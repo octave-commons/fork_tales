@@ -1,0 +1,15 @@
+{
+  "name": "eta-mu-frame-firewall",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "live": "node cli/live-choir.mjs",
+    "fork-tax:audit": "node contracts/contract_fork_tax_git_v1.mjs --audit",
+    "fork-tax:cycle": "node contracts/contract_fork_tax_git_v1.mjs --cycle",
+    "fork-tax:test": "node contracts/contract_fork_tax_git_v1.mjs --test"
+  },
+  "bin": {
+    "frame-firewall": "./cli/frame-firewall.mjs",
+    "live-choir": "./cli/live-choir.mjs"
+  }
+}
