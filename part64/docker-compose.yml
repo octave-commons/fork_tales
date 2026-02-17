@@ -28,6 +28,7 @@ services:
       - "8787:8787"
       - "8793:8793"
     volumes:
+      - .:/app
       - ./world_state:/app/world_state
       - ../.opencode/runtime:/app/.opencode/runtime:ro
       - ../:/vault
