@@ -1,846 +1,1205 @@
-import { useState, useCallback, useEffect, useMemo, useRef } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef, lazy, Suspense } from "react";
 import { useWorldState } from "./hooks/useWorldState";
-import { useVoice } from "./hooks/useVoice";
-import { SimulationCanvas } from "./components/Simulation/Canvas";
-import { VitalsPanel } from "./components/Panels/Vitals";
+import { OVERLAY_VIEW_OPTIONS, SimulationCanvas } from "./components/Simulation/Canvas";
 import { ChatPanel } from "./components/Panels/Chat";
-import { SoundConsole } from "./components/Panels/Controls";
-import { CatalogPanel } from "./components/Panels/Catalog";
-import { OmniPanel } from "./components/Panels/Omni";
-import { MythWorldPanel } from "./components/Panels/MythWorld";
-import { PresenceMusicCommandCenter } from "./components/Panels/PresenceMusicCommandCenter";
-import { WebGraphWeaverPanel } from "./components/Panels/WebGraphWeaverPanel";
-import { InspirationAtlasPanel } from "./components/Panels/InspirationAtlasPanel";
+import { PresenceCallDeck } from "./components/Panels/PresenceCallDeck";
+import { ProjectionLedgerPanel } from "./components/Panels/ProjectionLedgerPanel";
+import {
+  Autopilot,
+  type AskPayload,
+  type AutopilotActionEvent,
+  type AutopilotActionResult,
+  type GateVerdict,
+  type IntentHypothesis,
+  type PlannedAction,
+} from "./autopilot";
 import type {
-  InstrumentPad,
-  InstrumentState,
+  CouncilApiResponse,
+  DriftScanPayload,
+  StudySnapshotPayload,
+  TaskQueueSnapshot,
   UIPerspective,
   UIProjectionBundle,
   UIProjectionElementState,
   WorldInteractionResponse,
 } from "./types";
 
-const MIX_POSITION_STORAGE_KEY = "eta_mu_mix_position_seconds";
+const VitalsPanel = lazy(() =>
+  import("./components/Panels/Vitals").then((module) => ({ default: module.VitalsPanel })),
+);
+const CatalogPanel = lazy(() =>
+  import("./components/Panels/Catalog").then((module) => ({ default: module.CatalogPanel })),
+);
+const OmniPanel = lazy(() =>
+  import("./components/Panels/Omni").then((module) => ({ default: module.OmniPanel })),
+);
+const MythWorldPanel = lazy(() =>
+  import("./components/Panels/MythWorld").then((module) => ({ default: module.MythWorldPanel })),
+);
+const WebGraphWeaverPanel = lazy(() =>
+  import("./components/Panels/WebGraphWeaverPanel").then((module) => ({
+    default: module.WebGraphWeaverPanel,
+  })),
+);
+const InspirationAtlasPanel = lazy(() =>
+  import("./components/Panels/InspirationAtlasPanel").then((module) => ({
+    default: module.InspirationAtlasPanel,
+  })),
+);
+const StabilityObservatoryPanel = lazy(() =>
+  import("./components/Panels/StabilityObservatoryPanel").then((module) => ({
+    default: module.StabilityObservatoryPanel,
+  })),
+);
 
-const DEFAULT_INSTRUMENT: InstrumentState = {
-  masterLevel: 0.82,
-  pulseLevel: 0.56,
-  artifactLevel: 0.74,
-  transportRate: 1,
-  voiceRate: 0.96,
-  voicePitch: 1,
-  voiceGain: 0.86,
-  delivery: "spoken",
+interface OverlayApi {
+  pulseAt?: (x: number, y: number, power: number) => void;
+  singAll?: () => void;
+}
+
+type AutopilotHealth = "green" | "yellow" | "red";
+
+interface AutopilotSenseContext {
+  isConnected: boolean;
+  blockedGateCount: number;
+  activeDriftCount: number;
+  queuePendingCount: number;
+  truthGateBlocked: boolean;
+  health: AutopilotHealth;
+  healthReasons: string[];
+  permissions: Record<string, boolean>;
+}
+
+interface UiToast {
+  id: number;
+  title: string;
+  body: string;
+}
+
+const AUTOPILOT_C_MIN = 0.72;
+const AUTOPILOT_R_MAX = 0.45;
+const PROJECTION_GRID_COLUMNS = 12;
+const PROJECTION_GRID_ROWS = 24;
+
+const DEFAULT_AUTOPILOT_PERMISSIONS: Record<string, boolean> = {
+  "runtime.read": true,
+  "truth.push.dry-run": false,
 };
 
-const INSTRUMENT_PADS: InstrumentPad[] = [
-  { id: "pad-c4", key: "4", note: "C4", labelEn: "Receipt Pulse", labelJa: "領収脈", freqHz: 261.63 },
-  { id: "pad-d4", key: "5", note: "D4", labelEn: "Witness Thread", labelJa: "証糸", freqHz: 293.66 },
-  { id: "pad-e4", key: "6", note: "E4", labelEn: "Fork Canticle", labelJa: "フォーク聖歌", freqHz: 329.63 },
-  { id: "pad-g4", key: "7", note: "G4", labelEn: "Mage Choir", labelJa: "魔導合唱", freqHz: 392.0 },
-  { id: "pad-a4", key: "8", note: "A4", labelEn: "Keeper Drone", labelJa: "番人持続", freqHz: 440.0 },
-  { id: "pad-c5", key: "9", note: "C5", labelEn: "Anchor Lift", labelJa: "錨上昇", freqHz: 523.25 },
-  { id: "pad-d5", key: "0", note: "D5", labelEn: "Truth Gate", labelJa: "真理門", freqHz: 587.33 },
-];
+function directiveToGoal(input: string): string {
+  const normalized = input.trim().toLowerCase();
+  if (normalized.includes("drift")) {
+    return "scan-drift";
+  }
+  if (normalized.includes("queue") || normalized.includes("study")) {
+    return "reduce-queue";
+  }
+  if (normalized.includes("truth") || normalized.includes("push")) {
+    return "clear-gates";
+  }
+  return "maintain-observability";
+}
 
-const PAD_BY_KEY = new Map(INSTRUMENT_PADS.map((pad) => [pad.key, pad.id]));
-const PAD_BY_ID = new Map(INSTRUMENT_PADS.map((pad) => [pad.id, pad]));
+function isAffirmativeResponse(input: string): boolean {
+  const normalized = input.trim().toLowerCase();
+  return (
+    normalized === "yes" ||
+    normalized === "y" ||
+    normalized.includes("grant") ||
+    normalized.includes("allow") ||
+    normalized.includes("approve")
+  );
+}
 
-const DELIVERY_PROFILE = {
-  whispered: { attackSec: 0.05, releaseSec: 0.24, vibratoHz: 5.2, vibratoDepth: 3.8 },
-  spoken: { attackSec: 0.03, releaseSec: 0.2, vibratoHz: 4.4, vibratoDepth: 2.6 },
-  canticle: { attackSec: 0.08, releaseSec: 0.34, vibratoHz: 5.8, vibratoDepth: 5.2 },
-} as const;
-
-interface ActivePadSynth {
-  gain: GainNode;
-  filter: BiquadFilterNode;
-  oscillators: OscillatorNode[];
-  lfoOsc: OscillatorNode;
-  lfoDepth: GainNode;
+function runtimeBaseUrl(): string {
+  return window.location.port === "5173" ? "http://127.0.0.1:8787" : "";
 }
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-function isEditableElement(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) {
-    return false;
-  }
-  const tag = target.tagName;
-  return target.isContentEditable || tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+function projectionOpacity(raw: number | undefined, floor = 0.9): number {
+  const normalized = clamp(typeof raw === "number" ? raw : 1, 0, 1);
+  return floor + normalized * (1 - floor);
+}
+
+function DeferredPanelPlaceholder({ title }: { title: string }) {
+  return (
+    <div className="rounded-xl border border-[var(--line)] bg-[rgba(45,46,39,0.82)] px-4 py-5">
+      <p className="text-sm font-semibold text-ink">{title}</p>
+      <p className="text-xs text-muted mt-1">warming up panel...</p>
+    </div>
+  );
 }
 
 export default function App() {
   const [uiPerspective, setUiPerspective] = useState<UIPerspective>("hybrid");
   const { catalog, simulation, projection, isConnected } = useWorldState(uiPerspective);
-  const [preferJa, setPreferJa] = useState(true);
-  const [instrument, setInstrument] = useState<InstrumentState>(DEFAULT_INSTRUMENT);
-  const { stop, sing, active, queue, pack, speakText } = useVoice({ preferJa, instrument });
-  
-  const [overlayApi, setOverlayApi] = useState<any>(null);
+
+  const [overlayApi, setOverlayApi] = useState<OverlayApi | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
   const [voiceInputMeta, setVoiceInputMeta] = useState("voice input idle / 音声入力待機");
   const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
-  const [isDragging, setIsDragging] = useState(false);
   const [worldInteraction, setWorldInteraction] = useState<WorldInteractionResponse | null>(null);
   const [interactingPersonId, setInteractingPersonId] = useState<string | null>(null);
-  const [performanceArmed, setPerformanceArmed] = useState(true);
-  const [activePadIds, setActivePadIds] = useState<string[]>([]);
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const activePadSynthsRef = useRef<Map<string, ActivePadSynth>>(new Map());
-  const activePadKeysRef = useRef<Set<string>>(new Set());
+  const [deferredPanelsReady, setDeferredPanelsReady] = useState(false);
+  const [isWideViewport, setIsWideViewport] = useState(
+    () => window.matchMedia("(min-width: 1280px)").matches,
+  );
+  const [autopilotEnabled, setAutopilotEnabled] = useState(true);
+  const [autopilotStatus, setAutopilotStatus] = useState<"running" | "waiting" | "stopped">("stopped");
+  const [autopilotSummary, setAutopilotSummary] = useState("booting");
+  const [autopilotEvents, setAutopilotEvents] = useState<AutopilotActionEvent[]>([]);
+  const [autopilotPermissions, setAutopilotPermissions] = useState<Record<string, boolean>>(
+    DEFAULT_AUTOPILOT_PERMISSIONS,
+  );
+  const [uiToasts, setUiToasts] = useState<UiToast[]>([]);
 
-  const syncActivePads = useCallback(() => {
-    const next = INSTRUMENT_PADS
-      .filter((pad) => activePadSynthsRef.current.has(pad.id))
-      .map((pad) => pad.id);
-    setActivePadIds(next);
-  }, []);
+  const autopilotRef = useRef<Autopilot<AutopilotSenseContext> | null>(null);
+  const autopilotPendingAskRef = useRef<AskPayload | null>(null);
+  const autopilotDirectiveRef = useRef<string | null>(null);
+  const autopilotPermissionsRef = useRef(autopilotPermissions);
+  const autopilotLastActionRef = useRef<{ id: string; ts: number } | null>(null);
+  const runtimeSnapshotRef = useRef({ catalog, simulation, isConnected });
+  const toastSeqRef = useRef(0);
+  const toastTimeoutsRef = useRef<Map<number, number>>(new Map());
 
-  const ensureAudioContext = useCallback((): AudioContext => {
-    const ExistingCtx = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!audioCtxRef.current) {
-      audioCtxRef.current = new ExistingCtx();
-    }
-    if (audioCtxRef.current.state === "suspended") {
-      void audioCtxRef.current.resume();
-    }
-    return audioCtxRef.current;
-  }, []);
-
-  const stopPad = useCallback((padId: string) => {
-    const synth = activePadSynthsRef.current.get(padId);
-    if (!synth || !audioCtxRef.current) {
-      return;
-    }
-    const profile = DELIVERY_PROFILE[instrument.delivery];
-    const ctx = audioCtxRef.current;
-    const now = ctx.currentTime;
-    synth.gain.gain.cancelScheduledValues(now);
-    synth.gain.gain.setValueAtTime(Math.max(0.0001, synth.gain.gain.value), now);
-    synth.gain.gain.exponentialRampToValueAtTime(0.0001, now + profile.releaseSec);
-    const stopAt = now + profile.releaseSec + 0.04;
-    synth.oscillators.forEach((osc) => {
-      osc.stop(stopAt);
-    });
-    synth.lfoOsc.stop(stopAt);
-    activePadSynthsRef.current.delete(padId);
-    activePadKeysRef.current.delete(padId);
-    syncActivePads();
-  }, [instrument.delivery, syncActivePads]);
-
-  const startPad = useCallback((padId: string) => {
-    if (activePadSynthsRef.current.has(padId)) {
-      return;
-    }
-    const pad = PAD_BY_ID.get(padId);
-    if (!pad) {
-      return;
-    }
-
-    const ctx = ensureAudioContext();
-    const profile = DELIVERY_PROFILE[instrument.delivery];
-    const now = ctx.currentTime;
-
-    const destinationGain = ctx.createGain();
-    const filter = ctx.createBiquadFilter();
-    filter.type = "lowpass";
-    filter.frequency.value = 1800 + instrument.pulseLevel * 1600;
-    filter.Q.value = 0.6 + instrument.artifactLevel * 2.0;
-
-    const oscA = ctx.createOscillator();
-    const oscB = ctx.createOscillator();
-    oscA.type = "triangle";
-    oscB.type = "sine";
-    const baseFreq = pad.freqHz * instrument.voicePitch;
-    oscA.frequency.setValueAtTime(baseFreq, now);
-    oscB.frequency.setValueAtTime(baseFreq * 2.01, now);
-
-    const lfoOsc = ctx.createOscillator();
-    const lfoDepth = ctx.createGain();
-    lfoOsc.frequency.value = profile.vibratoHz;
-    lfoDepth.gain.value = profile.vibratoDepth;
-    lfoOsc.connect(lfoDepth);
-    lfoDepth.connect(oscA.detune);
-    lfoDepth.connect(oscB.detune);
-
-    const padGainTarget = clamp(
-      instrument.masterLevel * instrument.artifactLevel * instrument.voiceGain * 0.32,
-      0.03,
-      0.45,
-    );
-
-    destinationGain.gain.setValueAtTime(0.0001, now);
-    destinationGain.gain.exponentialRampToValueAtTime(padGainTarget, now + profile.attackSec);
-
-    oscA.connect(filter);
-    oscB.connect(filter);
-    filter.connect(destinationGain);
-    destinationGain.connect(ctx.destination);
-
-    oscA.start(now);
-    oscB.start(now);
-    lfoOsc.start(now);
-
-    activePadSynthsRef.current.set(padId, {
-      gain: destinationGain,
-      filter,
-      oscillators: [oscA, oscB],
-      lfoOsc,
-      lfoDepth,
-    });
-    activePadKeysRef.current.add(padId);
-    syncActivePads();
-    setVoiceInputMeta(`instrument pad: ${pad.labelEn} / ${pad.labelJa}`);
-  }, [ensureAudioContext, instrument.artifactLevel, instrument.delivery, instrument.masterLevel, instrument.pulseLevel, instrument.voiceGain, instrument.voicePitch, syncActivePads]);
-
-  const handleFileUpload = useCallback(async (file: File) => {
-    const reader = new FileReader();
-    reader.onload = async () => {
-      const b64 = (reader.result as string).split(',')[1];
-      setVoiceInputMeta(`learning frequency: ${file.name}...`);
-      try {
-        const baseUrl = window.location.port === '5173' ? 'http://127.0.0.1:8787' : '';
-        const res = await fetch(`${baseUrl}/api/upload`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name: file.name,
-            base64: b64,
-            mime: file.type
-          })
-        });
-        const data = await res.json();
-        if (data.ok) {
-          setVoiceInputMeta(`learned: ${data.text || file.name}`);
-          // Add system message to chat
-          window.dispatchEvent(new CustomEvent("chat-message", {
-            detail: { role: "system", text: `The Weaver has learned a new frequency from ${file.name}: "${data.text}"` }
-          }));
-        }
-      } catch (e) {
-        setVoiceInputMeta("learning failed");
-      }
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDeferredPanelsReady(true);
+    }, 220);
+    return () => {
+      window.clearTimeout(timer);
     };
-    reader.readAsDataURL(file);
   }, []);
 
-  const onDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    const files = Array.from(e.dataTransfer.files);
-    files.forEach(file => {
-      if (file.type.startsWith('audio/')) {
-        handleFileUpload(file);
+  useEffect(() => {
+    const query = window.matchMedia("(min-width: 1280px)");
+    const handleViewportChange = (event: MediaQueryListEvent) => {
+      setIsWideViewport(event.matches);
+    };
+    setIsWideViewport(query.matches);
+    query.addEventListener("change", handleViewportChange);
+    return () => {
+      query.removeEventListener("change", handleViewportChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    runtimeSnapshotRef.current = { catalog, simulation, isConnected };
+  }, [catalog, isConnected, simulation]);
+
+  useEffect(() => {
+    autopilotPermissionsRef.current = autopilotPermissions;
+  }, [autopilotPermissions]);
+
+  const dismissToast = useCallback((id: number) => {
+    const timeoutId = toastTimeoutsRef.current.get(id);
+    if (timeoutId !== undefined) {
+      window.clearTimeout(timeoutId);
+      toastTimeoutsRef.current.delete(id);
+    }
+    setUiToasts((prev) => prev.filter((toast) => toast.id !== id));
+  }, []);
+
+  useEffect(() => {
+    const handler: EventListener = (event) => {
+      const customEvent = event as CustomEvent<{ title?: unknown; body?: unknown }>;
+      const title =
+        typeof customEvent.detail?.title === "string" ? customEvent.detail.title.trim() : "Notice";
+      const body =
+        typeof customEvent.detail?.body === "string" ? customEvent.detail.body.trim() : "";
+      if (!body) {
+        return;
       }
-    });
-  }, [handleFileUpload]);
 
-  const onDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
+      const id = Date.now() + toastSeqRef.current;
+      toastSeqRef.current += 1;
+      setUiToasts((prev) => [{ id, title: title || "Notice", body }, ...prev].slice(0, 4));
+
+      const timeoutId = window.setTimeout(() => {
+        setUiToasts((prev) => prev.filter((toast) => toast.id !== id));
+        toastTimeoutsRef.current.delete(id);
+      }, 5200);
+      toastTimeoutsRef.current.set(id, timeoutId);
+    };
+
+    window.addEventListener("ui:toast", handler);
+    return () => {
+      window.removeEventListener("ui:toast", handler);
+      toastTimeoutsRef.current.forEach((timeoutId) => {
+        window.clearTimeout(timeoutId);
+      });
+      toastTimeoutsRef.current.clear();
+    };
   }, []);
 
-  const onDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-  }, []);
-
-  // Voice Recording Logic
   const handleRecord = useCallback(async () => {
-    if(isRecording) return;
+    if (isRecording) {
+      return;
+    }
     try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const mediaRecorder = new MediaRecorder(stream);
-        const chunks: BlobPart[] = [];
-        
-        mediaRecorder.ondataavailable = (e) => {
-            if (e.data.size > 0) chunks.push(e.data);
-        };
-        
-        mediaRecorder.onstop = () => {
-            const blob = new Blob(chunks, { type: "audio/webm" });
-            setRecordedBlob(blob);
-            setVoiceInputMeta(`voice captured / 音声取得: ${Math.round(blob.size/1024)}KB`);
-            stream.getTracks().forEach((t) => {
-              t.stop();
-            });
-            setIsRecording(false);
-        };
-        
-        mediaRecorder.start();
-        setIsRecording(true);
-        setVoiceInputMeta("recording voice / 録音中");
-        
-        setTimeout(() => {
-            if(mediaRecorder.state === "recording") mediaRecorder.stop();
-        }, 8000);
-        
-    } catch(e) {
-        setVoiceInputMeta("mic permission denied / マイク許可なし");
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      const chunks: BlobPart[] = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunks.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(chunks, { type: "audio/webm" });
+        setRecordedBlob(blob);
+        setVoiceInputMeta(`voice captured / 音声取得: ${Math.round(blob.size / 1024)}KB`);
+        stream.getTracks().forEach((track) => {
+          track.stop();
+        });
+        setIsRecording(false);
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+      setVoiceInputMeta("recording voice / 録音中");
+
+      window.setTimeout(() => {
+        if (mediaRecorder.state === "recording") {
+          mediaRecorder.stop();
+        }
+      }, 8000);
+    } catch (_error) {
+      setVoiceInputMeta("mic permission denied / マイク許可なし");
     }
   }, [isRecording]);
 
-  const handleTranscribe = useCallback(async () => {
-    if(!recordedBlob) return;
-    const buf = await recordedBlob.arrayBuffer();
-    // Convert to base64
-    let binary = '';
-    const bytes = new Uint8Array(buf);
-    for (let i = 0; i < bytes.byteLength; i++) {
-        binary += String.fromCharCode(bytes[i]);
+  const handleTranscribe = useCallback(async (): Promise<string | undefined> => {
+    if (!recordedBlob) {
+      return undefined;
     }
-    const b64 = btoa(binary);
+
+    const buffer = await recordedBlob.arrayBuffer();
+    let binary = "";
+    const bytes = new Uint8Array(buffer);
+    for (let i = 0; i < bytes.byteLength; i += 1) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    const base64 = btoa(binary);
 
     try {
-        const baseUrl = window.location.port === '5173' ? 'http://127.0.0.1:8787' : '';
-        const res = await fetch(`${baseUrl}/api/transcribe`, {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({ audio_base64: b64, mime: recordedBlob.type })
-        });
-        const data = await res.json();
-        if(data.ok) {
-            setVoiceInputMeta(`transcribed: ${data.text}`);
-            return data.text;
-        } else {
-            setVoiceInputMeta(`error: ${data.error}`);
-        }
-    } catch(e) {
-        setVoiceInputMeta("transcribe failed");
+      const baseUrl = runtimeBaseUrl();
+      const response = await fetch(`${baseUrl}/api/transcribe`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ audio_base64: base64, mime: recordedBlob.type }),
+      });
+      const payload = (await response.json()) as { ok?: boolean; text?: string; error?: string };
+      if (payload.ok) {
+        const text = String(payload.text ?? "");
+        setVoiceInputMeta(`transcribed: ${text}`);
+        return text;
+      }
+      setVoiceInputMeta(`error: ${String(payload.error ?? "unknown")}`);
+      return undefined;
+    } catch (_error) {
+      setVoiceInputMeta("transcribe failed");
+      return undefined;
     }
   }, [recordedBlob]);
 
   const handleSendVoice = useCallback(async () => {
     const text = await handleTranscribe();
-    if(text) {
-        window.dispatchEvent(new CustomEvent("chat-message", { 
-            detail: { role: "user", text } 
-        }));
-        
-        const baseUrl = window.location.port === '5173' ? 'http://127.0.0.1:8787' : '';
-        fetch(`${baseUrl}/api/chat`, {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({ messages: [{role: "user", text}] })
-        }).then(r => r.json()).then(data => {
-             window.dispatchEvent(new CustomEvent("chat-message", { 
-                detail: { role: "assistant", text: data.reply } 
-            }));
-            if(data.reply.includes("[[PULSE]]") && overlayApi) overlayApi.pulseAt(0.5, 0.5, 1.0);
-            if(data.reply.includes("[[SING]]") && overlayApi) overlayApi.singAll();
-        });
+    if (!text) {
+      return;
+    }
+
+    window.dispatchEvent(
+      new CustomEvent("chat-message", {
+        detail: { role: "user", text },
+      }),
+    );
+
+    const baseUrl = runtimeBaseUrl();
+    try {
+      const response = await fetch(`${baseUrl}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: [{ role: "user", text }] }),
+      });
+      const payload = (await response.json()) as { reply?: string };
+      const reply = String(payload.reply ?? "");
+
+      window.dispatchEvent(
+        new CustomEvent("chat-message", {
+          detail: { role: "assistant", text: reply },
+        }),
+      );
+
+      if (reply.includes("[[PULSE]]")) {
+        overlayApi?.pulseAt?.(0.5, 0.5, 1);
+      }
+      if (reply.includes("[[SING]]")) {
+        overlayApi?.singAll?.();
+      }
+    } catch (_error) {
+      window.dispatchEvent(
+        new CustomEvent("chat-message", {
+          detail: { role: "system", text: "voice chat request failed" },
+        }),
+      );
     }
   }, [handleTranscribe, overlayApi]);
 
-  const handleHandoff = useCallback(async () => {
-    try {
-        const baseUrl = window.location.port === '5173' ? 'http://127.0.0.1:8787' : '';
-        const res = await fetch(`${baseUrl}/api/handoff`);
-        if(res.ok) {
-            const blob = await res.blob();
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = `HANDOFF_Part_70_${new Date().toISOString().split('T')[0]}.md`;
-            a.click();
-            URL.revokeObjectURL(url);
-            setVoiceInputMeta("handoff report generated / 引き継ぎレポート作成完了");
-        }
-    } catch(e) {
-        setVoiceInputMeta("handoff failed");
-    }
-  }, []);
-
-  const applyInstrumentToAudio = useCallback((smoothPulseRamp = false) => {
-    const audios = Array.from(document.querySelectorAll("audio"));
-    audios.forEach((audio) => {
-      const isPulseStream = audio.id === "mix-stream";
-      const targetVolume = clamp(
-        instrument.masterLevel * (isPulseStream ? instrument.pulseLevel : instrument.artifactLevel),
-        0,
-        1,
-      );
-
-      audio.playbackRate = instrument.transportRate;
-
-      if (audio.muted) {
-        return;
-      }
-
-      if (smoothPulseRamp && isPulseStream) {
-        const startVolume = Math.min(audio.volume, targetVolume * 0.25);
-        const started = performance.now();
-        audio.volume = startVolume;
-        const durationMs = 1100;
-
-        const ramp = (now: number) => {
-          const progress = Math.min((now - started) / durationMs, 1);
-          const eased = progress * progress * (3 - 2 * progress);
-          audio.volume = startVolume + (targetVolume - startVolume) * eased;
-          if (progress < 1) {
-            requestAnimationFrame(ramp);
-          }
-        };
-        requestAnimationFrame(ramp);
-        return;
-      }
-
-      audio.volume = targetVolume;
-    });
-  }, [instrument.artifactLevel, instrument.masterLevel, instrument.pulseLevel, instrument.transportRate]);
-
-  useEffect(() => {
-    applyInstrumentToAudio(false);
-  }, [applyInstrumentToAudio]);
-
-  useEffect(() => {
-    const ctx = audioCtxRef.current;
-    if (!ctx) {
-      return;
-    }
-
-    const now = ctx.currentTime;
-    const profile = DELIVERY_PROFILE[instrument.delivery];
-    activePadSynthsRef.current.forEach((synth, padId) => {
-      const pad = PAD_BY_ID.get(padId);
-      if (!pad) {
-        return;
-      }
-
-      const baseFreq = pad.freqHz * instrument.voicePitch;
-      synth.oscillators[0].frequency.setTargetAtTime(baseFreq, now, 0.02);
-      synth.oscillators[1].frequency.setTargetAtTime(baseFreq * 2.01, now, 0.02);
-      synth.filter.frequency.setTargetAtTime(1800 + instrument.pulseLevel * 1600, now, 0.03);
-      synth.filter.Q.setTargetAtTime(0.6 + instrument.artifactLevel * 2.0, now, 0.03);
-      synth.lfoOsc.frequency.setTargetAtTime(profile.vibratoHz, now, 0.04);
-      synth.lfoDepth.gain.setTargetAtTime(profile.vibratoDepth, now, 0.04);
-
-      const targetGain = clamp(
-        instrument.masterLevel * instrument.artifactLevel * instrument.voiceGain * 0.32,
-        0.03,
-        0.45,
-      );
-      synth.gain.gain.setTargetAtTime(targetGain, now, 0.03);
-    });
-  }, [
-    instrument.artifactLevel,
-    instrument.delivery,
-    instrument.masterLevel,
-    instrument.pulseLevel,
-    instrument.voiceGain,
-    instrument.voicePitch,
-  ]);
-
-  useEffect(() => {
-    const mixStream = document.getElementById("mix-stream") as HTMLAudioElement | null;
-    if (!mixStream) {
-      return;
-    }
-
-    const restorePosition = () => {
-      try {
-        const raw = window.sessionStorage.getItem(MIX_POSITION_STORAGE_KEY);
-        const saved = raw === null ? Number.NaN : Number(raw);
-        if (!Number.isFinite(saved) || saved <= 0) {
-          return;
-        }
-        if (Number.isFinite(mixStream.duration) && saved >= mixStream.duration) {
-          return;
-        }
-        mixStream.currentTime = saved;
-      } catch {
-        return;
-      }
-    };
-
-    const persistPosition = () => {
-      try {
-        window.sessionStorage.setItem(MIX_POSITION_STORAGE_KEY, String(mixStream.currentTime));
-      } catch {
-        return;
-      }
-    };
-
-    mixStream.addEventListener("loadedmetadata", restorePosition);
-    mixStream.addEventListener("timeupdate", persistPosition);
-    mixStream.addEventListener("pause", persistPosition);
-
-    if (mixStream.readyState > 0) {
-      restorePosition();
-    }
-
-    return () => {
-      mixStream.removeEventListener("loadedmetadata", restorePosition);
-      mixStream.removeEventListener("timeupdate", persistPosition);
-      mixStream.removeEventListener("pause", persistPosition);
-    };
-  }, []);
-
-  const handlePlayAll = useCallback(() => {
-    const audios = document.querySelectorAll("audio");
-    audios.forEach((a) => {
-      void a.play().catch(() => {});
-    });
-    applyInstrumentToAudio(true);
-  }, [applyInstrumentToAudio]);
-
-  const handlePauseAll = useCallback(() => {
-    const audios = document.querySelectorAll("audio");
-    audios.forEach((a) => {
-      a.pause();
-    });
-  }, []);
-
-  const handleMuteAll = useCallback(() => {
-    const audios = document.querySelectorAll("audio");
-    audios.forEach(a => { a.muted = true; });
-  }, []);
-
-  const handleUnmuteAll = useCallback(() => {
-    const audios = document.querySelectorAll("audio");
-    audios.forEach(a => { a.muted = false; });
-    applyInstrumentToAudio(false);
-  }, [applyInstrumentToAudio]);
-
-  const handleReloadMix = () => {
-    const mix = document.getElementById("mix-stream") as HTMLAudioElement;
-    if(mix) {
-        mix.src = `/stream/mix.wav?t=${Date.now()}`;
-        mix.load();
-        mix.addEventListener("loadedmetadata", () => {
-          applyInstrumentToAudio(false);
-        }, { once: true });
-    }
-  };
-
-  useEffect(() => {
-    if (!performanceArmed) {
-      activePadSynthsRef.current.forEach((_synth, padId) => {
-        stopPad(padId);
-      });
-      return;
-    }
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.repeat || event.metaKey || event.ctrlKey || event.altKey) {
-        return;
-      }
-      if (isEditableElement(event.target)) {
-        return;
-      }
-
-      const lower = event.key.toLowerCase();
-      const padId = PAD_BY_KEY.get(lower);
-      if (padId) {
-        if (!activePadKeysRef.current.has(padId)) {
-          startPad(padId);
-        }
-        event.preventDefault();
-        return;
-      }
-
-      let handled = true;
-
-      if (event.key === " ") {
-        const audioEls = Array.from(document.querySelectorAll("audio"));
-        const anyPlaying = audioEls.some((audio) => !audio.paused);
-        if (anyPlaying) {
-          handlePauseAll();
-          setVoiceInputMeta("instrument: transport paused / 輸送停止");
-        } else {
-          handlePlayAll();
-          setVoiceInputMeta("instrument: transport running / 輸送再開");
-        }
-      } else if (lower === "m") {
-        const audioEls = Array.from(document.querySelectorAll("audio"));
-        const shouldMute = audioEls.some((audio) => !audio.muted);
-        if (shouldMute) {
-          handleMuteAll();
-          setVoiceInputMeta("instrument: mute on / ミュートON");
-        } else {
-          handleUnmuteAll();
-          setVoiceInputMeta("instrument: mute off / ミュートOFF");
-        }
-      } else if (lower === "q") {
-        void sing("canonical");
-        setVoiceInputMeta("instrument: canonical phrase / 正準フレーズ");
-      } else if (lower === "w") {
-        void sing("ollama");
-        setVoiceInputMeta("instrument: ollama phrase / Ollamaフレーズ");
-      } else if (lower === "x") {
-        stop();
-        setVoiceInputMeta("instrument: voices cut / 声停止");
-      } else if (lower === "f") {
-        overlayApi?.singAll();
-        setVoiceInputMeta("instrument: field choir / 場の合唱");
-      } else if (lower === "j") {
-        setPreferJa((prev) => !prev);
-      } else if (lower === "[") {
-        setInstrument((prev) => ({ ...prev, masterLevel: clamp(prev.masterLevel - 0.04, 0.1, 1) }));
-      } else if (lower === "]") {
-        setInstrument((prev) => ({ ...prev, masterLevel: clamp(prev.masterLevel + 0.04, 0.1, 1) }));
-      } else if (lower === "-") {
-        setInstrument((prev) => ({ ...prev, pulseLevel: clamp(prev.pulseLevel - 0.04, 0.05, 1) }));
-      } else if (lower === "=") {
-        setInstrument((prev) => ({ ...prev, pulseLevel: clamp(prev.pulseLevel + 0.04, 0.05, 1) }));
-      } else if (lower === ",") {
-        setInstrument((prev) => ({ ...prev, transportRate: clamp(prev.transportRate - 0.03, 0.75, 1.25) }));
-      } else if (lower === ".") {
-        setInstrument((prev) => ({ ...prev, transportRate: clamp(prev.transportRate + 0.03, 0.75, 1.25) }));
-      } else if (lower === "o") {
-        setInstrument((prev) => ({ ...prev, voiceRate: clamp(prev.voiceRate - 0.03, 0.7, 1.35) }));
-      } else if (lower === "p") {
-        setInstrument((prev) => ({ ...prev, voiceRate: clamp(prev.voiceRate + 0.03, 0.7, 1.35) }));
-      } else if (lower === "k") {
-        setInstrument((prev) => ({ ...prev, voicePitch: clamp(prev.voicePitch - 0.03, 0.75, 1.45) }));
-      } else if (lower === "l") {
-        setInstrument((prev) => ({ ...prev, voicePitch: clamp(prev.voicePitch + 0.03, 0.75, 1.45) }));
-      } else if (lower === "n") {
-        setInstrument((prev) => ({ ...prev, artifactLevel: clamp(prev.artifactLevel - 0.04, 0.05, 1) }));
-      } else if (lower === "b") {
-        setInstrument((prev) => ({ ...prev, artifactLevel: clamp(prev.artifactLevel + 0.04, 0.05, 1) }));
-      } else if (lower === ";") {
-        setInstrument((prev) => ({ ...prev, voiceGain: clamp(prev.voiceGain - 0.03, 0.2, 1) }));
-      } else if (lower === "'") {
-        setInstrument((prev) => ({ ...prev, voiceGain: clamp(prev.voiceGain + 0.03, 0.2, 1) }));
-      } else if (lower === "1") {
-        setInstrument((prev) => ({ ...prev, delivery: "whispered" }));
-      } else if (lower === "2") {
-        setInstrument((prev) => ({ ...prev, delivery: "spoken" }));
-      } else if (lower === "3") {
-        setInstrument((prev) => ({ ...prev, delivery: "canticle" }));
-      } else {
-        handled = false;
-      }
-
-      if (handled) {
-        event.preventDefault();
-      }
-    };
-
-    const handleKeyUp = (event: KeyboardEvent) => {
-      const lower = event.key.toLowerCase();
-      const padId = PAD_BY_KEY.get(lower);
-      if (!padId) {
-        return;
-      }
-      stopPad(padId);
-      event.preventDefault();
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("keyup", handleKeyUp);
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("keyup", handleKeyUp);
-    };
-  }, [
-    handleMuteAll,
-    handlePauseAll,
-    handlePlayAll,
-    handleUnmuteAll,
-    overlayApi,
-    performanceArmed,
-    sing,
-    startPad,
-    stopPad,
-    stop,
-  ]);
-
-  useEffect(() => {
-    const synths = activePadSynthsRef.current;
-    return () => {
-      synths.forEach((_synth, padId) => {
-        stopPad(padId);
-      });
-      if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
-        void audioCtxRef.current.close();
-      }
-    };
-  }, [stopPad]);
-
-  useEffect(() => {
-    const clearPads = () => {
-      activePadSynthsRef.current.forEach((_synth, padId) => {
-        stopPad(padId);
-      });
-    };
-
-    window.addEventListener("blur", clearPads);
-    document.addEventListener("visibilitychange", clearPads);
-    return () => {
-      window.removeEventListener("blur", clearPads);
-      document.removeEventListener("visibilitychange", clearPads);
-    };
-  }, [stopPad]);
-
-  const voiceMeta = `voice mode: ${pack?.mode || 'canonical'} | delivery: ${instrument.delivery} | pads: ${activePadIds.length} | active: ${active} | queue: ${queue.length}`;
-
   const emitSystemMessage = useCallback((text: string) => {
-    window.dispatchEvent(new CustomEvent('chat-message', {
-      detail: {
-        role: 'system',
-        text,
-      },
-    }));
+    window.dispatchEvent(
+      new CustomEvent("chat-message", {
+        detail: {
+          role: "system",
+          text,
+        },
+      }),
+    );
   }, []);
 
-  const handleLedgerCommand = useCallback(async (text: string): Promise<boolean> => {
-    const trimmed = text.trim();
-    if (!trimmed.toLowerCase().startsWith('/ledger')) {
-      return false;
-    }
-
-    const payloadText = trimmed.replace(/^\/ledger\s*/i, '');
-    const baseUrl = window.location.port === '5173' ? 'http://127.0.0.1:8787' : '';
-    const utterances = payloadText
-      ? payloadText.split('|').map((row) => row.trim()).filter((row) => row.length > 0)
-      : [];
-
+  const runAutopilotStudySnapshot = useCallback(async (): Promise<AutopilotActionResult> => {
+    const baseUrl = runtimeBaseUrl();
     try {
-      const res = await fetch(`${baseUrl}/api/eta-mu-ledger`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ utterances }),
-      });
-      const data = await res.json();
-      const body = data?.jsonl ? data.jsonl.trim() : '(no utterances)';
-      emitSystemMessage(`eta/mu ledger\n${body}`);
-    } catch (_e) {
-      emitSystemMessage('eta/mu ledger failed');
-    }
-    return true;
-  }, [emitSystemMessage]);
-
-  const handlePresenceSayCommand = useCallback(async (text: string): Promise<boolean> => {
-    const trimmed = text.trim();
-    if (!trimmed.toLowerCase().startsWith('/say')) {
-      return false;
-    }
-
-    const args = trimmed.replace(/^\/say\s*/i, '');
-    const [presenceIdRaw, ...rest] = args.split(/\s+/).filter((token) => token.length > 0);
-    const presence_id = presenceIdRaw || 'witness_thread';
-    const messageText = rest.join(' ');
-    const baseUrl = window.location.port === '5173' ? 'http://127.0.0.1:8787' : '';
-
-    try {
-      const res = await fetch(`${baseUrl}/api/presence/say`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          presence_id,
-          text: messageText,
-        }),
-      });
-      const data = await res.json();
+      const response = await fetch(`${baseUrl}/api/study?limit=6`);
+      if (!response.ok) {
+        return {
+          ok: false,
+          summary: `study snapshot failed (${response.status})`,
+        };
+      }
+      const study = (await response.json()) as StudySnapshotPayload;
       emitSystemMessage(
-        `${data?.presence_name?.en || presence_id} / say\n${data?.rendered_text || '(no render)'}\n` +
-        `facts=${data?.say_intent?.facts?.length || 0} asks=${data?.say_intent?.asks?.length || 0} repairs=${data?.say_intent?.repairs?.length || 0}`,
+        [
+          "autopilot /study",
+          `stability=${Math.round(study.stability.score * 100)}%`,
+          `blocked_gates=${study.signals.blocked_gate_count}`,
+          `active_drifts=${study.signals.active_drift_count}`,
+          `queue_pending=${study.signals.queue_pending_count}`,
+        ].join("\n"),
       );
-    } catch (_e) {
-      emitSystemMessage('presence say failed');
+      return {
+        ok: true,
+        summary: `study snapshot sampled (stability=${Math.round(study.stability.score * 100)}%)`,
+        meta: { queue_pending: study.signals.queue_pending_count },
+      };
+    } catch (_error) {
+      return {
+        ok: false,
+        summary: "study snapshot request crashed",
+      };
     }
-    return true;
   }, [emitSystemMessage]);
 
-  const handleDriftCommand = useCallback(async (text: string): Promise<boolean> => {
-    const trimmed = text.trim();
-    if (trimmed.toLowerCase() !== '/drift') {
-      return false;
-    }
-
-    const baseUrl = window.location.port === '5173' ? 'http://127.0.0.1:8787' : '';
+  const runAutopilotDriftScan = useCallback(async (): Promise<AutopilotActionResult> => {
+    const baseUrl = runtimeBaseUrl();
     try {
-      const res = await fetch(`${baseUrl}/api/drift/scan`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const response = await fetch(`${baseUrl}/api/drift/scan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
-      const data = await res.json();
-      const drifts = Array.isArray(data?.active_drifts) ? data.active_drifts.length : 0;
-      const blocked = Array.isArray(data?.blocked_gates) ? data.blocked_gates.length : 0;
-      emitSystemMessage(`drift scan\nactive_drifts=${drifts} blocked_gates=${blocked}`);
-    } catch (_e) {
-      emitSystemMessage('drift scan failed');
+      if (!response.ok) {
+        return {
+          ok: false,
+          summary: `drift scan failed (${response.status})`,
+        };
+      }
+      const payload = (await response.json()) as DriftScanPayload;
+      emitSystemMessage(
+        [
+          "autopilot /drift",
+          `active_drifts=${payload.active_drifts.length}`,
+          `blocked_gates=${payload.blocked_gates.length}`,
+        ].join("\n"),
+      );
+      return {
+        ok: true,
+        summary: `drift scanned (blocked=${payload.blocked_gates.length})`,
+      };
+    } catch (_error) {
+      return {
+        ok: false,
+        summary: "drift scan request crashed",
+      };
     }
-    return true;
   }, [emitSystemMessage]);
 
-  const handlePushTruthDryRunCommand = useCallback(async (text: string): Promise<boolean> => {
-    const trimmed = text.trim().toLowerCase();
-    if (trimmed !== '/push-truth --dry-run') {
-      return false;
-    }
-
-    const baseUrl = window.location.port === '5173' ? 'http://127.0.0.1:8787' : '';
+  const runAutopilotPushTruthDryRun = useCallback(async (): Promise<AutopilotActionResult> => {
+    const baseUrl = runtimeBaseUrl();
     try {
-      const res = await fetch(`${baseUrl}/api/push-truth/dry-run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const response = await fetch(`${baseUrl}/api/push-truth/dry-run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
-      const data = await res.json();
-      const blocked = data?.gate?.blocked ? 'blocked' : 'pass';
-      const needs = Array.isArray(data?.needs) ? data.needs.join(', ') : '';
-      emitSystemMessage(`push-truth dry-run\ngate=${blocked}\nneeds=${needs || '(none)'}`);
-    } catch (_e) {
-      emitSystemMessage('push-truth dry-run failed');
+      if (!response.ok) {
+        return {
+          ok: false,
+          summary: `push-truth dry-run failed (${response.status})`,
+        };
+      }
+      const payload = (await response.json()) as {
+        gate?: { blocked?: boolean };
+        needs?: string[];
+      };
+      const blocked = payload?.gate?.blocked ? "blocked" : "pass";
+      const needs = Array.isArray(payload?.needs) ? payload.needs.join(", ") : "(none)";
+      emitSystemMessage(`autopilot /push-truth --dry-run\ngate=${blocked}\nneeds=${needs}`);
+      return {
+        ok: true,
+        summary: `push-truth dry-run gate=${blocked}`,
+      };
+    } catch (_error) {
+      return {
+        ok: false,
+        summary: "push-truth dry-run request crashed",
+      };
     }
-    return true;
   }, [emitSystemMessage]);
 
-  const handleChatCommand = useCallback(async (text: string): Promise<boolean> => {
-    if (await handleLedgerCommand(text)) {
-      return true;
-    }
-    if (await handlePresenceSayCommand(text)) {
-      return true;
-    }
-    if (await handleDriftCommand(text)) {
-      return true;
-    }
-    if (await handlePushTruthDryRunCommand(text)) {
-      return true;
-    }
-    return false;
-  }, [handleDriftCommand, handleLedgerCommand, handlePresenceSayCommand, handlePushTruthDryRunCommand]);
+  const senseAutopilotContext = useCallback(async (): Promise<AutopilotSenseContext> => {
+    const runtime = runtimeSnapshotRef.current;
+    const baseUrl = runtimeBaseUrl();
 
-  const handleWorldInteract = useCallback(async (personId: string, action: 'speak' | 'pray' | 'sing') => {
+    let study: StudySnapshotPayload | null = null;
+    try {
+      const studyRes = await fetch(`${baseUrl}/api/study?limit=4`);
+      if (studyRes.ok) {
+        study = (await studyRes.json()) as StudySnapshotPayload;
+      }
+    } catch (_error) {
+      // best effort
+    }
+
+    const blockedGateCount = study?.signals.blocked_gate_count ?? 0;
+    const activeDriftCount = study?.signals.active_drift_count ?? 0;
+    const queuePendingCount =
+      study?.signals.queue_pending_count ?? runtime.catalog?.task_queue?.pending_count ?? 0;
+    const truthGateBlocked =
+      study?.signals.truth_gate_blocked ??
+      Boolean(runtime.simulation?.truth_state?.gate?.blocked ?? runtime.catalog?.truth_state?.gate?.blocked);
+
+    let health: AutopilotHealth = "green";
+    const healthReasons: string[] = [];
+    if (!runtime.isConnected) {
+      health = "red";
+      healthReasons.push("runtime websocket disconnected");
+    } else if (blockedGateCount >= 4 || activeDriftCount >= 8) {
+      health = "red";
+      healthReasons.push("high drift or blocked gate pressure");
+    } else if (blockedGateCount >= 2 || activeDriftCount >= 4 || queuePendingCount >= 8) {
+      health = "yellow";
+      healthReasons.push("moderate pressure; run reduced-cost actions");
+    }
+
+    return {
+      isConnected: runtime.isConnected,
+      blockedGateCount,
+      activeDriftCount,
+      queuePendingCount,
+      truthGateBlocked,
+      health,
+      healthReasons,
+      permissions: autopilotPermissionsRef.current,
+    };
+  }, []);
+
+  const hypothesizeAutopilotIntent = useCallback(
+    async (ctx: AutopilotSenseContext): Promise<IntentHypothesis> => {
+      if (autopilotDirectiveRef.current) {
+        const goal = directiveToGoal(autopilotDirectiveRef.current);
+        autopilotDirectiveRef.current = null;
+        return {
+          goal,
+          confidence: 0.99,
+          rationale: "user supplied directive",
+        };
+      }
+
+      if (!ctx.isConnected) {
+        return {
+          goal: "restore-connectivity",
+          confidence: 0.98,
+          rationale: "runtime stream disconnected",
+        };
+      }
+      if (ctx.blockedGateCount > 0 || ctx.truthGateBlocked) {
+        return {
+          goal: "clear-gates",
+          confidence: clamp(0.82 + ctx.blockedGateCount * 0.03, 0, 0.98),
+          alternatives: [
+            { goal: "scan-drift", confidence: 0.79 },
+            { goal: "reduce-queue", confidence: 0.74 },
+          ],
+        };
+      }
+      if (ctx.queuePendingCount > 3) {
+        return {
+          goal: "reduce-queue",
+          confidence: clamp(0.77 + ctx.queuePendingCount * 0.015, 0, 0.94),
+          alternatives: [{ goal: "scan-drift", confidence: 0.68 }],
+        };
+      }
+      if (ctx.activeDriftCount > 0) {
+        return {
+          goal: "scan-drift",
+          confidence: clamp(0.76 + ctx.activeDriftCount * 0.02, 0, 0.9),
+        };
+      }
+      return {
+        goal: "maintain-observability",
+        confidence: 0.64,
+        alternatives: [
+          { goal: "reduce-queue", confidence: 0.59 },
+          { goal: "scan-drift", confidence: 0.57 },
+        ],
+      };
+    },
+    [],
+  );
+
+  const planAutopilotAction = useCallback(
+    async (
+      ctx: AutopilotSenseContext,
+      goal: string,
+    ): Promise<PlannedAction<AutopilotSenseContext>> => {
+      const lastAction = autopilotLastActionRef.current;
+      const isFreshAction = (actionId: string, maxAgeMs: number): boolean => {
+        if (!lastAction) {
+          return true;
+        }
+        if (lastAction.id !== actionId) {
+          return true;
+        }
+        return Date.now() - lastAction.ts > maxAgeMs;
+      };
+
+      if (goal === "restore-connectivity") {
+        return {
+          id: "autopilot.wait-runtime",
+          label: "wait runtime recovery",
+          goal,
+          risk: 0.1,
+          cost: 0.05,
+          requiredPerms: [],
+          run: async () => ({ ok: false, summary: "runtime disconnected" }),
+        };
+      }
+
+      if (goal === "clear-gates") {
+        if (ctx.blockedGateCount >= 2 && isFreshAction("autopilot.push-truth-dry-run", 15000)) {
+          return {
+            id: "autopilot.push-truth-dry-run",
+            label: "push truth dry-run",
+            goal,
+            risk: 0.58,
+            cost: 0.42,
+            requiredPerms: ["runtime.read", "truth.push.dry-run"],
+            run: runAutopilotPushTruthDryRun,
+          };
+        }
+        return {
+          id: "autopilot.drift-scan",
+          label: "drift scan",
+          goal,
+          risk: 0.22,
+          cost: 0.18,
+          requiredPerms: ["runtime.read"],
+          run: runAutopilotDriftScan,
+        };
+      }
+
+      if (goal === "reduce-queue") {
+        return {
+          id: "autopilot.study-snapshot",
+          label: "study snapshot",
+          goal,
+          risk: 0.24,
+          cost: 0.22,
+          requiredPerms: ["runtime.read"],
+          run: runAutopilotStudySnapshot,
+        };
+      }
+
+      if (goal === "scan-drift") {
+        return {
+          id: "autopilot.drift-scan",
+          label: "drift scan",
+          goal,
+          risk: 0.2,
+          cost: 0.18,
+          requiredPerms: ["runtime.read"],
+          run: runAutopilotDriftScan,
+        };
+      }
+
+      if (!isFreshAction("autopilot.study-snapshot", 20000)) {
+        return {
+          id: "autopilot.idle",
+          label: "idle hold",
+          goal,
+          risk: 0.02,
+          cost: 0.01,
+          requiredPerms: [],
+          run: async () => ({ ok: true, summary: "idle cadence hold" }),
+        };
+      }
+
+      return {
+        id: "autopilot.study-snapshot",
+        label: "study snapshot",
+        goal,
+        risk: 0.19,
+        cost: 0.2,
+        requiredPerms: ["runtime.read"],
+        run: runAutopilotStudySnapshot,
+      };
+    },
+    [runAutopilotDriftScan, runAutopilotPushTruthDryRun, runAutopilotStudySnapshot],
+  );
+
+  const gateAutopilotAction = useCallback(
+    (
+      ctx: AutopilotSenseContext,
+      hyp: IntentHypothesis,
+      action: PlannedAction<AutopilotSenseContext>,
+    ): GateVerdict<AutopilotSenseContext> => {
+      if (ctx.health === "red") {
+        return {
+          ok: false,
+          ask: {
+            gate: "health",
+            reason: `I paused because runtime health is red (${ctx.healthReasons.join("; ") || "unstable"}).`,
+            need: "Should I keep waiting, or do you want me to pause autopilot?",
+            options: ["keep waiting", "pause autopilot", "run /study now"],
+            urgency: "high",
+            context: {
+              connected: ctx.isConnected,
+              blocked_gates: ctx.blockedGateCount,
+              active_drifts: ctx.activeDriftCount,
+            },
+          },
+        };
+      }
+
+      if (hyp.confidence < AUTOPILOT_C_MIN) {
+        return {
+          ok: false,
+          ask: {
+            gate: "confidence",
+            reason: `I tried to infer the next goal but confidence is ${hyp.confidence.toFixed(2)} (< ${AUTOPILOT_C_MIN}).`,
+            need: "Pick the next move so I can continue.",
+            options: ["run /study now", "run /drift", "pause autopilot"],
+            urgency: "low",
+            context: {
+              inferred_goal: hyp.goal,
+              alternatives: hyp.alternatives ?? [],
+            },
+          },
+        };
+      }
+
+      const missingPerms = action.requiredPerms.filter((permission) => !ctx.permissions[permission]);
+      if (missingPerms.length > 0) {
+        const permission = missingPerms[0];
+        return {
+          ok: false,
+          ask: {
+            gate: "permission",
+            reason: `I selected '${action.label}', but permission '${permission}' is missing.`,
+            need: `Grant ${permission} so I can continue?`,
+            options: ["grant permission", "deny", "pause autopilot"],
+            urgency: "med",
+            context: {
+              permission,
+              action_id: action.id,
+            },
+          },
+        };
+      }
+
+      if (action.risk > AUTOPILOT_R_MAX) {
+        const riskPermission = `risk:${action.id}`;
+        if (!ctx.permissions[riskPermission]) {
+          return {
+            ok: false,
+            ask: {
+              gate: "risk",
+              reason: `I can run '${action.label}', but risk ${action.risk.toFixed(2)} is above ${AUTOPILOT_R_MAX.toFixed(2)}.`,
+              need: `Approve this higher-risk step (${action.label})?`,
+              options: ["approve step", "skip", "pause autopilot"],
+              urgency: "med",
+              context: {
+                permission: riskPermission,
+                action_id: action.id,
+                risk: action.risk,
+              },
+            },
+          };
+        }
+      }
+
+      return { ok: true, action };
+    },
+    [],
+  );
+
+  const handleAutopilotActionEvent = useCallback((event: AutopilotActionEvent) => {
+    setAutopilotEvents((prev) => [event, ...prev].slice(0, 8));
+    setAutopilotSummary(`${event.intent}: ${event.summary}`);
+    if (event.result !== "skipped") {
+      autopilotLastActionRef.current = {
+        id: event.actionId,
+        ts: Date.now(),
+      };
+    }
+  }, []);
+
+  const handleAutopilotAsk = useCallback((ask: AskPayload) => {
+    autopilotPendingAskRef.current = ask;
+    setAutopilotStatus("waiting");
+    setAutopilotSummary(`${ask.gate || "unknown"} gate: ${ask.need}`);
+  }, []);
+
+  useEffect(() => {
+    const autopilot = new Autopilot<AutopilotSenseContext>({
+      sense: senseAutopilotContext,
+      hypothesize: hypothesizeAutopilotIntent,
+      plan: planAutopilotAction,
+      gate: gateAutopilotAction,
+      onActionEvent: handleAutopilotActionEvent,
+      onAsk: handleAutopilotAsk,
+      onTickError: () => {
+        setAutopilotSummary("tick error; waiting for next cycle");
+      },
+      tickDelayMs: 5000,
+    });
+
+    autopilotRef.current = autopilot;
+
+    if (autopilotEnabled) {
+      autopilot.start();
+      setAutopilotStatus("running");
+      setAutopilotSummary("running");
+    } else {
+      setAutopilotStatus("stopped");
+      setAutopilotSummary("disabled");
+    }
+
+    return () => {
+      autopilot.stop();
+      if (autopilotRef.current === autopilot) {
+        autopilotRef.current = null;
+      }
+    };
+  }, [
+    autopilotEnabled,
+    gateAutopilotAction,
+    handleAutopilotActionEvent,
+    handleAutopilotAsk,
+    hypothesizeAutopilotIntent,
+    planAutopilotAction,
+    senseAutopilotContext,
+  ]);
+
+  const handleAutopilotUserInput = useCallback(
+    (text: string): boolean => {
+      const autopilot = autopilotRef.current;
+      const pendingAsk = autopilotPendingAskRef.current;
+      if (!autopilot || !pendingAsk || !autopilot.isWaitingForInput()) {
+        return false;
+      }
+
+      const normalized = text.trim().toLowerCase();
+      const pauseRequested =
+        normalized.includes("pause autopilot") ||
+        normalized.includes("disable autopilot") ||
+        normalized === "/autopilot off";
+
+      if (pauseRequested) {
+        autopilot.stop();
+        setAutopilotEnabled(false);
+        autopilotPendingAskRef.current = null;
+        setAutopilotStatus("stopped");
+        setAutopilotSummary("paused by user");
+        emitSystemMessage("autopilot paused by user");
+        return true;
+      }
+
+      const permission =
+        typeof pendingAsk.context?.permission === "string" ? pendingAsk.context.permission : null;
+      if (permission && isAffirmativeResponse(text)) {
+        setAutopilotPermissions((prev) => ({
+          ...prev,
+          [permission]: true,
+        }));
+        emitSystemMessage(`autopilot permission granted: ${permission}`);
+      } else if (permission && normalized.includes("deny")) {
+        emitSystemMessage(`autopilot permission denied: ${permission}`);
+      } else {
+        autopilotDirectiveRef.current = text;
+      }
+
+      autopilotPendingAskRef.current = null;
+      setAutopilotStatus("running");
+      setAutopilotSummary("resumed");
+      autopilot.resume();
+      return true;
+    },
+    [emitSystemMessage],
+  );
+
+  const toggleAutopilot = useCallback(() => {
+    setAutopilotEnabled((prev) => !prev);
+  }, []);
+
+  const handleLedgerCommand = useCallback(
+    async (text: string): Promise<boolean> => {
+      const trimmed = text.trim();
+      if (!trimmed.toLowerCase().startsWith("/ledger")) {
+        return false;
+      }
+
+      const payloadText = trimmed.replace(/^\/ledger\s*/i, "");
+      const utterances = payloadText
+        ? payloadText
+            .split("|")
+            .map((row) => row.trim())
+            .filter((row) => row.length > 0)
+        : [];
+
+      try {
+        const baseUrl = runtimeBaseUrl();
+        const response = await fetch(`${baseUrl}/api/eta-mu-ledger`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ utterances }),
+        });
+        const payload = (await response.json()) as { jsonl?: string };
+        const body = payload?.jsonl ? payload.jsonl.trim() : "(no utterances)";
+        emitSystemMessage(`eta/mu ledger\n${body}`);
+      } catch (_error) {
+        emitSystemMessage("eta/mu ledger failed");
+      }
+      return true;
+    },
+    [emitSystemMessage],
+  );
+
+  const handlePresenceSayCommand = useCallback(
+    async (text: string): Promise<boolean> => {
+      const trimmed = text.trim();
+      if (!trimmed.toLowerCase().startsWith("/say")) {
+        return false;
+      }
+
+      const args = trimmed.replace(/^\/say\s*/i, "");
+      const [presenceIdRaw, ...rest] = args.split(/\s+/).filter((token) => token.length > 0);
+      const presence_id = presenceIdRaw || "witness_thread";
+      const messageText = rest.join(" ");
+
+      try {
+        const baseUrl = runtimeBaseUrl();
+        const response = await fetch(`${baseUrl}/api/presence/say`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            presence_id,
+            text: messageText,
+          }),
+        });
+        const payload = (await response.json()) as {
+          presence_name?: { en?: string };
+          rendered_text?: string;
+          say_intent?: { facts?: unknown[]; asks?: unknown[]; repairs?: unknown[] };
+        };
+        emitSystemMessage(
+          `${payload?.presence_name?.en || presence_id} / say\n${payload?.rendered_text || "(no render)"}\n` +
+            `facts=${payload?.say_intent?.facts?.length || 0} asks=${payload?.say_intent?.asks?.length || 0} repairs=${payload?.say_intent?.repairs?.length || 0}`,
+        );
+      } catch (_error) {
+        emitSystemMessage("presence say failed");
+      }
+      return true;
+    },
+    [emitSystemMessage],
+  );
+
+  const handleDriftCommand = useCallback(
+    async (text: string): Promise<boolean> => {
+      const trimmed = text.trim();
+      if (trimmed.toLowerCase() !== "/drift") {
+        return false;
+      }
+
+      try {
+        const baseUrl = runtimeBaseUrl();
+        const response = await fetch(`${baseUrl}/api/drift/scan`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        const payload = (await response.json()) as {
+          active_drifts?: unknown[];
+          blocked_gates?: unknown[];
+        };
+        const drifts = Array.isArray(payload?.active_drifts) ? payload.active_drifts.length : 0;
+        const blocked = Array.isArray(payload?.blocked_gates) ? payload.blocked_gates.length : 0;
+        emitSystemMessage(`drift scan\nactive_drifts=${drifts} blocked_gates=${blocked}`);
+      } catch (_error) {
+        emitSystemMessage("drift scan failed");
+      }
+      return true;
+    },
+    [emitSystemMessage],
+  );
+
+  const handlePushTruthDryRunCommand = useCallback(
+    async (text: string): Promise<boolean> => {
+      const trimmed = text.trim().toLowerCase();
+      if (trimmed !== "/push-truth --dry-run") {
+        return false;
+      }
+
+      try {
+        const baseUrl = runtimeBaseUrl();
+        const response = await fetch(`${baseUrl}/api/push-truth/dry-run`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        const payload = (await response.json()) as {
+          gate?: { blocked?: boolean };
+          needs?: string[];
+        };
+        const blocked = payload?.gate?.blocked ? "blocked" : "pass";
+        const needs = Array.isArray(payload?.needs) ? payload.needs.join(", ") : "";
+        emitSystemMessage(`push-truth dry-run\ngate=${blocked}\nneeds=${needs || "(none)"}`);
+      } catch (_error) {
+        emitSystemMessage("push-truth dry-run failed");
+      }
+      return true;
+    },
+    [emitSystemMessage],
+  );
+
+  const handleStudyCommand = useCallback(
+    async (text: string): Promise<boolean> => {
+      const raw = text.trim();
+      const trimmed = raw.toLowerCase();
+      const exportPrefix = "/study export";
+      if (trimmed === exportPrefix || trimmed.startsWith(`${exportPrefix} `)) {
+        const label = raw.slice(exportPrefix.length).trim();
+        try {
+          const baseUrl = runtimeBaseUrl();
+          const response = await fetch(`${baseUrl}/api/study/export`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              label: label || "chat-export",
+              include_truth: true,
+              refs: ["chat:/study export"],
+            }),
+          });
+          if (!response.ok) {
+            throw new Error(`study export failed: ${response.status}`);
+          }
+          const payload = (await response.json()) as {
+            ok?: boolean;
+            event?: { id?: string; ts?: string; label?: string };
+            history?: { count?: number; path?: string };
+          };
+          const eventId = String(payload.event?.id || "(unknown)");
+          const historyCount = Number(payload.history?.count ?? 0);
+          emitSystemMessage(
+            `study export\nid=${eventId}\nlabel=${String(payload.event?.label || label || "chat-export")}\nhistory=${historyCount}`,
+          );
+        } catch (_error) {
+          emitSystemMessage("study export failed");
+        }
+        return true;
+      }
+
+      if (trimmed !== "/study" && trimmed !== "/study now") {
+        return false;
+      }
+
+      const baseUrl = runtimeBaseUrl();
+      try {
+        const studyResponse = await fetch(`${baseUrl}/api/study?limit=6`);
+        if (studyResponse.ok) {
+          const study = (await studyResponse.json()) as StudySnapshotPayload;
+          const signals = study.signals;
+          const topDecision = study.council?.decisions?.[0];
+          const topDecisionLine = topDecision
+            ? `top_decision=${topDecision.status} id=${topDecision.id} source=${String(topDecision.resource?.source_rel_path || "(unknown)")}`
+            : "top_decision=(none)";
+          const gateReasons = (study.drift?.blocked_gates ?? [])
+            .map((row) => row.reason)
+            .slice(0, 4)
+            .join(", ");
+          const warningLine = (study.warnings ?? [])
+            .slice(0, 3)
+            .map((row) => `${row.code}:${row.message}`)
+            .join(" | ");
+
+          emitSystemMessage(
+            [
+              "study snapshot",
+              `stability=${Math.round(study.stability.score * 100)}% (${study.stability.label})`,
+              `truth_gate=${signals.truth_gate_blocked ? "blocked" : "clear"}`,
+              `blocked_gates=${signals.blocked_gate_count} active_drifts=${signals.active_drift_count}`,
+              `queue_pending=${signals.queue_pending_count} queue_events=${signals.queue_event_count}`,
+              `council_pending=${signals.council_pending_count} approved=${signals.council_approved_count} decisions=${signals.council_decision_count}`,
+              topDecisionLine,
+              `gate_reasons=${gateReasons || "(none)"}`,
+              `runtime_receipts_within_vault=${String(study.runtime.receipts_path_within_vault)}`,
+              `warnings=${warningLine || "(none)"}`,
+            ].join("\n"),
+          );
+          return true;
+        }
+
+        if (studyResponse.status !== 404) {
+          throw new Error(`study fetch failed: /api/study status=${studyResponse.status}`);
+        }
+
+        const [councilRes, queueRes, driftRes] = await Promise.all([
+          fetch(`${baseUrl}/api/council?limit=6`),
+          fetch(`${baseUrl}/api/task/queue`),
+          fetch(`${baseUrl}/api/drift/scan`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          }),
+        ]);
+
+        if (!councilRes.ok || !queueRes.ok || !driftRes.ok) {
+          throw new Error(
+            `study fetch failed: council=${councilRes.status} queue=${queueRes.status} drift=${driftRes.status}`,
+          );
+        }
+
+        const councilPayload = (await councilRes.json()) as CouncilApiResponse;
+        const queuePayload = (await queueRes.json()) as { ok: boolean; queue: TaskQueueSnapshot };
+        const driftPayload = (await driftRes.json()) as DriftScanPayload;
+
+        const council = councilPayload.council;
+        const queue = queuePayload.queue;
+        const blocked = driftPayload.blocked_gates.length;
+        const drifts = driftPayload.active_drifts.length;
+        const pending = queue.pending_count;
+        const pendingCouncil = council.pending_count;
+        const truthBlocked = Boolean(
+          simulation?.truth_state?.gate?.blocked ?? catalog?.truth_state?.gate?.blocked,
+        );
+
+        const blockedPenalty = Math.min(0.34, (blocked / 4) * 0.34);
+        const driftPenalty = Math.min(0.18, (drifts / 8) * 0.18);
+        const queuePenalty = Math.min(0.2, (pending / 8) * 0.2);
+        const councilPenalty = Math.min(0.16, (pendingCouncil / 5) * 0.16);
+        const truthPenalty = truthBlocked ? 0.12 : 0;
+        const stabilityScore = Math.max(
+          0,
+          Math.min(1, 1 - blockedPenalty - driftPenalty - queuePenalty - councilPenalty - truthPenalty),
+        );
+
+        const topDecision = council.decisions?.[0];
+        const topDecisionLine = topDecision
+          ? `top_decision=${topDecision.status} id=${topDecision.id} source=${String(topDecision.resource?.source_rel_path || "(unknown)")}`
+          : "top_decision=(none)";
+        const gateReasons = driftPayload.blocked_gates
+          .map((row) => row.reason)
+          .slice(0, 4)
+          .join(", ");
+
+        emitSystemMessage(
+          [
+            "study snapshot",
+            `stability=${Math.round(stabilityScore * 100)}%`,
+            `truth_gate=${truthBlocked ? "blocked" : "clear"}`,
+            `blocked_gates=${blocked} active_drifts=${drifts}`,
+            `queue_pending=${pending} queue_events=${queue.event_count}`,
+            `council_pending=${pendingCouncil} approved=${council.approved_count} decisions=${council.decision_count}`,
+            topDecisionLine,
+            `gate_reasons=${gateReasons || "(none)"}`,
+            "runtime_receipts_within_vault=(unknown:legacy-mode)",
+          ].join("\n"),
+        );
+      } catch (_error) {
+        emitSystemMessage("study snapshot failed");
+      }
+      return true;
+    },
+    [catalog?.truth_state?.gate?.blocked, emitSystemMessage, simulation?.truth_state?.gate?.blocked],
+  );
+
+  const handleChatCommand = useCallback(
+    async (text: string): Promise<boolean> => {
+      if (await handleLedgerCommand(text)) {
+        return true;
+      }
+      if (await handlePresenceSayCommand(text)) {
+        return true;
+      }
+      if (await handleDriftCommand(text)) {
+        return true;
+      }
+      if (await handlePushTruthDryRunCommand(text)) {
+        return true;
+      }
+      if (await handleStudyCommand(text)) {
+        return true;
+      }
+      return false;
+    },
+    [
+      handleDriftCommand,
+      handleLedgerCommand,
+      handlePresenceSayCommand,
+      handlePushTruthDryRunCommand,
+      handleStudyCommand,
+    ],
+  );
+
+  const handleWorldInteract = useCallback(async (personId: string, action: "speak" | "pray" | "sing") => {
     setInteractingPersonId(personId);
     try {
-      const baseUrl = window.location.port === '5173' ? 'http://127.0.0.1:8787' : '';
-      const res = await fetch(`${baseUrl}/api/world/interact`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const baseUrl = runtimeBaseUrl();
+      const response = await fetch(`${baseUrl}/api/world/interact`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ person_id: personId, action }),
       });
-      const data = await res.json();
-      setWorldInteraction(data);
+      const payload = (await response.json()) as WorldInteractionResponse;
+      setWorldInteraction(payload);
 
-      if (data?.ok) {
-        window.dispatchEvent(new CustomEvent('chat-message', {
-          detail: {
-            role: 'assistant',
-            text: `${data.line_en}\n${data.line_ja}`,
-          },
-        }));
-        speakText(data.voice_text_en || data.line_en || '', data.voice_text_ja || data.line_ja || '');
+      if (payload?.ok) {
+        window.dispatchEvent(
+          new CustomEvent("chat-message", {
+            detail: {
+              role: "assistant",
+              text: `${payload.line_en}\n${payload.line_ja}`,
+            },
+          }),
+        );
       }
-    } catch (_e) {
+    } catch (_error) {
       setWorldInteraction({
         ok: false,
-        line_en: 'Interaction failed. The field is unstable.',
-        line_ja: '対話に失敗。場が不安定です。',
+        line_en: "Interaction failed. The field is unstable.",
+        line_ja: "対話に失敗。場が不安定です。",
       });
     } finally {
       setInteractingPersonId(null);
     }
-  }, [speakText]);
+  }, []);
 
   const activeProjection: UIProjectionBundle | null =
     projection ?? simulation?.projection ?? catalog?.ui_projection ?? null;
@@ -855,38 +1214,118 @@ export default function App() {
     });
     return map;
   }, [activeProjection]);
+  const projectionLayoutRects = useMemo(
+    () => activeProjection?.layout?.rects ?? {},
+    [activeProjection?.layout?.rects],
+  );
 
-  const projectionRectByElement = useMemo(() => {
-    const map = new Map<string, { x: number; y: number; w: number; h: number }>();
-    const rects = activeProjection?.layout?.rects ?? {};
-    Object.entries(rects).forEach(([elementId, rect]) => {
-      map.set(elementId, rect);
-    });
-    return map;
-  }, [activeProjection]);
+  const projectionDensitySignalFor = useCallback(
+    (state: UIProjectionElementState | undefined): number => {
+      if (!state) {
+        return 0.42;
+      }
+      const minArea = clamp(activeProjection?.layout?.clamps?.min_area ?? 0.1, 0.05, 1);
+      const maxArea = Math.max(
+        minArea + 0.001,
+        clamp(activeProjection?.layout?.clamps?.max_area ?? 0.36, minArea + 0.001, 1),
+      );
+      const areaSignal = clamp((state.area - minArea) / (maxArea - minArea), 0, 1);
+      const prioritySignal = clamp(state.priority, 0, 1);
+      return clamp(areaSignal * 0.72 + prioritySignal * 0.28, 0, 1);
+    },
+    [activeProjection?.layout?.clamps?.max_area, activeProjection?.layout?.clamps?.min_area],
+  );
 
-  const projectionStyleFor = useCallback((elementId: string, fallbackSpan = 12) => {
-    const rect = projectionRectByElement.get(elementId);
-    const state = projectionStateByElement.get(elementId);
-    const colSpan = rect ? clamp(Math.round(rect.w * 12), 3, 12) : fallbackSpan;
-    const rowSpan = rect ? clamp(Math.round(rect.h * 10), 2, 6) : 3;
-    const pulseScale = state ? 1 + (clamp(state.pulse, 0, 1) * 0.014) : 1;
-    return {
-      gridColumn: `span ${colSpan} / span ${colSpan}`,
-      gridRow: `span ${rowSpan} / span ${rowSpan}`,
-      opacity: state ? clamp(state.opacity, 0.5, 1) : 1,
-      transform: state ? `scale(${pulseScale.toFixed(3)})` : undefined,
-      transformOrigin: "center top",
-      transition:
-        "grid-column 220ms ease, grid-row 220ms ease, transform 260ms ease, opacity 220ms ease",
-    } as const;
-  }, [projectionRectByElement, projectionStateByElement]);
+  const projectionStyleFor = useCallback(
+    (elementId: string, fallbackSpan = 12) => {
+      const state = projectionStateByElement.get(elementId);
+      const densitySignal = projectionDensitySignalFor(state);
+      const baseStyle = {
+        opacity: state ? projectionOpacity(state.opacity, 0.9) : 1,
+        transform: state ? `scale(${(1 + clamp(state.pulse, 0, 1) * 0.014).toFixed(3)})` : undefined,
+        transformOrigin: "center top",
+      } as const;
+
+      if (!isWideViewport) {
+        return {
+          ...baseStyle,
+          transition: "transform 260ms ease, opacity 220ms ease",
+        } as const;
+      }
+
+      const rect = projectionLayoutRects[elementId];
+      if (rect) {
+        const colStart = clamp(
+          Math.floor(clamp(rect.x, 0, 0.98) * PROJECTION_GRID_COLUMNS) + 1,
+          1,
+          PROJECTION_GRID_COLUMNS,
+        );
+        const rowStart = clamp(
+          Math.floor(clamp(rect.y, 0, 0.98) * PROJECTION_GRID_ROWS) + 1,
+          1,
+          PROJECTION_GRID_ROWS,
+        );
+        const maxColSpan = Math.max(1, PROJECTION_GRID_COLUMNS - colStart + 1);
+        const maxRowSpan = Math.max(1, PROJECTION_GRID_ROWS - rowStart + 1);
+        const colSpan = clamp(
+          Math.round(clamp(rect.w, 0.05, 1) * PROJECTION_GRID_COLUMNS),
+          1,
+          maxColSpan,
+        );
+        const rowSpan = clamp(
+          Math.round(clamp(rect.h, 0.05, 1) * PROJECTION_GRID_ROWS),
+          1,
+          maxRowSpan,
+        );
+
+        return {
+          ...baseStyle,
+          gridColumn: `${colStart} / span ${colSpan}`,
+          gridRow: `${rowStart} / span ${rowSpan}`,
+          transition:
+            "grid-column 220ms ease, grid-row 220ms ease, transform 260ms ease, opacity 220ms ease",
+        } as const;
+      }
+
+      const baseColSpan = clamp(fallbackSpan, 2, 12);
+      const minColSpan = baseColSpan >= 10 ? 4 : baseColSpan >= 6 ? 3 : 2;
+      const colSpan = clamp(
+        Math.round(baseColSpan * (0.44 + densitySignal * 0.28)),
+        minColSpan,
+        baseColSpan,
+      );
+      const baseRowSpan = baseColSpan >= 10 ? 4 : baseColSpan >= 6 ? 3 : 2;
+      const minRowSpan = baseRowSpan >= 4 ? 2 : 1;
+      const rowSpan = clamp(
+        Math.round(baseRowSpan * (0.52 + densitySignal * 0.28)),
+        minRowSpan,
+        baseRowSpan,
+      );
+
+      return {
+        ...baseStyle,
+        gridColumn: `span ${colSpan} / span ${colSpan}`,
+        gridRow: `span ${rowSpan} / span ${rowSpan}`,
+        transition:
+          "grid-column 220ms ease, grid-row 220ms ease, transform 260ms ease, opacity 220ms ease",
+      } as const;
+    },
+    [isWideViewport, projectionDensitySignalFor, projectionLayoutRects, projectionStateByElement],
+  );
+
+  const simulationMapState = projectionStateByElement.get("nexus.ui.simulation_map");
+  const simulationCanvasHeight = useMemo(() => {
+    return Math.round(300 + projectionDensitySignalFor(simulationMapState) * 120);
+  }, [projectionDensitySignalFor, simulationMapState]);
+  const dedicatedOverlayViews = useMemo(
+    () => OVERLAY_VIEW_OPTIONS.filter((option) => option.id !== "omni"),
+    [],
+  );
 
   const projectionPerspective = activeProjection?.perspective ?? uiPerspective;
   const projectionOptions =
     activeProjection?.perspectives ??
-    catalog?.ui_perspectives ??
-    [
+    catalog?.ui_perspectives ?? [
       {
         id: "hybrid",
         symbol: "perspective.hybrid",
@@ -913,54 +1352,76 @@ export default function App() {
       },
     ];
 
-  const projectionHighlights = useMemo(() => {
-    const rows = [...projectionStateByElement.values()];
-    rows.sort((a, b) => b.priority - a.priority);
-    return rows.slice(0, 4);
-  }, [projectionStateByElement]);
-
   const activeChatLens = activeProjection?.chat_sessions?.[0] ?? null;
   const chatLensState = projectionStateByElement.get("nexus.ui.chat.witness_thread") ?? null;
+  const latestAutopilotEvent = autopilotEvents[0] ?? null;
 
   return (
-    <main 
-      className={`max-w-[1100px] mx-auto p-6 md:p-12 pb-24 transition-colors ${isDragging ? 'bg-blue-50/50' : ''}`}
-      onDrop={onDrop}
-      onDragOver={onDragOver}
-      onDragLeave={onDragLeave}
-    >
-      <header className="mb-12 border-b-2 border-line pb-6">
+    <main className="max-w-[1600px] mx-auto px-4 py-5 md:px-6 md:py-7 pb-20 transition-colors">
+      <header className="mb-6 border-b-2 border-line pb-4">
         <h1 className="text-5xl font-bold tracking-tight mb-2 text-ink">eta-mu world daemon / ημ世界デーモン</h1>
         <div className="flex justify-between items-center">
           <p className="text-muted text-sm font-mono">
-            Part <code>{catalog?.part_roots?.[0]?.split('/').pop() || "?"}</code> | Seed <code>{catalog?.generated_at?.split('T')[0]}</code>
+            Part <code>{catalog?.part_roots?.[0]?.split("/").pop() || "?"}</code> | Seed
+            <code>{catalog?.generated_at?.split("T")[0]}</code>
           </p>
-          {!isConnected && <span className="text-red-600 font-bold animate-pulse">● Disconnected / 切断</span>}
-          {isConnected && <span className="text-green-600 font-bold flex items-center gap-2">● Connected / 接続中</span>}
+          {!isConnected ? (
+            <span className="text-[#f92672] font-bold animate-pulse">● Disconnected / 切断</span>
+          ) : (
+            <span className="text-[#a6e22e] font-bold flex items-center gap-2">● Connected / 接続中</span>
+          )}
         </div>
-        <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_auto] lg:items-center">
+        <div className="mt-3 grid gap-2 lg:grid-cols-[1fr_auto] lg:items-center">
           <div className="text-xs text-muted space-y-1">
             <p>
               projection perspective: <code>{projectionPerspective}</code>
               {activeProjection?.layout?.clamps ? (
                 <>
-                  {" "}| clamps area <code>{activeProjection.layout.clamps.min_area.toFixed(2)}</code>-<code>{activeProjection.layout.clamps.max_area.toFixed(2)}</code>
+                  {" "}| clamps area <code>{activeProjection.layout.clamps.min_area.toFixed(2)}</code>-
+                  <code>{activeProjection.layout.clamps.max_area.toFixed(2)}</code>
                 </>
               ) : null}
             </p>
             {activeChatLens ? (
               <p>
-                chat lens: <code>{activeChatLens.presence}</code> | memory scope: <code>{activeChatLens.memory_scope}</code> | status: <code>{activeChatLens.status}</code>
+                chat lens: <code>{activeChatLens.presence}</code> | memory scope:
+                <code>{activeChatLens.memory_scope}</code> | status: <code>{activeChatLens.status}</code>
+              </p>
+            ) : null}
+            <p>
+              autopilot: <code>{autopilotEnabled ? autopilotStatus : "stopped"}</code> | note:
+              <code>{autopilotSummary}</code>
+            </p>
+            {latestAutopilotEvent ? (
+              <p>
+                last action: <code>{latestAutopilotEvent.actionId}</code> | result:
+                <code>{latestAutopilotEvent.result}</code>
               </p>
             ) : null}
           </div>
           <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={toggleAutopilot}
+              className={`border rounded-md px-3 py-1 text-xs font-semibold transition-colors ${
+                autopilotEnabled
+                  ? "bg-[rgba(166,226,46,0.16)] border-[rgba(166,226,46,0.48)] text-[#a6e22e]"
+                  : "bg-[rgba(249,38,114,0.16)] border-[rgba(249,38,114,0.48)] text-[#f92672]"
+              }`}
+              title="Toggle autopilot loop"
+            >
+              {autopilotEnabled ? "Autopilot On" : "Autopilot Off"}
+            </button>
             {projectionOptions.map((option) => (
               <button
                 key={option.id}
                 type="button"
                 onClick={() => setUiPerspective(option.id as UIPerspective)}
-                className={`border rounded-md px-3 py-1 text-xs font-semibold transition-colors ${projectionPerspective === option.id ? 'bg-[#1f3946] text-[#f4f9ff] border-[#1f3946]' : 'bg-[#f8f4ee] text-[#2f2a24] border-[var(--line)] hover:bg-white'}`}
+                className={`border rounded-md px-3 py-1 text-xs font-semibold transition-colors ${
+                  projectionPerspective === option.id
+                    ? "bg-[rgba(102,217,239,0.2)] text-[#66d9ef] border-[rgba(102,217,239,0.7)]"
+                    : "bg-[rgba(39,40,34,0.78)] text-[var(--ink)] border-[var(--line)] hover:bg-[rgba(55,56,48,0.92)]"
+                }`}
                 title={option.description}
               >
                 {option.name}
@@ -970,184 +1431,325 @@ export default function App() {
         </div>
       </header>
 
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
-        <section className="xl:col-span-12" style={projectionStyleFor("nexus.ui.command_center", 12)}>
-          <PresenceMusicCommandCenter
-            catalog={catalog}
-            simulation={simulation}
-            instrument={instrument}
-            activePadIds={activePadIds}
-            performanceArmed={performanceArmed}
-          />
+      <div className="grid grid-cols-1 xl:grid-cols-12 xl:grid-flow-dense gap-3 items-start xl:auto-rows-[minmax(2.5rem,auto)]">
+        <section className="xl:col-span-12 xl:order-1" style={projectionStyleFor("nexus.ui.command_center", 12)}>
+          <PresenceCallDeck catalog={catalog} simulation={simulation} />
         </section>
 
-        <section className="xl:col-span-6" style={projectionStyleFor("nexus.ui.web_graph_weaver", 6)}>
-          <WebGraphWeaverPanel />
-        </section>
+        <section
+          className="card everything-dashboard-card !mt-0 relative overflow-hidden xl:col-span-12 xl:order-2"
+          style={projectionStyleFor("nexus.ui.simulation_map", 12)}
+        >
+          <div className="everything-dashboard-beam" />
+          <div className="everything-dashboard-header mb-6 px-1">
+            <div className="flex flex-col xl:flex-row xl:items-end xl:justify-between gap-2 mb-3">
+              <div>
+                <p className="everything-dashboard-overline mb-1">Simulation Core</p>
+                <h2 className="text-2xl md:text-3xl font-bold border-none pb-0 leading-tight">Everything Dashboard</h2>
+              </div>
+              <p className="text-xs text-muted font-mono bg-[rgba(0,0,0,0.2)] rounded px-2 py-1">
+                file nodes <code>{Number(catalog?.file_graph?.stats?.file_count ?? 0)}</code> | crawler nodes
+                <code>{Number(catalog?.crawler_graph?.stats?.crawler_count ?? 0)}</code> | artifacts
+                <code>
+                  {Number(catalog?.counts?.audio ?? 0) +
+                    Number(catalog?.counts?.image ?? 0) +
+                    Number(catalog?.counts?.video ?? 0)}
+                </code>
+              </p>
+            </div>
+          </div>
 
-        <section className="xl:col-span-6" style={projectionStyleFor("nexus.ui.inspiration_atlas", 6)}>
-          <InspirationAtlasPanel simulation={simulation} />
-        </section>
-
-        <section className="card !mt-0 relative overflow-hidden xl:col-span-12" style={projectionStyleFor("nexus.ui.simulation_map", 12)}>
-          <div className="absolute top-0 left-0 w-1 h-full bg-blue-400 opacity-50" />
-          <h2 className="text-3xl font-bold mb-6">Everything Dashboard (real-time)</h2>
-
-          <SimulationCanvas
+          <div className="everything-dashboard-canvas-wrap">
+            <SimulationCanvas
               simulation={simulation}
               catalog={catalog}
-              onOverlayInit={setOverlayApi}
-              height={400}
-          />
+              onOverlayInit={(api) => setOverlayApi(api)}
+              height={simulationCanvasHeight}
+            />
+          </div>
 
-          <div className="mt-8 space-y-6">
-              <div>
-                  <p className="font-bold text-lg mb-2 flex items-center gap-2">
-                    Combined stream / 合成ストリーム
-                  </p>
-                   <audio
-                       id="mix-stream"
-                       controls
-                       preload="none"
-                       src={window.location.port === '5173' ? 'http://127.0.0.1:8787/stream/mix.wav' : '/stream/mix.wav'}
-                       className="w-full bg-bg-0 rounded-lg p-1"
-                  >
-                    <track kind="captions" />
-                  </audio>
-               </div>
+          <div className="mt-4 rounded-xl border border-[var(--line)] bg-[rgba(14,22,28,0.58)] p-3">
+            <p className="text-[11px] uppercase tracking-[0.12em] text-[#9ec7dd]">Dedicated World Views</p>
+            <p className="text-xs text-muted mt-1">Each overlay lane rendered as its own live viewport.</p>
+            <div className="mt-3 grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
+              {dedicatedOverlayViews.map((view) => (
+                <section key={view.id} className="rounded-lg border border-[rgba(126,166,192,0.32)] bg-[rgba(10,18,28,0.72)] p-2">
+                  <div className="mb-2">
+                    <p className="text-sm font-semibold text-[#e5f3ff]">{view.label}</p>
+                    <p className="text-[11px] text-[#9fc4dd]">{view.description}</p>
+                  </div>
+                  <SimulationCanvas
+                    simulation={simulation}
+                    catalog={catalog}
+                    height={180}
+                    defaultOverlayView={view.id}
+                    overlayViewLocked
+                    compactHud
+                    interactive={false}
+                  />
+                </section>
+              ))}
+            </div>
+          </div>
 
-               <SoundConsole
-                   onPlayAll={handlePlayAll}
-                   onPauseAll={handlePauseAll}
-                   onMuteAll={handleMuteAll}
-                   onUnmuteAll={handleUnmuteAll}
-                   onReloadMix={handleReloadMix}
-                   onOverlayToggle={() => {}}
-                   onSingFields={() => overlayApi?.singAll()}
-                   onPrimeVoice={() => sing("canonical")}
-                    onSingWords={() => sing("canonical")}
-                    onSingOllama={() => sing("ollama")}
-                    onStopVoices={stop}
-                    onHandoff={handleHandoff}
-                    performanceArmed={performanceArmed}
-                    onTogglePerformanceArm={() => setPerformanceArmed((prev) => !prev)}
-                    pads={INSTRUMENT_PADS}
-                    activePadIds={activePadIds}
-                    onPadStart={startPad}
-                    onPadStop={stopPad}
-                    preferJa={preferJa}
-                    setPreferJa={setPreferJa}
-                    voiceMeta={voiceMeta}
-                    instrument={instrument}
-                   onInstrumentChange={setInstrument}
-               />
+          <div className="mt-6 space-y-4">
+            <div className="rounded-xl border border-[var(--line)] bg-[rgba(45,46,39,0.88)] px-4 py-3 text-sm text-muted">
+              Communication mode active: sound production controls are retired. Use Presence Call Deck for
+              WebRTC communication and this lane for text/voice messaging.
+            </div>
 
-              {chatLensState ? (
-                <p className="text-xs text-muted font-mono">
-                  chat-lens mass <code>{chatLensState.mass.toFixed(2)}</code> | priority <code>{chatLensState.priority.toFixed(2)}</code> | reason <code>{chatLensState.explain.dominant_field}</code>
-                </p>
-              ) : null}
-              <div
-                style={{
-                  opacity: chatLensState ? clamp(chatLensState.opacity, 0.5, 1) : 1,
-                  transform: chatLensState ? `scale(${(1 + chatLensState.pulse * 0.012).toFixed(3)})` : undefined,
-                  transformOrigin: "center top",
-                  transition: "transform 200ms ease, opacity 200ms ease",
+            {chatLensState ? (
+              <p className="text-xs text-muted font-mono">
+                chat-lens mass <code>{chatLensState.mass.toFixed(2)}</code> | priority
+                <code>{chatLensState.priority.toFixed(2)}</code> | reason
+                <code>{chatLensState.explain.dominant_field}</code>
+              </p>
+            ) : null}
+
+            <div
+              style={{
+                opacity: chatLensState ? projectionOpacity(chatLensState.opacity, 0.92) : 1,
+                transform: chatLensState
+                  ? `scale(${(1 + chatLensState.pulse * 0.012).toFixed(3)})`
+                  : undefined,
+                transformOrigin: "center top",
+                transition: "transform 200ms ease, opacity 200ms ease",
+              }}
+            >
+              <ChatPanel
+                onSend={(text) => {
+                  if (handleAutopilotUserInput(text)) {
+                    return;
+                  }
+                  setIsThinking(true);
+                  (async () => {
+                    const consumed = await handleChatCommand(text);
+                    if (consumed) {
+                      return;
+                    }
+
+                    const baseUrl = runtimeBaseUrl();
+                    const response = await fetch(`${baseUrl}/api/chat`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ messages: [{ role: "user", text }] }),
+                    });
+                    const payload = (await response.json()) as { reply?: string };
+                    const reply = String(payload.reply ?? "");
+                    window.dispatchEvent(
+                      new CustomEvent("chat-message", {
+                        detail: { role: "assistant", text: reply },
+                      }),
+                    );
+                    if (reply.includes("[[PULSE]]")) {
+                      overlayApi?.pulseAt?.(0.5, 0.5, 1.0);
+                    }
+                    if (reply.includes("[[SING]]")) {
+                      overlayApi?.singAll?.();
+                    }
+                  })()
+                    .catch(() => {
+                      window.dispatchEvent(
+                        new CustomEvent("chat-message", {
+                          detail: { role: "system", text: "chat request failed" },
+                        }),
+                      );
+                    })
+                    .finally(() => {
+                      setIsThinking(false);
+                    });
                 }}
-              >
-                <ChatPanel
-                  onSend={(text) => {
-                      setIsThinking(true);
-                      (async () => {
-                        const consumed = await handleChatCommand(text);
-                        if (consumed) {
-                          return;
-                        }
-
-                        const baseUrl = window.location.port === '5173' ? 'http://127.0.0.1:8787' : '';
-                        const response = await fetch(`${baseUrl}/api/chat`, {
-                          method: 'POST',
-                          headers: {'Content-Type': 'application/json'},
-                          body: JSON.stringify({ messages: [{role: 'user', text}] })
-                        });
-                        const data = await response.json();
-                        window.dispatchEvent(new CustomEvent('chat-message', {
-                          detail: { role: 'assistant', text: data.reply }
-                        }));
-                        if (data.reply.includes('[[PULSE]]') && overlayApi) overlayApi.pulseAt(0.5, 0.5, 1.0);
-                        if (data.reply.includes('[[SING]]') && overlayApi) overlayApi.singAll();
-                      })().catch(() => {
-                        window.dispatchEvent(new CustomEvent('chat-message', {
-                          detail: { role: 'system', text: 'chat request failed' }
-                        }));
-                      }).finally(() => {
-                        setIsThinking(false);
-                      });
-                  }}
-                  onRecord={handleRecord}
-                  onTranscribe={handleTranscribe}
-                  onSendVoice={handleSendVoice}
-                  isRecording={isRecording}
-                  isThinking={isThinking}
-                  voiceInputMeta={voiceInputMeta}
-                />
-              </div>
+                onRecord={handleRecord}
+                onTranscribe={handleTranscribe}
+                onSendVoice={handleSendVoice}
+                isRecording={isRecording}
+                isThinking={isThinking}
+                voiceInputMeta={voiceInputMeta}
+              />
+            </div>
           </div>
         </section>
 
-        <section className="card relative overflow-hidden xl:col-span-6" style={projectionStyleFor("nexus.ui.entity_vitals", 6)}>
-          <div className="absolute top-0 left-0 w-1 h-full bg-green-400 opacity-50" />
+        <section className="xl:col-span-6 xl:order-8" style={projectionStyleFor("nexus.ui.web_graph_weaver", 6)}>
+          {deferredPanelsReady ? (
+            <Suspense fallback={<DeferredPanelPlaceholder title="Web Graph Weaver" />}>
+              <WebGraphWeaverPanel />
+            </Suspense>
+          ) : (
+            <DeferredPanelPlaceholder title="Web Graph Weaver" />
+          )}
+        </section>
+
+        <section className="xl:col-span-6 xl:order-9" style={projectionStyleFor("nexus.ui.inspiration_atlas", 6)}>
+          {deferredPanelsReady ? (
+            <Suspense fallback={<DeferredPanelPlaceholder title="Inspiration Atlas" />}>
+              <InspirationAtlasPanel simulation={simulation} />
+            </Suspense>
+          ) : (
+            <DeferredPanelPlaceholder title="Inspiration Atlas" />
+          )}
+        </section>
+
+        <section
+          className="card relative overflow-hidden xl:col-span-6 xl:order-3"
+          style={projectionStyleFor("nexus.ui.entity_vitals", 6)}
+        >
+          <div className="absolute top-0 left-0 w-1 h-full bg-[#a6e22e] opacity-60" />
           <h2 className="text-3xl font-bold mb-2">Entity Vitals / 実体バイタル</h2>
           <p className="text-muted mb-6">Live telemetry from the canonical named forms.</p>
-          <VitalsPanel
-            entities={simulation?.entities}
-            catalog={catalog}
-            presenceDynamics={simulation?.presence_dynamics}
-          />
-        </section>
-
-        <section className="card relative overflow-hidden xl:col-span-6" style={projectionStyleFor("nexus.ui.omni_archive", 6)}>
-          <div className="absolute top-0 left-0 w-1 h-full bg-cyan-400 opacity-55" />
-          <h2 className="text-2xl font-bold mb-2">Projection Ledger / 映台帳</h2>
-          <p className="text-muted mb-4">Explainable panel weights derived from field + presence forces.</p>
-          <div className="space-y-2">
-            {projectionHighlights.map((state) => (
-              <div key={state.element_id} className="border border-[rgba(36,31,26,0.14)] rounded-lg bg-[rgba(255,255,255,0.82)] p-2">
-                <p className="text-xs font-semibold text-ink">
-                  <code>{state.element_id}</code>
-                </p>
-                <p className="text-[11px] text-muted font-mono">
-                  mass {state.mass.toFixed(2)} | priority {state.priority.toFixed(2)} | area {state.area.toFixed(2)}
-                </p>
-                <p className="text-[11px] text-muted">{state.explain.reason_en}</p>
-              </div>
-            ))}
+          <div className="max-h-[62rem] overflow-y-auto pr-1">
+            {deferredPanelsReady ? (
+              <Suspense fallback={<DeferredPanelPlaceholder title="Entity Vitals" />}>
+                <VitalsPanel
+                  entities={simulation?.entities}
+                  catalog={catalog}
+                  presenceDynamics={simulation?.presence_dynamics}
+                />
+              </Suspense>
+            ) : (
+              <DeferredPanelPlaceholder title="Entity Vitals" />
+            )}
           </div>
         </section>
 
-        <section className="card relative overflow-hidden xl:col-span-8" style={projectionStyleFor("nexus.ui.omni_archive", 8)}>
-          <div className="absolute top-0 left-0 w-1 h-full bg-purple-400 opacity-50" />
+        <section
+          className="card relative overflow-hidden xl:col-span-6 xl:order-4"
+          style={projectionStyleFor("nexus.ui.projection_ledger", 6)}
+        >
+          <div className="absolute top-0 left-0 w-1 h-full bg-[#66d9ef] opacity-70" />
+          <h2 className="text-2xl font-bold mb-2">Projection Ledger / 映台帳</h2>
+          <p className="text-muted mb-4">Sub-panels expose routing and control data for every known box.</p>
+          <div className="max-h-[74rem] overflow-y-auto pr-1">
+            <ProjectionLedgerPanel projection={activeProjection} />
+          </div>
+        </section>
+
+        <section
+          className="card relative overflow-hidden xl:col-span-6 xl:order-5"
+          style={projectionStyleFor("nexus.ui.autopilot_ledger", 6)}
+        >
+          <div className="absolute top-0 left-0 w-1 h-full bg-[#fd971f] opacity-70" />
+          <h2 className="text-2xl font-bold mb-2">Autopilot Ledger / 自動操縦台帳</h2>
+          <p className="text-muted mb-4">
+            Replay stream of intent, confidence, risk, permissions, and result.
+          </p>
+          <div className="space-y-2 max-h-[26rem] overflow-y-auto pr-1">
+            {autopilotEvents.length === 0 ? (
+              <p className="text-xs text-muted">No autopilot events yet.</p>
+            ) : (
+              autopilotEvents.map((event, index) => (
+                <div
+                  key={`${event.ts}-${event.actionId}-${index}`}
+                  className="border border-[var(--line)] rounded-lg bg-[rgba(45,46,39,0.86)] p-2"
+                >
+                  <p className="text-xs font-semibold text-ink">
+                    <code>{event.intent}</code>{" -> "}<code>{event.actionId}</code>
+                  </p>
+                  <p className="text-[11px] text-muted font-mono">
+                    confidence {event.confidence.toFixed(2)} | risk {event.risk.toFixed(2)} | result
+                    <code>{event.result}</code>
+                    {event.gate ? (
+                      <>
+                        {" "}| gate <code>{event.gate}</code>
+                      </>
+                    ) : null}
+                  </p>
+                  <p className="text-[11px] text-muted font-mono">
+                    perms {event.perms.length > 0 ? event.perms.join(", ") : "(none)"}
+                  </p>
+                  <p className="text-[11px] text-muted">{event.summary}</p>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+
+        <section
+          className="card relative overflow-hidden xl:col-span-6 xl:order-6"
+          style={projectionStyleFor("nexus.ui.stability_observatory", 6)}
+        >
+          <div className="absolute top-0 left-0 w-1 h-full bg-[#66d9ef] opacity-70" />
+          <h2 className="text-2xl font-bold mb-2">Stability Observatory / 安定観測</h2>
+          <p className="text-muted mb-4">
+            Evidence-first view for study mode: council, gates, queue, and drift movement.
+          </p>
+          {deferredPanelsReady ? (
+            <Suspense fallback={<DeferredPanelPlaceholder title="Stability Observatory" />}>
+              <StabilityObservatoryPanel catalog={catalog} simulation={simulation} />
+            </Suspense>
+          ) : (
+            <DeferredPanelPlaceholder title="Stability Observatory" />
+          )}
+        </section>
+
+        <section className="card relative overflow-hidden xl:col-span-8 xl:order-6" style={projectionStyleFor("nexus.ui.omni_archive", 8)}>
+          <div className="absolute top-0 left-0 w-1 h-full bg-[#ae81ff] opacity-65" />
           <h2 className="text-3xl font-bold mb-2">Omni Panel / 全感覚パネル</h2>
           <p className="text-muted mb-6">Receipt River, Mage of Receipts, and other cover entities.</p>
-          <OmniPanel catalog={catalog} />
+          {deferredPanelsReady ? (
+            <Suspense fallback={<DeferredPanelPlaceholder title="Omni Archive" />}>
+              <OmniPanel catalog={catalog} />
+            </Suspense>
+          ) : (
+            <DeferredPanelPlaceholder title="Omni Archive" />
+          )}
           <div className="mt-8">
             <h3 className="text-2xl font-bold mb-4">Vault Artifacts / 遺物録</h3>
-            <CatalogPanel catalog={catalog} />
+            {deferredPanelsReady ? (
+              <Suspense fallback={<DeferredPanelPlaceholder title="Vault Artifacts" />}>
+                <CatalogPanel catalog={catalog} />
+              </Suspense>
+            ) : (
+              <DeferredPanelPlaceholder title="Vault Artifacts" />
+            )}
           </div>
         </section>
 
-        <section className="card relative overflow-hidden xl:col-span-4" style={projectionStyleFor("nexus.ui.myth_commons", 4)}>
-          <div className="absolute top-0 left-0 w-1 h-full bg-amber-400 opacity-60" />
+        <section className="card relative overflow-hidden xl:col-span-4 xl:order-7" style={projectionStyleFor("nexus.ui.myth_commons", 4)}>
+          <div className="absolute top-0 left-0 w-1 h-full bg-[#fd971f] opacity-70" />
           <h2 className="text-3xl font-bold mb-2">Myth Commons / 神話共同体</h2>
           <p className="text-muted mb-6">People sing, pray to the Presences, and keep writing the myth.</p>
-          <MythWorldPanel
-            simulation={simulation}
-            interaction={worldInteraction}
-            interactingPersonId={interactingPersonId}
-            onInteract={handleWorldInteract}
-          />
+          {deferredPanelsReady ? (
+            <Suspense fallback={<DeferredPanelPlaceholder title="Myth Commons" />}>
+              <MythWorldPanel
+                simulation={simulation}
+                interaction={worldInteraction}
+                interactingPersonId={interactingPersonId}
+                onInteract={handleWorldInteract}
+              />
+            </Suspense>
+          ) : (
+            <DeferredPanelPlaceholder title="Myth Commons" />
+          )}
         </section>
       </div>
+
+      {uiToasts.length > 0 ? (
+        <div className="fixed bottom-4 right-4 z-[80] flex w-[min(92vw,360px)] flex-col gap-2">
+          {uiToasts.map((toast) => (
+            <div
+              key={toast.id}
+              className="rounded-lg border border-[rgba(102,217,239,0.45)] bg-[rgba(12,23,31,0.94)] px-3 py-2 shadow-[0_8px_24px_rgba(0,0,0,0.45)]"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[#9ec7dd]">
+                    {toast.title}
+                  </p>
+                  <p className="text-sm text-[#e9f6ff] mt-1">{toast.body}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => dismissToast(toast.id)}
+                  className="text-xs text-[#9ec7dd] hover:text-white transition-colors"
+                >
+                  dismiss
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </main>
   );
 }
