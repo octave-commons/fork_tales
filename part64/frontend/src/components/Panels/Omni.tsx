@@ -5,8 +5,16 @@ interface Props {
   catalog: Catalog | null;
 }
 
+interface Memory {
+  id?: string;
+  text: string;
+  metadata?: {
+    timestamp?: string;
+  };
+}
+
 export function OmniPanel({ catalog }: Props) {
-  const [memories, setMemories] = useState<any[]>([]);
+  const [memories, setMemories] = useState<Memory[]>([]);
 
   useEffect(() => {
     const fetchMemories = async () => {
@@ -14,10 +22,12 @@ export function OmniPanel({ catalog }: Props) {
             const baseUrl = window.location.port === '5173' ? 'http://127.0.0.1:8787' : '';
             const res = await fetch(`${baseUrl}/api/memories`);
             if(res.ok) {
-                const data = await res.json();
+                const data = await res.json() as { memories?: Memory[] };
                 setMemories(data.memories || []);
             }
-        } catch(e) {}
+        } catch {
+          // ignore
+        }
     };
     fetchMemories();
     const interval = setInterval(fetchMemories, 10000);

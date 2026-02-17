@@ -978,6 +978,14 @@ export interface StudySnapshotPayload {
   council: CouncilSnapshot;
 }
 
+export interface EntityManifestItem {
+  id: string;
+  en: string;
+  ja: string;
+  hue: number;
+  type?: string;
+}
+
 export interface Catalog {
   generated_at: string;
   part_roots: string[];
@@ -994,7 +1002,7 @@ export interface Catalog {
   ui_default_perspective?: UIPerspective;
   ui_perspectives?: UIProjectionPerspectiveOption[];
   ui_projection?: UIProjectionBundle;
-  entity_manifest?: Array<any>;
+  entity_manifest?: EntityManifestItem[];
   cover_fields: Array<{
     id: string;
     part: string;

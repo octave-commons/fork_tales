@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo, useRef, lazy, Suspense } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef, lazy, Suspense, type CSSProperties } from "react";
 import { motion, type PanInfo } from "framer-motion";
 import { useWorldState } from "./hooks/useWorldState";
 import { OVERLAY_VIEW_OPTIONS, SimulationCanvas } from "./components/Simulation/Canvas";
@@ -275,7 +275,7 @@ export default function App() {
           mediaRecorder.stop();
         }
       }, 8000);
-    } catch (_error) {
+    } catch {
       setVoiceInputMeta("mic permission denied / マイク許可なし");
     }
   }, [isRecording]);
@@ -308,7 +308,7 @@ export default function App() {
       }
       setVoiceInputMeta(`error: ${String(payload.error ?? "unknown")}`);
       return undefined;
-    } catch (_error) {
+    } catch {
       setVoiceInputMeta("transcribe failed");
       return undefined;
     }
@@ -348,7 +348,7 @@ export default function App() {
       if (reply.includes("[[SING]]")) {
         overlayApi?.singAll?.();
       }
-    } catch (_error) {
+    } catch {
       window.dispatchEvent(
         new CustomEvent("chat-message", {
           detail: { role: "system", text: "voice chat request failed" },
@@ -393,7 +393,7 @@ export default function App() {
         summary: `study snapshot sampled (stability=${Math.round(study.stability.score * 100)}%)`,
         meta: { queue_pending: study.signals.queue_pending_count },
       };
-    } catch (_error) {
+    } catch {
       return {
         ok: false,
         summary: "study snapshot request crashed",
@@ -427,7 +427,7 @@ export default function App() {
         ok: true,
         summary: `drift scanned (blocked=${payload.blocked_gates.length})`,
       };
-    } catch (_error) {
+    } catch {
       return {
         ok: false,
         summary: "drift scan request crashed",
@@ -460,7 +460,7 @@ export default function App() {
         ok: true,
         summary: `push-truth dry-run gate=${blocked}`,
       };
-    } catch (_error) {
+    } catch {
       return {
         ok: false,
         summary: "push-truth dry-run request crashed",
@@ -478,7 +478,7 @@ export default function App() {
       if (studyRes.ok) {
         study = (await studyRes.json()) as StudySnapshotPayload;
       }
-    } catch (_error) {
+    } catch {
       // best effort
     }
 
@@ -889,7 +889,7 @@ export default function App() {
         const payload = (await response.json()) as { jsonl?: string };
         const body = payload?.jsonl ? payload.jsonl.trim() : "(no utterances)";
         emitSystemMessage(`eta/mu ledger\n${body}`);
-      } catch (_error) {
+      } catch {
         emitSystemMessage("eta/mu ledger failed");
       }
       return true;
@@ -928,7 +928,7 @@ export default function App() {
           `${payload?.presence_name?.en || presence_id} / say\n${payload?.rendered_text || "(no render)"}\n` +
             `facts=${payload?.say_intent?.facts?.length || 0} asks=${payload?.say_intent?.asks?.length || 0} repairs=${payload?.say_intent?.repairs?.length || 0}`,
         );
-      } catch (_error) {
+      } catch {
         emitSystemMessage("presence say failed");
       }
       return true;
@@ -957,7 +957,7 @@ export default function App() {
         const drifts = Array.isArray(payload?.active_drifts) ? payload.active_drifts.length : 0;
         const blocked = Array.isArray(payload?.blocked_gates) ? payload.blocked_gates.length : 0;
         emitSystemMessage(`drift scan\nactive_drifts=${drifts} blocked_gates=${blocked}`);
-      } catch (_error) {
+      } catch {
         emitSystemMessage("drift scan failed");
       }
       return true;
@@ -986,7 +986,7 @@ export default function App() {
         const blocked = payload?.gate?.blocked ? "blocked" : "pass";
         const needs = Array.isArray(payload?.needs) ? payload.needs.join(", ") : "";
         emitSystemMessage(`push-truth dry-run\ngate=${blocked}\nneeds=${needs || "(none)"}`);
-      } catch (_error) {
+      } catch {
         emitSystemMessage("push-truth dry-run failed");
       }
       return true;
@@ -1025,7 +1025,7 @@ export default function App() {
           emitSystemMessage(
             `study export\nid=${eventId}\nlabel=${String(payload.event?.label || label || "chat-export")}\nhistory=${historyCount}`,
           );
-        } catch (_error) {
+        } catch {
           emitSystemMessage("study export failed");
         }
         return true;
@@ -1137,7 +1137,7 @@ export default function App() {
             "runtime_receipts_within_vault=(unknown:legacy-mode)",
           ].join("\n"),
         );
-      } catch (_error) {
+      } catch {
         emitSystemMessage("study snapshot failed");
       }
       return true;
@@ -1195,7 +1195,7 @@ export default function App() {
           }),
         );
       }
-    } catch (_error) {
+    } catch {
       setWorldInteraction({
         ok: false,
         line_en: "Interaction failed. The field is unstable.",
@@ -1345,7 +1345,7 @@ export default function App() {
         h: prev[elementId]?.h ?? 0.2,
       }
     }));
-  }, [mergedLayoutRects]);
+  }, []);
 
   const simulationMapState = projectionStateByElement.get("nexus.ui.simulation_map");
   const simulationCanvasHeight = useMemo(() => {
@@ -1845,7 +1845,7 @@ export default function App() {
           <motion.section
             key={panel.id}
             className={`${panel.className ?? ""} ${isEditMode ? "cursor-grab active:cursor-grabbing ring-2 ring-[#ae81ff] shadow-[0_0_15px_rgba(174,129,255,0.3)] z-10" : ""}`}
-            style={panel.style as any}
+            style={panel.style as CSSProperties}
             drag={isEditMode}
             dragMomentum={false}
             dragElastic={0.1}

@@ -18,8 +18,8 @@ export function VitalsPanel({ entities, catalog, presenceDynamics }: Props) {
   const manifest = catalog?.entity_manifest || [];
   const manifestById = new Map(
     manifest
-      .filter((item: any) => item && item.id)
-      .map((item: any) => [String(item.id), item]),
+      .filter((item) => item && item.id)
+      .map((item) => [String(item.id), item]),
   );
   const impactById = new Map(
     (presenceDynamics?.presence_impacts ?? []).map((impact) => [impact.id, impact]),
@@ -106,7 +106,7 @@ export function VitalsPanel({ entities, catalog, presenceDynamics }: Props) {
 
       <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-6">
         {entities.map((e) => {
-          const meta = manifest.find((m: any) => m.id === e.id) || { en: e.id, ja: "", hue: 200 };
+          const meta = manifest.find((m) => m.id === e.id) || { id: e.id, en: e.id, ja: "", hue: 200 };
           const impact = impactById.get(e.id);
           const isWitnessCard = e.id === "witness_thread";
           return (
