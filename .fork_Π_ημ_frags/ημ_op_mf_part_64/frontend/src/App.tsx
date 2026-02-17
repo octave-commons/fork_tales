@@ -1356,90 +1356,18 @@ export default function App() {
   const chatLensState = projectionStateByElement.get("nexus.ui.chat.witness_thread") ?? null;
   const latestAutopilotEvent = autopilotEvents[0] ?? null;
 
-  return (
-    <main className="max-w-[1600px] mx-auto px-4 py-5 md:px-6 md:py-7 pb-20 transition-colors">
-      <header className="mb-6 border-b-2 border-line pb-4">
-        <h1 className="text-5xl font-bold tracking-tight mb-2 text-ink">eta-mu world daemon / ημ世界デーモン</h1>
-        <div className="flex justify-between items-center">
-          <p className="text-muted text-sm font-mono">
-            Part <code>{catalog?.part_roots?.[0]?.split("/").pop() || "?"}</code> | Seed
-            <code>{catalog?.generated_at?.split("T")[0]}</code>
-          </p>
-          {!isConnected ? (
-            <span className="text-[#f92672] font-bold animate-pulse">● Disconnected / 切断</span>
-          ) : (
-            <span className="text-[#a6e22e] font-bold flex items-center gap-2">● Connected / 接続中</span>
-          )}
-        </div>
-        <div className="mt-3 grid gap-2 lg:grid-cols-[1fr_auto] lg:items-center">
-          <div className="text-xs text-muted space-y-1">
-            <p>
-              projection perspective: <code>{projectionPerspective}</code>
-              {activeProjection?.layout?.clamps ? (
-                <>
-                  {" "}| clamps area <code>{activeProjection.layout.clamps.min_area.toFixed(2)}</code>-
-                  <code>{activeProjection.layout.clamps.max_area.toFixed(2)}</code>
-                </>
-              ) : null}
-            </p>
-            {activeChatLens ? (
-              <p>
-                chat lens: <code>{activeChatLens.presence}</code> | memory scope:
-                <code>{activeChatLens.memory_scope}</code> | status: <code>{activeChatLens.status}</code>
-              </p>
-            ) : null}
-            <p>
-              autopilot: <code>{autopilotEnabled ? autopilotStatus : "stopped"}</code> | note:
-              <code>{autopilotSummary}</code>
-            </p>
-            {latestAutopilotEvent ? (
-              <p>
-                last action: <code>{latestAutopilotEvent.actionId}</code> | result:
-                <code>{latestAutopilotEvent.result}</code>
-              </p>
-            ) : null}
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={toggleAutopilot}
-              className={`border rounded-md px-3 py-1 text-xs font-semibold transition-colors ${
-                autopilotEnabled
-                  ? "bg-[rgba(166,226,46,0.16)] border-[rgba(166,226,46,0.48)] text-[#a6e22e]"
-                  : "bg-[rgba(249,38,114,0.16)] border-[rgba(249,38,114,0.48)] text-[#f92672]"
-              }`}
-              title="Toggle autopilot loop"
-            >
-              {autopilotEnabled ? "Autopilot On" : "Autopilot Off"}
-            </button>
-            {projectionOptions.map((option) => (
-              <button
-                key={option.id}
-                type="button"
-                onClick={() => setUiPerspective(option.id as UIPerspective)}
-                className={`border rounded-md px-3 py-1 text-xs font-semibold transition-colors ${
-                  projectionPerspective === option.id
-                    ? "bg-[rgba(102,217,239,0.2)] text-[#66d9ef] border-[rgba(102,217,239,0.7)]"
-                    : "bg-[rgba(39,40,34,0.78)] text-[var(--ink)] border-[var(--line)] hover:bg-[rgba(55,56,48,0.92)]"
-                }`}
-                title={option.description}
-              >
-                {option.name}
-              </button>
-            ))}
-          </div>
-        </div>
-      </header>
-
-      <div className="grid grid-cols-1 xl:grid-cols-12 xl:grid-flow-dense gap-3 items-start xl:auto-rows-[minmax(2.5rem,auto)]">
-        <section className="xl:col-span-12 xl:order-1" style={projectionStyleFor("nexus.ui.command_center", 12)}>
-          <PresenceCallDeck catalog={catalog} simulation={simulation} />
-        </section>
-
-        <section
-          className="card everything-dashboard-card !mt-0 relative overflow-hidden xl:col-span-12 xl:order-2"
-          style={projectionStyleFor("nexus.ui.simulation_map", 12)}
-        >
+  const panelConfigs = useMemo(() => [
+    {
+      id: "nexus.ui.command_center",
+      fallbackSpan: 12,
+      render: () => <PresenceCallDeck catalog={catalog} simulation={simulation} />,
+    },
+    {
+      id: "nexus.ui.simulation_map",
+      fallbackSpan: 12,
+      className: "card everything-dashboard-card !mt-0 relative overflow-hidden",
+      render: () => (
+        <>
           <div className="everything-dashboard-beam" />
           <div className="everything-dashboard-header mb-6 px-1">
             <div className="flex flex-col xl:flex-row xl:items-end xl:justify-between gap-2 mb-3">
@@ -1467,133 +1395,148 @@ export default function App() {
               height={simulationCanvasHeight}
             />
           </div>
-
-          <div className="mt-4 rounded-xl border border-[var(--line)] bg-[rgba(14,22,28,0.58)] p-3">
-            <p className="text-[11px] uppercase tracking-[0.12em] text-[#9ec7dd]">Dedicated World Views</p>
-            <p className="text-xs text-muted mt-1">Each overlay lane rendered as its own live viewport.</p>
-            <div className="mt-3 grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
-              {dedicatedOverlayViews.map((view) => (
-                <section key={view.id} className="rounded-lg border border-[rgba(126,166,192,0.32)] bg-[rgba(10,18,28,0.72)] p-2">
-                  <div className="mb-2">
-                    <p className="text-sm font-semibold text-[#e5f3ff]">{view.label}</p>
-                    <p className="text-[11px] text-[#9fc4dd]">{view.description}</p>
-                  </div>
-                  <SimulationCanvas
-                    simulation={simulation}
-                    catalog={catalog}
-                    height={180}
-                    defaultOverlayView={view.id}
-                    overlayViewLocked
-                    compactHud
-                    interactive={false}
-                  />
-                </section>
-              ))}
-            </div>
+        </>
+      ),
+    },
+    {
+      id: "nexus.ui.dedicated_views",
+      fallbackSpan: 12,
+      render: () => (
+        <div className="mt-0 rounded-xl border border-[var(--line)] bg-[rgba(14,22,28,0.58)] p-3 h-full">
+          <p className="text-[11px] uppercase tracking-[0.12em] text-[#9ec7dd]">Dedicated World Views</p>
+          <p className="text-xs text-muted mt-1">Each overlay lane rendered as its own live viewport.</p>
+          <div className="mt-3 grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
+            {dedicatedOverlayViews.map((view) => (
+              <section key={view.id} className="rounded-lg border border-[rgba(126,166,192,0.32)] bg-[rgba(10,18,28,0.72)] p-2">
+                <div className="mb-2">
+                  <p className="text-sm font-semibold text-[#e5f3ff]">{view.label}</p>
+                  <p className="text-[11px] text-[#9fc4dd]">{view.description}</p>
+                </div>
+                <SimulationCanvas
+                  simulation={simulation}
+                  catalog={catalog}
+                  height={180}
+                  defaultOverlayView={view.id}
+                  overlayViewLocked
+                  compactHud
+                  interactive={false}
+                />
+              </section>
+            ))}
+          </div>
+        </div>
+      ),
+    },
+    {
+      id: "nexus.ui.chat.witness_thread",
+      fallbackSpan: 6,
+      render: () => (
+        <div className="space-y-4 h-full">
+          <div className="rounded-xl border border-[var(--line)] bg-[rgba(45,46,39,0.88)] px-4 py-3 text-sm text-muted">
+            Communication mode active: sound production controls are retired. Use Presence Call Deck for
+            WebRTC communication and this lane for text/voice messaging.
           </div>
 
-          <div className="mt-6 space-y-4">
-            <div className="rounded-xl border border-[var(--line)] bg-[rgba(45,46,39,0.88)] px-4 py-3 text-sm text-muted">
-              Communication mode active: sound production controls are retired. Use Presence Call Deck for
-              WebRTC communication and this lane for text/voice messaging.
-            </div>
+          {chatLensState ? (
+            <p className="text-xs text-muted font-mono">
+              chat-lens mass <code>{chatLensState.mass.toFixed(2)}</code> | priority
+              <code>{chatLensState.priority.toFixed(2)}</code> | reason
+              <code>{chatLensState.explain.dominant_field}</code>
+            </p>
+          ) : null}
 
-            {chatLensState ? (
-              <p className="text-xs text-muted font-mono">
-                chat-lens mass <code>{chatLensState.mass.toFixed(2)}</code> | priority
-                <code>{chatLensState.priority.toFixed(2)}</code> | reason
-                <code>{chatLensState.explain.dominant_field}</code>
-              </p>
-            ) : null}
-
-            <div
-              style={{
-                opacity: chatLensState ? projectionOpacity(chatLensState.opacity, 0.92) : 1,
-                transform: chatLensState
-                  ? `scale(${(1 + chatLensState.pulse * 0.012).toFixed(3)})`
-                  : undefined,
-                transformOrigin: "center top",
-                transition: "transform 200ms ease, opacity 200ms ease",
-              }}
-            >
-              <ChatPanel
-                onSend={(text) => {
-                  if (handleAutopilotUserInput(text)) {
+          <div
+            style={{
+              opacity: chatLensState ? projectionOpacity(chatLensState.opacity, 0.92) : 1,
+              transform: chatLensState
+                ? `scale(${(1 + chatLensState.pulse * 0.012).toFixed(3)})`
+                : undefined,
+              transformOrigin: "center top",
+              transition: "transform 200ms ease, opacity 200ms ease",
+            }}
+          >
+            <ChatPanel
+              onSend={(text) => {
+                if (handleAutopilotUserInput(text)) {
+                  return;
+                }
+                setIsThinking(true);
+                (async () => {
+                  const consumed = await handleChatCommand(text);
+                  if (consumed) {
                     return;
                   }
-                  setIsThinking(true);
-                  (async () => {
-                    const consumed = await handleChatCommand(text);
-                    if (consumed) {
-                      return;
-                    }
 
-                    const baseUrl = runtimeBaseUrl();
-                    const response = await fetch(`${baseUrl}/api/chat`, {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ messages: [{ role: "user", text }] }),
-                    });
-                    const payload = (await response.json()) as { reply?: string };
-                    const reply = String(payload.reply ?? "");
+                  const baseUrl = runtimeBaseUrl();
+                  const response = await fetch(`${baseUrl}/api/chat`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ messages: [{ role: "user", text }] }),
+                  });
+                  const payload = (await response.json()) as { reply?: string };
+                  const reply = String(payload.reply ?? "");
+                  window.dispatchEvent(
+                    new CustomEvent("chat-message", {
+                      detail: { role: "assistant", text: reply },
+                    }),
+                  );
+                  if (reply.includes("[[PULSE]]")) {
+                    overlayApi?.pulseAt?.(0.5, 0.5, 1.0);
+                  }
+                  if (reply.includes("[[SING]]")) {
+                    overlayApi?.singAll?.();
+                  }
+                })()
+                  .catch(() => {
                     window.dispatchEvent(
                       new CustomEvent("chat-message", {
-                        detail: { role: "assistant", text: reply },
+                        detail: { role: "system", text: "chat request failed" },
                       }),
                     );
-                    if (reply.includes("[[PULSE]]")) {
-                      overlayApi?.pulseAt?.(0.5, 0.5, 1.0);
-                    }
-                    if (reply.includes("[[SING]]")) {
-                      overlayApi?.singAll?.();
-                    }
-                  })()
-                    .catch(() => {
-                      window.dispatchEvent(
-                        new CustomEvent("chat-message", {
-                          detail: { role: "system", text: "chat request failed" },
-                        }),
-                      );
-                    })
-                    .finally(() => {
-                      setIsThinking(false);
-                    });
-                }}
-                onRecord={handleRecord}
-                onTranscribe={handleTranscribe}
-                onSendVoice={handleSendVoice}
-                isRecording={isRecording}
-                isThinking={isThinking}
-                voiceInputMeta={voiceInputMeta}
-              />
-            </div>
+                  })
+                  .finally(() => {
+                    setIsThinking(false);
+                  });
+              }}
+              onRecord={handleRecord}
+              onTranscribe={handleTranscribe}
+              onSendVoice={handleSendVoice}
+              isRecording={isRecording}
+              isThinking={isThinking}
+              voiceInputMeta={voiceInputMeta}
+            />
           </div>
-        </section>
-
-        <section className="xl:col-span-6 xl:order-8" style={projectionStyleFor("nexus.ui.web_graph_weaver", 6)}>
-          {deferredPanelsReady ? (
-            <Suspense fallback={<DeferredPanelPlaceholder title="Web Graph Weaver" />}>
-              <WebGraphWeaverPanel />
-            </Suspense>
-          ) : (
-            <DeferredPanelPlaceholder title="Web Graph Weaver" />
-          )}
-        </section>
-
-        <section className="xl:col-span-6 xl:order-9" style={projectionStyleFor("nexus.ui.inspiration_atlas", 6)}>
-          {deferredPanelsReady ? (
-            <Suspense fallback={<DeferredPanelPlaceholder title="Inspiration Atlas" />}>
-              <InspirationAtlasPanel simulation={simulation} />
-            </Suspense>
-          ) : (
-            <DeferredPanelPlaceholder title="Inspiration Atlas" />
-          )}
-        </section>
-
-        <section
-          className="card relative overflow-hidden xl:col-span-6 xl:order-3"
-          style={projectionStyleFor("nexus.ui.entity_vitals", 6)}
-        >
+        </div>
+      ),
+    },
+    {
+      id: "nexus.ui.web_graph_weaver",
+      fallbackSpan: 6,
+      render: () => deferredPanelsReady ? (
+        <Suspense fallback={<DeferredPanelPlaceholder title="Web Graph Weaver" />}>
+          <WebGraphWeaverPanel />
+        </Suspense>
+      ) : (
+        <DeferredPanelPlaceholder title="Web Graph Weaver" />
+      ),
+    },
+    {
+      id: "nexus.ui.inspiration_atlas",
+      fallbackSpan: 6,
+      render: () => deferredPanelsReady ? (
+        <Suspense fallback={<DeferredPanelPlaceholder title="Inspiration Atlas" />}>
+          <InspirationAtlasPanel simulation={simulation} />
+        </Suspense>
+      ) : (
+        <DeferredPanelPlaceholder title="Inspiration Atlas" />
+      ),
+    },
+    {
+      id: "nexus.ui.entity_vitals",
+      fallbackSpan: 6,
+      className: "card relative overflow-hidden",
+      render: () => (
+        <>
           <div className="absolute top-0 left-0 w-1 h-full bg-[#a6e22e] opacity-60" />
           <h2 className="text-3xl font-bold mb-2">Entity Vitals / 実体バイタル</h2>
           <p className="text-muted mb-6">Live telemetry from the canonical named forms.</p>
@@ -1610,24 +1553,30 @@ export default function App() {
               <DeferredPanelPlaceholder title="Entity Vitals" />
             )}
           </div>
-        </section>
-
-        <section
-          className="card relative overflow-hidden xl:col-span-6 xl:order-4"
-          style={projectionStyleFor("nexus.ui.projection_ledger", 6)}
-        >
+        </>
+      ),
+    },
+    {
+      id: "nexus.ui.projection_ledger",
+      fallbackSpan: 6,
+      className: "card relative overflow-hidden",
+      render: () => (
+        <>
           <div className="absolute top-0 left-0 w-1 h-full bg-[#66d9ef] opacity-70" />
           <h2 className="text-2xl font-bold mb-2">Projection Ledger / 映台帳</h2>
           <p className="text-muted mb-4">Sub-panels expose routing and control data for every known box.</p>
           <div className="max-h-[74rem] overflow-y-auto pr-1">
             <ProjectionLedgerPanel projection={activeProjection} />
           </div>
-        </section>
-
-        <section
-          className="card relative overflow-hidden xl:col-span-6 xl:order-5"
-          style={projectionStyleFor("nexus.ui.autopilot_ledger", 6)}
-        >
+        </>
+      ),
+    },
+    {
+      id: "nexus.ui.autopilot_ledger",
+      fallbackSpan: 6,
+      className: "card relative overflow-hidden",
+      render: () => (
+        <>
           <div className="absolute top-0 left-0 w-1 h-full bg-[#fd971f] opacity-70" />
           <h2 className="text-2xl font-bold mb-2">Autopilot Ledger / 自動操縦台帳</h2>
           <p className="text-muted mb-4">
@@ -1662,12 +1611,15 @@ export default function App() {
               ))
             )}
           </div>
-        </section>
-
-        <section
-          className="card relative overflow-hidden xl:col-span-6 xl:order-6"
-          style={projectionStyleFor("nexus.ui.stability_observatory", 6)}
-        >
+        </>
+      ),
+    },
+    {
+      id: "nexus.ui.stability_observatory",
+      fallbackSpan: 6,
+      className: "card relative overflow-hidden",
+      render: () => (
+        <>
           <div className="absolute top-0 left-0 w-1 h-full bg-[#66d9ef] opacity-70" />
           <h2 className="text-2xl font-bold mb-2">Stability Observatory / 安定観測</h2>
           <p className="text-muted mb-4">
@@ -1680,9 +1632,15 @@ export default function App() {
           ) : (
             <DeferredPanelPlaceholder title="Stability Observatory" />
           )}
-        </section>
-
-        <section className="card relative overflow-hidden xl:col-span-8 xl:order-6" style={projectionStyleFor("nexus.ui.omni_archive", 8)}>
+        </>
+      ),
+    },
+    {
+      id: "nexus.ui.omni_archive",
+      fallbackSpan: 8,
+      className: "card relative overflow-hidden",
+      render: () => (
+        <>
           <div className="absolute top-0 left-0 w-1 h-full bg-[#ae81ff] opacity-65" />
           <h2 className="text-3xl font-bold mb-2">Omni Panel / 全感覚パネル</h2>
           <p className="text-muted mb-6">Receipt River, Mage of Receipts, and other cover entities.</p>
@@ -1703,9 +1661,15 @@ export default function App() {
               <DeferredPanelPlaceholder title="Vault Artifacts" />
             )}
           </div>
-        </section>
-
-        <section className="card relative overflow-hidden xl:col-span-4 xl:order-7" style={projectionStyleFor("nexus.ui.myth_commons", 4)}>
+        </>
+      ),
+    },
+    {
+      id: "nexus.ui.myth_commons",
+      fallbackSpan: 4,
+      className: "card relative overflow-hidden",
+      render: () => (
+        <>
           <div className="absolute top-0 left-0 w-1 h-full bg-[#fd971f] opacity-70" />
           <h2 className="text-3xl font-bold mb-2">Myth Commons / 神話共同体</h2>
           <p className="text-muted mb-6">People sing, pray to the Presences, and keep writing the myth.</p>
@@ -1721,7 +1685,120 @@ export default function App() {
           ) : (
             <DeferredPanelPlaceholder title="Myth Commons" />
           )}
-        </section>
+        </>
+      ),
+    },
+  ], [
+    activeProjection,
+    autopilotEvents,
+    catalog,
+    chatLensState,
+    dedicatedOverlayViews,
+    deferredPanelsReady,
+    handleAutopilotUserInput,
+    handleChatCommand,
+    handleRecord,
+    handleSendVoice,
+    handleTranscribe,
+    handleWorldInteract,
+    interactingPersonId,
+    isRecording,
+    isThinking,
+    overlayApi,
+    simulation,
+    simulationCanvasHeight,
+    voiceInputMeta,
+    worldInteraction
+  ]);
+
+  const sortedPanels = useMemo(() => {
+    return panelConfigs
+      .map((config) => {
+        const state = projectionStateByElement.get(config.id);
+        const priority = state?.priority ?? 0.1; // Default low priority if unknown
+        const style = projectionStyleFor(config.id, config.fallbackSpan);
+        return { ...config, priority, style };
+      })
+      .sort((a, b) => b.priority - a.priority); // Sort DESC
+  }, [panelConfigs, projectionStateByElement, projectionStyleFor]);
+
+  return (
+    <main className="max-w-[1920px] mx-auto px-2 py-2 md:px-4 md:py-4 pb-20 transition-colors">
+      <header className="mb-4 border-b border-line pb-3 flex flex-col gap-2">
+        <div className="flex justify-between items-center">
+          <h1 className="text-2xl font-bold tracking-tight text-ink flex items-center gap-3">
+             <span className="opacity-50">ημ</span>
+             <span>eta-mu world daemon</span>
+          </h1>
+          <div className="flex items-center gap-4">
+            <p className="text-muted text-xs font-mono hidden md:block">
+              Part <code>{catalog?.part_roots?.[0]?.split("/").pop() || "?"}</code>
+            </p>
+            {!isConnected ? (
+              <span className="text-[#f92672] font-bold text-xs animate-pulse">● Disconnected</span>
+            ) : (
+              <span className="text-[#a6e22e] font-bold text-xs flex items-center gap-2">● Connected</span>
+            )}
+          </div>
+        </div>
+        
+        <div className="grid gap-2 lg:grid-cols-[1fr_auto] lg:items-center">
+          <div className="text-[10px] text-muted space-y-0.5 font-mono opacity-70">
+            <div className="flex flex-wrap gap-x-3 gap-y-1">
+               <span>perspective: <code>{projectionPerspective}</code></span>
+               <span>autopilot: <code>{autopilotEnabled ? autopilotStatus : "stopped"}</code></span>
+               <span className="opacity-80">note: <code>{autopilotSummary}</code></span>
+            </div>
+            <div className="flex flex-wrap gap-x-3 gap-y-1">
+              {activeChatLens ? (
+                <span>chat-lens: <code>{activeChatLens.presence}</code> ({activeChatLens.status})</span>
+              ) : null}
+              {latestAutopilotEvent ? (
+                 <span>last: <code>{latestAutopilotEvent.actionId}</code> ({latestAutopilotEvent.result})</span>
+              ) : null}
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={toggleAutopilot}
+              className={`border rounded px-2 py-0.5 text-[10px] font-semibold transition-colors ${
+                autopilotEnabled
+                  ? "bg-[rgba(166,226,46,0.16)] border-[rgba(166,226,46,0.48)] text-[#a6e22e]"
+                  : "bg-[rgba(249,38,114,0.16)] border-[rgba(249,38,114,0.48)] text-[#f92672]"
+              }`}
+            >
+              {autopilotEnabled ? "Autopilot On" : "Autopilot Off"}
+            </button>
+            {projectionOptions.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => setUiPerspective(option.id as UIPerspective)}
+                className={`border rounded px-2 py-0.5 text-[10px] font-semibold transition-colors ${
+                  projectionPerspective === option.id
+                    ? "bg-[rgba(102,217,239,0.2)] text-[#66d9ef] border-[rgba(102,217,239,0.7)]"
+                    : "bg-[rgba(39,40,34,0.78)] text-[var(--ink)] border-[var(--line)] hover:bg-[rgba(55,56,48,0.92)]"
+                }`}
+                title={option.description}
+              >
+                {option.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      </header>
+
+      <div className="grid grid-cols-1 xl:grid-cols-12 xl:grid-flow-dense gap-3 items-start xl:auto-rows-[minmax(2.5rem,auto)]">
+        {sortedPanels.map((panel) => (
+          <section
+            key={panel.id}
+            className={panel.className ?? ""}
+            style={panel.style}
+          >
+            {panel.render()}
+          </section>
+        ))}
       </div>
 
       {uiToasts.length > 0 ? (
