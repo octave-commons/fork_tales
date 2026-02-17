@@ -1324,14 +1324,11 @@ export default function App() {
     [isWideViewport, projectionDensitySignalFor, mergedLayoutRects, projectionStateByElement],
   );
 
-  const handleDragEnd = useCallback((event: MouseEvent | TouchEvent | PointerEvent, info: PanInfo, elementId: string) => {
+  const handleDragEnd = useCallback((_: MouseEvent | TouchEvent | PointerEvent, info: PanInfo, elementId: string) => {
     if (!gridContainerRef.current) return;
     const containerRect = gridContainerRef.current.getBoundingClientRect();
     const x = (info.point.x - containerRect.left) / containerRect.width;
     const y = (info.point.y - containerRect.top) / containerRect.height;
-    
-    // Get existing w/h or default from computed style
-    const existing = mergedLayoutRects[elementId] || { w: 0.2, h: 0.2 }; // crude fallback if completely new
     
     // We update position but keep dimensions unless resized (resize logic separate)
     // Note: this simple drag updates x/y based on top-left.
@@ -1826,10 +1823,15 @@ export default function App() {
         </div>
       </header>
 
-      <div className="flex justify-end px-2 mb-2">
+      <div className="flex justify-end px-2 mb-2 sticky top-2 z-50">
         <button
+          type="button"
           onClick={() => setIsEditMode(!isEditMode)}
-          className={`text-xs px-2 py-1 rounded border ${isEditMode ? "bg-[#ae81ff]/20 border-[#ae81ff] text-[#ae81ff]" : "border-transparent text-muted hover:text-ink"}`}
+          className={`text-sm font-bold px-4 py-2 rounded-lg shadow-lg transition-all duration-200 
+            ${isEditMode 
+              ? "bg-[#ae81ff] text-white ring-2 ring-white/20 scale-105" 
+              : "bg-[rgba(45,46,39,0.9)] text-[#ae81ff] border border-[#ae81ff]/40 hover:bg-[#ae81ff]/10 hover:border-[#ae81ff]"
+            }`}
         >
           {isEditMode ? "Done Editing" : "Edit Layout"}
         </button>
@@ -1842,17 +1844,21 @@ export default function App() {
         {sortedPanels.map((panel) => (
           <motion.section
             key={panel.id}
-            className={`${panel.className ?? ""} ${isEditMode ? "cursor-grab active:cursor-grabbing ring-1 ring-[#ae81ff]/50" : ""}`}
+            className={`${panel.className ?? ""} ${isEditMode ? "cursor-grab active:cursor-grabbing ring-2 ring-[#ae81ff] shadow-[0_0_15px_rgba(174,129,255,0.3)] z-10" : ""}`}
             style={panel.style as any}
             drag={isEditMode}
             dragMomentum={false}
-            dragElastic={0}
-            onDragEnd={(e, info) => handleDragEnd(e, info, panel.id)}
+            dragElastic={0.1}
+            whileHover={isEditMode ? { scale: 1.02, zIndex: 20 } : undefined}
+            whileTap={isEditMode ? { scale: 1.05, zIndex: 30, cursor: "grabbing" } : undefined}
+            onDragEnd={(_, info) => handleDragEnd(_, info, panel.id)}
             layout
           >
             {panel.render()}
             {isEditMode && (
-               <div className="absolute bottom-1 right-1 w-4 h-4 bg-[#ae81ff]/50 rounded-br cursor-nwse-resize opacity-50 hover:opacity-100" />
+               <div className="absolute top-2 right-2 px-2 py-1 bg-black/60 rounded text-[10px] text-[#ae81ff] font-mono pointer-events-none">
+                 DRAG ME
+               </div>
             )}
           </motion.section>
         ))}
