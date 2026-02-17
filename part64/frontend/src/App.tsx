@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useMemo, useRef, lazy, Suspense } from "react";
+import { motion, type PanInfo } from "framer-motion";
 import { useWorldState } from "./hooks/useWorldState";
 import { OVERLAY_VIEW_OPTIONS, SimulationCanvas } from "./components/Simulation/Canvas";
 import { ChatPanel } from "./components/Panels/Chat";
@@ -165,6 +166,10 @@ export default function App() {
   const runtimeSnapshotRef = useRef({ catalog, simulation, isConnected });
   const toastSeqRef = useRef(0);
   const toastTimeoutsRef = useRef<Map<number, number>>(new Map());
+  const gridContainerRef = useRef<HTMLDivElement>(null);
+
+  const [layoutOverrides, setLayoutOverrides] = useState<Record<string, { x: number; y: number; w: number; h: number }>>({});
+  const [isEditMode, setIsEditMode] = useState(false);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1214,10 +1219,16 @@ export default function App() {
     });
     return map;
   }, [activeProjection]);
+  
   const projectionLayoutRects = useMemo(
     () => activeProjection?.layout?.rects ?? {},
     [activeProjection?.layout?.rects],
   );
+
+  const mergedLayoutRects = useMemo(() => ({
+    ...projectionLayoutRects,
+    ...layoutOverrides,
+  }), [projectionLayoutRects, layoutOverrides]);
 
   const projectionDensitySignalFor = useCallback(
     (state: UIProjectionElementState | undefined): number => {
@@ -1253,7 +1264,7 @@ export default function App() {
         } as const;
       }
 
-      const rect = projectionLayoutRects[elementId];
+      const rect = mergedLayoutRects[elementId];
       if (rect) {
         const colStart = clamp(
           Math.floor(clamp(rect.x, 0, 0.98) * PROJECTION_GRID_COLUMNS) + 1,
@@ -1310,8 +1321,34 @@ export default function App() {
           "grid-column 220ms ease, grid-row 220ms ease, transform 260ms ease, opacity 220ms ease",
       } as const;
     },
-    [isWideViewport, projectionDensitySignalFor, projectionLayoutRects, projectionStateByElement],
+    [isWideViewport, projectionDensitySignalFor, mergedLayoutRects, projectionStateByElement],
   );
+
+  const handleDragEnd = useCallback((event: MouseEvent | TouchEvent | PointerEvent, info: PanInfo, elementId: string) => {
+    if (!gridContainerRef.current) return;
+    const containerRect = gridContainerRef.current.getBoundingClientRect();
+    const x = (info.point.x - containerRect.left) / containerRect.width;
+    const y = (info.point.y - containerRect.top) / containerRect.height;
+    
+    // Get existing w/h or default from computed style
+    const existing = mergedLayoutRects[elementId] || { w: 0.2, h: 0.2 }; // crude fallback if completely new
+    
+    // We update position but keep dimensions unless resized (resize logic separate)
+    // Note: this simple drag updates x/y based on top-left.
+    // Ideally we snap? x/y are normalized 0..1.
+    // The projectionStyleFor logic snaps to grid cells.
+    
+    setLayoutOverrides(prev => ({
+      ...prev,
+      [elementId]: {
+        ...prev[elementId],
+        x: clamp(x, 0, 0.95),
+        y: clamp(y, 0, 0.95),
+        w: prev[elementId]?.w ?? 0.25, // preserve or default
+        h: prev[elementId]?.h ?? 0.2,
+      }
+    }));
+  }, [mergedLayoutRects]);
 
   const simulationMapState = projectionStateByElement.get("nexus.ui.simulation_map");
   const simulationCanvasHeight = useMemo(() => {
@@ -1789,15 +1826,35 @@ export default function App() {
         </div>
       </header>
 
-      <div className="grid grid-cols-1 xl:grid-cols-12 xl:grid-flow-dense gap-3 items-start xl:auto-rows-[minmax(2.5rem,auto)]">
+      <div className="flex justify-end px-2 mb-2">
+        <button
+          onClick={() => setIsEditMode(!isEditMode)}
+          className={`text-xs px-2 py-1 rounded border ${isEditMode ? "bg-[#ae81ff]/20 border-[#ae81ff] text-[#ae81ff]" : "border-transparent text-muted hover:text-ink"}`}
+        >
+          {isEditMode ? "Done Editing" : "Edit Layout"}
+        </button>
+      </div>
+
+      <div 
+        ref={gridContainerRef}
+        className="grid grid-cols-1 xl:grid-cols-12 xl:grid-flow-dense gap-3 items-start xl:auto-rows-[minmax(2.5rem,auto)] relative"
+      >
         {sortedPanels.map((panel) => (
-          <section
+          <motion.section
             key={panel.id}
-            className={panel.className ?? ""}
-            style={panel.style}
+            className={`${panel.className ?? ""} ${isEditMode ? "cursor-grab active:cursor-grabbing ring-1 ring-[#ae81ff]/50" : ""}`}
+            style={panel.style as any}
+            drag={isEditMode}
+            dragMomentum={false}
+            dragElastic={0}
+            onDragEnd={(e, info) => handleDragEnd(e, info, panel.id)}
+            layout
           >
             {panel.render()}
-          </section>
+            {isEditMode && (
+               <div className="absolute bottom-1 right-1 w-4 h-4 bg-[#ae81ff]/50 rounded-br cursor-nwse-resize opacity-50 hover:opacity-100" />
+            )}
+          </motion.section>
         ))}
       </div>
 
