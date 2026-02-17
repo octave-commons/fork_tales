@@ -16,6 +16,8 @@ interface Props {
   overlayViewLocked?: boolean;
   compactHud?: boolean;
   interactive?: boolean;
+  backgroundMode?: boolean;
+  className?: string;
 }
 
 interface GraphWorldscreenState {
@@ -581,6 +583,8 @@ export function SimulationCanvas({
   overlayViewLocked = false,
   compactHud = false,
   interactive = true,
+  backgroundMode = false,
+  className = "",
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
@@ -2563,10 +2567,15 @@ export function SimulationCanvas({
   const activeOverlayView =
     OVERLAY_VIEW_OPTIONS.find((option) => option.id === overlayView) ?? OVERLAY_VIEW_OPTIONS[0];
 
+  const containerClassName = backgroundMode
+    ? `relative h-full w-full overflow-hidden ${className}`.trim()
+    : `relative mt-3 border border-[rgba(36,31,26,0.16)] rounded-xl overflow-hidden bg-gradient-to-b from-[#0f1a1f] to-[#131b2a] ${className}`.trim();
+  const canvasHeight: number | string = backgroundMode ? "100%" : height;
+
   return (
-    <div ref={containerRef} className="relative mt-3 border border-[rgba(36,31,26,0.16)] rounded-xl overflow-hidden bg-gradient-to-b from-[#0f1a1f] to-[#131b2a]">
-      <canvas ref={canvasRef} style={{ height }} className="block w-full" />
-      <canvas ref={overlayRef} style={{ height }} className="absolute inset-0 w-full touch-none" />
+    <div ref={containerRef} className={containerClassName}>
+      <canvas ref={canvasRef} style={{ height: canvasHeight }} className="block w-full" />
+      <canvas ref={overlayRef} style={{ height: canvasHeight }} className="absolute inset-0 w-full touch-none" />
       {!compactHud ? (
         <div className="absolute top-2 right-2 z-10 w-[min(96%,31rem)] pointer-events-auto">
           <div className="rounded-md border border-[rgba(137,178,220,0.32)] bg-[rgba(9,22,36,0.72)] px-2 py-2 backdrop-blur-[2px]">

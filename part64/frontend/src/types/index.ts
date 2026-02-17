@@ -984,6 +984,21 @@ export interface EntityManifestItem {
   ja: string;
   hue: number;
   type?: string;
+  x?: number;
+  y?: number;
+  freq?: number;
+  flavor_vitals?: Record<string, unknown>;
+}
+
+export interface NamedFieldItem {
+  id: string;
+  en: string;
+  ja: string;
+  type?: string;
+  x?: number;
+  y?: number;
+  freq?: number;
+  hue?: number;
 }
 
 export interface Catalog {
@@ -1003,6 +1018,7 @@ export interface Catalog {
   ui_perspectives?: UIProjectionPerspectiveOption[];
   ui_projection?: UIProjectionBundle;
   entity_manifest?: EntityManifestItem[];
+  named_fields?: NamedFieldItem[];
   cover_fields: Array<{
     id: string;
     part: string;

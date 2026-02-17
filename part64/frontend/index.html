@@ -7,7 +7,20 @@
     <title>frontend</title>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <main style="font-family: Georgia, serif; padding: 1.25rem; max-width: 52rem; margin: 0 auto; color: #1d1d1d;">
+        <h1 style="margin: 0 0 0.5rem; font-size: 1.5rem;">eta-mu world daemon</h1>
+        <p style="margin: 0 0 0.5rem;">Loading runtime UI...</p>
+        <p style="margin: 0; font-size: 0.9rem; opacity: 0.8;">
+          If this page stays blank, hard refresh once and verify
+          <code style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace;">/api/catalog</code>
+          returns JSON.
+        </p>
+      </main>
+    </div>
+    <noscript>
+      <p style="padding: 1rem; font-family: Georgia, serif;">This UI requires JavaScript to render.</p>
+    </noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
