@@ -1,0 +1,56 @@
+services:
+  eta-mu-system:
+    build:
+      context: .
+      dockerfile: Dockerfile.system
+    command:
+      [
+        "pm2-runtime",
+        "start",
+        "ecosystem.config.cjs",
+        "--only",
+        "eta-mu-world,eta-mu-io,web-graph-weaver",
+      ]
+    environment:
+      CHROMA_HOST: chroma
+      CHROMA_PORT: "8000"
+      PYTHONUNBUFFERED: "1"
+      WEAVER_HOST: "0.0.0.0"
+      WEAVER_PORT: "8793"
+      OLLAMA_BASE_URL: "http://host.docker.internal:11434"
+      OLLAMA_MODEL: "qwen3-vl:4b-instruct"
+      EMBEDDINGS_BACKEND: "tensorflow"
+      TEXT_GENERATION_BACKEND: "tensorflow"
+      TF_EMBED_HASH_BINS: "768"
+    depends_on:
+      - chroma
+    ports:
+      - "8787:8787"
+      - "8793:8793"
+    volumes:
+      - ./world_state:/app/world_state
+      - ../.opencode/runtime:/app/.opencode/runtime:ro
+      - ../:/vault
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/api/catalog', timeout=8)",
+        ]
+      interval: 20s
+      timeout: 12s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  chroma:
+    image: chromadb/chroma:latest
+    volumes:
+      - ./world_state/chroma_data:/chroma/chroma
+    environment:
+      IS_PERSISTENT: "TRUE"
+    restart: unless-stopped

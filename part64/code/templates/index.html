@@ -1,0 +1,1435 @@
+<!doctype html>
+<html lang="en"> 
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>eta-mu world daemon</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg-0: #f3efe8;
+      --bg-1: #e7dfd2;
+      --ink: #241f1a;
+      --muted: #5f564c;
+      --card: rgba(255, 255, 255, 0.78);
+      --line: rgba(36, 31, 26, 0.16);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+      color: var(--ink);
+      background: radial-gradient(circle at top right, #f7f2e8 0%, var(--bg-0) 42%, var(--bg-1) 100%);
+      min-height: 100vh;
+    }
+    main { max-width: 1100px; margin: 0 auto; padding: 2rem 1rem 3rem; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 1rem 1.2rem;
+      margin-top: 1rem;
+      backdrop-filter: blur(4px);
+    }
+    h1 { margin: 0 0 0.3rem 0; font-size: 2rem; letter-spacing: 0.02em; }
+    .sub { margin: 0; color: var(--muted); }
+    ul { padding-left: 1.2rem; margin: 0.6rem 0 0 0; }
+    code { background: #efe7d8; border-radius: 4px; padding: 0.1rem 0.3rem; }
+    .controls { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+    .controls button {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 0.45rem 0.75rem;
+      background: #f8f3ea;
+      cursor: pointer;
+      font: inherit;
+    }
+    .controls button.voice {
+      background: linear-gradient(180deg, #eef8ff 0%, #daeefc 100%);
+    }
+    .chat-shell {
+      margin-top: 0.8rem;
+      border: 1px solid rgba(36, 31, 26, 0.18);
+      border-radius: 12px;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(247, 243, 236, 0.9));
+      padding: 0.7rem;
+    }
+    .chat-log {
+      border: 1px solid rgba(36, 31, 26, 0.14);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.88);
+      padding: 0.55rem;
+      min-height: 130px;
+      max-height: 240px;
+      overflow: auto;
+      display: grid;
+      gap: 0.5rem;
+    }
+    .chat-msg {
+      border: 1px solid rgba(36, 31, 26, 0.1);
+      border-radius: 9px;
+      padding: 0.45rem 0.55rem;
+      background: #fffefb;
+      font-size: 0.9rem;
+      white-space: pre-wrap;
+      line-height: 1.35;
+    }
+    .chat-msg.user {
+      background: #f1fbff;
+    }
+    .chat-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 0.45rem;
+      margin-top: 0.55rem;
+    }
+    .chat-row textarea {
+      width: 100%;
+      min-height: 74px;
+      max-height: 180px;
+      resize: vertical;
+      border: 1px solid rgba(36, 31, 26, 0.2);
+      border-radius: 9px;
+      padding: 0.5rem;
+      font: inherit;
+      background: #fffdf8;
+    }
+    .chat-row button {
+      align-self: end;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 0.45rem 0.75rem;
+      background: #ecf8ff;
+      cursor: pointer;
+      font: inherit;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 0.8rem;
+      margin-top: 0.75rem;
+    }
+    .item { border: 1px solid var(--line); border-radius: 12px; padding: 0.65rem; background: #fffdf8; }
+    .item p { margin: 0.2rem 0; font-size: 0.92rem; }
+    .item img { width: 100%; border-radius: 10px; display: block; margin-top: 0.45rem; }
+    audio, video { width: 100%; margin-top: 0.5rem; }
+    .small { color: var(--muted); font-size: 0.88rem; }
+    .sim-wrap {
+      margin-top: 0.7rem;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: hidden;
+      background: linear-gradient(180deg, #0f1a1f 0%, #131b2a 100%);
+      position: relative;
+    }
+    #sim-canvas {
+      display: block;
+      width: 100%;
+      height: 300px;
+      background: transparent;
+    }
+    #field-overlay-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 300px;
+      background: transparent;
+      touch-action: none;
+    }
+    .cover-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 0.8rem;
+      margin-top: 0.75rem;
+    }
+    .cover-field {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 0.6rem;
+      background: linear-gradient(180deg, rgba(255, 253, 248, 0.98), rgba(245, 237, 226, 0.95));
+    }
+    .cover-field p { margin: 0.2rem 0; font-size: 0.88rem; }
+    .cover-canvas {
+      width: 100%;
+      height: 120px;
+      display: block;
+      border-radius: 10px;
+      border: 1px solid rgba(36, 31, 26, 0.18);
+      margin-top: 0.4rem;
+      background: #101926;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>eta-mu world daemon / ημ世界デーモン</h1>
+    <p class="sub">Part <code>{part}</code> | Seed <code>{seed_label}</code></p>
+
+    <section class="card">
+      <h2>World snapshot / 世界スナップショット</h2>
+      <p>Total files in manifest: <strong>{file_count}</strong></p>
+      <p>Generated at (UTC): <code>{generated_at}</code></p>
+    </section>
+
+    <section class="card">
+      <h2>Roles / 役割</h2>
+      <ul>{role_items}</ul>
+    </section>
+
+    <section class="card">
+      <h2>Active constraints ledger lines / 有効制約台帳</h2>
+      <ul>{constraint_items}</ul>
+    </section>
+
+    <section class="card">
+      <h2>Organism State / 生命体状態</h2>
+      <p id="organism-stats">Initializing mycelial network... / 菌糸体ネットワーク初期化中...</p>
+      <p><a href="/healthz">/healthz</a> for detailed bio-metrics / 詳細生体指標.</p>
+    </section>
+
+    <section class="card">
+      <h2>Canonical Lore Names / 正準ロア名</h2>
+      <ul>{canonical_terms_items}</ul>
+    </section>
+
+    <section class="card">
+      <h2>Entity Vitals / 実体バイタル</h2>
+      <p class="small">Live telemetry from the canonical named forms. / 正準実体のリアルタイム計測。</p>
+      <div id="vitals-grid" class="cover-grid"></div>
+    </section>
+
+    <section class="card">
+      <h2>Everything Dashboard (real-time) / 全景ダッシュボード（リアルタイム）</h2>
+      <p class="small">WebSocket updates from <code>/ws</code> / WebSocket更新。Fallback: polling <code>/api/catalog</code> / フォールバック: ポーリング。Global controls affect all players, including the combined stream / 全体操作は合成ストリームを含む全プレイヤーに反映。</p>
+      <div class="sim-wrap">
+        <canvas id="sim-canvas" width="1200" height="300"></canvas>
+        <canvas id="field-overlay-canvas" width="1200" height="300"></canvas>
+      </div>
+      <p class="small" id="sim-meta">simulation stream idle... / シミュレーション待機中...</p>
+      <p class="small" id="sim-touch-meta">touch to wake the named fields / 正準場を触れて起動</p>
+      <p><strong>Combined stream / 合成ストリーム:</strong></p>
+      <audio id="mix-stream" controls preload="none" src="/stream/mix.wav"></audio>
+      <div class="controls">
+        <button id="play-all" type="button">Play all / 全再生</button>
+        <button id="pause-all" type="button">Pause all / 一時停止</button>
+        <button id="mute-all" type="button">Mute all / 全ミュート</button>
+        <button id="unmute-all" type="button">Unmute all / ミュート解除</button>
+        <button id="reload-mix" type="button">Reload mix / ミックス再読込</button>
+        <button id="overlay-all-fields" type="button">Overlay All Fields / 全正準場重畳</button>
+        <button id="sing-fields" type="button">Sing Fields / 場を歌わせる</button>
+        <button id="prime-voice" class="voice" type="button">Prime Voice / 音声起動</button>
+        <button id="sing-words" class="voice" type="button">Sing Words / 詞を歌う</button>
+        <button id="sing-words-ollama" class="voice" type="button">Sing via Ollama / Ollama詠唱</button>
+        <button id="stop-voices" class="voice" type="button">Stop Voices / 音声停止</button>
+        <label style="display:flex;align-items:center;gap:0.35rem;font-size:0.9rem"><input id="prefer-ja-voice" type="checkbox" checked>Prefer JA voice / 日本語音声優先</label>
+      </div>
+      <p class="small" id="voice-meta">voice mode / 音声モード: canonical</p>
+      <div id="chat-shell" class="chat-shell">
+        <p><strong>Live Chat / 対話チャット</strong></p>
+        <div id="chat-log" class="chat-log"></div>
+        <div class="chat-row">
+          <textarea id="chat-input" placeholder="speak or type... / 話すか入力してください"></textarea>
+          <button id="send-chat" type="button">Send / 送信</button>
+        </div>
+        <div class="controls" style="margin-top:0.45rem">
+          <button id="record-voice" class="voice" type="button">Record Voice / 音声録音</button>
+          <button id="transcribe-voice" class="voice" type="button">Transcribe Voice / 音声文字化</button>
+          <button id="send-voice-chat" class="voice" type="button">Send Voice to Chat / 音声を送信</button>
+        </div>
+        <p class="small" id="voice-input-meta">voice input idle / 音声入力待機</p>
+      </div>
+      <p class="small" id="dashboard-meta"></p>
+      <p class="small" id="stream-meta"></p>
+      <h3>Omni Panel / 全感覚パネル — Cover Fields / カバーフィールド</h3>
+      <p class="small">Receipt River, Mage of Receipts, and other cover entities render as living fields / カバー存在を動的な場として描画。</p>
+      <div id="cover-field-grid" class="cover-grid"></div>
+      <div id="catalog-grid" class="grid"></div>
+    </section>
+  </main>
+  <script id="catalog-data" type="text/plain">{catalog_json}</script>
+  <script id="voice-lines-data" type="text/plain">{voice_lines_json}</script>
+  <script>
+    const catalogNode = document.getElementById("catalog-data");
+    let catalog = JSON.parse(catalogNode.textContent);
+    const voiceNode = document.getElementById("voice-lines-data");
+    let voicePack = JSON.parse(voiceNode.textContent);
+    const grid = document.getElementById("catalog-grid");
+    const coverGrid = document.getElementById("cover-field-grid");
+    const vitalsGrid = document.getElementById("vitals-grid");
+    const meta = document.getElementById("dashboard-meta");
+    const streamMeta = document.getElementById("stream-meta");
+    const mixStream = document.getElementById("mix-stream");
+    const simCanvas = document.getElementById("sim-canvas");
+    const overlayCanvas = document.getElementById("field-overlay-canvas");
+    const simMeta = document.getElementById("sim-meta");
+    const simTouchMeta = document.getElementById("sim-touch-meta");
+    const voiceMeta = document.getElementById("voice-meta");
+    const chatLog = document.getElementById("chat-log");
+    const chatInput = document.getElementById("chat-input");
+    const voiceInputMeta = document.getElementById("voice-input-meta");
+    const preferJaVoiceNode = document.getElementById("prefer-ja-voice");
+    const coverFieldStops = [];
+    function fallbackNamedForms() {
+      return [
+        { id: "receipt_river", en: "Receipt River", ja: "領収書の川", hue: 212, x: 0.22, y: 0.38, freq: 196, type: "flow" },
+        { id: "witness_thread", en: "Witness Thread", ja: "証人の糸", hue: 262, x: 0.63, y: 0.33, freq: 233, type: "network" },
+        { id: "fork_tax_canticle", en: "Fork Tax Canticle", ja: "フォーク税の聖歌", hue: 34, x: 0.44, y: 0.62, freq: 277, type: "glitch" },
+        { id: "mage_of_receipts", en: "Mage of Receipts", ja: "領収魔導師", hue: 286, x: 0.33, y: 0.71, freq: 311, type: "flow" },
+        { id: "keeper_of_receipts", en: "Keeper of Receipts", ja: "領収書の番人", hue: 124, x: 0.57, y: 0.72, freq: 349, type: "geo" },
+        { id: "anchor_registry", en: "Anchor Registry", ja: "錨台帳", hue: 184, x: 0.49, y: 0.5, freq: 392, type: "geo" },
+        { id: "gates_of_truth", en: "Gates of Truth", ja: "真理の門", hue: 52, x: 0.76, y: 0.54, freq: 440, type: "portal" },
+      ];
+    }
+
+    function normalizeNamedForm(row) {
+      if (!row || typeof row !== "object") return null;
+      return {
+        id: String(row.id || "").trim() || null,
+        en: String(row.en || "Unknown Field"),
+        ja: String(row.ja || ""),
+        hue: Number(row.hue || 200),
+        x: Number(row.x || 0.5),
+        y: Number(row.y || 0.5),
+        freq: Number(row.freq || 220),
+        type: String(row.type || "flow"),
+        gradient: row.gradient || null,
+      };
+    }
+
+    function pickNamedForms(data) {
+      const fromNamed = Array.isArray(data && data.named_fields)
+        ? data.named_fields.map(normalizeNamedForm).filter(Boolean)
+        : [];
+      if (fromNamed.length) return fromNamed;
+
+      const fromManifest = Array.isArray(data && data.entity_manifest)
+        ? data.entity_manifest.map(normalizeNamedForm).filter(Boolean)
+        : [];
+      if (fromManifest.length) return fromManifest;
+
+      return fallbackNamedForms();
+    }
+
+    let namedForms = pickNamedForms(catalog);
+
+    function renderVitals(entities) {
+      if (!vitalsGrid) return;
+      vitalsGrid.innerHTML = "";
+      
+      if (!entities || !entities.length) {
+        vitalsGrid.innerHTML = "<p class='small'>No vitals signal / バイタル信号なし</p>";
+        return;
+      }
+
+      for (const e of entities) {
+        const manifest = namedForms.find(n => n.id === e.id) || { en: e.id, ja: "" };
+        const card = document.createElement("article");
+        card.className = "cover-field";
+        
+        let vitalsHtml = "";
+        if (e.vitals) {
+          for (const [k, v] of Object.entries(e.vitals)) {
+            vitalsHtml += `<div style="display:flex;justify-content:space-between;font-size:0.85rem;color:var(--muted)"><span>${k}</span><span>${v}</span></div>`;
+          }
+        }
+
+        card.innerHTML = `
+          <div style="display:flex;justify-content:space-between;align-items:baseline">
+            <strong style="font-size:0.95rem">${manifest.en}</strong>
+            <span style="font-size:0.8rem;color:var(--muted)">${manifest.ja}</span>
+          </div>
+          <div style="margin-top:0.5rem;border-top:1px solid var(--line);padding-top:0.4rem">
+            <div style="display:flex;justify-content:space-between;font-size:0.85rem">
+              <span>BPM</span>
+              <span>${e.bpm}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:0.85rem">
+              <span>Stability</span>
+              <span>${e.stability}%</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:0.85rem">
+              <span>Resonance</span>
+              <span>${e.resonance}Hz</span>
+            </div>
+            ${vitalsHtml}
+          </div>
+          <div style="margin-top:0.4rem;height:4px;background:#e0e0e0;border-radius:2px;overflow:hidden">
+            <div style="height:100%;width:${e.stability}%;background:hsl(${manifest.hue || 200}, 70%, 60%);transition:width 0.5s"></div>
+          </div>
+        `;
+        vitalsGrid.appendChild(card);
+      }
+    }
+
+    function initSimRenderer(canvas, metaNode) {
+      const gl = canvas.getContext("webgl", { alpha: false, antialias: true });
+      if (!gl) {
+        metaNode.textContent = "WebGL unavailable in this browser / このブラウザではWebGLを利用できません。";
+        return {
+          update: (_state) => {}
+        };
+      }
+
+      const vertexSrc = `
+        attribute vec2 aPos;
+        attribute float aSize;
+        attribute vec3 aColor;
+        uniform float uTime;
+        uniform vec2 uMouse;
+        uniform float uInfluence;
+        varying vec3 vColor;
+        void main() {
+          // Mouse influence field
+          vec2 d = aPos - uMouse;
+          float dist = length(d);
+          float force = max(0.0, (1.0 - dist * 3.0) * uInfluence);
+          vec2 offset = normalize(d) * force * 0.1;
+          
+          float wobble = sin((aPos.x * 4.0) + (aPos.y * 2.0) + (uTime * 0.0025)) * 0.02;
+          gl_Position = vec4(aPos.x + offset.x, aPos.y + wobble + offset.y, 0.0, 1.0);
+          gl_PointSize = aSize + force * 10.0;
+          vColor = aColor + vec3(force * 0.5);
+        }
+      `;
+
+      const fragmentSrc = `
+        precision mediump float;
+        varying vec3 vColor;
+        void main() {
+          vec2 c = gl_PointCoord - vec2(0.5, 0.5);
+          float d = dot(c, c);
+          if (d > 0.25) discard;
+          float alpha = smoothstep(0.25, 0.01, d);
+          gl_FragColor = vec4(vColor, alpha);
+        }
+      `;
+
+      function compile(type, source) {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+          throw new Error(gl.getShaderInfoLog(shader) || "shader compile failed");
+        }
+        return shader;
+      }
+
+      const vs = compile(gl.VERTEX_SHADER, vertexSrc);
+      const fs = compile(gl.FRAGMENT_SHADER, fragmentSrc);
+      const program = gl.createProgram();
+      gl.attachShader(program, vs);
+      gl.attachShader(program, fs);
+      gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        throw new Error(gl.getProgramInfoLog(program) || "program link failed");
+      }
+
+      const posBuffer = gl.createBuffer();
+      const sizeBuffer = gl.createBuffer();
+      const colorBuffer = gl.createBuffer();
+
+      const locPos = gl.getAttribLocation(program, "aPos");
+      const locSize = gl.getAttribLocation(program, "aSize");
+      const locColor = gl.getAttribLocation(program, "aColor");
+      const locTime = gl.getUniformLocation(program, "uTime");
+      const locMouse = gl.getUniformLocation(program, "uMouse");
+      const locInfluence = gl.getUniformLocation(program, "uInfluence");
+
+      let count = 0;
+      let capacity = 0;
+      let currentPositions = new Float32Array(0);
+      let targetPositions = new Float32Array(0);
+      let currentSizes = new Float32Array(0);
+      let targetSizes = new Float32Array(0);
+      let currentColors = new Float32Array(0);
+      let targetColors = new Float32Array(0);
+      let lastTick = 0;
+      
+      // Tracer history
+      let tracers = [];
+      const MAX_TRACERS = 200;
+
+      function ensureCapacity(pointCount) {
+        if (pointCount <= capacity) return;
+        capacity = Math.max(pointCount, capacity * 2, 64);
+
+        currentPositions = new Float32Array(capacity * 2);
+        targetPositions = new Float32Array(capacity * 2);
+        currentSizes = new Float32Array(capacity);
+        targetSizes = new Float32Array(capacity);
+        currentColors = new Float32Array(capacity * 3);
+        targetColors = new Float32Array(capacity * 3);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, currentPositions.byteLength, gl.DYNAMIC_DRAW);
+        gl.bindBuffer(gl.ARRAY_BUFFER, sizeBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, currentSizes.byteLength, gl.DYNAMIC_DRAW);
+        gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, currentColors.byteLength, gl.DYNAMIC_DRAW);
+      }
+
+      function resize() {
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.getBoundingClientRect();
+        const w = Math.max(1, Math.floor(rect.width * dpr));
+        const h = Math.max(1, Math.floor(rect.height * dpr));
+        if (canvas.width !== w || canvas.height !== h) {
+          canvas.width = w;
+          canvas.height = h;
+        }
+        gl.viewport(0, 0, canvas.width, canvas.height);
+      }
+
+      function update(state) {
+        const points = (state && state.points) || [];
+        count = points.length;
+        ensureCapacity(count);
+        for (let i = 0; i < count; i += 1) {
+          const p = points[i];
+          targetPositions[(i * 2)] = p.x || 0;
+          targetPositions[(i * 2) + 1] = p.y || 0;
+          targetSizes[i] = p.size || 3;
+          targetColors[(i * 3)] = p.r || 0.4;
+          targetColors[(i * 3) + 1] = p.g || 0.6;
+          targetColors[(i * 3) + 2] = p.b || 0.9;
+
+          if (lastTick === 0) {
+            currentPositions[(i * 2)] = targetPositions[(i * 2)];
+            currentPositions[(i * 2) + 1] = targetPositions[(i * 2) + 1];
+            currentSizes[i] = targetSizes[i];
+            currentColors[(i * 3)] = targetColors[(i * 3)];
+            currentColors[(i * 3) + 1] = targetColors[(i * 3) + 1];
+            currentColors[(i * 3) + 2] = targetColors[(i * 3) + 2];
+          }
+        }
+
+        metaNode.textContent = `sim particles / 粒子: ${state.total || 0} | audio nodes / 音声: ${state.audio || 0} | updated / 更新: ${state.timestamp || ""}`;
+      }
+      
+      let mouseX = 0;
+      let mouseY = 0;
+      let influence = 0;
+      
+      // Tracer renderer (2D context over WebGL)
+      const tracerCanvas = document.createElement('canvas');
+      tracerCanvas.style.position = 'absolute';
+      tracerCanvas.style.top = '0';
+      tracerCanvas.style.left = '0';
+      tracerCanvas.style.width = '100%';
+      tracerCanvas.style.height = '100%';
+      tracerCanvas.style.pointerEvents = 'none';
+      canvas.parentElement.appendChild(tracerCanvas);
+      const ctx = tracerCanvas.getContext('2d');
+
+      function resizeTracers() {
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.getBoundingClientRect();
+        tracerCanvas.width = rect.width * dpr;
+        tracerCanvas.height = rect.height * dpr;
+      }
+
+      function drawTracers() {
+        resizeTracers();
+        const w = tracerCanvas.width;
+        const h = tracerCanvas.height;
+        ctx.clearRect(0, 0, w, h);
+        
+        ctx.globalCompositeOperation = 'screen';
+        ctx.lineWidth = 1;
+        
+        tracers.forEach(t => {
+            t.life -= 0.01;
+            if(t.life <= 0) return;
+            
+            ctx.strokeStyle = `rgba(200, 230, 255, ${t.life * 0.4})`;
+            ctx.beginPath();
+            ctx.moveTo((t.x + 1)/2 * w, (1 - (t.y + 1)/2) * h); // GL to Canvas coords
+            ctx.lineTo((t.prevX + 1)/2 * w, (1 - (t.prevY + 1)/2) * h);
+            ctx.stroke();
+        });
+        
+        tracers = tracers.filter(t => t.life > 0);
+      }
+
+      function draw(ts) {
+        const delta = lastTick > 0 ? Math.min(64, ts - lastTick) : 16;
+        lastTick = ts;
+        const blend = Math.min(1, (delta / 1000) * 8);
+
+        const xyCount = count * 2;
+        for (let i = 0; i < xyCount; i += 1) {
+          currentPositions[i] += (targetPositions[i] - currentPositions[i]) * blend;
+        }
+        for (let i = 0; i < count; i += 1) {
+          currentSizes[i] += (targetSizes[i] - currentSizes[i]) * blend;
+        }
+        const rgbCount = count * 3;
+        for (let i = 0; i < rgbCount; i += 1) {
+          currentColors[i] += (targetColors[i] - currentColors[i]) * blend;
+        }
+        
+        // Spawn tracers randomly
+        if (count > 0 && Math.random() < 0.3) {
+            const idx = Math.floor(Math.random() * count);
+            tracers.push({
+                x: currentPositions[idx*2],
+                y: currentPositions[idx*2+1],
+                prevX: currentPositions[idx*2] - (Math.random()-0.5)*0.1,
+                prevY: currentPositions[idx*2+1] - (Math.random()-0.5)*0.1,
+                life: 1.0
+            });
+            if(tracers.length > MAX_TRACERS) tracers.shift();
+        }
+
+        resize();
+        gl.clearColor(0.035, 0.05, 0.075, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+
+        if (count > 0) {
+          gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
+          gl.bufferSubData(gl.ARRAY_BUFFER, 0, currentPositions.subarray(0, xyCount));
+          gl.bindBuffer(gl.ARRAY_BUFFER, sizeBuffer);
+          gl.bufferSubData(gl.ARRAY_BUFFER, 0, currentSizes.subarray(0, count));
+          gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+          gl.bufferSubData(gl.ARRAY_BUFFER, 0, currentColors.subarray(0, rgbCount));
+
+          gl.useProgram(program);
+          gl.uniform1f(locTime, ts || 0);
+          gl.uniform2f(locMouse, mouseX, mouseY);
+          gl.uniform1f(locInfluence, influence);
+
+          gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
+          gl.enableVertexAttribArray(locPos);
+          gl.vertexAttribPointer(locPos, 2, gl.FLOAT, false, 0, 0);
+
+          gl.bindBuffer(gl.ARRAY_BUFFER, sizeBuffer);
+          gl.enableVertexAttribArray(locSize);
+          gl.vertexAttribPointer(locSize, 1, gl.FLOAT, false, 0, 0);
+
+          gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+          gl.enableVertexAttribArray(locColor);
+          gl.vertexAttribPointer(locColor, 3, gl.FLOAT, false, 0, 0);
+
+          gl.drawArrays(gl.POINTS, 0, count);
+        }
+        
+        drawTracers();
+        requestAnimationFrame(draw);
+      }
+      
+      // High-frequency input stream
+      window.addEventListener("mousemove", (e) => {
+          const rect = canvas.getBoundingClientRect();
+          mouseX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+          mouseY = -(((e.clientY - rect.top) / rect.height) * 2 - 1); // GL Y is flipped
+          influence = 1.0;
+          
+          // Send to backend (throttled)
+          if(Math.random() < 0.05) {
+              fetch("/api/input-stream", {
+                  method: "POST",
+                  headers: {"Content-Type": "application/json"},
+                  body: JSON.stringify({type: "mouse", data: {x: mouseX, y: mouseY}})
+              }).catch(() => {});
+          }
+      });
+      
+      // Decay influence
+      setInterval(() => {
+          influence *= 0.95;
+      }, 50);
+
+      window.addEventListener("resize", resize);
+      requestAnimationFrame(draw);
+      return { update };
+    }
+
+    function initFieldOverlay(canvas, metaNode) {
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        return {
+          updateSimulation: (_sim) => {},
+          updateCatalog: (_catalog) => {},
+          singAll: () => {},
+          pulseAt: (_x, _y, _power) => {},
+        };
+      }
+
+      let audioCtx = null;
+      let simEnergy = 0;
+      let alive = true;
+      let ripple = { x: 0.5, y: 0.5, power: 0, at: 0 };
+      let highlighted = -1;
+      let catalogCoverCount = 0;
+
+      function ensureAudio() {
+        if (audioCtx) return audioCtx;
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return null;
+        audioCtx = new Ctx();
+        return audioCtx;
+      }
+
+      async function unlockAudio() {
+        const ctxAudio = ensureAudio();
+        if (!ctxAudio) return;
+        if (ctxAudio.state === "suspended") {
+          try {
+            await ctxAudio.resume();
+          } catch (_err) {
+          }
+        }
+      }
+
+      function toneForForm(form, power) {
+        const ctxAudio = ensureAudio();
+        if (!ctxAudio) return;
+        if (ctxAudio.state !== "running") return;
+        const osc = ctxAudio.createOscillator();
+        const gain = ctxAudio.createGain();
+        const filter = ctxAudio.createBiquadFilter();
+        filter.type = "lowpass";
+        filter.frequency.value = 900 + form.hue * 3;
+        osc.type = "sine";
+        osc.frequency.value = form.freq * (1 + power * 0.18);
+        const now = ctxAudio.currentTime;
+        gain.gain.setValueAtTime(0.0001, now);
+        gain.gain.exponentialRampToValueAtTime(0.05 + power * 0.07, now + 0.018);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.34);
+        osc.connect(filter);
+        filter.connect(gain);
+        gain.connect(ctxAudio.destination);
+        osc.start(now);
+        osc.stop(now + 0.36);
+      }
+
+      function pulseAt(xNorm, yNorm, power) {
+        ripple = {
+          x: Math.max(0, Math.min(1, xNorm)),
+          y: Math.max(0, Math.min(1, yNorm)),
+          power: Math.max(0.08, Math.min(1, power)),
+          at: performance.now(),
+        };
+
+        let nearest = 0;
+        let nearestDist = Infinity;
+        for (let i = 0; i < namedForms.length; i += 1) {
+          const form = namedForms[i];
+          const dx = form.x - ripple.x;
+          const dy = form.y - ripple.y;
+          const d = dx * dx + dy * dy;
+          if (d < nearestDist) {
+            nearestDist = d;
+            nearest = i;
+          }
+        }
+        highlighted = nearest;
+        toneForForm(namedForms[nearest], ripple.power);
+      }
+
+      function pointerToNorm(event) {
+        const rect = canvas.getBoundingClientRect();
+        if (!rect.width || !rect.height) return { x: 0.5, y: 0.5 };
+        return {
+          x: (event.clientX - rect.left) / rect.width,
+          y: (event.clientY - rect.top) / rect.height,
+        };
+      }
+
+      function onPointerDown(event) {
+        if (canvas.setPointerCapture) {
+          try { canvas.setPointerCapture(event.pointerId); } catch (_err) {}
+        }
+        unlockAudio();
+        const p = pointerToNorm(event);
+        pulseAt(p.x, p.y, 0.85);
+      }
+
+      function onPointerMove(event) {
+        if ((event.buttons & 1) === 0) return;
+        const p = pointerToNorm(event);
+        pulseAt(p.x, p.y, 0.42);
+      }
+
+      function onPointerUp(event) {
+        if (canvas.releasePointerCapture) {
+          try { canvas.releasePointerCapture(event.pointerId); } catch (_err) {}
+        }
+      }
+
+      canvas.addEventListener("pointerdown", onPointerDown, { passive: true });
+      canvas.addEventListener("pointermove", onPointerMove, { passive: true });
+      canvas.addEventListener("pointerup", onPointerUp, { passive: true });
+      canvas.addEventListener("pointercancel", onPointerUp, { passive: true });
+
+      function resize() {
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.getBoundingClientRect();
+        const w = Math.max(1, Math.floor(rect.width * dpr));
+        const h = Math.max(1, Math.floor(rect.height * dpr));
+        if (canvas.width !== w || canvas.height !== h) {
+          canvas.width = w;
+          canvas.height = h;
+        }
+      }
+
+      function drawFlow(ctx, t, form, w, h, dpr, lift) {
+        const count = 32;
+        ctx.fillStyle = `hsla(${form.hue}, 70%, 75%, ${0.35 + lift * 0.4})`;
+        for(let i=0; i<count; i++) {
+            const p = (i / count + t * 0.08) % 1.0;
+            const x = (form.x + (p - 0.5) * 0.5) * w;
+            const yBase = form.y * h;
+            const y = yBase + Math.sin(p * Math.PI * 3 + t * 0.5) * 25 * dpr;
+            const size = (2 + Math.sin(p * 15) * 1.5 + lift * 3) * dpr;
+            ctx.fillRect(x, y, size, size * 1.4);
+        }
+      }
+
+      function drawNetwork(ctx, t, form, w, h, dpr, lift) {
+        const cx = form.x * w;
+        const cy = form.y * h;
+        ctx.strokeStyle = `hsla(${form.hue}, 85%, 70%, ${0.4 + lift * 0.4})`;
+        ctx.lineWidth = 1.2 * dpr;
+        ctx.beginPath();
+        for(let i=0; i<5; i++) {
+           const ang = t * 0.3 + i * (Math.PI * 2 / 5);
+           const r = (35 + Math.sin(t * 3 + i) * 8 + lift * 20) * dpr;
+           const x = cx + Math.cos(ang) * r;
+           const y = cy + Math.sin(ang) * r;
+           ctx.moveTo(cx, cy);
+           ctx.lineTo(x, y);
+           ctx.moveTo(x + 4*dpr, y);
+           ctx.arc(x, y, 2*dpr, 0, Math.PI*2);
+        }
+        ctx.stroke();
+      }
+
+      function drawGlitch(ctx, t, form, w, h, dpr, lift) {
+        const cx = form.x * w;
+        const cy = form.y * h;
+        ctx.fillStyle = `hsla(${form.hue}, 95%, 60%, ${0.5 + lift * 0.4})`;
+        const seed = Math.floor(t * 8);
+        if (seed % 3 !== 0) {
+           const wBox = (15 + Math.sin(seed)*10 + lift*20) * dpr;
+           const hBox = (4 + Math.cos(seed)*3 + lift*5) * dpr;
+           const xOff = (Math.sin(seed * 11) * 35) * dpr;
+           const yOff = (Math.cos(seed * 7) * 35) * dpr;
+           ctx.fillRect(cx + xOff, cy + yOff, wBox, hBox);
+           ctx.fillRect(cx - xOff, cy - yOff, wBox * 0.5, hBox * 1.5);
+        }
+      }
+
+      function drawGeo(ctx, t, form, w, h, dpr, lift) {
+        const cx = form.x * w;
+        const cy = form.y * h;
+        const size = (25 + lift * 25) * dpr;
+        ctx.strokeStyle = `hsla(${form.hue}, 60%, 65%, ${0.6 + lift * 0.3})`;
+        ctx.lineWidth = 2 * dpr;
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(t * 0.15);
+        ctx.strokeRect(-size/2, -size/2, size, size);
+        ctx.rotate(t * -0.3 + lift);
+        ctx.strokeRect(-size/2.8, -size/2.8, size/1.4, size/1.4);
+        ctx.restore();
+      }
+
+      function drawPortal(ctx, t, form, w, h, dpr, lift) {
+        const cx = form.x * w;
+        const cy = form.y * h;
+        ctx.strokeStyle = `hsla(${form.hue}, 80%, 80%, ${0.3 + lift * 0.5})`;
+        ctx.lineWidth = (1.5 + lift * 2) * dpr;
+        for(let i=0; i<3; i++) {
+           const r = (18 + i * 14 + Math.sin(t*1.5 + i)*4 + lift*15) * dpr;
+           ctx.beginPath();
+           ctx.arc(cx, cy, r, 0, Math.PI * 2);
+           ctx.stroke();
+        }
+      }
+
+      function drawFieldGradient(ctx, form, w, h, dpr, lift, t) {
+        const gx = form.x * w;
+        const gy = form.y * h;
+        const ripple = 1 + Math.sin(t * (0.7 + (form.hue % 9) * 0.08)) * 0.08;
+        const radius = Math.max(30 * dpr, Math.min(w, h) * (0.18 + lift * 0.12)) * ripple;
+        const grad = ctx.createRadialGradient(gx, gy, 0, gx, gy, radius);
+        if (form.gradient && Array.isArray(form.gradient.stops) && form.gradient.stops.length) {
+          for (const stop of form.gradient.stops) {
+            const offset = Math.max(0, Math.min(1, Number(stop.offset || 0)));
+            grad.addColorStop(offset, String(stop.color || `hsla(${form.hue}, 80%, 60%, 0.2)`));
+          }
+        } else {
+          grad.addColorStop(0, `hsla(${form.hue}, 86%, 72%, ${0.24 + lift * 0.3})`);
+          grad.addColorStop(0.55, `hsla(${form.hue}, 78%, 56%, ${0.12 + lift * 0.16})`);
+          grad.addColorStop(1, `hsla(${(form.hue + 24) % 360}, 72%, 38%, 0)`);
+        }
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(gx, gy, radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      function draw(ts) {
+        if (!alive) return;
+        resize();
+        const w = canvas.width;
+        const h = canvas.height;
+        const dpr = window.devicePixelRatio || 1;
+        const t = ts * 0.001;
+        ctx.clearRect(0, 0, w, h);
+
+        const touchAge = Math.max(0, (performance.now() - ripple.at) / 1000);
+        const touchDecay = Math.max(0, 1 - touchAge * 0.85);
+        const globalLift = 0.15 + simEnergy * 0.5 + touchDecay * ripple.power * 0.7;
+
+        ctx.globalCompositeOperation = "screen";
+
+        for (let i = 0; i < namedForms.length; i += 1) {
+          const form = namedForms[i];
+          const lift = globalLift + (highlighted === i ? 0.22 : 0.0);
+          drawFieldGradient(ctx, form, w, h, dpr, lift, t);
+        }
+        
+        // Draw forms based on type
+        for (let i = 0; i < namedForms.length; i += 1) {
+          const form = namedForms[i];
+          const lift = globalLift + (highlighted === i ? 0.3 : 0.0);
+          
+          if (form.type === "flow") drawFlow(ctx, t, form, w, h, dpr, lift);
+          else if (form.type === "network") drawNetwork(ctx, t, form, w, h, dpr, lift);
+          else if (form.type === "glitch") drawGlitch(ctx, t, form, w, h, dpr, lift);
+          else if (form.type === "geo") drawGeo(ctx, t, form, w, h, dpr, lift);
+          else if (form.type === "portal") drawPortal(ctx, t, form, w, h, dpr, lift);
+          else drawFlow(ctx, t, form, w, h, dpr, lift); // fallback
+        }
+
+        // Ripple
+        if (touchDecay > 0.01) {
+          const rx = ripple.x * w;
+          const ry = ripple.y * h;
+          ctx.strokeStyle = `rgba(255, 236, 170, ${0.22 + touchDecay * 0.58})`;
+          for (let ring = 0; ring < 3; ring += 1) {
+            const rr = (touchAge * 170 + 26 + ring * 34) * dpr;
+            ctx.lineWidth = Math.max(0.8, dpr * (1.35 - ring * 0.2));
+            ctx.beginPath();
+            ctx.arc(rx, ry, rr, 0, Math.PI * 2);
+            ctx.stroke();
+          }
+        }
+
+        ctx.globalCompositeOperation = "source-over";
+        if (highlighted >= 0 && namedForms[highlighted]) {
+          const f = namedForms[highlighted];
+          metaNode.textContent = `touch resonance / 触覚共鳴: ${f.en} / ${f.ja} | type: ${f.type}`;
+        } else {
+          metaNode.textContent = `named fields overlaid / 正準場重畳: ${namedForms.length} | cover fields / カバー場: ${catalogCoverCount}`;
+        }
+
+        requestAnimationFrame(draw);
+      }
+
+      function updateSimulation(sim) {
+        const total = Number(sim && sim.total || 0);
+        const audio = Number(sim && sim.audio || 0);
+        simEnergy = Math.max(0, Math.min(1, total / 340 + audio * 0.04));
+      }
+
+      function updateCatalog(data) {
+        namedForms = pickNamedForms(data);
+        catalogCoverCount = Array.isArray(data && data.cover_fields) ? data.cover_fields.length : 0;
+      }
+
+      function singAll() {
+        unlockAudio();
+        namedForms.forEach((form, idx) => {
+          window.setTimeout(() => toneForForm(form, 0.6), idx * 85);
+        });
+      }
+
+      requestAnimationFrame(draw);
+      return { updateSimulation, updateCatalog, singAll, pulseAt };
+    }
+
+    const simRenderer = initSimRenderer(simCanvas, simMeta);
+    const fieldOverlay = initFieldOverlay(overlayCanvas, simTouchMeta);
+
+    function allAudios() {
+      return Array.from(document.querySelectorAll("audio"));
+    }
+
+    const ttsState = {
+      voices: [],
+      queue: [],
+      active: false,
+      primed: false,
+      hasJaVoice: false,
+      hasEnVoice: false,
+    };
+
+    const chatState = {
+      history: [],
+      recording: false,
+      recorder: null,
+      stream: null,
+      chunks: [],
+      recordedBlob: null,
+    };
+    let preferJaVoice = true;
+
+    function containsJapanese(text) {
+      return /[\u3040-\u30ff\u3400-\u9fff]/.test(String(text || ""));
+    }
+
+    function loadVoices() {
+      if (!("speechSynthesis" in window)) return;
+      ttsState.voices = window.speechSynthesis.getVoices();
+      ttsState.hasJaVoice = ttsState.voices.some((v) => (v.lang || "").toLowerCase().startsWith("ja"));
+      ttsState.hasEnVoice = ttsState.voices.some((v) => (v.lang || "").toLowerCase().startsWith("en"));
+    }
+
+    function hasVoicePrefix(prefix) {
+      return ttsState.voices.some((v) => (v.lang || "").toLowerCase().startsWith(prefix));
+    }
+
+    function pickVoice(lang) {
+      if (!ttsState.voices.length) return null;
+      const exact = ttsState.voices.find((v) => v.lang && v.lang.toLowerCase() === lang.toLowerCase());
+      if (exact) return exact;
+      const prefix = lang.split("-")[0].toLowerCase();
+      return ttsState.voices.find((v) => v.lang && v.lang.toLowerCase().startsWith(prefix)) || null;
+    }
+
+    async function primeVoice() {
+      if (!("speechSynthesis" in window) || typeof SpeechSynthesisUtterance === "undefined") {
+        voiceMeta.textContent = "voice unavailable / 音声非対応";
+        return;
+      }
+      loadVoices();
+      const u = new SpeechSynthesisUtterance("");
+      u.volume = 0;
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(u);
+      ttsState.primed = true;
+      voiceMeta.textContent = `voice primed / 音声起動: ${voicePack.mode || "canonical"}`;
+    }
+
+    function appendChatMessage(role, text, metaText = "") {
+      if (!chatLog) return;
+      const row = document.createElement("div");
+      row.className = `chat-msg ${role}`;
+      const head = role === "user"
+        ? "you / あなた"
+        : role === "assistant"
+        ? "world / 世界"
+        : "system / システム";
+      row.textContent = `${head}: ${text}${metaText ? `\n${metaText}` : ""}`;
+      chatLog.appendChild(row);
+      chatLog.scrollTop = chatLog.scrollHeight;
+    }
+
+    function speakNextQueued() {
+      if (!("speechSynthesis" in window)) return;
+      if (ttsState.active) return;
+      const next = ttsState.queue.shift();
+      if (!next) return;
+      ttsState.active = true;
+
+      const utter = new SpeechSynthesisUtterance(next.text);
+      utter.lang = next.lang;
+      utter.rate = next.rate || 0.92;
+      utter.pitch = next.pitch || 1.0;
+      utter.volume = next.volume || 1.0;
+      const voice = pickVoice(next.lang);
+      if (voice) utter.voice = voice;
+      utter.onend = () => {
+        ttsState.active = false;
+        speakNextQueued();
+      };
+      utter.onerror = () => {
+        ttsState.active = false;
+        speakNextQueued();
+      };
+      window.speechSynthesis.speak(utter);
+    }
+
+    function queueVoiceLine(text, lang, opts = {}) {
+      if (!text) return;
+      ttsState.queue.push({
+        text,
+        lang,
+        rate: opts.rate,
+        pitch: opts.pitch,
+        volume: opts.volume,
+      });
+      speakNextQueued();
+    }
+
+    function stopVoices() {
+      if (!("speechSynthesis" in window)) return;
+      ttsState.queue.length = 0;
+      window.speechSynthesis.cancel();
+      ttsState.active = false;
+      voiceMeta.textContent = "voice stopped / 音声停止";
+    }
+
+    async function loadVoicePack(mode) {
+      if (mode !== "ollama") {
+        voicePack = JSON.parse(voiceNode.textContent);
+        voiceMeta.textContent = `voice mode / 音声モード: ${voicePack.mode || "canonical"}`;
+        return;
+      }
+      try {
+        const res = await fetch("/api/voice-lines?mode=ollama", { cache: "no-store" });
+        if (!res.ok) throw new Error("voice lines fetch failed");
+        voicePack = await res.json();
+      } catch (_err) {
+        voicePack = JSON.parse(voiceNode.textContent);
+      }
+      const modelTag = voicePack.model ? ` [${voicePack.model}]` : "";
+      voiceMeta.textContent = `voice mode / 音声モード: ${voicePack.mode || "canonical"}${modelTag}`;
+    }
+
+    function arrayBufferToBase64(buffer) {
+      const bytes = new Uint8Array(buffer);
+      let binary = "";
+      const chunk = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+      }
+      return btoa(binary);
+    }
+
+    async function sendChatText(text, mode = "ollama") {
+      const content = String(text || "").trim();
+      if (!content) return;
+      chatState.history.push({ role: "user", text: content });
+      appendChatMessage("user", content);
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 12000);
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messages: chatState.history, mode }),
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+        if (!res.ok) throw new Error("chat failed");
+        const payload = await res.json();
+        let reply = String(payload.reply || "").trim() || "...";
+        
+        // Parse triggers
+        if (reply.includes("[[PULSE]]")) {
+          fieldOverlay.pulseAt(0.5, 0.5, 1.0);
+          reply = reply.replaceAll("[[PULSE]]", "");
+        }
+        if (reply.includes("[[GLITCH]]")) {
+          for(let i=0; i<5; i++) setTimeout(() => fieldOverlay.pulseAt(Math.random(), Math.random(), 0.7), i*120);
+          reply = reply.replaceAll("[[GLITCH]]", "");
+        }
+        if (reply.includes("[[SING]]")) {
+          fieldOverlay.singAll();
+          reply = reply.replaceAll("[[SING]]", "");
+        }
+        reply = reply.trim();
+
+        const metaLine = `mode: ${payload.mode || "canonical"}${payload.model ? ` / model: ${payload.model}` : ""}`;
+        appendChatMessage("assistant", reply, metaLine);
+        chatState.history.push({ role: "assistant", text: reply });
+        
+        const replyLang = containsJapanese(reply) && hasVoicePrefix("ja") && preferJaVoice ? "ja-JP" : "en-US";
+        queueVoiceLine(reply, replyLang, { rate: 0.92, pitch: 0.98, volume: 0.9 });
+      } catch (_err) {
+        appendChatMessage("system", "chat endpoint unavailable / チャットエンドポイント未接続");
+      }
+    }
+
+    async function startVoiceRecording() {
+      if (chatState.recording) return;
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        voiceInputMeta.textContent = "mic unavailable / マイク非対応";
+        return;
+      }
+      try {
+        chatState.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const recorder = new MediaRecorder(chatState.stream);
+        chatState.chunks = [];
+        chatState.recorder = recorder;
+        recorder.ondataavailable = (event) => {
+          if (event.data && event.data.size > 0) chatState.chunks.push(event.data);
+        };
+        recorder.onstop = () => {
+          chatState.recordedBlob = new Blob(chatState.chunks, { type: recorder.mimeType || "audio/webm" });
+          voiceInputMeta.textContent = `voice captured / 音声取得: ${Math.max(1, Math.round(chatState.recordedBlob.size / 1024))}KB`;
+        };
+        recorder.start();
+        chatState.recording = true;
+        voiceInputMeta.textContent = "recording voice / 録音中";
+      } catch (_err) {
+        voiceInputMeta.textContent = "mic permission denied / マイク許可なし";
+      }
+    }
+
+    function stopVoiceRecording() {
+      if (!chatState.recording || !chatState.recorder) return;
+      chatState.recording = false;
+      try { chatState.recorder.stop(); } catch (_err) {}
+      if (chatState.stream) {
+        chatState.stream.getTracks().forEach((track) => {
+          track.stop();
+        });
+      }
+      chatState.stream = null;
+    }
+
+    async function transcribeRecordedAudio(language = "ja") {
+      if (!chatState.recordedBlob) {
+        voiceInputMeta.textContent = "no recording yet / 録音なし";
+        return "";
+      }
+      try {
+        const buf = await chatState.recordedBlob.arrayBuffer();
+        const res = await fetch("/api/transcribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            audio_base64: arrayBufferToBase64(buf),
+            mime: chatState.recordedBlob.type || "audio/webm",
+            language,
+          }),
+        });
+        if (!res.ok) throw new Error("transcribe failed");
+        const payload = await res.json();
+        if (!payload.ok) {
+          voiceInputMeta.textContent = `transcribe failed / 文字化失敗: ${payload.error || "unknown"}`;
+          return "";
+        }
+        const text = String(payload.text || "").trim();
+        voiceInputMeta.textContent = `transcribed / 文字化: ${payload.engine || "unknown"}`;
+        return text;
+      } catch (_err) {
+        voiceInputMeta.textContent = "transcribe endpoint unavailable / 文字化エンドポイント未接続";
+        return "";
+      }
+    }
+
+    async function sendRecordedVoiceToChat() {
+      const text = await transcribeRecordedAudio("ja");
+      if (!text) return;
+      chatInput.value = text;
+      await sendChatText(text, "ollama");
+    }
+
+    async function singWords(mode) {
+      await primeVoice();
+      await loadVoicePack(mode);
+      const rows = Array.isArray(voicePack.lines) ? voicePack.lines : [];
+      const hasJapanese = hasVoicePrefix("ja") && preferJaVoice;
+      if (!hasJapanese) {
+        voiceMeta.textContent = `voice mode / 音声モード: ${voicePack.mode || "canonical"} | ja fallback / 日本語代替`;
+      }
+      for (const row of rows) {
+        if (row.line_en) queueVoiceLine(`${row.en}. ${row.line_en}`, "en-US", { rate: 0.9, pitch: 0.96, volume: 0.95 });
+        if (row.line_ja && hasJapanese) {
+          queueVoiceLine(`${row.ja}。${row.line_ja}`, "ja-JP", { rate: 0.88, pitch: 1.04, volume: 0.92 });
+        } else if (row.line_ja && row.line_en) {
+          queueVoiceLine(`${row.ja} translation: ${row.line_en}`, "en-US", { rate: 0.86, pitch: 0.92, volume: 0.86 });
+        }
+      }
+    }
+
+    if ("speechSynthesis" in window) {
+      loadVoices();
+      if ("onvoiceschanged" in window.speechSynthesis) {
+        window.speechSynthesis.onvoiceschanged = loadVoices;
+      }
+    }
+
+    const wsProto = window.location.protocol === "https:" ? "wss" : "ws";
+    const wsUrl = `${wsProto}://${window.location.host}/ws`;
+    
+    function connectWs() {
+      const ws = new WebSocket(wsUrl);
+      ws.onopen = () => {
+        simMeta.textContent = "simulation stream active / シミュレーション接続";
+      };
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === "catalog") {
+            catalog = msg.catalog;
+            namedForms = pickNamedForms(catalog);
+            render(catalog);
+            fieldOverlay.updateCatalog(catalog);
+            if (msg.mix) {
+              streamMeta.textContent = `mix sources / ミックス源: ${msg.mix.sources} | duration / 長さ: ${msg.mix.duration_seconds}s | updated / 更新: ${msg.catalog.generated_at}`;
+            }
+          } else if (msg.type === "simulation" && msg.simulation) {
+            simRenderer.update(msg.simulation);
+            fieldOverlay.updateSimulation(msg.simulation);
+            if (msg.simulation.entities) {
+              renderVitals(msg.simulation.entities);
+            }
+          }
+        } catch (_err) {}
+      };
+      ws.onclose = () => {
+        simMeta.textContent = "stream disconnected, retrying... / 接続切れ、再試行中...";
+        setTimeout(connectWs, 3000);
+      };
+    }
+    connectWs();
+
+    function render(data) {
+      if (!grid) return;
+      const items = data.items || [];
+      grid.innerHTML = "";
+      coverGrid.innerHTML = "";
+      
+      // Separate cover art to Omni Panel
+      const covers = items.filter(x => x.role === "cover_art");
+      
+      for (const item of items) {
+        if (item.role === "cover_art") continue; 
+        
+        const el = document.createElement("div");
+        el.className = "item";
+        
+        let media = "";
+        if (item.kind === "audio") {
+          media = `<audio controls src="${item.url}"></audio>`;
+        } else if (item.kind === "image") {
+          media = `<img src="${item.url}" loading="lazy" alt="artifact">`;
+        } else if (item.kind === "video") {
+          media = `<video controls src="${item.url}"></video>`;
+        } else {
+          media = `<p><a href="${item.url}" target="_blank">View / 表示</a></p>`;
+        }
+
+        const dn = item.display_name;
+        const dr = item.display_role;
+        el.innerHTML = `
+          <div style="display:flex;justify-content:space-between;align-items:baseline">
+            <strong>${dn.en}</strong>
+            <span style="font-size:0.85rem;color:var(--muted)">${dn.ja}</span>
+          </div>
+          <p class="small">${dr.en} / ${dr.ja}</p>
+          ${media}
+          <div style="margin-top:0.4rem;font-size:0.8rem;color:var(--muted)">
+            ${item.part} | ${(item.bytes / 1024).toFixed(1)} KB
+          </div>
+        `;
+        grid.appendChild(el);
+      }
+
+      // Render Cover Fields in Omni Panel
+      for (const cover of covers) {
+        const el = document.createElement("div");
+        el.className = "cover-field";
+        const dn = cover.display_name;
+        // Use canvas for cover visualization? Or just image for now
+        // To be truly "alive", we should render a mini-sim here.
+        // For now, let's keep the static image but add a pulse element
+        el.innerHTML = `
+          <div style="display:flex;justify-content:space-between;align-items:baseline">
+            <strong>${dn.en}</strong>
+            <span style="font-size:0.85rem;color:var(--muted)">${dn.ja}</span>
+          </div>
+          <img src="${cover.url}" style="width:100%;border-radius:8px;margin-top:0.5rem;display:block" loading="lazy">
+          <p class="small" style="margin-top:0.3rem">Part ${cover.part}</p>
+        `;
+        coverGrid.appendChild(el);
+      }
+    }
+
+    // Refresh on load (fallback)
+    async function refreshCatalog() {
+      try {
+        const res = await fetch("/api/catalog", { cache: "no-store" });
+        if (!res.ok) return;
+        catalog = await res.json();
+        namedForms = pickNamedForms(catalog);
+        render(catalog);
+        fieldOverlay.updateCatalog(catalog);
+        
+        // Refresh Organism Stats
+        const healthRes = await fetch("/healthz", { cache: "no-store" });
+        if (healthRes.ok) {
+          const health = await healthRes.json();
+          const org = health.organism || {};
+          const statsNode = document.getElementById("organism-stats");
+          if (statsNode) {
+            statsNode.innerHTML = `
+              <strong>Spore Count / 胞子数:</strong> ${org.spore_count || 0} <br>
+              <strong>Mycelial Density / 菌糸密度:</strong> ${org.mycelial_density || 0} <br>
+              <strong>Pulse Rate / 脈拍:</strong> ${org.pulse_rate || "unknown"} <br>
+              <strong>Entropy / エントロピー:</strong> ${org.substrate_entropy || "0%"} <br>
+              <span class="small" style="color:var(--muted)">Phase: ${org.growth_phase || "dormant"}</span>
+            `;
+          }
+        }
+      } catch (_err) {
+      }
+    }
+    
+    // Initial Render
+    render(catalog);
+    refreshCatalog();
+
+    // Event Bindings
+    document.getElementById("play-all").onclick = () => {
+      mixStream.play().catch(() => {});
+      allAudios().forEach((a) => {
+        a.play().catch(() => {});
+      });
+    };
+    document.getElementById("pause-all").onclick = () => {
+      mixStream.pause();
+      allAudios().forEach((a) => {
+        a.pause();
+      });
+    };
+    document.getElementById("mute-all").onclick = () => {
+      mixStream.muted = true;
+      allAudios().forEach((a) => {
+        a.muted = true;
+      });
+    };
+    document.getElementById("unmute-all").onclick = () => {
+      mixStream.muted = false;
+      allAudios().forEach((a) => {
+        a.muted = false;
+      });
+    };
+    document.getElementById("reload-mix").onclick = () => {
+      mixStream.src = "/stream/mix.wav?t=" + Date.now();
+      mixStream.load();
+    };
+    document.getElementById("overlay-all-fields").onclick = () => {
+      // Toggle visibility or mode? For now just trigger update
+      simTouchMeta.textContent = "overlay active / 重畳有効";
+    };
+    document.getElementById("sing-fields").onclick = () => {
+      fieldOverlay.singAll();
+    };
+    
+    document.getElementById("prime-voice").onclick = primeVoice;
+    document.getElementById("sing-words").onclick = () => singWords("canonical");
+    document.getElementById("sing-words-ollama").onclick = () => singWords("ollama");
+    document.getElementById("stop-voices").onclick = stopVoices;
+    
+    preferJaVoiceNode.onchange = (e) => {
+      preferJaVoice = e.target.checked;
+    };
+
+    document.getElementById("send-chat").onclick = () => {
+      sendChatText(chatInput.value, "ollama");
+      chatInput.value = "";
+    };
+    document.getElementById("record-voice").onclick = startVoiceRecording;
+    document.getElementById("transcribe-voice").onclick = () => transcribeRecordedAudio();
+    document.getElementById("send-voice-chat").onclick = sendRecordedVoiceToChat;
+  </script>
+</body>
+</html>

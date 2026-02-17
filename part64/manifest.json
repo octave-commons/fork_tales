@@ -1,0 +1,165 @@
+{
+  "part": 64,
+  "seed_label": "ημ_part_64",
+  "dice": [
+    3,
+    2,
+    4,
+    5,
+    1,
+    5,
+    1,
+    5,
+    1,
+    5,
+    4,
+    2,
+    2,
+    3,
+    5
+  ],
+  "markers": {
+    "witness_thread_78bpm": [
+      {
+        "name": "anchor",
+        "t_seconds": 30.5,
+        "purpose": "stutter cue"
+      },
+      {
+        "name": "tax",
+        "t_seconds": 48.2,
+        "purpose": "stutter cue"
+      }
+    ],
+    "fork_tax_canticle_84bpm": [
+      {
+        "name": "eta",
+        "t_seconds": 12.0,
+        "purpose": "stutter cue"
+      },
+      {
+        "name": "mu",
+        "t_seconds": 24.0,
+        "purpose": "stutter cue"
+      },
+      {
+        "name": "anchor",
+        "t_seconds": 36.0,
+        "purpose": "stutter cue"
+      },
+      {
+        "name": "fork",
+        "t_seconds": 48.0,
+        "purpose": "stutter cue"
+      }
+    ]
+  },
+  "soundchain": {
+    "witness_thread_78bpm": "sub(55Hz,wow/flutter)+minimal_piano(plucks)+filtered_noise_droplets+tape_hiss+tanh_saturation+stutter(anchor,tax)+stereo_delay(8ms)",
+    "fork_tax_canticle_84bpm": "heartbeat_sub(48Hz)+cathedral_pad(sines)+noise_grains+glitch_impulses+tanh_saturation+stutter(eta,mu,anchor,fork)+multi_delay_widening"
+  },
+  "files": [
+    {
+      "path": "DIALOG_River_Gate.md",
+      "sha256": "3dedc62e0395b68933fb8653f82c6bb7d2864a5fbd0eba11803032646c9db132",
+      "bytes": 424,
+      "role": "doc"
+    },
+    {
+      "path": "GATES_OF_TRUTH_ANNOUNCEMENT.md",
+      "sha256": "faae151f0c3df738ef426f4ee03e234186bd0b5d315044db1653011b4139d165",
+      "bytes": 440,
+      "role": "doc"
+    },
+    {
+      "path": "NEW_LYRICS_Fork_Tax_Canticle.md",
+      "sha256": "f4b540091534ca15ca142d645bf37b0044b8346c1d281daafc10a382d6a3a7e2",
+      "bytes": 1046,
+      "role": "doc"
+    },
+    {
+      "path": "NEW_LYRICS_Witness_Thread.md",
+      "sha256": "dcb01f6aebdfd1c15e9cde7d83ac1d880d9d16cce34b875b2f4d62e7814b8c31",
+      "bytes": 1056,
+      "role": "doc"
+    },
+    {
+      "path": "artifacts/audio/fork_tax_canticle_84bpm.mp3",
+      "sha256": "33fd48eee674723b507486c55b1883d7197c9d41be69d03ba86126adf06acadc",
+      "bytes": 1022469,
+      "role": "audio/convenience"
+    },
+    {
+      "path": "artifacts/audio/fork_tax_canticle_84bpm.wav",
+      "sha256": "080947d8761695fc7372d1a8b8e85aff824bafdbc1123c6711adf15304e20481",
+      "bytes": 10584044,
+      "role": "audio/canonical"
+    },
+    {
+      "path": "artifacts/audio/witness_thread_78bpm.mp3",
+      "sha256": "161250b9ecaa371b1aa0791c193573a67e0639aed140683ea41f45e4a16bae18",
+      "bytes": 1141638,
+      "role": "audio/convenience"
+    },
+    {
+      "path": "artifacts/audio/witness_thread_78bpm.wav",
+      "sha256": "8684711e5dc126a4a2829821033733cc5c8d754854a232716314c60eac43b1fb",
+      "bytes": 10584044,
+      "role": "audio/canonical"
+    },
+    {
+      "path": "artifacts/images/Fork_Tax_Canticle_cover_ημ_part64.png",
+      "sha256": "09c8db142a23c73bb171c6909d4dd4080c79c61a8e4df761ca942aea09e7af45",
+      "bytes": 4330512,
+      "role": "image"
+    },
+    {
+      "path": "artifacts/images/Witness_Thread_cover_ημ_part64.png",
+      "sha256": "13cc8eff126109319abdf101edf6380174086efba5fac607ddfea8b9c189b0a7",
+      "bytes": 4326873,
+      "role": "image"
+    },
+    {
+      "path": "artifacts/images/particle_field_ημ_part64.png",
+      "sha256": "724712dd34fbdb2cc7c7408d812a07ae979519372771c5e271447b30a6b26040",
+      "bytes": 372428,
+      "role": "image"
+    },
+    {
+      "path": "artifacts/images/ημ_storyboard_part64.png",
+      "sha256": "6d4e052ce42f15d5fc089dada080409cfd7a68e639492e11067cd17bd192161f",
+      "bytes": 80260,
+      "role": "image"
+    },
+    {
+      "path": "code/sonify/__pycache__/ledger_sonify.cpython-311.pyc",
+      "sha256": "10fa9e76d89ee6ad361ad7645911b349d0f98e3a6f1d169209980b406d639a20",
+      "bytes": 6372,
+      "role": "code"
+    },
+    {
+      "path": "code/sonify/ledger_sonify.py",
+      "sha256": "05a514114ed2123b22e800e7597b014fb2f204b31452e062676dbda69ddcafd2",
+      "bytes": 2770,
+      "role": "code"
+    },
+    {
+      "path": "code/tests/test_sonify_determinism.py",
+      "sha256": "94cfeff3f08ff02d9f1a710cf81222151dd351935d47ec489265778d19a45c53",
+      "bytes": 993,
+      "role": "code"
+    },
+    {
+      "path": "notes/world_map_part64.md",
+      "sha256": "5cad69c55d38cfdfe981b5a73a80a5a384afa8583c75c6b447632e3dd0954748",
+      "bytes": 716,
+      "role": "note"
+    },
+    {
+      "path": "world_state/constraints.md",
+      "sha256": "920f3d28b5e53be5dccafafb6e2dca92dabb8e96f7da26a9b385b034548b1594",
+      "bytes": 1193,
+      "role": "world_state"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+.git
+.pytest_cache
+__pycache__/
+**/__pycache__/
+
+code/node_modules/
+code/.pytest_cache/
+frontend/node_modules/
+
+world_state/*.log

@@ -1,0 +1,46 @@
+# System
+.DS_Store
+Thumbs.db
+
+# Dependencies
+node_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv
+venv/
+ENV/
+
+# Editor/IDE
+.vscode/
+.idea/
+.clj-kondo/
+.lsp/
+.obsidian/
+
+# Temporary files
+.tmp/
+tmp/
+*.log
+
+# Artifacts and Generated Content
+*.zip
+*.tar.gz
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.mp3
+*.wav
+*.pdf
+
+# Project specific / generated fragments
+.fork_*/
+.Π/
+.η/
+.ημ/
+
+# State dumps
+*.sexp
+Π_v2_export/
