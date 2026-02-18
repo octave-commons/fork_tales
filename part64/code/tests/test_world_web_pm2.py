@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import tempfile
 import wave
 import zipfile
@@ -115,6 +116,18 @@ def test_pm2_parse_args_defaults() -> None:
     assert args.port == 8787
     assert args.host == "127.0.0.1"
     assert args.name == "eta-mu-world"
+
+
+def test_world_web_module_entrypoint_help() -> None:
+    proc = subprocess.run(
+        [sys.executable, "-m", "code.world_web", "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0
+    assert "--host" in proc.stdout
+    assert "--port" in proc.stdout
 
 
 def test_voice_lines_canonical_payload() -> None:
@@ -1170,6 +1183,162 @@ def test_eta_mu_inbox_is_ingested_and_graphed() -> None:
         )
         assert isinstance(note_node.get("concept_presence_id", ""), str)
         assert note_node.get("organized_by") == "file_organizer"
+
+
+def test_docmeta_tags_create_first_class_tag_nodes(monkeypatch: Any) -> None:
+    monkeypatch.setattr(world_web_module, "ETA_MU_INBOX_DEBOUNCE_SECONDS", 0.0)
+
+    from code.world_web import catalog as catalog_module
+
+    monkeypatch.setattr(catalog_module, "ETA_MU_DOCMETA_CYCLE_SECONDS", 0.0)
+    monkeypatch.setattr(catalog_module, "ETA_MU_DOCMETA_MAX_PER_CYCLE", 256)
+
+    monkeypatch.setattr(
+        catalog_module,
+        "_ollama_generate_text",
+        lambda *_args, **_kwargs: ("", ""),
+    )
+
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+        part = vault / "ημ_op_mf_part_64"
+        part.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        inbox = vault / ".ημ"
+        inbox.mkdir(parents=True)
+        (inbox / "new_witness_note.md").write_text(
+            "Witness thread continuity, gate proof, and fork tax notes.",
+            encoding="utf-8",
+        )
+        (inbox / "new_anchor_note.md").write_text(
+            "Anchor registry updates tie proofs to runtime gates.",
+            encoding="utf-8",
+        )
+
+        catalog = collect_catalog(part, vault)
+        file_graph = catalog.get("file_graph", {})
+        assert isinstance(file_graph, dict)
+
+        tag_nodes = file_graph.get("tag_nodes", [])
+        assert isinstance(tag_nodes, list)
+        assert len(tag_nodes) >= 1
+
+        stats = file_graph.get("stats", {})
+        assert isinstance(stats, dict)
+        assert stats.get("tag_count", 0) == len(tag_nodes)
+        assert stats.get("docmeta_enriched_count", 0) >= 1
+        assert stats.get("tag_edge_count", 0) >= 1
+
+        note_node = next(
+            node
+            for node in file_graph.get("file_nodes", [])
+            if node.get("name") == "new_witness_note.md"
+        )
+        assert str(note_node.get("summary", "")).strip()
+        assert len(note_node.get("tags", [])) >= 1
+        assert len(note_node.get("labels", [])) >= 1
+
+        note_id = str(note_node.get("id", "")).strip()
+        assert note_id
+        assert any(
+            isinstance(edge, dict)
+            and str(edge.get("kind", "")) == "labeled_as"
+            and str(edge.get("source", "")) == note_id
+            for edge in file_graph.get("edges", [])
+        )
+
+        simulation = build_simulation_state(catalog)
+        logical_graph = simulation.get("logical_graph", {})
+        assert isinstance(logical_graph, dict)
+        assert any(
+            isinstance(node, dict) and str(node.get("kind", "")) == "tag"
+            for node in logical_graph.get("nodes", [])
+        )
+        assert any(
+            isinstance(edge, dict)
+            and str(edge.get("kind", "")) in {"labeled_as", "relates_tag"}
+            for edge in logical_graph.get("edges", [])
+        )
+
+
+def test_docmeta_index_is_idempotent_and_refreshes_on_source_change(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(world_web_module, "ETA_MU_INBOX_DEBOUNCE_SECONDS", 0.0)
+
+    from code.world_web import catalog as catalog_module
+
+    monkeypatch.setattr(catalog_module, "ETA_MU_DOCMETA_CYCLE_SECONDS", 0.0)
+    monkeypatch.setattr(catalog_module, "ETA_MU_DOCMETA_MAX_PER_CYCLE", 256)
+    monkeypatch.setattr(
+        catalog_module,
+        "_ollama_generate_text",
+        lambda *_args, **_kwargs: (
+            '{"summary":"auto metadata summary","tags":["witness","gate"]}',
+            "stub-llm",
+        ),
+    )
+
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+        part = vault / "ημ_op_mf_part_64"
+        part.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        inbox = vault / ".ημ"
+        inbox.mkdir(parents=True)
+        note_name = "docmeta_refresh_note.md"
+        (inbox / note_name).write_text(
+            "Witness thread continuity, gate proof, and fork tax notes.",
+            encoding="utf-8",
+        )
+
+        collect_catalog(part, vault)
+        docmeta_path = vault / ".opencode" / "runtime" / "eta_mu_docmeta.v1.jsonl"
+        assert docmeta_path.exists()
+        first_rows = [
+            json.loads(line)
+            for line in docmeta_path.read_text("utf-8").splitlines()
+            if line.strip()
+        ]
+        first_count = len(first_rows)
+        assert first_count >= 1
+
+        collect_catalog(part, vault)
+        second_rows = [
+            json.loads(line)
+            for line in docmeta_path.read_text("utf-8").splitlines()
+            if line.strip()
+        ]
+        second_count = len(second_rows)
+        assert second_count == first_count
+
+        inbox.mkdir(parents=True, exist_ok=True)
+        (inbox / note_name).write_text(
+            "Witness thread continuity with updated anchor registry links.",
+            encoding="utf-8",
+        )
+        collect_catalog(part, vault)
+
+        third_rows = [
+            json.loads(line)
+            for line in docmeta_path.read_text("utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(third_rows) > second_count
+        latest = next(
+            row
+            for row in sorted(
+                third_rows,
+                key=lambda item: str(item.get("generated_at", "")),
+                reverse=True,
+            )
+            if str(row.get("source_rel_path", "")).endswith(note_name)
+        )
+        assert str(latest.get("summary", "")).strip()
+        assert latest.get("strategy") in {"llm", "heuristic"}
+        assert len(latest.get("tags", [])) >= 1
 
 
 def test_eta_mu_inbox_registry_skips_unchanged_duplicate(monkeypatch: Any) -> None:
