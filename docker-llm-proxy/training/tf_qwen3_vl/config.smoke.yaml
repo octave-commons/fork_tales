@@ -1,0 +1,24 @@
+seed: 42
+
+dataset:
+  train_jsonl: /data/qwen3_vl/train.jsonl
+  val_jsonl: /data/qwen3_vl/val.jsonl
+  image_root: /data/qwen3_vl/images
+
+model:
+  tokenizer_id: Qwen/Qwen3-VL-2B-Instruct
+  max_seq_len: 256
+  image_size: 224
+  hidden_size: 256
+
+training:
+  epochs: 1
+  batch_size: 1
+  gradient_accumulation_steps: 2
+  learning_rate: 3.0e-5
+  weight_decay: 0.01
+  mixed_precision: false
+
+  checkpoint_dir: /output/checkpoints/qwen3-vl-2b-smoke
+  export_dir: /output/export/qwen3-vl-2b-smoke
+  log_dir: /output/logs/qwen3-vl-2b-smoke

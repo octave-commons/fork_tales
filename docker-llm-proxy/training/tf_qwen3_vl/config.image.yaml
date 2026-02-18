@@ -1,0 +1,28 @@
+seed: 42
+
+dataset:
+  train_jsonl: /data/qwen3_vl/train.jsonl
+  val_jsonl: /data/qwen3_vl/val.jsonl
+  image_root: /data/qwen3_vl/images
+
+model:
+  image_size: 336
+  hidden_size: 768
+  dropout: 0.2
+
+training:
+  epochs: 5
+  batch_size: 4
+  learning_rate: 2.0e-4
+  weight_decay: 0.01
+  mixed_precision: false
+  augment: true
+  kl_weight: 0.65
+  ce_weight: 0.35
+
+  checkpoint_dir: /output/checkpoints/qwen3-vl-2b-image
+  export_dir: /output/export/qwen3-vl-2b-image
+  log_dir: /output/logs/qwen3-vl-2b-image
+
+  max_train_samples: 0
+  max_val_samples: 0

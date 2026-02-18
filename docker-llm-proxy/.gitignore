@@ -1,0 +1,10 @@
+.env
+oauth_creds/
+logs/
+key_usage.json
+
+training-output/
+training-data/qwen3_vl/
+
+!training-output/.gitkeep
+!training-data/.gitkeep

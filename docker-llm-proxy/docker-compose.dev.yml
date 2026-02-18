@@ -1,0 +1,110 @@
+services:
+  llm-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: llm-api-proxy-dev
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      # Mount .env files for configuration
+      - ./.env:/app/.env:ro
+      # Mount oauth_creds directory for OAuth credentials persistence
+      - ./oauth_creds:/app/oauth_creds
+      # Mount logs directory for persistent logging
+      - ./logs:/app/logs
+      # Mount key_usage.json for usage statistics persistence
+      - ./key_usage.json:/app/key_usage.json
+      # Optionally mount additional .env files (e.g., combined credential files)
+      # - ./antigravity_all_combined.env:/app/antigravity_all_combined.env:ro
+    environment:
+      # Skip OAuth interactive initialization in container (non-interactive)
+      - SKIP_OAUTH_INIT_CHECK=true
+      # Ensure Python output is not buffered
+      - PYTHONUNBUFFERED=1
+      # TensorFlow image-router bridge provider (local, OpenAI-compatible)
+      - TENSORFLOW_API_BASE=http://tf-image-bridge:8501/v1
+      - TENSORFLOW_API_KEY_1=${TF_IMAGE_ROUTER_API_KEY:-local-tensorflow-token}
+      - TENSORFLOW_MODELS=["promethean-train","promethean-code-train","qwen3-vl-2b-image"]
+
+  gateway-ui:
+    build:
+      context: ./gateway-ui
+      dockerfile: Dockerfile
+    container_name: llm-gateway-ui-dev
+    restart: unless-stopped
+    depends_on:
+      - llm-proxy
+    volumes:
+      - ../part64/frontend/dist:/usr/share/nginx/html:ro
+    ports:
+      - "${UI_PORT:-5173}:80"
+
+  tf-trainer:
+    profiles:
+      - training
+    build:
+      context: ./training/tf_qwen3_vl
+      dockerfile: Dockerfile
+    container_name: tf-qwen3-vl-trainer-dev
+    restart: "no"
+    volumes:
+      - ./training/tf_qwen3_vl:/workspace
+      - ./training-data:/data
+      - ./training-output:/output
+      - ../:/vault:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TF_CPP_MIN_LOG_LEVEL=2
+      - CORPUS_MAX_FILE_SAMPLES=1800
+      - CORPUS_MAX_KNOWLEDGE_SAMPLES=1800
+    command: ["sh", "-lc", "python prepare_corpus_dataset.py --vault-root /vault --out-dir /data/qwen3_vl --max-file-samples $$CORPUS_MAX_FILE_SAMPLES --max-knowledge-samples $$CORPUS_MAX_KNOWLEDGE_SAMPLES && python train.py --config /workspace/config.yaml"]
+
+  tf-image-trainer:
+    profiles:
+      - training
+    build:
+      context: ./training/tf_qwen3_vl
+      dockerfile: Dockerfile
+    container_name: tf-qwen3-vl-image-trainer-dev
+    restart: "no"
+    volumes:
+      - ./training/tf_qwen3_vl:/workspace
+      - ./training-data:/data
+      - ./training-output:/output
+      - ../:/vault:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TF_CPP_MIN_LOG_LEVEL=2
+      - CORPUS_MAX_FILE_SAMPLES=1800
+      - CORPUS_MAX_KNOWLEDGE_SAMPLES=1800
+    command: ["sh", "-lc", "python prepare_corpus_dataset.py --vault-root /vault --out-dir /data/qwen3_vl --max-file-samples $$CORPUS_MAX_FILE_SAMPLES --max-knowledge-samples $$CORPUS_MAX_KNOWLEDGE_SAMPLES && python train_image_loop.py --config /workspace/config.image.yaml"]
+
+  tf-image-bridge:
+    profiles:
+      - serving
+      - training
+    build:
+      context: ./training/tf_qwen3_vl
+      dockerfile: Dockerfile
+    container_name: tf-image-router-bridge-dev
+    restart: unless-stopped
+    volumes:
+      - ./training/tf_qwen3_vl:/workspace
+      - ./training-output:/output:ro
+      - ../:/vault:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TF_CPP_MIN_LOG_LEVEL=2
+      - TF_IMAGE_ROUTER_API_KEY=${TF_IMAGE_ROUTER_API_KEY:-local-tensorflow-token}
+      - TF_IMAGE_ROUTER_MODEL_ID=qwen3-vl-2b-image
+      - TF_IMAGE_ROUTER_EXPORT_ROOT=/output/export
+    ports:
+      - "${TF_IMAGE_ROUTER_PORT:-8501}:8501"
+    command: ["uvicorn", "serve_image_router:app", "--host", "0.0.0.0", "--port", "8501"]

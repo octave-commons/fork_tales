@@ -1,0 +1,8 @@
+COPYING
+COPYING.LESSER
+README.md
+pyproject.toml
+rotator_library.egg-info/PKG-INFO
+rotator_library.egg-info/SOURCES.txt
+rotator_library.egg-info/dependency_links.txt
+rotator_library.egg-info/top_level.txt
