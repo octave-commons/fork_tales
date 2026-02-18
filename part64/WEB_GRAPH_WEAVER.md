@@ -1,6 +1,7 @@
 # Web Graph Weaver
 
-Live, ethical crawl instrumentation service for real-time graph growth.
+Live, ethical crawl instrumentation service for real-time graph growth,
+including arXiv paper/PDF citation edges and Wikipedia cross-reference edges.
 
 ## Run
 
@@ -11,6 +12,11 @@ Live, ethical crawl instrumentation service for real-time graph growth.
 - Graph API: `http://127.0.0.1:8793/api/weaver/graph`
 - Event API: `http://127.0.0.1:8793/api/weaver/events`
 - WebSocket: `ws://127.0.0.1:8793/ws`
+
+Starter seed set for arXiv + Wikipedia cross-linking:
+
+- `https://arxiv.org/list/cs.AI/recent`
+- `https://en.wikipedia.org/wiki/Artificial_intelligence`
 
 The dashboard panel is integrated in the frontend (`WebGraphWeaverPanel`).
 
@@ -50,6 +56,10 @@ Edges:
 - `canonical_redirect` (`url -> url`)
 - `domain_membership` (`url -> domain`)
 - `content_membership` (`url -> content`)
+- `citation` (`arXiv paper -> cited arXiv paper`)
+- `paper_pdf` (`arXiv paper -> arXiv PDF`)
+- `wiki_reference` (`Wikipedia article -> linked Wikipedia article`)
+- `cross_reference` (`arXiv <-> Wikipedia`)
 
 Storage:
 
@@ -68,6 +78,34 @@ Storage:
 - nofollow links are discovered but not traversed
 - `429/503` responses trigger exponential backoff per domain
 - domain-level `nextAllowedAt` timestamps gate fetch starts
+- host-level active request cap is enforced (`max_requests_per_host`)
+- node cooldown gate blocks repeat fetches for 10 minutes by default (`WEAVER_NODE_COOLDOWN_MS`)
+
+## Entity-Driven Crawl Flow
+
+- Entity walkers move across known URL nodes and emit `entity_move`, `entity_arrived`, `entity_visit`, and `entity_tick` events.
+- Node interactions raise `activation_potential`; when threshold is reached and cooldown is clear, the URL is enqueued.
+- Any known URL node can be visited by entities; crawl direction becomes interaction-driven over graph links.
+- Interactions are available through API (`POST /api/weaver/entities/interact`) and panel controls.
+
+Defaults:
+
+- node cooldown: `10 minutes`
+- activation threshold: `1.0`
+- interaction delta: `0.35`
+- entity walkers: `4`
+
+## arXiv + Wikipedia Knowledge Mapping
+
+- arXiv pages:
+  - detect canonical arXiv IDs from `/abs/...` and `/pdf/...`
+  - emit `paper_pdf` edges to canonical PDFs
+  - emit `citation` edges for linked/mentioned arXiv papers
+  - emit `cross_reference` edges when arXiv pages link to Wikipedia articles
+- Wikipedia pages:
+  - emit `wiki_reference` edges for in-article links (`/wiki/...`)
+  - emit `cross_reference` edges when Wikipedia cites arXiv
+- Status metrics now expose semantic edge totals (`citation_edges`, `cross_reference_edges`, etc.)
 
 ## Ethical Guardrails
 
@@ -82,9 +120,26 @@ Storage:
 
 - `POST /api/weaver/control`
   - `start`, `pause`, `resume`, `stop`
+  - supports `max_per_host`, `entity_count`
 - `POST /api/weaver/seed`
 - `POST /api/weaver/opt-out`
 - `DELETE /api/weaver/opt-out`
+- `GET /api/weaver/entities`
+- `POST /api/weaver/entities/control`
+  - `start`, `pause`, `resume`, `stop`, `configure`
+- `POST /api/weaver/entities/interact`
+
+## Link Text Analysis (LLM)
+
+- When pages are visited/fetched, text excerpts are analyzed and written to node metadata.
+- Events emitted:
+  - `link_text_analysis_started`
+  - `link_text_analyzed`
+  - `link_text_analysis_failed`
+- Default LLM target is Ollama-compatible endpoint:
+  - `WEAVER_LLM_BASE_URL` (default `http://127.0.0.1:11434`)
+  - `WEAVER_LLM_MODEL` (default `qwen2.5:3b-instruct`)
+  - `WEAVER_LLM_ENABLED` (default enabled)
 
 ## Dashboard Features
 

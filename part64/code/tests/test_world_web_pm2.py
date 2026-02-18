@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
+import time
 import wave
 import zipfile
 from array import array
@@ -27,6 +29,7 @@ from code.world_web import (
     build_mix_stream,
     build_presence_say_payload,
     build_push_truth_dry_run_payload,
+    build_world_log_payload,
     build_study_snapshot,
     build_pi_archive_payload,
     build_simulation_state,
@@ -68,6 +71,17 @@ def _create_fixture_tree(root: Path) -> None:
         "# Constraints\n\n- C-64-world-snapshot: active\n",
         encoding="utf-8",
     )
+
+
+def _css_rule_block(css_source: str, selector: str) -> str:
+    marker = f"{selector} {{"
+    start = css_source.find(marker)
+    assert start >= 0, f"missing css selector: {selector}"
+    end = css_source.find("}\n", start)
+    if end < 0:
+        end = css_source.find("}", start)
+    assert end >= 0, f"unterminated css selector: {selector}"
+    return css_source[start : end + 1]
 
 
 def test_world_payload_and_artifact_resolution() -> None:
@@ -116,6 +130,230 @@ def test_pm2_parse_args_defaults() -> None:
     assert args.port == 8787
     assert args.host == "127.0.0.1"
     assert args.name == "eta-mu-world"
+
+
+def test_world_panel_layering_interaction_guards_present() -> None:
+    part_root = Path(__file__).resolve().parents[2]
+    viewport_path = (
+        part_root
+        / "frontend"
+        / "src"
+        / "components"
+        / "App"
+        / "WorldPanelsViewport.tsx"
+    )
+    css_path = part_root / "frontend" / "src" / "index.css"
+
+    viewport_source = viewport_path.read_text("utf-8")
+    css_source = css_path.read_text("utf-8")
+
+    assert "renderFocusPane" in viewport_source
+    assert "world-council-grid" in viewport_source
+    assert "onAdjustPanelCouncilRank" in viewport_source
+    assert "onPinPanelToTertiary" in viewport_source
+    assert 'className="world-orbital-dock"' in viewport_source
+
+    body_block = _css_rule_block(css_source, ".world-panel-body")
+    assert "overscroll-behavior: contain;" in body_block
+    assert "-webkit-overflow-scrolling: touch;" in body_block
+
+    edit_tag_block = _css_rule_block(css_source, ".world-panel-edit-tag")
+    assert "pointer-events: none;" in edit_tag_block
+
+    rack_block = _css_rule_block(css_source, ".world-panel-chip-rack")
+    assert "pointer-events: none;" in rack_block
+
+    chip_block = _css_rule_block(css_source, ".world-panel-chip")
+    assert "pointer-events: auto;" in chip_block
+
+
+def test_world_panel_world_space_state_space_contract_present() -> None:
+    part_root = Path(__file__).resolve().parents[2]
+    app_path = part_root / "frontend" / "src" / "App.tsx"
+    viewport_path = (
+        part_root
+        / "frontend"
+        / "src"
+        / "components"
+        / "App"
+        / "WorldPanelsViewport.tsx"
+    )
+    css_path = part_root / "frontend" / "src" / "index.css"
+
+    app_source = app_path.read_text("utf-8")
+    viewport_source = viewport_path.read_text("utf-8")
+    css_source = css_path.read_text("utf-8")
+
+    assert "const [panelWorldBiases, setPanelWorldBiases]" in app_source
+    assert "const [panelWindowStates, setPanelWindowStates]" in app_source
+    assert (
+        "const panelWindowStateById = useMemo<Record<string, PanelWindowState>>"
+        in app_source
+    )
+    assert (
+        "const activatePanelWindow = useCallback((panelId: string) => {" in app_source
+    )
+    assert (
+        "const minimizePanelWindow = useCallback((panelId: string) => {" in app_source
+    )
+    assert "const closePanelWindow = useCallback((panelId: string) => {" in app_source
+    assert "const panelStateSpaceBiases = useMemo(() => {" in app_source
+    assert "const worldDeltaX = info.offset.x / pixelsPerWorldX" in app_source
+    assert "function shouldRouteWheelToCore" in app_source
+    assert (
+        'window.addEventListener("wheel", onGlobalWheel, { passive: false, capture: true });'
+        in app_source
+    )
+    assert "transition-colors pointer-events-none" in app_source
+    assert "shadow-[0_12px_30px_rgba(2,8,14,0.34)] pointer-events-auto" in app_source
+    assert "panelWorldX" in app_source
+    assert "pixelsPerWorldX" in app_source
+    assert 'id: "nexus.ui.world_log"' in app_source
+    assert "<WorldLogPanel catalog={catalog} />" in app_source
+    assert "if (!isWideViewport)" not in app_source
+
+    assert 'className="world-council-root"' in viewport_source
+    assert "world-council-grid" in viewport_source
+    assert "world-smart-pile" in viewport_source
+    assert "world-orbital-dock" in viewport_source
+    assert 'renderFocusPane("primary", primaryPanelId)' in viewport_source
+    assert "onAdjustPanelCouncilRank" in viewport_source
+    assert "onPinPanelToTertiary" in viewport_source
+    assert "onMinimizePanel" in viewport_source
+    assert "onClosePanel" in viewport_source
+    assert "overlay-constellation" not in viewport_source
+    assert "onGridPanelDragEnd" not in viewport_source
+
+    council_root_block = _css_rule_block(css_source, ".world-council-root")
+    assert "pointer-events: auto;" in council_root_block
+
+    focus_block = _css_rule_block(css_source, ".world-focus-pane")
+    assert "max-height: calc(100vh - 12.2rem);" in focus_block
+
+    smart_pile_block = _css_rule_block(css_source, ".world-smart-pile")
+    assert "display: grid;" in smart_pile_block
+
+    orbital_dock_block = _css_rule_block(css_source, ".world-orbital-dock")
+    assert "position: fixed;" in orbital_dock_block
+
+    assert ".world-smart-card-actions" in css_source
+    assert ".world-focus-action-close" in css_source
+
+
+def test_hologram_canvas_remote_resource_metadata_contract() -> None:
+    part_root = Path(__file__).resolve().parents[2]
+    backdrop_path = (
+        part_root / "frontend" / "src" / "components" / "App" / "CoreBackdrop.tsx"
+    )
+    canvas_path = (
+        part_root / "frontend" / "src" / "components" / "Simulation" / "Canvas.tsx"
+    )
+    css_path = part_root / "frontend" / "src" / "index.css"
+
+    backdrop_source = backdrop_path.read_text("utf-8")
+    canvas_source = canvas_path.read_text("utf-8")
+    css_source = css_path.read_text("utf-8")
+
+    assert "interactive={false}" not in backdrop_source
+    assert "\n          interactive\n" in backdrop_source
+
+    assert (
+        'type GraphWorldscreenView = "website" | "editor" | "video" | "metadata";'
+        in canvas_source
+    )
+    assert "anchorRatioX?: number;" in canvas_source
+    assert "anchorRatioY?: number;" in canvas_source
+    assert "function resolveWorldscreenPlacement(" in canvas_source
+    assert "anchorRatioX: clamp01(graphHit.x)," in canvas_source
+    assert "anchorRatioY: clamp01(graphHit.y)," in canvas_source
+    assert "const worldscreenPlacement = worldscreen" in canvas_source
+    assert "transformOrigin: worldscreenPlacement.transformOrigin," in canvas_source
+    assert 'worldscreen.view === "metadata"' in canvas_source
+    assert "isRemoteHttpUrl(worldscreenUrl)" in canvas_source
+    assert "event.stopPropagation();" in canvas_source
+    assert "Math.max(0.012, hit.radiusNorm * 1.8)" in canvas_source
+    assert "presence image commentary" in canvas_source
+    assert 'resourceKind === "image"' in canvas_source
+    assert "/api/image/commentary" in canvas_source
+    assert "/api/image/comments" in canvas_source
+    assert "/api/presence/accounts/upsert" in canvas_source
+
+    assert "html,\nbody,\n#root {" in css_source
+    assert "overscroll-behavior: none;" in css_source
+
+
+def test_canvas_file_graph_positions_are_server_authoritative() -> None:
+    part_root = Path(__file__).resolve().parents[2]
+    canvas_path = (
+        part_root / "frontend" / "src" / "components" / "Simulation" / "Canvas.tsx"
+    )
+
+    canvas_source = canvas_path.read_text("utf-8")
+
+    assert "computeDocumentLayout" not in canvas_source
+    assert "documentLayoutState" not in canvas_source
+    assert "fileLayoutById" not in canvas_source
+    assert (
+        "const graphPositionForNode = (node: any): { x: number; y: number } => ({"
+        in canvas_source
+    )
+    assert "x: clamp01(Number(node?.x ?? 0.5))" in canvas_source
+    assert "y: clamp01(Number(node?.y ?? 0.5))" in canvas_source
+    assert "p += vec3(" not in canvas_source
+    assert "clip.xy += forceDir" not in canvas_source
+    assert "vec3 p = aPos;" in canvas_source
+    assert "updatePresenceParticles" not in canvas_source
+    assert "drawPresenceParticles" not in canvas_source
+    assert "drawPresenceParticleTelemetry" not in canvas_source
+    assert "const orbitTime =" not in canvas_source
+    assert "currentPositions[i] +=" not in canvas_source
+    assert "currentPositions[i] = targetPositions[i];" in canvas_source
+    assert "state?.presence_dynamics?.field_particles" in canvas_source
+
+
+def test_world_log_panel_contract_present() -> None:
+    part_root = Path(__file__).resolve().parents[2]
+    app_path = part_root / "frontend" / "src" / "App.tsx"
+    layout_path = part_root / "frontend" / "src" / "app" / "worldPanelLayout.ts"
+    panel_path = (
+        part_root / "frontend" / "src" / "components" / "Panels" / "WorldLogPanel.tsx"
+    )
+
+    app_source = app_path.read_text("utf-8")
+    layout_source = layout_path.read_text("utf-8")
+    panel_source = panel_path.read_text("utf-8")
+
+    assert 'id: "nexus.ui.world_log"' in app_source
+    assert "<WorldLogPanel catalog={catalog} />" in app_source
+    assert '"nexus.ui.world_log": {' in layout_source
+    assert 'anchorId: "witness_thread"' in layout_source
+
+    assert 'runtimeApiUrl("/api/world/events?limit=180")' in panel_source
+    assert 'runtimeApiUrl("/api/eta-mu/sync")' in panel_source
+    assert "ingest .ημ now" in panel_source
+    assert 'if (source !== "nasa_gibs")' in panel_source
+    assert 'loading="lazy"' in panel_source
+    assert 'referrerPolicy="no-referrer"' in panel_source
+
+
+def test_stability_observatory_panel_npu_widget_contract_present() -> None:
+    part_root = Path(__file__).resolve().parents[2]
+    panel_path = (
+        part_root
+        / "frontend"
+        / "src"
+        / "components"
+        / "Panels"
+        / "StabilityObservatoryPanel.tsx"
+    )
+
+    panel_source = panel_path.read_text("utf-8")
+
+    assert "function resourceStatusClass(status: string): string" in panel_source
+    assert "const npuDevice = runtimeResource?.devices?.npu0;" in panel_source
+    assert "const npuQueueDepth =" in panel_source
+    assert "npu lane" in panel_source
+    assert "queue <code>{npuQueueDepth}</code>" in panel_source
 
 
 def test_world_web_module_entrypoint_help() -> None:
@@ -272,6 +510,53 @@ def test_ollama_embed_uses_tensorflow_backend_when_selected(
     monkeypatch.setattr(world_web_module, "_tensorflow_embed", _fake_tf_embed)
     result = world_web_module._ollama_embed("drift gate")
     assert result == expected
+
+
+def test_ollama_embed_records_compute_job_event(monkeypatch: Any) -> None:
+    tracker = RuntimeInfluenceTracker()
+    monkeypatch.setattr(world_web_module, "_INFLUENCE_TRACKER", tracker)
+    monkeypatch.setenv("EMBEDDINGS_BACKEND", "tensorflow")
+    monkeypatch.setattr(
+        world_web_module,
+        "_tensorflow_embed",
+        lambda text, model=None: [0.2, 0.4] if text == "job probe" else None,
+    )
+
+    result = world_web_module._ollama_embed("job probe")
+    assert result == [0.2, 0.4]
+    snapshot = tracker.snapshot(queue_snapshot={"pending_count": 0, "event_count": 0})
+    assert snapshot.get("compute_jobs_180s") == 1
+    jobs = snapshot.get("compute_jobs", [])
+    assert isinstance(jobs, list)
+    assert jobs[0].get("kind") == "embedding"
+    assert str(jobs[0].get("op", "")).startswith("embed.")
+
+
+def test_ollama_generate_text_records_compute_job_event(monkeypatch: Any) -> None:
+    tracker = RuntimeInfluenceTracker()
+    monkeypatch.setattr(world_web_module, "_INFLUENCE_TRACKER", tracker)
+    monkeypatch.setenv("TEXT_GENERATION_BACKEND", "tensorflow")
+
+    def _fake_tf_generate(
+        prompt: str, model: str | None = None, timeout_s: float | None = None
+    ) -> tuple[str | None, str]:
+        del model, timeout_s
+        if "gate" not in prompt:
+            return None, "tensorflow-hash-v1"
+        return "tf guidance", "tensorflow-hash-v1"
+
+    monkeypatch.setattr(
+        world_web_module, "_tensorflow_generate_text", _fake_tf_generate
+    )
+    text, model = world_web_module._ollama_generate_text("gate remains blocked")
+    assert text == "tf guidance"
+    assert model == "tensorflow-hash-v1"
+    snapshot = tracker.snapshot(queue_snapshot={"pending_count": 0, "event_count": 0})
+    assert snapshot.get("compute_summary", {}).get("llm_jobs") == 1
+    jobs = snapshot.get("compute_jobs", [])
+    assert isinstance(jobs, list)
+    assert jobs[0].get("kind") == "llm"
+    assert str(jobs[0].get("op", "")).startswith("text_generate.")
 
 
 def test_resource_monitor_snapshot_reports_devices_and_auto_backend(
@@ -476,6 +761,229 @@ def test_transcribe_audio_empty_payload() -> None:
     assert payload["ok"] is False
     assert payload["engine"] == "none"
     assert payload["error"] == "empty audio payload"
+
+
+def test_presence_accounts_and_image_comments_persist_in_runtime_db() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+
+        account = world_web_module._upsert_presence_account(
+            vault,
+            presence_id="witness_thread",
+            display_name="Witness Thread",
+            handle="witness_thread",
+            avatar="",
+            bio="Tracks continuity.",
+            tags=["witness", "continuity"],
+        )
+        assert account["ok"] is True
+        listing = world_web_module._list_presence_accounts(vault, limit=10)
+        assert listing["ok"] is True
+        assert listing["count"] >= 1
+        assert any(
+            str(row.get("presence_id", "")) == "witness_thread"
+            for row in listing.get("entries", [])
+        )
+
+        created = world_web_module._create_image_comment(
+            vault,
+            image_ref="artifacts/images/demo.png",
+            presence_id="witness_thread",
+            comment="The edge contrast highlights gate boundaries.",
+            metadata={"model": "qwen3-vl:2b-instruct", "backend": "test"},
+        )
+        assert created["ok"] is True
+        comments = world_web_module._list_image_comments(
+            vault,
+            image_ref="artifacts/images/demo.png",
+            limit=20,
+        )
+        assert comments["ok"] is True
+        assert comments["count"] >= 1
+        assert comments["entries"][0]["presence_id"] == "witness_thread"
+
+
+def test_world_web_server_exposes_image_commentary_and_account_endpoints() -> None:
+    part_root = Path(__file__).resolve().parents[2]
+    server_path = part_root / "code" / "world_web" / "server.py"
+    source = server_path.read_text("utf-8")
+
+    assert 'if parsed.path == "/api/presence/accounts":' in source
+    assert 'if parsed.path == "/api/presence/accounts/upsert":' in source
+    assert 'if parsed.path == "/api/image/comments":' in source
+    assert 'if parsed.path == "/api/image/commentary":' in source
+    assert 'if parsed.path == "/api/world/events":' in source
+    assert 'if parsed.path == "/api/eta-mu/sync":' in source
+    assert "build_image_commentary" in source
+    assert "build_world_log_payload" in source
+    assert "sync_eta_mu_inbox" in source
+
+
+def test_build_image_commentary_falls_back_without_ollama(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import ai as ai_module
+
+    monkeypatch.setattr(
+        ai_module,
+        "_tensorflow_image_fingerprint",
+        lambda _bytes: {
+            "ok": True,
+            "error": "",
+            "width": 320,
+            "height": 200,
+            "channels": 3,
+            "mean_luma": 0.42,
+        },
+    )
+
+    def _raise_unavailable(*_args: Any, **_kwargs: Any) -> Any:
+        raise OSError("ollama unavailable")
+
+    monkeypatch.setattr(world_web_module, "urlopen", _raise_unavailable)
+
+    payload = world_web_module.build_image_commentary(
+        image_bytes=b"\x89PNG\r\n\x1a\n",
+        mime="image/png",
+        image_ref="artifacts/images/demo.png",
+        presence_id="witness_thread",
+        prompt="Summarize this image",
+    )
+    assert payload["ok"] is True
+    assert payload["backend"] == "tensorflow-fallback"
+    assert "witness_thread" in str(payload.get("commentary", ""))
+
+
+def test_eta_mu_image_derive_segment_adds_vllm_caption_for_embedding(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import ai as ai_module
+
+    class _FakeResponse:
+        def __init__(self, payload: dict[str, Any]) -> None:
+            self._payload = payload
+
+        def __enter__(self) -> "_FakeResponse":
+            return self
+
+        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(self._payload).encode("utf-8")
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_urlopen(req: Any, timeout: float = 0.0) -> _FakeResponse:
+        payload = json.loads((req.data or b"{}").decode("utf-8"))
+        headers = {str(k).lower(): str(v) for k, v in req.header_items()}
+        calls.append(
+            {
+                "url": str(req.full_url),
+                "timeout": timeout,
+                "payload": payload,
+                "headers": headers,
+            }
+        )
+        return _FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "A rocky coastline with a red lighthouse near rough water."
+                        }
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr(world_web_module, "urlopen", fake_urlopen)
+    monkeypatch.setenv("ETA_MU_IMAGE_VISION_ENABLED", "1")
+    monkeypatch.setenv("ETA_MU_IMAGE_VISION_BASE_URL", "http://vllm.local:8001")
+    monkeypatch.setenv("ETA_MU_IMAGE_VISION_MODEL", "Qwen/Qwen2.5-VL-3B-Instruct")
+    monkeypatch.setenv("ETA_MU_IMAGE_VISION_API_KEY", "test-key")
+    monkeypatch.setenv("ETA_MU_IMAGE_VISION_TIMEOUT_SECONDS", "7")
+
+    segment = ai_module._eta_mu_image_derive_segment(
+        source_hash="abc123",
+        source_bytes=8,
+        source_rel_path=".ημ/demo.png",
+        mime="image/png",
+        image_bytes=b"\x89PNG\r\n\x1a\n",
+    )
+
+    assert segment.get("vision_backend") == "vllm"
+    assert segment.get("vision_model") == "Qwen/Qwen2.5-VL-3B-Instruct"
+    assert "vision-caption=" in str(segment.get("text", ""))
+    assert "rocky coastline" in str(segment.get("vision_caption", "")).lower()
+
+    assert len(calls) == 1
+    assert calls[0]["url"] == "http://vllm.local:8001/v1/chat/completions"
+    assert calls[0]["headers"].get("authorization") == "Bearer test-key"
+    assert calls[0]["timeout"] == 7.0
+    content_rows = calls[0]["payload"]["messages"][0]["content"]
+    assert content_rows[1]["type"] == "image_url"
+    assert str(content_rows[1]["image_url"]["url"]).startswith("data:image/png;base64,")
+
+
+def test_eta_mu_image_derive_segment_reports_vllm_unconfigured_when_enabled(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import ai as ai_module
+
+    monkeypatch.setenv("ETA_MU_IMAGE_VISION_ENABLED", "1")
+    monkeypatch.delenv("ETA_MU_IMAGE_VISION_BASE_URL", raising=False)
+
+    segment = ai_module._eta_mu_image_derive_segment(
+        source_hash="abc123",
+        source_bytes=8,
+        source_rel_path=".ημ/demo.png",
+        mime="image/png",
+        image_bytes=b"\x89PNG\r\n\x1a\n",
+    )
+
+    assert segment.get("vision_backend") == "vllm"
+    assert segment.get("vision_error") == "vllm_base_url_unset"
+    assert "vision-caption=" not in str(segment.get("text", ""))
+
+
+def test_eta_mu_embed_vector_for_image_uses_text_embedding_backend(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import ai as ai_module
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_embed_text(
+        text: str,
+        model: str | None = None,
+        **_kwargs: Any,
+    ) -> list[float] | None:
+        calls.append({"text": text, "model": model})
+        return [1.0, 0.0, 0.0]
+
+    def fail_ollama(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("_ollama_embed should not be called for image modality")
+
+    monkeypatch.setattr(ai_module, "_embed_text", fake_embed_text)
+    monkeypatch.setattr(ai_module, "_ollama_embed", fail_ollama)
+
+    vector, model_name, fallback_used = ai_module._eta_mu_embed_vector_for_segment(
+        modality="image",
+        segment_text="vision-caption=lighthouse over rough sea",
+        space={
+            "model": {"name": "nomic-embed-text"},
+            "dims": 3,
+        },
+        embed_id="img:demo",
+    )
+
+    assert calls
+    assert calls[0]["model"] == "nomic-embed-text"
+    assert "vision-caption" in str(calls[0]["text"])
+    assert vector == [1.0, 0.0, 0.0]
+    assert model_name == "nomic-embed-text"
+    assert fallback_used is False
 
 
 def test_catalog_library_and_dashboard_render() -> None:
@@ -1023,6 +1531,1713 @@ def test_catalog_includes_pi_archive_summary() -> None:
             len(str((pi_archive.get("hash") or {}).get("canonical_sha256", ""))) == 64
         )
         assert isinstance(pi_archive.get("portable"), dict)
+
+
+def test_collect_catalog_runtime_fast_mode_skips_pi_archive_build() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+        part = vault / "ημ_op_mf_part_64"
+        _create_fixture_tree(part)
+
+        catalog = collect_catalog(
+            part,
+            vault,
+            sync_inbox=False,
+            include_pi_archive=False,
+        )
+
+        inbox = catalog.get("eta_mu_inbox", {})
+        assert inbox.get("record") == "ημ.inbox.v1"
+        assert str(inbox.get("sync_status", "")) in {"", "skipped", "failed"}
+
+        pi_archive = catalog.get("pi_archive", {})
+        assert pi_archive.get("record") == "ημ.pi-archive.v1"
+        assert pi_archive.get("status") == "deferred"
+        assert pi_archive.get("ledger_count") == 0
+
+
+def test_collect_catalog_runtime_fast_mode_defers_world_log(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import chamber as chamber_module
+
+    called = {"world_log": False}
+
+    def _build_world_log_payload(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        called["world_log"] = True
+        return {"ok": True, "record": "ημ.world-log.v1", "events": []}
+
+    monkeypatch.setattr(
+        chamber_module,
+        "build_world_log_payload",
+        _build_world_log_payload,
+    )
+
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+        part = vault / "ημ_op_mf_part_64"
+        _create_fixture_tree(part)
+
+        catalog = collect_catalog(
+            part,
+            vault,
+            sync_inbox=False,
+            include_pi_archive=False,
+            include_world_log=False,
+        )
+
+        assert called["world_log"] is False
+        world_log = catalog.get("world_log", {})
+        assert world_log.get("ok") is False
+        assert world_log.get("record") == "ημ.world-log.v1"
+        assert world_log.get("error") == "world_log_deferred:runtime_fast_path"
+
+
+def test_collect_catalog_retains_items_when_world_log_collection_fails(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import chamber as chamber_module
+
+    def _raise_world_log(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise PermissionError("read-only world log stream")
+
+    monkeypatch.setattr(
+        chamber_module,
+        "build_world_log_payload",
+        _raise_world_log,
+    )
+
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+        part = vault / "ημ_op_mf_part_64"
+        _create_fixture_tree(part)
+
+        catalog = collect_catalog(
+            part,
+            vault,
+            sync_inbox=False,
+            include_pi_archive=False,
+        )
+
+        items = catalog.get("items", [])
+        assert len(items) == 2
+
+        world_log = catalog.get("world_log", {})
+        assert world_log.get("ok") is False
+        assert world_log.get("record") == "ημ.world-log.v1"
+        assert world_log.get("events") == []
+        assert world_log.get("error") == "world_log_unavailable:PermissionError"
+
+
+def test_world_log_payload_emits_stream_error_event_when_collector_fails(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import chamber as chamber_module
+
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+        part = vault / "ημ_op_mf_part_64"
+        _create_fixture_tree(part)
+
+        def _raise_emsc(_vault: Path) -> None:
+            raise PermissionError("read-only stream log")
+
+        monkeypatch.setattr(chamber_module, "_collect_emsc_stream_rows", _raise_emsc)
+        monkeypatch.setattr(
+            chamber_module, "_collect_nws_alert_rows", lambda _vault: None
+        )
+        monkeypatch.setattr(
+            chamber_module, "_collect_swpc_alert_rows", lambda _vault: None
+        )
+        monkeypatch.setattr(
+            chamber_module, "_collect_gibs_layer_rows", lambda _vault: None
+        )
+        monkeypatch.setattr(
+            chamber_module, "_collect_eonet_event_rows", lambda _vault: None
+        )
+        monkeypatch.setattr(
+            chamber_module,
+            "_collect_wikimedia_stream_rows",
+            lambda _vault: None,
+        )
+
+        payload = build_world_log_payload(part, vault, limit=60)
+        assert payload.get("ok") is True
+        events = payload.get("events", [])
+        emsc_errors = [
+            row
+            for row in events
+            if isinstance(row, dict)
+            and str(row.get("source", "")) == "emsc_stream"
+            and str(row.get("kind", "")) == "emsc.stream.error"
+        ]
+        assert emsc_errors
+        assert "PermissionError" in str(emsc_errors[0].get("detail", ""))
+
+
+def test_world_log_payload_degrades_event_when_embedding_persist_fails(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import chamber as chamber_module
+
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+        part = vault / "ημ_op_mf_part_64"
+        _create_fixture_tree(part)
+
+        runtime_dir = vault / ".opencode" / "runtime"
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        (runtime_dir / "gibs_layers.v1.jsonl").write_text(
+            json.dumps(
+                {
+                    "record": "eta-mu.gibs-layer.v1",
+                    "id": "gibs:fixture-embedding-failure",
+                    "ts": "2030-01-01T00:00:00Z",
+                    "source": "nasa_gibs",
+                    "kind": "gibs.layer.fixture",
+                    "status": "recorded",
+                    "title": "Fixture Layer",
+                    "detail": "fixture layer row",
+                    "refs": ["https://gibs.earthdata.nasa.gov/fixture.jpg"],
+                    "tags": ["gibs", "nasa"],
+                    "meta": {},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        with chamber_module._WORLD_LOG_EMBEDDING_IDS_LOCK:
+            chamber_module._WORLD_LOG_EMBEDDING_IDS.clear()
+
+        def _raise_upsert(*_args: Any, **_kwargs: Any) -> None:
+            raise PermissionError("read-only embeddings db")
+
+        monkeypatch.setattr(
+            chamber_module,
+            "_embedding_db_upsert_append_only",
+            _raise_upsert,
+        )
+        monkeypatch.setattr(
+            chamber_module, "_collect_emsc_stream_rows", lambda _vault: None
+        )
+        monkeypatch.setattr(
+            chamber_module, "_collect_nws_alert_rows", lambda _vault: None
+        )
+        monkeypatch.setattr(
+            chamber_module, "_collect_swpc_alert_rows", lambda _vault: None
+        )
+        monkeypatch.setattr(
+            chamber_module, "_collect_gibs_layer_rows", lambda _vault: None
+        )
+        monkeypatch.setattr(
+            chamber_module, "_collect_eonet_event_rows", lambda _vault: None
+        )
+        monkeypatch.setattr(
+            chamber_module,
+            "_collect_wikimedia_stream_rows",
+            lambda _vault: None,
+        )
+
+        payload = build_world_log_payload(part, vault, limit=30)
+        assert payload.get("ok") is True
+        events = payload.get("events", [])
+        degraded = [
+            row
+            for row in events
+            if isinstance(row, dict)
+            and "embedding_error=PermissionError" in str(row.get("detail", ""))
+            and str(row.get("status", "")) == "degraded"
+        ]
+        assert degraded
+
+
+def test_collect_catalog_accepts_part_root_outside_vault() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        catalog = collect_catalog(
+            part,
+            vault,
+            sync_inbox=False,
+            include_pi_archive=False,
+        )
+
+        items = catalog.get("items", [])
+        assert len(items) == 2
+        rel_paths = {str(row.get("rel_path", "")) for row in items}
+        assert "artifacts/audio/test.wav" in rel_paths
+        assert "world_state/constraints.md" in rel_paths
+
+
+def test_runtime_library_path_resolves_part_root_relative_files() -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        resolved = server_module._resolve_runtime_library_path(
+            vault,
+            part,
+            "/library/artifacts/audio/test.wav",
+        )
+        assert resolved is not None
+        assert resolved.name == "test.wav"
+
+
+def test_runtime_catalog_refresh_is_not_blocked_by_inbox_sync(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        with server_module._RUNTIME_CATALOG_CACHE_LOCK:
+            server_module._RUNTIME_CATALOG_CACHE["catalog"] = None
+            server_module._RUNTIME_CATALOG_CACHE["refreshed_monotonic"] = 0.0
+            server_module._RUNTIME_CATALOG_CACHE["last_error"] = ""
+            server_module._RUNTIME_CATALOG_CACHE["inbox_sync_monotonic"] = 0.0
+            server_module._RUNTIME_CATALOG_CACHE["inbox_sync_snapshot"] = None
+            server_module._RUNTIME_CATALOG_CACHE["inbox_sync_error"] = ""
+
+        def _slow_sync(_vault_root: Path) -> dict[str, Any]:
+            time.sleep(0.9)
+            return {
+                "record": "ημ.inbox.v1",
+                "pending_count": 0,
+                "processed_count": 0,
+                "is_empty": True,
+            }
+
+        def _fast_collect(
+            part_root: Path,
+            vault_root: Path,
+            *,
+            sync_inbox: bool,
+            include_pi_archive: bool,
+            include_world_log: bool,
+        ) -> dict[str, Any]:
+            assert sync_inbox is False
+            assert include_pi_archive is False
+            assert include_world_log is False
+            return {
+                "generated_at": "2026-02-18T00:00:00+00:00",
+                "part_roots": [str(part_root), str(vault_root)],
+                "counts": {"audio": 1},
+                "items": [
+                    {
+                        "part": "64",
+                        "name": "test.wav",
+                        "role": "audio/canonical",
+                        "kind": "audio",
+                        "rel_path": "artifacts/audio/test.wav",
+                        "url": "/library/artifacts/audio/test.wav",
+                    }
+                ],
+                "eta_mu_inbox": {
+                    "record": "ημ.inbox.v1",
+                    "pending_count": 0,
+                    "processed_count": 0,
+                    "is_empty": True,
+                },
+            }
+
+        monkeypatch.setattr(server_module, "sync_eta_mu_inbox", _slow_sync)
+        monkeypatch.setattr(server_module, "collect_catalog", _fast_collect)
+        monkeypatch.setattr(server_module, "_RUNTIME_ETA_MU_SYNC_SECONDS", 0.0)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+
+        started = time.monotonic()
+        handler._schedule_runtime_catalog_refresh()
+
+        cached_catalog: dict[str, Any] | None = None
+        deadline = started + 1.5
+        while time.monotonic() < deadline:
+            with server_module._RUNTIME_CATALOG_CACHE_LOCK:
+                snapshot = server_module._RUNTIME_CATALOG_CACHE.get("catalog")
+                if isinstance(snapshot, dict):
+                    cached_catalog = dict(snapshot)
+                    break
+            time.sleep(0.02)
+
+        elapsed = time.monotonic() - started
+        assert isinstance(cached_catalog, dict)
+        assert elapsed < 0.5
+        assert len(cached_catalog.get("items", [])) == 1
+
+
+def test_runtime_catalog_refresh_collects_before_scheduling_sync(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        with server_module._RUNTIME_CATALOG_CACHE_LOCK:
+            server_module._RUNTIME_CATALOG_CACHE["catalog"] = None
+            server_module._RUNTIME_CATALOG_CACHE["refreshed_monotonic"] = 0.0
+            server_module._RUNTIME_CATALOG_CACHE["last_error"] = ""
+            server_module._RUNTIME_CATALOG_CACHE["inbox_sync_monotonic"] = 0.0
+            server_module._RUNTIME_CATALOG_CACHE["inbox_sync_snapshot"] = None
+            server_module._RUNTIME_CATALOG_CACHE["inbox_sync_error"] = ""
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        order: list[str] = []
+
+        def _collect_catalog_fast() -> dict[str, Any]:
+            order.append("collect")
+            return {
+                "generated_at": "2026-02-18T00:00:00+00:00",
+                "part_roots": [str(part)],
+                "counts": {},
+                "items": [],
+                "eta_mu_inbox": {},
+            }
+
+        def _schedule_runtime_inbox_sync() -> None:
+            order.append("sync")
+
+        monkeypatch.setattr(server_module, "_RUNTIME_ETA_MU_SYNC_SECONDS", 0.0)
+        monkeypatch.setattr(handler, "_collect_catalog_fast", _collect_catalog_fast)
+        monkeypatch.setattr(
+            handler,
+            "_schedule_runtime_inbox_sync",
+            _schedule_runtime_inbox_sync,
+        )
+
+        handler._schedule_runtime_catalog_refresh()
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            if len(order) >= 2:
+                break
+            time.sleep(0.01)
+
+        assert len(order) >= 2
+        assert order[0] == "collect"
+        assert order[1] == "sync"
+
+
+def test_runtime_catalog_base_warms_cache_inline_when_empty(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        with server_module._RUNTIME_CATALOG_CACHE_LOCK:
+            server_module._RUNTIME_CATALOG_CACHE["catalog"] = None
+            server_module._RUNTIME_CATALOG_CACHE["refreshed_monotonic"] = 0.0
+            server_module._RUNTIME_CATALOG_CACHE["last_error"] = ""
+            server_module._RUNTIME_CATALOG_CACHE["inbox_sync_monotonic"] = 0.0
+            server_module._RUNTIME_CATALOG_CACHE["inbox_sync_snapshot"] = None
+            server_module._RUNTIME_CATALOG_CACHE["inbox_sync_error"] = ""
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+
+        monkeypatch.setattr(
+            handler,
+            "_collect_catalog_fast",
+            lambda: {
+                "generated_at": "2026-02-18T00:00:00+00:00",
+                "part_roots": [str(part)],
+                "counts": {"audio": 1},
+                "items": [{"name": "test.wav", "rel_path": "artifacts/audio/test.wav"}],
+                "eta_mu_inbox": {"record": "ημ.inbox.v1"},
+            },
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_collect_runtime_catalog_isolated",
+            lambda *_args, **_kwargs: (None, "catalog_subprocess_disabled"),
+        )
+        monkeypatch.setattr(handler, "_schedule_runtime_inbox_sync", lambda: None)
+
+        catalog = handler._runtime_catalog_base()
+        assert len(catalog.get("items", [])) == 1
+        with server_module._RUNTIME_CATALOG_CACHE_LOCK:
+            cached = server_module._RUNTIME_CATALOG_CACHE.get("catalog")
+        assert isinstance(cached, dict)
+        assert len(cached.get("items", [])) == 1
+
+
+def test_runtime_catalog_fallback_bootstraps_particles_from_manifest() -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+        part = vault / "ημ_op_mf_part_64"
+        _create_fixture_tree(part)
+
+        fallback_catalog = server_module._runtime_catalog_fallback(part, vault)
+        assert fallback_catalog.get("runtime_state") == "fallback"
+        assert len(fallback_catalog.get("items", [])) >= 2
+        counts = fallback_catalog.get("counts", {})
+        assert int(counts.get("audio", 0)) >= 1
+
+        simulation = build_simulation_state(fallback_catalog)
+        assert int(simulation.get("total", 0)) > 0
+        assert len(simulation.get("points", [])) == simulation.get("total", 0)
+
+
+def test_world_log_payload_tracks_pending_eta_mu_and_embeddings() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+        part = vault / "ημ_op_mf_part_64"
+        _create_fixture_tree(part)
+
+        (vault / "receipts.log").write_text(
+            (
+                "ts=2026-02-15T00:00:00Z | kind=:decision | origin=unit-test | owner=Err | "
+                "dod=world-log-check | pi=part64 | host=127.0.0.1:8787 | manifest=manifest.lith | "
+                "refs=.opencode/promptdb/00_wire_world.intent.lisp"
+            ),
+            encoding="utf-8",
+        )
+        inbox = vault / ".ημ"
+        inbox.mkdir(parents=True)
+        (inbox / "pending_note.md").write_text(
+            "pending note waiting for ingest",
+            encoding="utf-8",
+        )
+
+        payload = build_world_log_payload(part, vault, limit=80)
+        assert payload.get("ok") is True
+        assert payload.get("record") == "ημ.world-log.v1"
+        assert int(payload.get("count", 0)) >= 1
+        assert int(payload.get("pending_inbox", 0)) >= 1
+
+        events = payload.get("events", [])
+        pending_events = [
+            row
+            for row in events
+            if isinstance(row, dict) and str(row.get("kind", "")) == "eta_mu.pending"
+        ]
+        assert pending_events
+        sample = pending_events[0]
+        assert str(sample.get("embedding_id", "")).startswith("world-event:")
+        assert isinstance(sample.get("x"), float)
+        assert isinstance(sample.get("y"), float)
+        assert isinstance(sample.get("relations", []), list)
+
+        listing = world_web_module._embedding_db_list(vault, limit=500)
+        ids = {
+            str(row.get("id", ""))
+            for row in listing.get("entries", [])
+            if isinstance(row, dict)
+        }
+        assert str(sample.get("embedding_id", "")) in ids
+
+
+def test_wikimedia_stream_collect_tracks_dedupe_rate_limit_and_parse_errors(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import chamber as chamber_module
+
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+
+        with chamber_module._WIKIMEDIA_STREAM_LOCK:
+            chamber_module._WIKIMEDIA_STREAM_CACHE.clear()
+            chamber_module._WIKIMEDIA_STREAM_CACHE.update(
+                {
+                    "last_poll_monotonic": 0.0,
+                    "connected": False,
+                    "paused": False,
+                    "seen_ids": {},
+                }
+            )
+
+        monkeypatch.setattr(chamber_module, "WIKIMEDIA_EVENTSTREAMS_ENABLED", True)
+        monkeypatch.setattr(
+            chamber_module, "WIKIMEDIA_EVENTSTREAMS_POLL_INTERVAL_SECONDS", 0.0
+        )
+        monkeypatch.setattr(
+            chamber_module, "WIKIMEDIA_EVENTSTREAMS_RATE_LIMIT_PER_POLL", 1
+        )
+        monkeypatch.setattr(
+            chamber_module, "WIKIMEDIA_EVENTSTREAMS_STREAMS", "recentchange,page-create"
+        )
+
+        def _fake_fetch(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {
+                "ok": True,
+                "error": "",
+                "events": [
+                    {
+                        "meta": {
+                            "id": "evt-1",
+                            "stream": "recentchange",
+                            "dt": "2026-02-18T00:00:00Z",
+                        },
+                        "type": "edit",
+                        "title": "Alpha",
+                        "comment": "first",
+                        "wiki": "enwiki",
+                        "server_url": "https://en.wikipedia.org",
+                    },
+                    {
+                        "meta": {
+                            "id": "evt-1",
+                            "stream": "recentchange",
+                            "dt": "2026-02-18T00:00:00Z",
+                        },
+                        "type": "edit",
+                        "title": "Alpha",
+                        "comment": "duplicate",
+                        "wiki": "enwiki",
+                        "server_url": "https://en.wikipedia.org",
+                    },
+                    {
+                        "meta": {
+                            "id": "evt-2",
+                            "stream": "page-create",
+                            "dt": "2026-02-18T00:00:01Z",
+                        },
+                        "type": "create",
+                        "title": "Beta",
+                        "comment": "second",
+                        "wiki": "enwiki",
+                        "server_url": "https://en.wikipedia.org",
+                    },
+                ],
+                "parse_errors": 2,
+                "bytes_read": 321,
+            }
+
+        monkeypatch.setattr(chamber_module, "_wikimedia_fetch_sse_events", _fake_fetch)
+
+        chamber_module._collect_wikimedia_stream_rows(vault)
+        log_path, rows = chamber_module._load_wikimedia_stream_rows(vault, limit=200)
+        assert log_path.endswith("wikimedia_stream.v1.jsonl")
+
+        kinds = {str(row.get("kind", "")) for row in rows if isinstance(row, dict)}
+        assert "wikimedia.stream.connected" in kinds
+        assert "wikimedia.stream.poll" in kinds
+        assert "wikimedia.stream.parse-error" in kinds
+        assert "wikimedia.stream.dedupe" in kinds
+        assert "wikimedia.stream.rate-limit" in kinds
+
+        accepted = [
+            row
+            for row in rows
+            if isinstance(row, dict)
+            and str(row.get("record", "")) == chamber_module.WIKIMEDIA_EVENT_RECORD
+        ]
+        assert len(accepted) == 1
+
+
+def test_wikimedia_stream_collect_emits_pause_resume_events(monkeypatch: Any) -> None:
+    from code.world_web import chamber as chamber_module
+
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+
+        with chamber_module._WIKIMEDIA_STREAM_LOCK:
+            chamber_module._WIKIMEDIA_STREAM_CACHE.clear()
+            chamber_module._WIKIMEDIA_STREAM_CACHE.update(
+                {
+                    "last_poll_monotonic": 0.0,
+                    "connected": False,
+                    "paused": False,
+                    "seen_ids": {},
+                }
+            )
+
+        monkeypatch.setattr(chamber_module, "WIKIMEDIA_EVENTSTREAMS_ENABLED", False)
+        chamber_module._collect_wikimedia_stream_rows(vault)
+
+        monkeypatch.setattr(chamber_module, "WIKIMEDIA_EVENTSTREAMS_ENABLED", True)
+        monkeypatch.setattr(
+            chamber_module, "WIKIMEDIA_EVENTSTREAMS_POLL_INTERVAL_SECONDS", 0.0
+        )
+
+        def _empty_fetch(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {
+                "ok": True,
+                "error": "",
+                "events": [],
+                "parse_errors": 0,
+                "bytes_read": 0,
+            }
+
+        monkeypatch.setattr(chamber_module, "_wikimedia_fetch_sse_events", _empty_fetch)
+        chamber_module._collect_wikimedia_stream_rows(vault)
+
+        _, rows = chamber_module._load_wikimedia_stream_rows(vault, limit=200)
+        kinds = [str(row.get("kind", "")) for row in rows if isinstance(row, dict)]
+        assert "wikimedia.stream.paused" in kinds
+        assert "wikimedia.stream.resumed" in kinds
+
+
+def test_nws_alert_stream_collect_tracks_dedupe_rate_limit_and_parse_errors(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import chamber as chamber_module
+
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+
+        with chamber_module._NWS_ALERTS_LOCK:
+            chamber_module._NWS_ALERTS_CACHE.clear()
+            chamber_module._NWS_ALERTS_CACHE.update(
+                {
+                    "last_poll_monotonic": 0.0,
+                    "connected": False,
+                    "paused": False,
+                    "seen_ids": {},
+                }
+            )
+
+        monkeypatch.setattr(chamber_module, "NWS_ALERTS_ENABLED", True)
+        monkeypatch.setattr(chamber_module, "NWS_ALERTS_POLL_INTERVAL_SECONDS", 0.0)
+        monkeypatch.setattr(chamber_module, "NWS_ALERTS_RATE_LIMIT_PER_POLL", 1)
+
+        def _fake_fetch(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {
+                "ok": True,
+                "error": "",
+                "alerts": [
+                    {
+                        "id": "https://api.weather.gov/alerts/ALPHA",
+                        "properties": {
+                            "event": "Severe Thunderstorm Warning",
+                            "headline": "Severe thunderstorm warning",
+                            "areaDesc": "King County",
+                            "severity": "Severe",
+                            "urgency": "Immediate",
+                            "certainty": "Observed",
+                            "status": "Actual",
+                            "sent": "2026-02-18T00:00:00Z",
+                        },
+                    },
+                    {
+                        "id": "https://api.weather.gov/alerts/ALPHA",
+                        "properties": {
+                            "event": "Severe Thunderstorm Warning",
+                            "headline": "duplicate",
+                            "areaDesc": "King County",
+                            "status": "Actual",
+                            "sent": "2026-02-18T00:00:00Z",
+                        },
+                    },
+                    {
+                        "id": "https://api.weather.gov/alerts/BETA",
+                        "properties": {
+                            "event": "Flood Watch",
+                            "headline": "Flood watch",
+                            "areaDesc": "Pierce County",
+                            "status": "Actual",
+                            "sent": "2026-02-18T00:01:00Z",
+                        },
+                    },
+                ],
+                "parse_errors": 1,
+                "bytes_read": 432,
+            }
+
+        monkeypatch.setattr(chamber_module, "_nws_fetch_active_alerts", _fake_fetch)
+
+        chamber_module._collect_nws_alert_rows(vault)
+        log_path, rows = chamber_module._load_nws_alert_rows(vault, limit=220)
+        assert log_path.endswith("nws_alerts.v1.jsonl")
+
+        kinds = {str(row.get("kind", "")) for row in rows if isinstance(row, dict)}
+        assert "nws.alerts.connected" in kinds
+        assert "nws.alerts.poll" in kinds
+        assert "nws.alerts.parse-error" in kinds
+        assert "nws.alerts.dedupe" in kinds
+        assert "nws.alerts.rate-limit" in kinds
+
+        accepted = [
+            row
+            for row in rows
+            if isinstance(row, dict)
+            and str(row.get("record", "")) == chamber_module.NWS_ALERT_RECORD
+        ]
+        assert len(accepted) == 1
+
+
+def test_nws_alert_stream_collect_emits_pause_resume_events(monkeypatch: Any) -> None:
+    from code.world_web import chamber as chamber_module
+
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+
+        with chamber_module._NWS_ALERTS_LOCK:
+            chamber_module._NWS_ALERTS_CACHE.clear()
+            chamber_module._NWS_ALERTS_CACHE.update(
+                {
+                    "last_poll_monotonic": 0.0,
+                    "connected": False,
+                    "paused": False,
+                    "seen_ids": {},
+                }
+            )
+
+        monkeypatch.setattr(chamber_module, "NWS_ALERTS_ENABLED", False)
+        chamber_module._collect_nws_alert_rows(vault)
+
+        monkeypatch.setattr(chamber_module, "NWS_ALERTS_ENABLED", True)
+        monkeypatch.setattr(chamber_module, "NWS_ALERTS_POLL_INTERVAL_SECONDS", 0.0)
+
+        def _empty_fetch(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {
+                "ok": True,
+                "error": "",
+                "alerts": [],
+                "parse_errors": 0,
+                "bytes_read": 0,
+            }
+
+        monkeypatch.setattr(chamber_module, "_nws_fetch_active_alerts", _empty_fetch)
+        chamber_module._collect_nws_alert_rows(vault)
+
+        _, rows = chamber_module._load_nws_alert_rows(vault, limit=220)
+        kinds = [str(row.get("kind", "")) for row in rows if isinstance(row, dict)]
+        assert "nws.alerts.paused" in kinds
+        assert "nws.alerts.resumed" in kinds
+
+
+def test_swpc_alert_stream_collect_tracks_dedupe_rate_limit_and_parse_errors(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import chamber as chamber_module
+
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+
+        with chamber_module._SWPC_ALERTS_LOCK:
+            chamber_module._SWPC_ALERTS_CACHE.clear()
+            chamber_module._SWPC_ALERTS_CACHE.update(
+                {
+                    "last_poll_monotonic": 0.0,
+                    "connected": False,
+                    "paused": False,
+                    "seen_ids": {},
+                }
+            )
+
+        monkeypatch.setattr(chamber_module, "SWPC_ALERTS_ENABLED", True)
+        monkeypatch.setattr(chamber_module, "SWPC_ALERTS_POLL_INTERVAL_SECONDS", 0.0)
+        monkeypatch.setattr(chamber_module, "SWPC_ALERTS_RATE_LIMIT_PER_POLL", 1)
+
+        def _fake_fetch(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {
+                "ok": True,
+                "error": "",
+                "alerts": [
+                    {
+                        "message_type": "ALERT",
+                        "message_code": "ALTK08",
+                        "serial_number": "101",
+                        "issue_datetime": "2026-02-18T00:00:00Z",
+                        "message": "Geomagnetic conditions expected.",
+                    },
+                    {
+                        "message_type": "ALERT",
+                        "message_code": "ALTK08",
+                        "serial_number": "101",
+                        "issue_datetime": "2026-02-18T00:00:00Z",
+                        "message": "duplicate",
+                    },
+                    {
+                        "message_type": "WATCH",
+                        "message_code": "WATA20",
+                        "serial_number": "102",
+                        "issue_datetime": "2026-02-18T00:01:00Z",
+                        "message": "Solar flare watch.",
+                    },
+                ],
+                "parse_errors": 1,
+                "bytes_read": 384,
+            }
+
+        monkeypatch.setattr(chamber_module, "_swpc_fetch_alert_rows", _fake_fetch)
+
+        chamber_module._collect_swpc_alert_rows(vault)
+        log_path, rows = chamber_module._load_swpc_alert_rows(vault, limit=220)
+        assert log_path.endswith("swpc_alerts.v1.jsonl")
+
+        kinds = {str(row.get("kind", "")) for row in rows if isinstance(row, dict)}
+        assert "swpc.alerts.connected" in kinds
+        assert "swpc.alerts.poll" in kinds
+        assert "swpc.alerts.parse-error" in kinds
+        assert "swpc.alerts.dedupe" in kinds
+        assert "swpc.alerts.rate-limit" in kinds
+
+        accepted = [
+            row
+            for row in rows
+            if isinstance(row, dict)
+            and str(row.get("record", "")) == chamber_module.SWPC_ALERT_RECORD
+        ]
+        assert len(accepted) == 1
+
+
+def test_swpc_alert_stream_collect_emits_pause_resume_events(monkeypatch: Any) -> None:
+    from code.world_web import chamber as chamber_module
+
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+
+        with chamber_module._SWPC_ALERTS_LOCK:
+            chamber_module._SWPC_ALERTS_CACHE.clear()
+            chamber_module._SWPC_ALERTS_CACHE.update(
+                {
+                    "last_poll_monotonic": 0.0,
+                    "connected": False,
+                    "paused": False,
+                    "seen_ids": {},
+                }
+            )
+
+        monkeypatch.setattr(chamber_module, "SWPC_ALERTS_ENABLED", False)
+        chamber_module._collect_swpc_alert_rows(vault)
+
+        monkeypatch.setattr(chamber_module, "SWPC_ALERTS_ENABLED", True)
+        monkeypatch.setattr(chamber_module, "SWPC_ALERTS_POLL_INTERVAL_SECONDS", 0.0)
+
+        def _empty_fetch(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {
+                "ok": True,
+                "error": "",
+                "alerts": [],
+                "parse_errors": 0,
+                "bytes_read": 0,
+            }
+
+        monkeypatch.setattr(chamber_module, "_swpc_fetch_alert_rows", _empty_fetch)
+        chamber_module._collect_swpc_alert_rows(vault)
+
+        _, rows = chamber_module._load_swpc_alert_rows(vault, limit=220)
+        kinds = [str(row.get("kind", "")) for row in rows if isinstance(row, dict)]
+        assert "swpc.alerts.paused" in kinds
+        assert "swpc.alerts.resumed" in kinds
+
+
+def test_eonet_event_stream_collect_tracks_dedupe_rate_limit_and_parse_errors(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import chamber as chamber_module
+
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+
+        with chamber_module._EONET_EVENTS_LOCK:
+            chamber_module._EONET_EVENTS_CACHE.clear()
+            chamber_module._EONET_EVENTS_CACHE.update(
+                {
+                    "last_poll_monotonic": 0.0,
+                    "connected": False,
+                    "paused": False,
+                    "seen_ids": {},
+                }
+            )
+
+        monkeypatch.setattr(chamber_module, "EONET_EVENTS_ENABLED", True)
+        monkeypatch.setattr(chamber_module, "EONET_EVENTS_POLL_INTERVAL_SECONDS", 0.0)
+        monkeypatch.setattr(chamber_module, "EONET_EVENTS_RATE_LIMIT_PER_POLL", 1)
+
+        def _fake_fetch(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {
+                "ok": True,
+                "error": "",
+                "events": [
+                    {
+                        "id": "EONET-1",
+                        "title": "Volcano unrest",
+                        "link": "https://eonet.gsfc.nasa.gov/api/v3/events/EONET-1",
+                        "categories": [{"id": "volcanoes", "title": "Volcanoes"}],
+                        "geometry": [
+                            {
+                                "date": "2026-02-18T00:00:00Z",
+                                "type": "Point",
+                                "coordinates": [14.0, 40.8],
+                            }
+                        ],
+                        "sources": [{"id": "USGS", "url": "https://example.test/usgs"}],
+                    },
+                    {
+                        "id": "EONET-1",
+                        "title": "Volcano unrest duplicate",
+                        "categories": [{"id": "volcanoes", "title": "Volcanoes"}],
+                        "geometry": [
+                            {
+                                "date": "2026-02-18T00:00:00Z",
+                                "type": "Point",
+                                "coordinates": [14.0, 40.8],
+                            }
+                        ],
+                    },
+                    {
+                        "id": "EONET-2",
+                        "title": "Wildfire activity",
+                        "link": "https://eonet.gsfc.nasa.gov/api/v3/events/EONET-2",
+                        "categories": [{"id": "wildfires", "title": "Wildfires"}],
+                        "geometry": [
+                            {
+                                "date": "2026-02-18T00:05:00Z",
+                                "type": "Point",
+                                "coordinates": [-120.0, 45.0],
+                            }
+                        ],
+                    },
+                ],
+                "parse_errors": 2,
+                "bytes_read": 512,
+            }
+
+        monkeypatch.setattr(chamber_module, "_eonet_fetch_events", _fake_fetch)
+
+        chamber_module._collect_eonet_event_rows(vault)
+        log_path, rows = chamber_module._load_eonet_event_rows(vault, limit=220)
+        assert log_path.endswith("eonet_events.v1.jsonl")
+
+        kinds = {str(row.get("kind", "")) for row in rows if isinstance(row, dict)}
+        assert "eonet.events.connected" in kinds
+        assert "eonet.events.poll" in kinds
+        assert "eonet.events.parse-error" in kinds
+        assert "eonet.events.dedupe" in kinds
+        assert "eonet.events.rate-limit" in kinds
+
+        accepted = [
+            row
+            for row in rows
+            if isinstance(row, dict)
+            and str(row.get("record", "")) == chamber_module.EONET_EVENT_RECORD
+        ]
+        assert len(accepted) == 1
+
+
+def test_eonet_event_stream_collect_emits_pause_resume_events(monkeypatch: Any) -> None:
+    from code.world_web import chamber as chamber_module
+
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+
+        with chamber_module._EONET_EVENTS_LOCK:
+            chamber_module._EONET_EVENTS_CACHE.clear()
+            chamber_module._EONET_EVENTS_CACHE.update(
+                {
+                    "last_poll_monotonic": 0.0,
+                    "connected": False,
+                    "paused": False,
+                    "seen_ids": {},
+                }
+            )
+
+        monkeypatch.setattr(chamber_module, "EONET_EVENTS_ENABLED", False)
+        chamber_module._collect_eonet_event_rows(vault)
+
+        monkeypatch.setattr(chamber_module, "EONET_EVENTS_ENABLED", True)
+        monkeypatch.setattr(chamber_module, "EONET_EVENTS_POLL_INTERVAL_SECONDS", 0.0)
+
+        def _empty_fetch(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {
+                "ok": True,
+                "error": "",
+                "events": [],
+                "parse_errors": 0,
+                "bytes_read": 0,
+            }
+
+        monkeypatch.setattr(chamber_module, "_eonet_fetch_events", _empty_fetch)
+        chamber_module._collect_eonet_event_rows(vault)
+
+        _, rows = chamber_module._load_eonet_event_rows(vault, limit=220)
+        kinds = [str(row.get("kind", "")) for row in rows if isinstance(row, dict)]
+        assert "eonet.events.paused" in kinds
+        assert "eonet.events.resumed" in kinds
+
+
+def test_gibs_capabilities_parser_extracts_target_layer_metadata() -> None:
+    from code.world_web import chamber as chamber_module
+
+    capabilities_xml = """
+<Capabilities xmlns="http://www.opengis.net/wmts/1.0">
+  <Contents>
+    <Layer>
+      <Title>MODIS Terra True Color</Title>
+      <Identifier>MODIS_Terra_CorrectedReflectance_TrueColor</Identifier>
+      <Format>image/jpeg</Format>
+      <Dimension>
+        <Identifier>Time</Identifier>
+        <Default>2026-02-18</Default>
+        <Value>2026-02-16/2026-02-18/P1D</Value>
+      </Dimension>
+      <TileMatrixSetLink>
+        <TileMatrixSet>250m</TileMatrixSet>
+      </TileMatrixSetLink>
+    </Layer>
+    <Layer>
+      <Title>Ignored Layer</Title>
+      <Identifier>Other_Layer</Identifier>
+      <Format>image/png</Format>
+      <TileMatrixSetLink>
+        <TileMatrixSet>500m</TileMatrixSet>
+      </TileMatrixSetLink>
+    </Layer>
+  </Contents>
+</Capabilities>
+"""
+
+    layers, parse_errors = chamber_module._gibs_layers_from_capabilities_xml(
+        capabilities_xml,
+        target_layers=["MODIS_Terra_CorrectedReflectance_TrueColor"],
+        max_layers=4,
+    )
+    assert parse_errors == 0
+    assert len(layers) == 1
+    layer = layers[0]
+    assert layer.get("layer_id") == "MODIS_Terra_CorrectedReflectance_TrueColor"
+    assert layer.get("title") == "MODIS Terra True Color"
+    assert layer.get("default_time") == "2026-02-18"
+    assert layer.get("latest_time") == "2026-02-18"
+    assert layer.get("tile_matrix_set") == "250m"
+
+
+def test_gibs_layer_stream_collect_tracks_dedupe_rate_limit_and_parse_errors(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import chamber as chamber_module
+
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+
+        with chamber_module._GIBS_LAYERS_LOCK:
+            chamber_module._GIBS_LAYERS_CACHE.clear()
+            chamber_module._GIBS_LAYERS_CACHE.update(
+                {
+                    "last_poll_monotonic": 0.0,
+                    "connected": False,
+                    "paused": False,
+                    "seen_ids": {},
+                }
+            )
+
+        monkeypatch.setattr(chamber_module, "GIBS_LAYERS_ENABLED", True)
+        monkeypatch.setattr(chamber_module, "GIBS_LAYERS_POLL_INTERVAL_SECONDS", 0.0)
+        monkeypatch.setattr(chamber_module, "GIBS_LAYERS_RATE_LIMIT_PER_POLL", 1)
+        monkeypatch.setattr(
+            chamber_module,
+            "GIBS_LAYERS_CAPABILITIES_ENDPOINT",
+            "https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/wmts.cgi?SERVICE=WMTS&REQUEST=GetCapabilities",
+        )
+
+        def _fake_fetch(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {
+                "ok": True,
+                "error": "",
+                "layers": [
+                    {
+                        "layer_id": "MODIS_Terra_CorrectedReflectance_TrueColor",
+                        "title": "MODIS Terra True Color",
+                        "default_time": "2026-02-18",
+                        "latest_time": "2026-02-18",
+                        "tile_matrix_set": "250m",
+                        "formats": ["image/jpeg"],
+                    },
+                    {
+                        "layer_id": "MODIS_Terra_CorrectedReflectance_TrueColor",
+                        "title": "duplicate",
+                        "default_time": "2026-02-18",
+                        "latest_time": "2026-02-18",
+                        "tile_matrix_set": "250m",
+                        "formats": ["image/jpeg"],
+                    },
+                    {
+                        "layer_id": "VIIRS_SNPP_CorrectedReflectance_TrueColor",
+                        "title": "VIIRS SNPP True Color",
+                        "default_time": "2026-02-18",
+                        "latest_time": "2026-02-18",
+                        "tile_matrix_set": "250m",
+                        "formats": ["image/png"],
+                    },
+                ],
+                "parse_errors": 1,
+                "bytes_read": 654,
+            }
+
+        monkeypatch.setattr(
+            chamber_module, "_gibs_fetch_capabilities_layers", _fake_fetch
+        )
+
+        chamber_module._collect_gibs_layer_rows(vault)
+        log_path, rows = chamber_module._load_gibs_layer_rows(vault, limit=220)
+        assert log_path.endswith("gibs_layers.v1.jsonl")
+
+        kinds = {str(row.get("kind", "")) for row in rows if isinstance(row, dict)}
+        assert "gibs.layers.connected" in kinds
+        assert "gibs.layers.poll" in kinds
+        assert "gibs.layers.parse-error" in kinds
+        assert "gibs.layers.dedupe" in kinds
+        assert "gibs.layers.rate-limit" in kinds
+
+        accepted = [
+            row
+            for row in rows
+            if isinstance(row, dict)
+            and str(row.get("record", "")) == chamber_module.GIBS_LAYER_RECORD
+        ]
+        assert len(accepted) == 1
+        refs = accepted[0].get("refs", [])
+        assert isinstance(refs, list)
+        assert any("/wmts/epsg4326/best/" in str(value) for value in refs)
+
+
+def test_gibs_layer_stream_collect_emits_pause_resume_and_compliance_events(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import chamber as chamber_module
+
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+
+        with chamber_module._GIBS_LAYERS_LOCK:
+            chamber_module._GIBS_LAYERS_CACHE.clear()
+            chamber_module._GIBS_LAYERS_CACHE.update(
+                {
+                    "last_poll_monotonic": 0.0,
+                    "connected": False,
+                    "paused": False,
+                    "seen_ids": {},
+                }
+            )
+
+        monkeypatch.setattr(chamber_module, "GIBS_LAYERS_ENABLED", False)
+        chamber_module._collect_gibs_layer_rows(vault)
+
+        monkeypatch.setattr(chamber_module, "GIBS_LAYERS_ENABLED", True)
+        monkeypatch.setattr(chamber_module, "GIBS_LAYERS_POLL_INTERVAL_SECONDS", 0.0)
+        monkeypatch.setattr(
+            chamber_module,
+            "GIBS_LAYERS_CAPABILITIES_ENDPOINT",
+            "http://example.com/wmts.cgi?SERVICE=WMTS&REQUEST=GetCapabilities",
+        )
+
+        calls = {"count": 0}
+
+        def _should_not_fetch(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            calls["count"] += 1
+            return {
+                "ok": True,
+                "error": "",
+                "layers": [],
+                "parse_errors": 0,
+                "bytes_read": 0,
+            }
+
+        monkeypatch.setattr(
+            chamber_module,
+            "_gibs_fetch_capabilities_layers",
+            _should_not_fetch,
+        )
+
+        chamber_module._collect_gibs_layer_rows(vault)
+
+        _, rows = chamber_module._load_gibs_layer_rows(vault, limit=220)
+        kinds = [str(row.get("kind", "")) for row in rows if isinstance(row, dict)]
+        assert "gibs.layers.paused" in kinds
+        assert "gibs.layers.resumed" in kinds
+        assert "gibs.layers.compliance" in kinds
+        compliance_rows = [
+            row
+            for row in rows
+            if isinstance(row, dict)
+            and str(row.get("kind", "")) == "gibs.layers.compliance"
+        ]
+        assert compliance_rows
+        assert str(compliance_rows[-1].get("status", "")) == "blocked"
+        assert calls["count"] == 0
+
+
+def test_emsc_stream_collect_tracks_dedupe_rate_limit_and_parse_errors(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import chamber as chamber_module
+
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+
+        with chamber_module._EMSC_STREAM_LOCK:
+            chamber_module._EMSC_STREAM_CACHE.clear()
+            chamber_module._EMSC_STREAM_CACHE.update(
+                {
+                    "last_poll_monotonic": 0.0,
+                    "connected": False,
+                    "paused": False,
+                    "seen_ids": {},
+                }
+            )
+
+        monkeypatch.setattr(chamber_module, "EMSC_STREAM_ENABLED", True)
+        monkeypatch.setattr(chamber_module, "EMSC_STREAM_POLL_INTERVAL_SECONDS", 0.0)
+        monkeypatch.setattr(chamber_module, "EMSC_STREAM_RATE_LIMIT_PER_POLL", 1)
+
+        def _fake_fetch(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {
+                "ok": True,
+                "error": "",
+                "events": [
+                    {
+                        "action": "create",
+                        "data": {
+                            "properties": {
+                                "unid": "eq-1",
+                                "time": "2026-02-18T00:00:00Z",
+                                "mag": 4.8,
+                                "flynn_region": "Ionian Sea",
+                            },
+                            "geometry": {"coordinates": [20.2, 37.8, 10.0]},
+                        },
+                    },
+                    {
+                        "action": "create",
+                        "data": {
+                            "properties": {
+                                "unid": "eq-1",
+                                "time": "2026-02-18T00:00:00Z",
+                                "mag": 4.8,
+                                "flynn_region": "Ionian Sea",
+                            },
+                            "geometry": {"coordinates": [20.2, 37.8, 10.0]},
+                        },
+                    },
+                    {
+                        "action": "create",
+                        "data": {
+                            "properties": {
+                                "unid": "eq-2",
+                                "time": "2026-02-18T00:00:03Z",
+                                "mag": 5.1,
+                                "flynn_region": "Aegean Sea",
+                            },
+                            "geometry": {"coordinates": [25.0, 38.5, 8.0]},
+                        },
+                    },
+                ],
+                "parse_errors": 2,
+                "bytes_read": 512,
+            }
+
+        monkeypatch.setattr(chamber_module, "_emsc_fetch_ws_events", _fake_fetch)
+
+        chamber_module._collect_emsc_stream_rows(vault)
+        log_path, rows = chamber_module._load_emsc_stream_rows(vault, limit=220)
+        assert log_path.endswith("emsc_stream.v1.jsonl")
+
+        kinds = {str(row.get("kind", "")) for row in rows if isinstance(row, dict)}
+        assert "emsc.stream.connected" in kinds
+        assert "emsc.stream.poll" in kinds
+        assert "emsc.stream.parse-error" in kinds
+        assert "emsc.stream.dedupe" in kinds
+        assert "emsc.stream.rate-limit" in kinds
+
+        accepted = [
+            row
+            for row in rows
+            if isinstance(row, dict)
+            and str(row.get("record", "")) == chamber_module.EMSC_EVENT_RECORD
+        ]
+        assert len(accepted) == 1
+
+
+def test_emsc_stream_collect_emits_pause_resume_events(monkeypatch: Any) -> None:
+    from code.world_web import chamber as chamber_module
+
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+
+        with chamber_module._EMSC_STREAM_LOCK:
+            chamber_module._EMSC_STREAM_CACHE.clear()
+            chamber_module._EMSC_STREAM_CACHE.update(
+                {
+                    "last_poll_monotonic": 0.0,
+                    "connected": False,
+                    "paused": False,
+                    "seen_ids": {},
+                }
+            )
+
+        monkeypatch.setattr(chamber_module, "EMSC_STREAM_ENABLED", False)
+        chamber_module._collect_emsc_stream_rows(vault)
+
+        monkeypatch.setattr(chamber_module, "EMSC_STREAM_ENABLED", True)
+        monkeypatch.setattr(chamber_module, "EMSC_STREAM_POLL_INTERVAL_SECONDS", 0.0)
+
+        def _empty_fetch(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {
+                "ok": True,
+                "error": "",
+                "events": [],
+                "parse_errors": 0,
+                "bytes_read": 0,
+            }
+
+        monkeypatch.setattr(chamber_module, "_emsc_fetch_ws_events", _empty_fetch)
+        chamber_module._collect_emsc_stream_rows(vault)
+
+        _, rows = chamber_module._load_emsc_stream_rows(vault, limit=220)
+        kinds = [str(row.get("kind", "")) for row in rows if isinstance(row, dict)]
+        assert "emsc.stream.paused" in kinds
+        assert "emsc.stream.resumed" in kinds
+
+
+def test_world_log_payload_includes_nws_and_emsc_rows_and_embeddings(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import chamber as chamber_module
+
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+        part = vault / "eta_mu_part_64"
+        _create_fixture_tree(part)
+
+        chamber_module._append_nws_alert_rows(
+            vault,
+            [
+                {
+                    "record": chamber_module.NWS_ALERT_RECORD,
+                    "id": "nws:test-1",
+                    "ts": "2026-02-18T00:00:00Z",
+                    "source": "nws_alerts",
+                    "kind": "nws.alert.flood-watch",
+                    "status": "actual",
+                    "title": "Flood watch",
+                    "detail": "fixture alert",
+                    "refs": ["https://api.weather.gov/alerts/TEST"],
+                    "tags": ["nws", "flood-watch"],
+                    "meta": {},
+                }
+            ],
+        )
+        chamber_module._append_emsc_stream_rows(
+            vault,
+            [
+                {
+                    "record": chamber_module.EMSC_EVENT_RECORD,
+                    "id": "emsc:test-1",
+                    "ts": "2026-02-18T00:00:01Z",
+                    "source": "emsc_stream",
+                    "kind": "emsc.earthquake",
+                    "status": "recorded",
+                    "title": "M 4.9 earthquake",
+                    "detail": "fixture quake",
+                    "refs": [
+                        "https://www.seismicportal.eu/eventdetails.html?unid=eq-1"
+                    ],
+                    "tags": ["emsc", "earthquake"],
+                    "meta": {},
+                }
+            ],
+        )
+
+        monkeypatch.setattr(
+            chamber_module, "_collect_emsc_stream_rows", lambda _vault: None
+        )
+        monkeypatch.setattr(
+            chamber_module, "_collect_nws_alert_rows", lambda _vault: None
+        )
+        monkeypatch.setattr(
+            chamber_module, "_collect_wikimedia_stream_rows", lambda _vault: None
+        )
+        monkeypatch.setattr(
+            chamber_module, "_collect_gibs_layer_rows", lambda _vault: None
+        )
+
+        payload = build_world_log_payload(part, vault, limit=80)
+        events = payload.get("events", [])
+        nws_events = [
+            row
+            for row in events
+            if isinstance(row, dict) and str(row.get("source", "")) == "nws_alerts"
+        ]
+        emsc_events = [
+            row
+            for row in events
+            if isinstance(row, dict) and str(row.get("source", "")) == "emsc_stream"
+        ]
+        assert nws_events
+        assert emsc_events
+        assert str(nws_events[0].get("embedding_id", "")).startswith("world-event:")
+        assert str(emsc_events[0].get("embedding_id", "")).startswith("world-event:")
+
+
+def test_world_log_payload_includes_swpc_and_eonet_rows_and_embeddings(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import chamber as chamber_module
+
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+        part = vault / "eta_mu_part_64"
+        _create_fixture_tree(part)
+
+        chamber_module._append_swpc_alert_rows(
+            vault,
+            [
+                {
+                    "record": chamber_module.SWPC_ALERT_RECORD,
+                    "id": "swpc:test-1",
+                    "ts": "2026-02-18T00:02:00Z",
+                    "source": "swpc_alerts",
+                    "kind": "swpc.alert.alert",
+                    "status": "actual",
+                    "title": "ALERT ALTK08 #101",
+                    "detail": "fixture swpc alert",
+                    "refs": ["https://services.swpc.noaa.gov/products/alerts.json"],
+                    "tags": ["swpc", "space-weather"],
+                    "meta": {},
+                }
+            ],
+        )
+        chamber_module._append_eonet_event_rows(
+            vault,
+            [
+                {
+                    "record": chamber_module.EONET_EVENT_RECORD,
+                    "id": "eonet:test-1",
+                    "ts": "2026-02-18T00:03:00Z",
+                    "source": "nasa_eonet",
+                    "kind": "eonet.event.wildfires",
+                    "status": "open",
+                    "title": "Wildfire activity",
+                    "detail": "fixture eonet event",
+                    "refs": ["https://eonet.gsfc.nasa.gov/api/v3/events/EONET-1"],
+                    "tags": ["eonet", "wildfires"],
+                    "meta": {},
+                }
+            ],
+        )
+
+        monkeypatch.setattr(
+            chamber_module, "_collect_swpc_alert_rows", lambda _vault: None
+        )
+        monkeypatch.setattr(
+            chamber_module, "_collect_eonet_event_rows", lambda _vault: None
+        )
+        monkeypatch.setattr(
+            chamber_module, "_collect_wikimedia_stream_rows", lambda _vault: None
+        )
+        monkeypatch.setattr(
+            chamber_module, "_collect_gibs_layer_rows", lambda _vault: None
+        )
+        monkeypatch.setattr(
+            chamber_module, "_collect_nws_alert_rows", lambda _vault: None
+        )
+        monkeypatch.setattr(
+            chamber_module, "_collect_emsc_stream_rows", lambda _vault: None
+        )
+
+        payload = build_world_log_payload(part, vault, limit=80)
+        events = payload.get("events", [])
+        swpc_events = [
+            row
+            for row in events
+            if isinstance(row, dict) and str(row.get("source", "")) == "swpc_alerts"
+        ]
+        eonet_events = [
+            row
+            for row in events
+            if isinstance(row, dict) and str(row.get("source", "")) == "nasa_eonet"
+        ]
+        assert swpc_events
+        assert eonet_events
+        assert str(swpc_events[0].get("embedding_id", "")).startswith("world-event:")
+        assert str(eonet_events[0].get("embedding_id", "")).startswith("world-event:")
+
+
+def test_world_log_payload_includes_wikimedia_rows_and_embeddings(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import chamber as chamber_module
+
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+        part = vault / "eta_mu_part_64"
+        _create_fixture_tree(part)
+
+        with chamber_module._WIKIMEDIA_STREAM_LOCK:
+            chamber_module._WIKIMEDIA_STREAM_CACHE.clear()
+            chamber_module._WIKIMEDIA_STREAM_CACHE.update(
+                {
+                    "last_poll_monotonic": 0.0,
+                    "connected": False,
+                    "paused": False,
+                    "seen_ids": {},
+                }
+            )
+
+        chamber_module._append_wikimedia_stream_rows(
+            vault,
+            [
+                {
+                    "record": chamber_module.WIKIMEDIA_EVENT_RECORD,
+                    "id": "wikimedia:test-1",
+                    "ts": "2026-02-18T00:00:00Z",
+                    "source": "wikimedia_eventstreams",
+                    "kind": "wikimedia.edit",
+                    "status": "recorded",
+                    "title": "Alpha",
+                    "detail": "fixture event",
+                    "refs": ["https://en.wikipedia.org/wiki/Alpha"],
+                    "tags": ["enwiki", "edit"],
+                    "meta": {},
+                }
+            ],
+        )
+
+        monkeypatch.setattr(
+            chamber_module, "_collect_wikimedia_stream_rows", lambda _vault: None
+        )
+        monkeypatch.setattr(
+            chamber_module, "_collect_gibs_layer_rows", lambda _vault: None
+        )
+
+        payload = build_world_log_payload(part, vault, limit=60)
+        events = payload.get("events", [])
+        wiki_events = [
+            row
+            for row in events
+            if isinstance(row, dict)
+            and str(row.get("source", "")) == "wikimedia_eventstreams"
+        ]
+        assert wiki_events
+        sample = wiki_events[0]
+        assert str(sample.get("embedding_id", "")).startswith("world-event:")
+
+
+def test_world_log_payload_includes_gibs_rows_and_embeddings(monkeypatch: Any) -> None:
+    from code.world_web import chamber as chamber_module
+
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+        part = vault / "eta_mu_part_64"
+        _create_fixture_tree(part)
+
+        with chamber_module._GIBS_LAYERS_LOCK:
+            chamber_module._GIBS_LAYERS_CACHE.clear()
+            chamber_module._GIBS_LAYERS_CACHE.update(
+                {
+                    "last_poll_monotonic": 0.0,
+                    "connected": False,
+                    "paused": False,
+                    "seen_ids": {},
+                }
+            )
+
+        chamber_module._append_gibs_layer_rows(
+            vault,
+            [
+                {
+                    "record": chamber_module.GIBS_LAYER_RECORD,
+                    "id": "gibs:test-1",
+                    "ts": "2026-02-18T00:00:00Z",
+                    "source": "nasa_gibs",
+                    "kind": "gibs.layer.modis-terra-correctedreflectance-truecolor",
+                    "status": "recorded",
+                    "title": "MODIS Terra True Color",
+                    "detail": "fixture layer event",
+                    "refs": [
+                        "https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/MODIS_Terra_CorrectedReflectance_TrueColor/default/2026-02-18/250m/2/1/1.jpg"
+                    ],
+                    "tags": ["gibs", "nasa", "satellite"],
+                    "meta": {},
+                }
+            ],
+        )
+
+        monkeypatch.setattr(
+            chamber_module, "_collect_gibs_layer_rows", lambda _vault: None
+        )
+
+        payload = build_world_log_payload(part, vault, limit=60)
+        events = payload.get("events", [])
+        gibs_events = [
+            row
+            for row in events
+            if isinstance(row, dict) and str(row.get("source", "")) == "nasa_gibs"
+        ]
+        assert gibs_events
+        sample = gibs_events[0]
+        assert str(sample.get("embedding_id", "")).startswith("world-event:")
+
+
+def test_eta_mu_vecstore_upsert_batch_mirrors_embeddings_with_chroma(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import db as db_module
+
+    class FakeCollection:
+        def upsert(self, **_kwargs: Any) -> None:
+            return
+
+    monkeypatch.setattr(
+        db_module,
+        "_get_eta_mu_chroma_collection",
+        lambda _collection_name: FakeCollection(),
+    )
+
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+        result = db_module._eta_mu_vecstore_upsert_batch(
+            vault,
+            rows=[
+                {
+                    "id": "emb_test_world_log_1",
+                    "embedding": [0.2, 0.1, -0.3, 0.4],
+                    "metadata": {"source.loc": "sample/path.md"},
+                    "document": "sample vector row",
+                    "model": "stub-model",
+                }
+            ],
+            collection_name="eta_mu_test_collection",
+            space_set_signature="space.sig.test",
+        )
+
+        assert result.get("ok") is True
+        assert result.get("backend") == "chroma"
+        assert int(result.get("mirrored", 0)) >= 1
+
+        listing = world_web_module._embedding_db_list(vault, limit=20)
+        ids = [
+            str(row.get("id", ""))
+            for row in listing.get("entries", [])
+            if isinstance(row, dict)
+        ]
+        assert "emb_test_world_log_1" in ids
 
 
 def test_pi_archive_hash_is_deterministic_for_stable_payload() -> None:
@@ -1665,6 +3880,144 @@ def test_ollama_embed_prefers_explicit_model_over_env(monkeypatch: Any) -> None:
     assert seen_models == ["arg-model"]
 
 
+def test_ollama_embed_force_nomic_with_small_context(monkeypatch: Any) -> None:
+    class _FakeResponse:
+        def __enter__(self) -> "_FakeResponse":
+            return self
+
+        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps({"embedding": [0.7, 0.8, 0.9]}).encode("utf-8")
+
+    seen_payloads: list[dict[str, Any]] = []
+
+    def fake_urlopen(req: Any, timeout: float = 0.0) -> _FakeResponse:
+        _ = timeout
+        payload = json.loads((req.data or b"{}").decode("utf-8"))
+        seen_payloads.append(payload)
+        return _FakeResponse()
+
+    monkeypatch.setattr(world_web_module, "urlopen", fake_urlopen)
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://stub.local:11434")
+    monkeypatch.setenv("OLLAMA_EMBED_MODEL", "qwen3-embedding:8b")
+    monkeypatch.setenv("OLLAMA_EMBED_FORCE_NOMIC", "1")
+    monkeypatch.setenv("OLLAMA_EMBED_NUM_CTX", "512")
+    monkeypatch.setenv("OLLAMA_EMBED_MAX_CHARS", "6")
+
+    vector = world_web_module._ollama_embed("abcdefghi", model="arg-model")
+
+    assert vector == [0.7, 0.8, 0.9]
+    assert seen_payloads[0]["model"] == "nomic-embed-text"
+    assert seen_payloads[0]["prompt"] == "abcdef"
+    assert seen_payloads[0]["options"] == {"num_ctx": 512}
+
+
+def test_effective_request_embed_model_honors_force_nomic(monkeypatch: Any) -> None:
+    from code.world_web import server as server_module
+
+    monkeypatch.setenv("OLLAMA_EMBED_FORCE_NOMIC", "1")
+    assert (
+        server_module._effective_request_embed_model("qwen3-embedding:8b")
+        == "nomic-embed-text"
+    )
+
+    monkeypatch.setenv("OLLAMA_EMBED_FORCE_NOMIC", "0")
+    assert (
+        server_module._effective_request_embed_model("qwen3-embedding:8b")
+        == "qwen3-embedding:8b"
+    )
+
+
+def test_openvino_embed_uses_local_endpoint_device_and_normalization(
+    monkeypatch: Any,
+) -> None:
+    class _FakeResponse:
+        def __init__(self, payload: dict[str, Any]) -> None:
+            self._payload = payload
+
+        def __enter__(self) -> "_FakeResponse":
+            return self
+
+        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(self._payload).encode("utf-8")
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_urlopen(req: Any, timeout: float = 0.0) -> _FakeResponse:
+        payload = json.loads((req.data or b"{}").decode("utf-8"))
+        headers = {str(k).lower(): str(v) for k, v in req.header_items()}
+        calls.append(
+            {
+                "url": str(req.full_url),
+                "timeout": timeout,
+                "payload": payload,
+                "headers": headers,
+            }
+        )
+        return _FakeResponse({"embedding": [3.0, 4.0]})
+
+    monkeypatch.setattr(world_web_module, "urlopen", fake_urlopen)
+    monkeypatch.setenv("OPENVINO_EMBED_ENDPOINT", "http://ov.local:18000/v1/embeddings")
+    monkeypatch.setenv("OPENVINO_EMBED_DEVICE", "NPU")
+    monkeypatch.setenv("OPENVINO_EMBED_MODEL", "nomic-embed-text")
+    monkeypatch.setenv("OPENVINO_EMBED_TIMEOUT_SEC", "7")
+    monkeypatch.setenv("OPENVINO_EMBED_MAX_CHARS", "5")
+    monkeypatch.setenv("OPENVINO_EMBED_NORMALIZE", "1")
+    monkeypatch.setenv("OPENVINO_EMBED_BEARER_TOKEN", "secret-token")
+
+    vector = world_web_module._openvino_embed("abcdefghi")
+
+    assert vector is not None
+    assert len(calls) >= 1
+    assert calls[0]["url"].endswith("/v1/embeddings")
+    assert calls[0]["payload"]["model"] == "nomic-embed-text"
+    assert calls[0]["payload"]["input"] == ["abcde"]
+    assert calls[0]["payload"]["options"]["device"] == "NPU"
+    assert calls[0]["headers"]["authorization"] == "Bearer secret-token"
+    assert calls[0]["timeout"] == 7.0
+    assert abs(vector[0] - 0.6) < 1e-6
+    assert abs(vector[1] - 0.8) < 1e-6
+
+
+def test_apply_embedding_provider_options_supports_gpu_and_npu_presets(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setenv("EMBEDDINGS_BACKEND", "ollama")
+    monkeypatch.setenv("OLLAMA_EMBED_FORCE_NOMIC", "0")
+    monkeypatch.setenv("OPENVINO_EMBED_DEVICE", "CPU")
+
+    gpu_result = world_web_module._apply_embedding_provider_options(
+        {
+            "preset": "gpu_local",
+            "ollama_embed_num_ctx": 384,
+        }
+    )
+    assert gpu_result.get("ok") is True
+    assert os.getenv("EMBEDDINGS_BACKEND") == "ollama"
+    assert os.getenv("OLLAMA_EMBED_FORCE_NOMIC") == "1"
+    assert os.getenv("OLLAMA_EMBED_NUM_CTX") == "384"
+
+    npu_result = world_web_module._apply_embedding_provider_options(
+        {
+            "preset": "npu_local",
+            "openvino_endpoint": "http://ov.local:18000/v1/embeddings",
+            "openvino_bearer_token": "ov-token",
+        }
+    )
+    assert npu_result.get("ok") is True
+    assert os.getenv("EMBEDDINGS_BACKEND") == "openvino"
+    assert os.getenv("OPENVINO_EMBED_DEVICE") == "NPU"
+    assert os.getenv("OPENVINO_EMBED_BEARER_TOKEN") == "ov-token"
+    options = npu_result.get("options", {}).get("config", {})
+    assert options.get("openvino_auth_mode") == "bearer"
+    assert options.get("openvino_auth_header_name") == "Authorization"
+
+
 def test_eta_mu_space_forms_support_layered_collections(monkeypatch: Any) -> None:
     monkeypatch.setattr(
         world_web_module, "ETA_MU_INGEST_VECSTORE_LAYER_MODE", "signature"
@@ -1735,6 +4088,503 @@ def test_simulation_state_includes_file_graph_nodes() -> None:
     assert simulation.get("file_graph", {}).get("record") == "ημ.file-graph.v1"
     assert simulation.get("total", 0) >= 1
     assert len(simulation.get("points", [])) == simulation.get("total", 0)
+
+
+def test_simulation_state_applies_document_similarity_layout_to_points() -> None:
+    catalog = {
+        "items": [],
+        "counts": {},
+        "file_graph": {
+            "record": "ημ.file-graph.v1",
+            "generated_at": "2026-02-16T00:00:00+00:00",
+            "inbox": {
+                "record": "ημ.inbox.v1",
+                "path": "/tmp/.ημ",
+                "pending_count": 0,
+                "processed_count": 2,
+                "failed_count": 0,
+                "is_empty": True,
+                "knowledge_entries": 2,
+                "last_ingested_at": "2026-02-16T00:00:00+00:00",
+                "errors": [],
+            },
+            "nodes": [],
+            "field_nodes": [],
+            "file_nodes": [
+                {
+                    "id": "file:left",
+                    "name": "alpha_notes.md",
+                    "kind": "text",
+                    "summary": "alpha witness archive",
+                    "tags": ["alpha", "witness"],
+                    "dominant_field": "f6",
+                    "x": 0.5,
+                    "y": 0.5,
+                    "hue": 210,
+                    "importance": 1.0,
+                },
+                {
+                    "id": "file:right",
+                    "name": "alpha_archive.md",
+                    "kind": "text",
+                    "summary": "alpha witness archive",
+                    "tags": ["alpha", "witness"],
+                    "dominant_field": "f6",
+                    "x": 0.54,
+                    "y": 0.5,
+                    "hue": 210,
+                    "importance": 1.0,
+                },
+            ],
+            "edges": [],
+            "stats": {
+                "field_count": 1,
+                "file_count": 2,
+                "edge_count": 0,
+                "kind_counts": {"text": 2},
+                "field_counts": {"f6": 2},
+                "knowledge_entries": 2,
+            },
+        },
+    }
+
+    simulation = build_simulation_state(catalog)
+    sim_graph = simulation.get("file_graph", {})
+    sim_nodes = sim_graph.get("file_nodes", [])
+    assert isinstance(sim_nodes, list)
+    assert len(sim_nodes) == 2
+
+    left = sim_nodes[0]
+    right = sim_nodes[1]
+    assert float(left.get("x", 0.0)) > 0.5
+    assert float(right.get("x", 1.0)) < 0.54
+
+    points = simulation.get("points", [])
+    assert len(points) >= 2
+    left_point = points[0]
+    right_point = points[1]
+    expected_left_x = round((float(left.get("x", 0.5)) * 2.0) - 1.0, 5)
+    expected_right_x = round((float(right.get("x", 0.5)) * 2.0) - 1.0, 5)
+    assert abs(float(left_point.get("x", 0.0)) - expected_left_x) <= 1e-5
+    assert abs(float(right_point.get("x", 0.0)) - expected_right_x) <= 1e-5
+
+
+def test_simulation_state_document_similarity_layout_is_subtle() -> None:
+    catalog = {
+        "items": [],
+        "counts": {},
+        "file_graph": {
+            "record": "ημ.file-graph.v1",
+            "generated_at": "2026-02-16T00:00:00+00:00",
+            "inbox": {
+                "record": "ημ.inbox.v1",
+                "path": "/tmp/.ημ",
+                "pending_count": 0,
+                "processed_count": 2,
+                "failed_count": 0,
+                "is_empty": True,
+                "knowledge_entries": 2,
+                "last_ingested_at": "2026-02-16T00:00:00+00:00",
+                "errors": [],
+            },
+            "nodes": [],
+            "field_nodes": [],
+            "file_nodes": [
+                {
+                    "id": "file:left",
+                    "name": "alpha_notes.md",
+                    "kind": "text",
+                    "summary": "alpha witness archive",
+                    "tags": ["alpha", "witness"],
+                    "dominant_field": "f6",
+                    "x": 0.4,
+                    "y": 0.5,
+                    "hue": 210,
+                    "importance": 1.0,
+                },
+                {
+                    "id": "file:right",
+                    "name": "gamma_image.png",
+                    "kind": "image",
+                    "summary": "solar flare telemetry",
+                    "tags": ["solar", "flare"],
+                    "dominant_field": "f1",
+                    "x": 0.44,
+                    "y": 0.5,
+                    "hue": 320,
+                    "importance": 1.0,
+                },
+            ],
+            "edges": [],
+            "stats": {
+                "field_count": 2,
+                "file_count": 2,
+                "edge_count": 0,
+                "kind_counts": {"text": 1, "image": 1},
+                "field_counts": {"f1": 1, "f6": 1},
+                "knowledge_entries": 2,
+            },
+        },
+    }
+
+    simulation = build_simulation_state(catalog)
+    sim_nodes = simulation.get("file_graph", {}).get("file_nodes", [])
+    assert isinstance(sim_nodes, list)
+    assert len(sim_nodes) == 2
+
+    left_x = float(sim_nodes[0].get("x", 0.4))
+    right_x = float(sim_nodes[1].get("x", 0.44))
+    assert left_x < 0.4
+    assert right_x > 0.44
+
+    assert abs(left_x - 0.4) < 0.03
+    assert abs(right_x - 0.44) < 0.03
+
+
+def test_simulation_state_embedded_nodes_repel_non_embedded_nodes() -> None:
+    catalog = {
+        "items": [],
+        "counts": {},
+        "file_graph": {
+            "record": "ημ.file-graph.v1",
+            "generated_at": "2026-02-16T00:00:00+00:00",
+            "inbox": {
+                "record": "ημ.inbox.v1",
+                "path": "/tmp/.ημ",
+                "pending_count": 0,
+                "processed_count": 2,
+                "failed_count": 0,
+                "is_empty": True,
+                "knowledge_entries": 2,
+                "last_ingested_at": "2026-02-16T00:00:00+00:00",
+                "errors": [],
+            },
+            "nodes": [],
+            "field_nodes": [],
+            "file_nodes": [
+                {
+                    "id": "file:embedded",
+                    "name": "alpha_embed.md",
+                    "kind": "text",
+                    "summary": "alpha witness archive",
+                    "tags": ["alpha", "witness"],
+                    "dominant_field": "f6",
+                    "vecstore_collection": "eta_mu_nexus_v1",
+                    "embed_layer_count": 1,
+                    "x": 0.5,
+                    "y": 0.5,
+                    "hue": 210,
+                    "importance": 1.0,
+                },
+                {
+                    "id": "file:plain",
+                    "name": "alpha_plain.md",
+                    "kind": "text",
+                    "summary": "alpha witness archive",
+                    "tags": ["alpha", "witness"],
+                    "dominant_field": "f6",
+                    "x": 0.52,
+                    "y": 0.5,
+                    "hue": 210,
+                    "importance": 1.0,
+                },
+            ],
+            "edges": [],
+            "stats": {
+                "field_count": 1,
+                "file_count": 2,
+                "edge_count": 0,
+                "kind_counts": {"text": 2},
+                "field_counts": {"f6": 2},
+                "knowledge_entries": 2,
+            },
+        },
+    }
+
+    simulation = build_simulation_state(catalog)
+    sim_nodes = simulation.get("file_graph", {}).get("file_nodes", [])
+    assert isinstance(sim_nodes, list)
+    assert len(sim_nodes) == 2
+
+    embedded_x = float(sim_nodes[0].get("x", 0.5))
+    plain_x = float(sim_nodes[1].get("x", 0.52))
+    assert embedded_x < 0.5
+    assert plain_x > 0.52
+    assert abs(embedded_x - 0.5) < 0.03
+    assert abs(plain_x - 0.52) < 0.03
+
+
+def test_simulation_state_emits_embedding_particles_for_embedded_files(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(world_web_module.time, "time", lambda: 1_700_001_234.0)
+    catalog = {
+        "items": [],
+        "counts": {},
+        "file_graph": {
+            "record": "ημ.file-graph.v1",
+            "generated_at": "2026-02-16T00:00:00+00:00",
+            "inbox": {
+                "record": "ημ.inbox.v1",
+                "path": "/tmp/.ημ",
+                "pending_count": 0,
+                "processed_count": 2,
+                "failed_count": 0,
+                "is_empty": True,
+                "knowledge_entries": 2,
+                "last_ingested_at": "2026-02-16T00:00:00+00:00",
+                "errors": [],
+            },
+            "nodes": [],
+            "field_nodes": [],
+            "file_nodes": [
+                {
+                    "id": "file:embed-left",
+                    "name": "left.md",
+                    "kind": "text",
+                    "summary": "alpha witness archive stream",
+                    "tags": ["alpha", "witness", "stream"],
+                    "dominant_field": "f6",
+                    "vecstore_collection": "eta_mu_nexus_v1",
+                    "embed_layer_count": 1,
+                    "x": 0.45,
+                    "y": 0.5,
+                    "hue": 210,
+                    "importance": 0.9,
+                },
+                {
+                    "id": "file:embed-right",
+                    "name": "right.md",
+                    "kind": "text",
+                    "summary": "alpha witness archive stream",
+                    "tags": ["alpha", "witness", "archive"],
+                    "dominant_field": "f6",
+                    "vecstore_collection": "eta_mu_nexus_v1",
+                    "embed_layer_count": 1,
+                    "x": 0.55,
+                    "y": 0.5,
+                    "hue": 210,
+                    "importance": 0.9,
+                },
+            ],
+            "edges": [],
+            "stats": {
+                "field_count": 1,
+                "file_count": 2,
+                "edge_count": 0,
+                "kind_counts": {"text": 2},
+                "field_counts": {"f6": 2},
+                "knowledge_entries": 2,
+            },
+        },
+    }
+
+    simulation = build_simulation_state(catalog)
+    embedding_particles = simulation.get("embedding_particles", [])
+    assert isinstance(embedding_particles, list)
+    assert len(embedding_particles) >= 6
+    assert any(float(row.get("size", 0.0)) > 2.0 for row in embedding_particles)
+
+    for row in embedding_particles[:3]:
+        assert -1.0 <= float(row.get("x", 0.0)) <= 1.0
+        assert -1.0 <= float(row.get("y", 0.0)) <= 1.0
+
+    graph_particles = simulation.get("file_graph", {}).get("embedding_particles", [])
+    assert isinstance(graph_particles, list)
+    assert len(graph_particles) == len(embedding_particles)
+
+
+def test_embedding_particles_bias_toward_denser_nearby_documents(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(world_web_module.time, "time", lambda: 1_700_009_999.0)
+
+    dense_text = "alpha witness archive stream " * 80
+    sparse_text = "alpha witness"
+
+    def _catalog_for_density(left_summary: str, right_summary: str) -> dict[str, Any]:
+        return {
+            "items": [],
+            "counts": {},
+            "file_graph": {
+                "record": "ημ.file-graph.v1",
+                "generated_at": "2026-02-16T00:00:00+00:00",
+                "inbox": {
+                    "record": "ημ.inbox.v1",
+                    "path": "/tmp/.ημ",
+                    "pending_count": 0,
+                    "processed_count": 2,
+                    "failed_count": 0,
+                    "is_empty": True,
+                    "knowledge_entries": 2,
+                    "last_ingested_at": "2026-02-16T00:00:00+00:00",
+                    "errors": [],
+                },
+                "nodes": [],
+                "field_nodes": [],
+                "file_nodes": [
+                    {
+                        "id": "file:left",
+                        "name": "alpha_note.md",
+                        "kind": "text",
+                        "summary": left_summary,
+                        "text_excerpt": left_summary,
+                        "tags": ["alpha", "witness", "archive"],
+                        "dominant_field": "f6",
+                        "vecstore_collection": "eta_mu_nexus_v1",
+                        "embed_layer_count": 1,
+                        "x": 0.44,
+                        "y": 0.5,
+                        "hue": 210,
+                        "importance": 0.9,
+                    },
+                    {
+                        "id": "file:right",
+                        "name": "alpha_note.md",
+                        "kind": "text",
+                        "summary": right_summary,
+                        "text_excerpt": right_summary,
+                        "tags": ["alpha", "witness", "archive"],
+                        "dominant_field": "f6",
+                        "vecstore_collection": "eta_mu_nexus_v1",
+                        "embed_layer_count": 1,
+                        "x": 0.56,
+                        "y": 0.5,
+                        "hue": 210,
+                        "importance": 0.9,
+                    },
+                ],
+                "edges": [],
+                "stats": {
+                    "field_count": 1,
+                    "file_count": 2,
+                    "edge_count": 0,
+                    "kind_counts": {"text": 2},
+                    "field_counts": {"f6": 2},
+                    "knowledge_entries": 2,
+                },
+            },
+        }
+
+    left_dense = build_simulation_state(_catalog_for_density(dense_text, sparse_text))
+    right_dense = build_simulation_state(_catalog_for_density(sparse_text, dense_text))
+
+    left_particles = left_dense.get("embedding_particles", [])
+    right_particles = right_dense.get("embedding_particles", [])
+    assert isinstance(left_particles, list)
+    assert isinstance(right_particles, list)
+    assert left_particles
+    assert right_particles
+
+    left_mean_x = sum(
+        (float(row.get("x", 0.0)) + 1.0) * 0.5 for row in left_particles
+    ) / len(left_particles)
+    right_mean_x = sum(
+        (float(row.get("x", 0.0)) + 1.0) * 0.5 for row in right_particles
+    ) / len(right_particles)
+
+    assert left_mean_x < right_mean_x
+    assert abs(right_mean_x - left_mean_x) > 0.0004
+
+
+def test_logical_graph_includes_world_log_event_nodes() -> None:
+    catalog = {
+        "items": [],
+        "counts": {},
+        "file_graph": {
+            "record": "ημ.file-graph.v1",
+            "generated_at": "2026-02-16T00:00:00+00:00",
+            "inbox": {
+                "record": "ημ.inbox.v1",
+                "path": "/tmp/.ημ",
+                "pending_count": 0,
+                "processed_count": 0,
+                "failed_count": 0,
+                "is_empty": True,
+                "knowledge_entries": 1,
+                "last_ingested_at": "",
+                "errors": [],
+            },
+            "nodes": [],
+            "field_nodes": [],
+            "file_nodes": [
+                {
+                    "id": "file:abc",
+                    "node_id": "knowledge:abc",
+                    "node_type": "file",
+                    "label": "pending_note.md",
+                    "source_rel_path": ".ημ/pending_note.md",
+                    "x": 0.24,
+                    "y": 0.31,
+                    "hue": 210,
+                }
+            ],
+            "edges": [],
+            "stats": {
+                "field_count": 0,
+                "file_count": 1,
+                "edge_count": 0,
+                "kind_counts": {},
+                "field_counts": {},
+                "knowledge_entries": 1,
+            },
+        },
+        "world_log": {
+            "ok": True,
+            "record": "ημ.world-log.v1",
+            "generated_at": "2026-02-16T00:00:00+00:00",
+            "count": 2,
+            "limit": 180,
+            "pending_inbox": 1,
+            "sources": {"eta_mu_inbox": 1, "receipt": 1},
+            "kinds": {"eta_mu.pending": 1, ":decision": 1},
+            "relation_count": 1,
+            "events": [
+                {
+                    "id": "evt_a",
+                    "source": "eta_mu_inbox",
+                    "kind": "eta_mu.pending",
+                    "status": "pending",
+                    "title": "pending inbox file",
+                    "detail": "awaiting ingest",
+                    "refs": [".ημ/pending_note.md"],
+                    "x": 0.4,
+                    "y": 0.5,
+                    "relations": [{"event_id": "evt_b", "score": 0.8}],
+                },
+                {
+                    "id": "evt_b",
+                    "source": "receipt",
+                    "kind": ":decision",
+                    "status": "recorded",
+                    "title": "decision",
+                    "detail": "recorded",
+                    "refs": ["receipts.log"],
+                    "x": 0.6,
+                    "y": 0.55,
+                    "relations": [{"event_id": "evt_a", "score": 0.8}],
+                },
+            ],
+        },
+    }
+
+    simulation = build_simulation_state(catalog)
+    logical_graph = simulation.get("logical_graph", {})
+    nodes = logical_graph.get("nodes", [])
+    edges = logical_graph.get("edges", [])
+
+    assert any(
+        isinstance(node, dict) and str(node.get("kind", "")) == "event"
+        for node in nodes
+    )
+    assert any(
+        isinstance(edge, dict) and str(edge.get("kind", "")) == "mentions"
+        for edge in edges
+    )
+    assert any(
+        isinstance(edge, dict) and str(edge.get("kind", "")) == "correlates"
+        for edge in edges
+    )
 
 
 def test_catalog_includes_crawler_graph_nodes_and_edges(monkeypatch: Any) -> None:
@@ -2309,6 +5159,46 @@ def test_runtime_influence_tracker_reports_bilingual_fork_tax_and_ghost() -> Non
     assert snapshot["ghost"]["ja"] == "ファイルの哨戒者"
 
 
+def test_runtime_influence_tracker_records_compute_jobs() -> None:
+    tracker = RuntimeInfluenceTracker()
+    tracker.record_compute_job(
+        kind="embedding",
+        op="embed.ollama",
+        backend="ollama",
+        resource="gpu",
+        emitter_presence_id="health_sentinel_gpu1",
+        target_presence_id="file_organizer",
+        model="nomic-embed-text",
+        status="ok",
+        latency_ms=24.7,
+    )
+    tracker.record_compute_job(
+        kind="llm",
+        op="text_generate.ollama",
+        backend="ollama",
+        resource="gpu",
+        emitter_presence_id="health_sentinel_gpu1",
+        target_presence_id="witness_thread",
+        model="qwen3-vl:2b-instruct",
+        status="error",
+        latency_ms=131.0,
+        error="timeout",
+    )
+
+    snapshot = tracker.snapshot(queue_snapshot={"pending_count": 0, "event_count": 0})
+    assert snapshot.get("compute_jobs_180s") == 2
+    summary = snapshot.get("compute_summary", {})
+    assert summary.get("llm_jobs") == 1
+    assert summary.get("embedding_jobs") == 1
+    assert summary.get("error_count") == 1
+    assert summary.get("resource_counts", {}).get("gpu") == 2
+    jobs = snapshot.get("compute_jobs", [])
+    assert isinstance(jobs, list)
+    assert len(jobs) >= 2
+    assert str(jobs[0].get("id", "")).startswith("compute:")
+    assert jobs[0].get("resource") == "gpu"
+
+
 def test_runtime_influence_tracker_accepts_manual_fork_tax_payment() -> None:
     tracker = RuntimeInfluenceTracker()
     tracker.record_file_delta(
@@ -2340,6 +5230,31 @@ def test_simulation_state_includes_presence_dynamics_and_file_sentinel() -> None
         influence_snapshot={
             "clicks_45s": 2,
             "file_changes_120s": 4,
+            "compute_jobs_180s": 2,
+            "compute_summary": {
+                "llm_jobs": 1,
+                "embedding_jobs": 1,
+                "ok_count": 1,
+                "error_count": 1,
+                "resource_counts": {"gpu": 2},
+            },
+            "compute_jobs": [
+                {
+                    "id": "compute:test-1",
+                    "at": "2026-02-18T00:00:00+00:00",
+                    "ts": 1_700_000_000.0,
+                    "kind": "llm",
+                    "op": "text_generate.ollama",
+                    "backend": "ollama",
+                    "resource": "gpu",
+                    "emitter_presence_id": "health_sentinel_gpu1",
+                    "target_presence_id": "witness_thread",
+                    "model": "qwen3-vl:2b-instruct",
+                    "status": "ok",
+                    "latency_ms": 84.2,
+                    "error": "",
+                }
+            ],
             "recent_click_targets": ["particle_field"],
             "recent_file_paths": ["receipts.log"],
             "fork_tax": {
@@ -2374,6 +5289,24 @@ def test_simulation_state_includes_presence_dynamics_and_file_sentinel() -> None
     impacts = dynamics.get("presence_impacts", [])
     assert any(item.get("id") == "receipt_river" for item in impacts)
     assert any(item.get("id") == "file_sentinel" for item in impacts)
+    assert dynamics.get("compute_jobs_180s") == 2
+    assert dynamics.get("compute_summary", {}).get("llm_jobs") == 1
+    compute_jobs = dynamics.get("compute_jobs", [])
+    assert isinstance(compute_jobs, list)
+    assert compute_jobs[0].get("id") == "compute:test-1"
+    assert compute_jobs[0].get("emitter_presence_id") == "health_sentinel_gpu1"
+    field_particles = dynamics.get("field_particles", [])
+    assert isinstance(field_particles, list)
+    assert dynamics.get("field_particles_record") == "ημ.field-particles.v1"
+    assert simulation.get("field_particles") == field_particles
+    if field_particles:
+        first_particle = field_particles[0]
+        assert str(first_particle.get("presence_id", "")).strip()
+        assert str(first_particle.get("presence_role", "")).strip()
+        assert first_particle.get("particle_mode") in {"neutral", "role-bound"}
+        assert 0.0 <= float(first_particle.get("r", 0.0)) <= 0.8
+        assert 0.0 <= float(first_particle.get("g", 0.0)) <= 0.8
+        assert 0.0 <= float(first_particle.get("b", 0.0)) <= 0.8
 
 
 def test_simulation_state_witness_thread_uses_idle_lineage_without_events() -> None:
@@ -2409,6 +5342,247 @@ def test_simulation_state_witness_thread_uses_idle_lineage_without_events() -> N
     assert isinstance(lineage, list)
     assert lineage[0]["kind"] == "idle"
     assert lineage[0]["ref"] == "awaiting-touch"
+
+
+def test_backend_field_particles_shift_toward_embedded_similarity(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(world_web_module.time, "time", lambda: 1_700_100_000.0)
+
+    base_catalog = {
+        "items": [],
+        "counts": {},
+        "file_graph": {
+            "record": "ημ.file-graph.v1",
+            "generated_at": "2026-02-16T00:00:00+00:00",
+            "inbox": {
+                "record": "ημ.inbox.v1",
+                "path": "/tmp/.ημ",
+                "pending_count": 0,
+                "processed_count": 2,
+                "failed_count": 0,
+                "is_empty": True,
+                "knowledge_entries": 2,
+                "last_ingested_at": "2026-02-16T00:00:00+00:00",
+                "errors": [],
+            },
+            "nodes": [],
+            "field_nodes": [],
+            "file_nodes": [],
+            "edges": [],
+            "stats": {
+                "field_count": 1,
+                "file_count": 2,
+                "edge_count": 0,
+                "kind_counts": {"text": 2},
+                "field_counts": {"f2": 2},
+                "knowledge_entries": 2,
+            },
+        },
+    }
+
+    embed_catalog = json.loads(json.dumps(base_catalog))
+    embed_catalog["file_graph"]["file_nodes"] = [
+        {
+            "id": "file:witness-embed",
+            "name": "witness_trace.md",
+            "kind": "text",
+            "summary": "witness trace continuity lineage",
+            "text_excerpt": "witness trace continuity lineage",
+            "tags": ["witness", "trace", "lineage"],
+            "dominant_field": "f2",
+            "field_scores": {"f2": 0.92, "f7": 0.08},
+            "vecstore_collection": "eta_mu_nexus_v1",
+            "embed_layer_count": 1,
+            "x": 0.7,
+            "y": 0.3,
+            "hue": 250,
+            "importance": 0.95,
+        },
+        {
+            "id": "file:witness-support",
+            "name": "witness_context.md",
+            "kind": "text",
+            "summary": "witness field context",
+            "tags": ["witness", "field"],
+            "dominant_field": "f2",
+            "field_scores": {"f2": 0.86},
+            "x": 0.64,
+            "y": 0.34,
+            "hue": 242,
+            "importance": 0.78,
+        },
+    ]
+
+    plain_catalog = json.loads(json.dumps(base_catalog))
+    plain_catalog["file_graph"]["file_nodes"] = [
+        {
+            "id": "file:witness-plain",
+            "name": "witness_trace.md",
+            "kind": "text",
+            "summary": "witness trace continuity lineage",
+            "text_excerpt": "witness trace continuity lineage",
+            "tags": ["witness", "trace", "lineage"],
+            "dominant_field": "f2",
+            "field_scores": {"f2": 0.92, "f7": 0.08},
+            "x": 0.7,
+            "y": 0.3,
+            "hue": 250,
+            "importance": 0.95,
+        },
+        {
+            "id": "file:witness-support",
+            "name": "witness_context.md",
+            "kind": "text",
+            "summary": "witness field context",
+            "tags": ["witness", "field"],
+            "dominant_field": "f2",
+            "field_scores": {"f2": 0.86},
+            "x": 0.64,
+            "y": 0.34,
+            "hue": 242,
+            "importance": 0.78,
+        },
+    ]
+
+    cache = getattr(world_web_module, "_DAIMO_DYNAMICS_CACHE", {})
+    if isinstance(cache, dict):
+        cache["field_particles"] = {}
+    embed_simulation = build_simulation_state(embed_catalog)
+
+    if isinstance(cache, dict):
+        cache["field_particles"] = {}
+    plain_simulation = build_simulation_state(plain_catalog)
+
+    def _witness_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+        rows = payload.get("presence_dynamics", {}).get("field_particles", [])
+        return [
+            row
+            for row in rows
+            if isinstance(row, dict)
+            and str(row.get("presence_id", "")).strip() == "witness_thread"
+        ]
+
+    witness_embed = _witness_rows(embed_simulation)
+    witness_plain = _witness_rows(plain_simulation)
+
+    assert witness_embed
+    assert witness_plain
+
+    target_x = 0.67
+    target_y = 0.32
+
+    def _mean_distance(rows: list[dict[str, Any]]) -> float:
+        total = 0.0
+        for row in rows:
+            dx = float(row.get("x", 0.5)) - target_x
+            dy = float(row.get("y", 0.5)) - target_y
+            total += (dx * dx + dy * dy) ** 0.5
+        return total / max(1, len(rows))
+
+    assert embed_simulation.get("embedding_particles")
+    assert plain_simulation.get("embedding_particles") == []
+    assert witness_embed != witness_plain
+    assert abs(_mean_distance(witness_embed) - _mean_distance(witness_plain)) > 0.0001
+
+
+def test_backend_field_particles_scale_with_local_cluster_density(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(world_web_module.time, "time", lambda: 1_700_200_000.0)
+
+    def _catalog_with_nodes(nodes: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "items": [],
+            "counts": {},
+            "file_graph": {
+                "record": "ημ.file-graph.v1",
+                "generated_at": "2026-02-18T00:00:00+00:00",
+                "inbox": {
+                    "record": "ημ.inbox.v1",
+                    "path": "/tmp/.ημ",
+                    "pending_count": 0,
+                    "processed_count": len(nodes),
+                    "failed_count": 0,
+                    "is_empty": True,
+                    "knowledge_entries": len(nodes),
+                    "last_ingested_at": "2026-02-18T00:00:00+00:00",
+                    "errors": [],
+                },
+                "nodes": [],
+                "field_nodes": [],
+                "file_nodes": nodes,
+                "edges": [],
+                "stats": {
+                    "field_count": 1,
+                    "file_count": len(nodes),
+                    "edge_count": 0,
+                    "kind_counts": {"text": len(nodes)},
+                    "field_counts": {"f2": len(nodes)},
+                    "knowledge_entries": len(nodes),
+                },
+            },
+        }
+
+    dense_nodes: list[dict[str, Any]] = []
+    for idx in range(5):
+        dense_nodes.append(
+            {
+                "id": f"file:dense:{idx}",
+                "name": f"witness_dense_{idx}.md",
+                "kind": "text",
+                "summary": "witness continuity cluster",
+                "tags": ["witness", "trace", "cluster"],
+                "dominant_field": "f2",
+                "field_scores": {"f2": 0.9, "f7": 0.1},
+                "x": 0.62 + (idx * 0.012),
+                "y": 0.31 + (idx * 0.008),
+                "importance": 0.72,
+            }
+        )
+
+    sparse_nodes: list[dict[str, Any]] = []
+    for idx in range(5):
+        sparse_nodes.append(
+            {
+                "id": f"file:sparse:{idx}",
+                "name": f"witness_sparse_{idx}.md",
+                "kind": "text",
+                "summary": "witness continuity distributed",
+                "tags": ["witness", "trace", "cluster"],
+                "dominant_field": "f2",
+                "field_scores": {"f2": 0.9, "f7": 0.1},
+                "x": 0.08 + (idx * 0.18),
+                "y": 0.92 - (idx * 0.18),
+                "importance": 0.72,
+            }
+        )
+
+    cache = getattr(world_web_module, "_DAIMO_DYNAMICS_CACHE", {})
+    if isinstance(cache, dict):
+        cache["field_particles"] = {}
+    dense_simulation = build_simulation_state(_catalog_with_nodes(dense_nodes))
+
+    if isinstance(cache, dict):
+        cache["field_particles"] = {}
+    sparse_simulation = build_simulation_state(_catalog_with_nodes(sparse_nodes))
+
+    def _witness_count(payload: dict[str, Any]) -> int:
+        rows = payload.get("presence_dynamics", {}).get("field_particles", [])
+        return len(
+            [
+                row
+                for row in rows
+                if isinstance(row, dict)
+                and str(row.get("presence_id", "")).strip() == "witness_thread"
+            ]
+        )
+
+    dense_count = _witness_count(dense_simulation)
+    sparse_count = _witness_count(sparse_simulation)
+
+    assert dense_count > sparse_count
+    assert dense_count >= 6
 
 
 def test_eta_mu_ledger_helpers() -> None:
