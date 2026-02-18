@@ -1,0 +1,16 @@
+\
+(fragment
+  (meta
+    (id "kernel/00")
+    (enabled true)
+    (kind kernel)
+    (name "promptdb-kernel")
+    (tags "#ημ" "#Π"))
+  (provides
+    (skill "intent-protocol")
+    (tool "router.decide")
+    (tool "promptdb.reload")
+    (tool "promptdb.list")
+    (command "/route")
+    (command "/promptdb-compile")
+    (tool "vision.observe")))

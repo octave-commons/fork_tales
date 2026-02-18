@@ -1,0 +1,17 @@
+\
+(fragment
+  (meta
+    (id "cmd/promptdb-compile@v1")
+    (enabled true)
+    (kind command)
+    (name "promptdb-compile")
+    (tags "#ημ" "#Π"))
+  (provides (command "/promptdb-compile"))
+  (opencode.command
+    (description "Compile PromptDB fragments into OpenCode commands + skills")
+    (agent "plan"))
+  (template
+"Run: `node scripts/promptdb_compile.mjs`
+Then summarize what files were generated under:
+- .opencode/commands/
+- .opencode/skills/"))

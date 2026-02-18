@@ -1,0 +1,17 @@
+\
+(fragment
+  (meta
+    (id "cmd/route@v1")
+    (enabled true)
+    (kind command)
+    (name "route")
+    (tags "#ημ" "#Π"))
+  (provides (command "/route"))
+  (opencode.command
+    (description "Route a prompt via PromptDB and print recommended skills/tools")
+    (agent "plan"))
+  (template
+"Call tool router.decide with:
+- prompt: $ARGUMENTS
+- mode: \\\"recommend\\\"
+Then print the returned witness report and suggested skill loads."))

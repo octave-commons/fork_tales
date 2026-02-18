@@ -1,0 +1,38 @@
+{
+  "entities": [
+    {
+      "id": "river",
+      "label": "Receipt River",
+      "presence": "witness",
+      "model": { "provider": "mock", "name": "river-voice" },
+      "tools": ["sing_line", "frame_echo"]
+    },
+    {
+      "id": "forge",
+      "label": "Forge Sparrow",
+      "presence": "challenge",
+      "model": { "provider": "mock", "name": "forge-voice" },
+      "tools": ["sing_line", "tighten_claim"]
+    }
+  ],
+  "presences": {
+    "witness": {
+      "motiveByFrame": {
+        "guilt": "restore agency",
+        "authority": "ask for evidence",
+        "urgency": "stabilize tempo",
+        "vagueness": "ask for specifics",
+        "agency_theft": "return choice"
+      }
+    },
+    "challenge": {
+      "motiveByFrame": {
+        "guilt": "reject coercion",
+        "authority": "demand proof",
+        "urgency": "demand deadline",
+        "vagueness": "pin down commitments",
+        "agency_theft": "refuse blind trust"
+      }
+    }
+  }
+}

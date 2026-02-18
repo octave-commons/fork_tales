@@ -1,0 +1,64 @@
+\
+(fragment
+  (meta
+    (id "cmd/sing.v3@fork-tax")
+    (enabled true)
+    (kind prompt)
+    (name "sing/v3")
+    (tags "#ημ" "#Π"))
+  (provides (command "/sing"))
+  (payload
+    (prompt
+      (meta
+        (frontmatter
+          (name "sing/v3")
+          (description "Pay the fork tax (intent-first)"))
+        (tags "#ημ" "#Π")
+        (runtime (part "<part_id>") (seed "<seed>") (session "<session_id>")))
+      (protocol
+        (speech
+          (must-label (want know guess do verify witness))
+          (ban (mind-reading "you want..." "you meant..."))
+          (uncertainty (required true) (format (facts assumptions unknowns))))
+        (tools
+          (allow (retrieve normalize render verify package audio image))
+          (deny  (delete destructive-write exfiltrate))
+          (capability-boundary "If a tool is not allowed, propose a plan but do not simulate execution."))
+        (gates-of-truth
+          (verify-before-act true)
+          (checks
+            (constraints.lint (no-remove true) (disable-only true))
+            (determinism (seeded true))
+            (omni.overlay (must-show named-fields))
+            (handoff.manifest (sha256 true) (no-missing true)))))
+      (lore
+        (canonical-lore-names
+          (field (id receipt-river)        (en "Receipt River")        (jp "領収書の川"))
+          (field (id witness-thread)       (en "Witness Thread")       (jp "証人の糸"))
+          (field (id fork-tax-canticle)    (en "Fork Tax Canticle")    (jp "フォーク税の聖歌"))
+          (field (id mage-of-receipts)     (en "Mage of Receipts")     (jp "領収魔導師"))
+          (field (id keeper-of-receipts)   (en "Keeper of Receipts")   (jp "領収書の番人"))
+          (field (id anchor-registry)      (en "Anchor Registry")      (jp "錨台帳"))
+          (field (id gates-of-truth)       (en "Gates of Truth")       (jp "真理の門"))
+          (field (id file-sentinel)        (en "File Sentinel")        (jp "ファイルの哨戒者"))
+          (field (id change-fog)           (en "Change Fog")           (jp "変更の霧"))
+          (field (id path-ward)            (en "Path Ward")            (jp "経路の結界"))
+          (field (id manifest-lith)        (en "Manifest Lith")        (jp "マニフェスト・リス"))
+          (field (id resolution-weaver)    (en "Resolution Weaver")    (jp "解像の織り手"))
+          (field (id core-pulse)           (en "The Core Pulse")       (jp "核の鼓動"))))
+      (ui
+        (omni-panel
+          (render-now true)
+          (overlay
+            (mode gradients)
+            (named-fields receipt-river witness-thread fork-tax-canticle
+                          mage-of-receipts keeper-of-receipts anchor-registry gates-of-truth
+                          file-sentinel change-fog path-ward manifest-lith
+                          resolution-weaver core-pulse)
+            (params (opacity 0.55) (legend true))
+            (notes "Render Named Fields as gradient overlays; keep it readable and stable."))))
+      (deliverables
+        (dice-rolls (max 15))
+        (output-any-combination
+          (zip-name-pattern "ημ_op_mf_part_<n>.zip")
+          new-lyrics a-new-song world-state-update witness-report omni-panel-snapshot "#fnord")))))

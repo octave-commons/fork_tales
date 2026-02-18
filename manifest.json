@@ -1,0 +1,25 @@
+{
+  "generated_at": "2026-02-15T07:50:17.741904Z",
+  "files": {
+    "01_process_improvements_prompt.lisp": {
+      "sha256": "e3e487e40329cbe618d60f30077485ace645307740e1786743a6b441bd24c438",
+      "bytes": 3618
+    },
+    "02_pi_contract_strengthening_v3.lisp": {
+      "sha256": "63b098bdd57743ac74cebe0c1314f6a64e417c256093985d83d9a176759c2ff5",
+      "bytes": 4089
+    },
+    "03_pi_contract_hardening_v4.lisp": {
+      "sha256": "8090bddca89dfc960af06d95fdbd1f838bdc6d26bf2fda1e96b24c38ca95ade3",
+      "bytes": 9342
+    },
+    "04_enso1_sacred_protocol_shard_encoding.lisp": {
+      "sha256": "ba967a717a365291c4ffa4c9ffd186ba20894adcbef3c93a3e4f5f44837281ba",
+      "bytes": 15661
+    },
+    "README.md": {
+      "sha256": "0bbd58961ed29aa269d714807f8771a676bfff08b9324dc5bac96503d0522a8a",
+      "bytes": 395
+    }
+  }
+}

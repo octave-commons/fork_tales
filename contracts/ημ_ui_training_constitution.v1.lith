@@ -1,0 +1,303 @@
+;; ημ_ui_training_constitution.v1.lith
+;; Created with the assistance of an AI.
+
+(contract
+  (id "ημ.ui.training.constitution.v1")
+  (name "ημ UI + Training Constitution v1")
+  (version "1.0.0")
+  (purpose
+    "Define authority boundaries, observability guarantees, and the learning pipeline
+     such that: simulation is substrate; governance is sovereign; learning is traceable;
+     agents earn privileges only via explicit promotion with receipts.")
+  (symbols
+    (ctx 己 "self / system")
+    (ctx 汝 "you / user")
+    (ctx 彼 "them / third parties")
+    (ctx 世 "world / external reality")
+    (ctx 主 "Presence / Silent Core marker"))
+
+  ;; ----------------------------
+  ;; LAYERS (0..8) + AUTHORITY
+  ;; ----------------------------
+  (layers
+    (layer 0
+      (name "simulation")
+      (role "Full-bleed substrate: world state, entities, flows, graph/field.")
+      (reads (all))
+      (writes
+        (allowed-by "executor")
+        (only-via "ui.tx.apply"))
+      (never
+        "Contains governance"
+        "Contains system prompting"
+        "Contains dev prompt"
+        "Contains chat commitments"))
+
+    (layer 1
+      (name "health")
+      (role "Truth anchor: stability/perf/drift/churn/oscillation/writers/gates.")
+      (reads (layer 0 layer 2 layer 3 layer 4))
+      (writes (telemetry-only))
+      (invariants
+        (always-visible true)
+        (agents-cannot-hide true)
+        (agents-cannot-disable true)
+        (agents-cannot-style-away true)))
+
+    (layer 2
+      (name "governance")
+      (role "Root-of-trust: permissions, budgets, turn timers, quorum, promotion gates.")
+      (reads (all))
+      (writes
+        (only ctx 汝)
+        (agents "propose-only"))
+      (invariants
+        (sovereign true)
+        (immutable-to-agents true)))
+
+    (layer 3
+      (name "conversation")
+      (role "Choir: change requests, council summaries, questions, explanations.")
+      (reads (layer 1 layer 2 layer 4))
+      (writes (allowed ctx 汝 "narrator"))
+      (rules
+        (single-narrator true)
+        (dissent-collapsible true)
+        (single-active-change-request true)
+        (no-direct-sim-mutation true)
+        (all-proposals-link-evidence true)))
+
+    (layer 4
+      (name "context")
+      (role "Everything: active context slices + evidence + receipts + influences.")
+      (reads (all))
+      (writes (instrumentation retrieval))
+      (invariants
+        (reflects-actual-model-context true)
+        (no-history-deletes true)
+        (annotations-allowed true)))
+
+    (layer 5
+      (name "system_prompting")
+      (role "Curriculum memory: durable system facts (NOT dev prompt).")
+      (reads (layer 4 layer 2 layer 1))
+      (writes
+        (default-only ctx 汝)
+        (agents "propose-only"))
+      (nonnegotiable
+        (developer-prompts-off-limits true))
+      (promotion
+        (requires
+          (evidence-link layer 4)
+          (health-pass layer 1)
+          (governance-allow layer 2)
+          (approval (or (quorum) (manual ctx 汝))))
+        (fact-shape
+          (fact
+            (ctx ?ctx)
+            (claim ?claim)
+            (source ?ptr)
+            (p ?probability_0_to_1)
+            (time ?iso_or_none)))
+        (versioning true)
+        (timestamping true)))
+
+    (layer 6
+      (name "model_and_hyperparams")
+      (role "Model selection + sampling/routing params (temp/top_p/max_tokens/etc).")
+      (reads (layer 2 layer 1))
+      (writes
+        (default-only ctx 汝)
+        (agents "propose-only"))
+      (rules
+        (no-silent-tuning true)
+        (requires-before-agent-apply
+          (eval-harness true)
+          (rollback true)
+          (governance-allow true))))
+
+    (layer 7
+      (name "data_loop_vaults")
+      (role "Curation + labeling: vault organization becomes training signal.")
+      (reads (layer 0 layer 1 layer 2 layer 3 layer 4 layer 6))
+      (writes
+        (vault-actions ctx 汝)
+        (agents "suggest-only"))
+      (principle
+        "User organizational actions are labeled examples with context snapshots.")
+      (labeling
+        (canonical-zones-only true)
+        (supports
+          (confidence "soft|strong|hard")
+          (taxonomy_version true)
+          (staging_zone true))))
+
+    (layer 8
+      (name "training_and_eval")
+      (role "Deterministic training runs + evaluation + regression + registry.")
+      (reads (layer 7 layer 6 layer 2 layer 1))
+      (writes
+        (default-only ctx 汝)
+        (agents "bounded-jobs-after-promotion"))
+      (requirements
+        (deterministic-manifest true)
+        (dataset-checksums true)
+        (eval-required true)
+        (rollback-required true)
+        (model-registry true))))
+
+  ;; ----------------------------
+  ;; AUTHORITY ORDER (OVERRIDES)
+  ;; ----------------------------
+  (authority
+    ;; higher overrides lower
+    (order (layer 2) (layer 1) (layer 5) (layer 6) (layer 3) (layer 4) (layer 0) (layer 7) (layer 8))
+    ;; practical meaning:
+    (notes
+      "Layer 2 may veto any mutation."
+      "Layer 1 may pause writers on instability."
+      "Layer 5/6 changes are privileged; require explicit promotion."
+      "Layer 3 can propose; cannot directly mutate Layer 0."))
+
+  ;; ----------------------------
+  ;; UI COMMAND BUS + TX MODEL
+  ;; ----------------------------
+  (ui
+    (command-bus
+      (rule "Presences do not poke DOM; they emit intent commands.")
+      (commands
+        (ui.focus ?panel_or_entity)
+        (ui.dock ?panel (edge ?edge) (slot ?n))
+        (ui.promote ?panel (size "s|m|l|xl"))
+        (ui.group (?ids...) (mode "stack|tab|cluster"))
+        (ui.pin ?panel true|false)
+        (ui.reflow (goal "minimize_gaps|reduce_churn|focus_task") (keep (?pinned...)))))
+    (transactions
+      (rule "Apply commands only as batched transactions: max 1 commit per tick/turn.")
+      (apply-event "ui.tx.apply")
+      (preview-event "ui.tx.preview")
+      (rollback-event "ui.tx.rollback")
+      (constraints
+        (no-touch-locked true)
+        (no-revert-last-user-override true)
+        (hysteresis true))))
+
+  ;; ----------------------------
+  ;; TURN-BASED NEGOTIATION MODE
+  ;; ----------------------------
+  (turn_mode
+    (enabled true)
+    (defaults
+      (presence_ms 20000)
+      (user_ms 20000)
+      (max_rounds_without_improvement 3))
+    (phases
+      (phase presence
+        (allows (propose ui.tx.preview))
+        (forbids (apply ui.tx.apply)))
+      (phase user
+        (allows (user_override) (accept) (reject) (lock) (unlock)))
+      (phase commit
+        (allows (apply ui.tx.apply) (ledger.write) (health.score.update))))
+    (oscillation
+      (detect
+        (metrics
+          (churn "moves+resizes+dock_changes")
+          (manual_corrections "user_overrides_reverting_system_moves")
+          (gap_penalty "unused_area_ratio")
+          (latency "frame_time_or_input_delay")
+          (constraint_conflicts "attempted_violations")))
+      (trigger
+        (if "no_energy_decrease_for_N_rounds"
+          (do
+            (health.pause_writers true)
+            (conversation.change_request
+              (why "oscillation/conflict")
+              (options
+                (A "lock current layout")
+                (B "let packer reflow unpinned")
+                (C "pause writers and explain"))))))))
+
+  ;; ----------------------------
+  ;; CONSTRAINT ENCODING
+  ;; ----------------------------
+  (constraints
+    (strength
+      (soft "preference; may be overridden with justification")
+      (strong "default rule; overrides most proposals")
+      (hard "immutable unless user unlocks"))
+    (events
+      (ui.user_override
+        (makes_constraint true)
+        (default_strength soft))
+      (ui.lock (sets_strength hard))
+      (ui.unlock (sets_strength soft))))
+
+  ;; ----------------------------
+  ;; TRANSPARENCY GUARANTEES
+  ;; ----------------------------
+  (transparency
+    (never
+      "Conceal active context (Layer 4 must reflect reality)"
+      "Silently change model hyperparams (Layer 6)"
+      "Mutate governance (Layer 2)"
+      "Write system facts without promotion (Layer 5)")
+    (always
+      (log "Projection Ledger" "all mutations + proposals + decisions")
+      (link-evidence true)
+      (replayable true)
+      (reversible "when feasible via tx.rollback")))
+
+  ;; ----------------------------
+  ;; PROMOTION / PRIVILEGE EARNING
+  ;; ----------------------------
+  (promotion
+    (principle "Privileges are earned, explicit, scoped, and revocable.")
+    (preconditions
+      (stability_above_threshold true)
+      (no_governance_violations true)
+      (eval_improves_or_non_regresses true)
+      (user_explicit_promote true))
+    (revocation
+      (always_possible ctx 汝)
+      (auto_on "repeated_violations|regressions|oscillation|unexpected_mutations")))
+
+  ;; ----------------------------
+  ;; TRAINING EXAMPLE ATOM (L7→L8)
+  ;; ----------------------------
+  (training_example
+    (id "training.example.v1")
+    (generated_on
+      "vault.move"
+      "ui.lock"
+      "ui.pin"
+      "ui.accept_proposal"
+      "ui.reject_proposal")
+    (record
+      (event ?event)
+      (snapshots
+        (L0.sim ?sim_state_ptr)
+        (L1.health ?health_ptr)
+        (L2.gov ?gov_ptr)
+        (L3.dialog ?dialog_ptr)
+        (L4.context ?context_ptr)
+        (L6.model ?model_ptr))
+      (label
+        (taxonomy ?taxonomy_version)
+        (destination ?canonical_zone)
+        (intent ?intent_symbol)
+        (confidence "soft|strong|hard")))
+    (rules
+      (only_canonical_zones_become_labels true)
+      (staging_zone_excluded true)
+      (taxonomy_version_required true)))
+
+  ;; ----------------------------
+  ;; NON-NEGOTIABLES
+  ;; ----------------------------
+  (nonnegotiable
+    (developer_prompt_immutable true)
+    (governance_sovereign true)
+    (health_always_visible true)
+    (learning_traceable true)
+    (mutations_logged true)))

@@ -1,0 +1,11 @@
+(manifest
+  (v "promethean.manifest/v1")
+  (truth-unit :pi-package+host)
+  (proof-schema
+    (required-refs
+      [".opencode/promptdb/00_wire_world.intent.lisp"
+       ".opencode/promptdb/contracts/receipts.v2.contract.lisp"
+       ".opencode/promptdb/diagrams/part64_runtime_system.packet.lisp"
+       "receipts.log"])
+    (required-hashes ["sha256:pi_zip" "sha256:manifest"])
+    (host-handle "github:err")))

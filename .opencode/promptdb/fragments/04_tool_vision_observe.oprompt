@@ -1,0 +1,18 @@
+\
+(fragment
+  (meta
+    (id "tool/vision.observe@v1")
+    (enabled true)
+    (kind tool)
+    (name "vision.observe")
+    (tags "#ημ" "#Π"))
+  (provides (tool "vision.observe"))
+  (schema
+    (args
+      (image_path string)
+      (observer string)
+      (subject string)
+      (scope (enum self other))
+      (task (enum describe detect-fields extract-text))))
+  (notes
+    "This is a schema stub. Wire it to qwen3-vl as an MCP tool or custom tool later."))
