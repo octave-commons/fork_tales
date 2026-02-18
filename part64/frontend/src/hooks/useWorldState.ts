@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { runtimeApiUrl, runtimeWebSocketUrl } from '../runtime/endpoints';
 import type {
   Catalog,
   SimulationState,
@@ -28,6 +29,7 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const projectionFetchTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const flushFrameRef = useRef<number | null>(null);
+  const connectRef = useRef<(() => void) | null>(null);
   const shouldReconnectRef = useRef(true);
   const pendingPatchRef = useRef<{
     catalog?: Catalog | null;
@@ -67,10 +69,7 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
   );
 
   const connect = useCallback(() => {
-    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    // When running in dev mode (port 5173), connect to 8787. In prod, relative path.
-    const host = window.location.port === '5173' ? '127.0.0.1:8787' : window.location.host;
-    const url = `${proto}://${host}/ws?perspective=${encodeURIComponent(perspective)}`;
+    const url = runtimeWebSocketUrl(`/ws?perspective=${encodeURIComponent(perspective)}`);
 
     const ws = new WebSocket(url);
 
@@ -105,11 +104,17 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
       if (!shouldReconnectRef.current) {
         return;
       }
-      retryTimeoutRef.current = window.setTimeout(connect, 3000);
+      retryTimeoutRef.current = window.setTimeout(() => {
+        connectRef.current?.();
+      }, 3000);
     };
 
     wsRef.current = ws;
   }, [enqueueStatePatch, perspective]);
+
+  useEffect(() => {
+    connectRef.current = connect;
+  }, [connect]);
 
   useEffect(() => {
     shouldReconnectRef.current = true;
@@ -119,9 +124,8 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
     // Initial fetch fallback
     const fetchInitial = async () => {
       try {
-        const baseUrl = window.location.port === '5173' ? 'http://127.0.0.1:8787' : '';
         const perspectiveQs = `perspective=${encodeURIComponent(perspective)}`;
-        const res = await fetch(`${baseUrl}/api/catalog?${perspectiveQs}`, {
+        const res = await fetch(runtimeApiUrl(`/api/catalog?${perspectiveQs}`), {
           signal: controller.signal,
         });
         if (res.ok) {
@@ -133,10 +137,9 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
           if (!catalog?.ui_projection) {
             projectionFetchTimeoutRef.current = window.setTimeout(async () => {
               try {
-                const projectionRes = await fetch(
-                  `${baseUrl}/api/ui/projection?${perspectiveQs}`,
-                  { signal: controller.signal },
-                );
+                const projectionRes = await fetch(runtimeApiUrl(`/api/ui/projection?${perspectiveQs}`), {
+                  signal: controller.signal,
+                });
                 if (!projectionRes.ok) {
                   return;
                 }
@@ -144,7 +147,7 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
                 if (projectionPayload?.projection) {
                   enqueueStatePatch({ projection: projectionPayload.projection });
                 }
-              } catch (_projectionError) {
+              } catch {
                 // projection fallback is optional
               }
             }, 120);

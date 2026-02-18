@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Phone, PhoneOff, Radio, SendHorizontal } from "lucide-react";
+import { runtimeBaseUrl } from "../../runtime/endpoints";
 import type { Catalog, SimulationState, WorldPresence } from "../../types";
 
 type CallStatus = "idle" | "connecting" | "connected" | "error";
@@ -51,10 +52,6 @@ const FALLBACK_PRESENCES: WorldPresence[] = [
     type: "presence",
   },
 ];
-
-function runtimeBaseUrl(): string {
-  return window.location.port === "5173" ? "http://127.0.0.1:8787" : "";
-}
 
 function formatCallStatus(status: CallStatus): string {
   if (status === "connected") {

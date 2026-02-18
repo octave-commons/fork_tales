@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { runtimeApiUrl } from "../../runtime/endpoints";
 import type { SimulationState } from "../../types";
 
 interface Props {
@@ -48,16 +49,12 @@ function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
-function baseUrl(): string {
-  return window.location.port === "5173" ? "http://127.0.0.1:8787" : "";
-}
-
 function libraryAssetUrl(relPath: string): string {
   const encoded = relPath
     .split("/")
     .map((segment) => encodeURIComponent(segment))
     .join("/");
-  return `${baseUrl()}/library/${encoded}`;
+  return runtimeApiUrl(`/library/${encoded}`);
 }
 
 function presenceForce(simulation: SimulationState | null, presenceId: string): number {

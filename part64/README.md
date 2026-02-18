@@ -35,11 +35,33 @@ Run complete real-time dashboard across all parts:
 
 Dashboard now includes a WebGL renderer consuming websocket simulation messages from `/ws`.
 
+Electron client (sandboxed renderer):
+- From `part64/frontend`, install deps: `npm install`
+- Dev loop (two terminals):
+  - Terminal A: `npm run dev -- --host 127.0.0.1 --port 5173`
+  - Terminal B: `npm run electron:dev`
+- Launch built desktop client: `npm run electron:preview`
+- Override runtime endpoints when needed:
+  - `WORLD_RUNTIME_URL=http://127.0.0.1:8787 WEAVER_RUNTIME_URL=http://127.0.0.1:8793 npm run electron:start`
+- PM2 controls (from `part64/frontend`):
+  - `npm run pm2:electron:start`
+  - `npm run pm2:electron:status`
+  - `npm run pm2:electron:stop`
+  - `npm run pm2:electron:delete`
+- Linux sandbox prerequisite:
+  - If PM2 logs show `No usable sandbox`, configure one of:
+    - Chromium SUID helper (`chrome-sandbox` owner root, mode `4755`)
+    - or AppArmor/userns policy that allows unprivileged user namespaces.
+  - Without one of those, Electron exits instead of running unsandboxed.
+
 Web Graph Weaver crawler service:
 - `cd code && npm install`
 - `npm run weaver`
 - Status: `http://127.0.0.1:8793/api/weaver/status`
 - WebSocket: `ws://127.0.0.1:8793/ws`
+- Example cross-reference crawl seeds:
+  - `https://arxiv.org/list/cs.AI/recent`
+  - `https://en.wikipedia.org/wiki/Artificial_intelligence`
 - Integration guide: `WEB_GRAPH_WEAVER.md`
 
 Useful PM2 controls:

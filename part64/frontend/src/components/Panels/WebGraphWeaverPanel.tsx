@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { runtimeWeaverBaseCandidates } from "../../runtime/endpoints";
 
 type CrawlState = "running" | "paused" | "stopped";
 
@@ -17,7 +18,15 @@ interface WeaverNode {
 
 interface WeaverEdge {
   id: string;
-  kind: "hyperlink" | "canonical_redirect" | "domain_membership" | "content_membership";
+  kind:
+    | "hyperlink"
+    | "canonical_redirect"
+    | "domain_membership"
+    | "content_membership"
+    | "citation"
+    | "wiki_reference"
+    | "cross_reference"
+    | "paper_pdf";
   source: string;
   target: string;
 }
@@ -52,11 +61,29 @@ interface WeaverStatus {
     duplicate_content: number;
     errors: number;
     average_fetch_ms: number;
+    semantic_edges?: number;
+    citation_edges?: number;
+    wiki_reference_edges?: number;
+    cross_reference_edges?: number;
+    paper_pdf_edges?: number;
   };
   graph_counts: {
     nodes_total: number;
     edges_total: number;
     url_nodes_total: number;
+  };
+  knowledge?: {
+    source_families?: {
+      arxiv?: number;
+      wikipedia?: number;
+      web?: number;
+    };
+    node_kinds?: {
+      arxiv_abs?: number;
+      arxiv_pdf?: number;
+      wikipedia_article?: number;
+      web_url?: number;
+    };
   };
 }
 
@@ -100,18 +127,7 @@ function uniqueStrings(values: string[]): string[] {
 }
 
 function weaverHttpCandidates(): string[] {
-  if (typeof window === "undefined") {
-    return ["http://127.0.0.1:8793"];
-  }
-  const protocol = window.location.protocol === "https:" ? "https" : "http";
-  const host = window.location.hostname || "127.0.0.1";
-  const envCandidate = import.meta.env.VITE_WEAVER_BASE_URL || "";
-  return uniqueStrings([
-    envCandidate,
-    `${protocol}://${host}:8793`,
-    `${protocol}://127.0.0.1:8793`,
-    `${protocol}://localhost:8793`,
-  ]);
+  return uniqueStrings(runtimeWeaverBaseCandidates());
 }
 
 function wsUrlFromHttpBase(base: string): string {
@@ -299,7 +315,9 @@ export function WebGraphWeaverPanel() {
   const [graph, setGraph] = useState<WeaverGraph>({ nodes: [], edges: [] });
   const [events, setEvents] = useState<WeaverEvent[]>([]);
   const [connection, setConnection] = useState<"connecting" | "online" | "offline">("connecting");
-  const [seedInput, setSeedInput] = useState("https://example.com/");
+  const [seedInput, setSeedInput] = useState(
+    "https://arxiv.org/list/cs.AI/recent\nhttps://en.wikipedia.org/wiki/Artificial_intelligence",
+  );
   const [maxDepth, setMaxDepth] = useState(3);
   const [maxNodes, setMaxNodes] = useState(2500);
   const [concurrency, setConcurrency] = useState(2);
@@ -758,6 +776,39 @@ export function WebGraphWeaverPanel() {
             : "rgba(214, 164, 93, 0.28)";
           context.lineWidth = highlighted ? 1.2 : 0.5;
           context.setLineDash([]);
+        } else if (edge.kind === "citation") {
+          context.strokeStyle = highlighted
+            ? "rgba(255, 182, 122, 0.9)"
+            : "rgba(219, 140, 90, 0.4)";
+          context.lineWidth = highlighted ? 1.4 : 0.8;
+          if (!denseMode) {
+            context.setLineDash([4, 6]);
+            context.lineDashOffset = -(timestamp / 36);
+          } else {
+            context.setLineDash([]);
+          }
+        } else if (edge.kind === "cross_reference") {
+          context.strokeStyle = highlighted
+            ? "rgba(250, 123, 228, 0.94)"
+            : "rgba(198, 102, 190, 0.48)";
+          context.lineWidth = highlighted ? 1.5 : 0.9;
+          if (!denseMode) {
+            context.setLineDash([2, 7]);
+            context.lineDashOffset = timestamp / 42;
+          } else {
+            context.setLineDash([]);
+          }
+        } else if (edge.kind === "paper_pdf") {
+          context.strokeStyle = highlighted
+            ? "rgba(133, 238, 248, 0.9)"
+            : "rgba(96, 196, 212, 0.5)";
+          context.lineWidth = highlighted ? 1.25 : 0.7;
+          if (!denseMode) {
+            context.setLineDash([1.5, 4]);
+            context.lineDashOffset = -(timestamp / 28);
+          } else {
+            context.setLineDash([]);
+          }
         } else {
           context.strokeStyle = highlighted
             ? "rgba(164, 239, 158, 0.85)"
@@ -959,6 +1010,7 @@ export function WebGraphWeaverPanel() {
       <h2 className="text-3xl font-bold mb-1">Web Graph Weaver / Web Graph Weaver</h2>
       <p className="text-muted mb-5 text-sm">
         Ethical crawl instrumentation: discover, validate, fetch, parse, and map relationship growth.
+        Includes citation + PDF edges for arXiv and reference cross-links for Wikipedia.
       </p>
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5 mb-4">
@@ -1120,6 +1172,10 @@ export function WebGraphWeaverPanel() {
               <li>- robots blocked: {status?.metrics?.robots_blocked ?? 0}</li>
               <li>- duplicate content: {status?.metrics?.duplicate_content ?? 0}</li>
               <li>- errors: {status?.metrics?.errors ?? 0}</li>
+              <li>- citation edges: {status?.metrics?.citation_edges ?? 0}</li>
+              <li>- wiki references: {status?.metrics?.wiki_reference_edges ?? 0}</li>
+              <li>- cross references: {status?.metrics?.cross_reference_edges ?? 0}</li>
+              <li>- paper pdf links: {status?.metrics?.paper_pdf_edges ?? 0}</li>
             </ul>
 
             <div className="mt-3">

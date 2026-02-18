@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { runtimeApiUrl } from "../../runtime/endpoints";
 import type { Catalog } from "../../types";
 import {
   Archive,
@@ -102,8 +103,7 @@ export function CatalogPanel({ catalog }: Props) {
       setZipLoading(true);
       setZipError("");
       try {
-        const baseUrl = window.location.port === "5173" ? "http://127.0.0.1:8787" : "";
-        const response = await fetch(`${baseUrl}/api/zips?member_limit=240`);
+        const response = await fetch(runtimeApiUrl("/api/zips?member_limit=240"));
         if (!response.ok) {
           throw new Error(`zip catalog failed: ${response.status}`);
         }

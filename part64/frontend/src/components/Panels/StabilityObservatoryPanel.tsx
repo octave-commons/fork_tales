@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, Gauge, RefreshCw, ShieldAlert } from "lucide-react";
+import { runtimeApiUrl } from "../../runtime/endpoints";
 import type {
   Catalog,
   CouncilDecision,
@@ -153,11 +154,10 @@ export function StabilityObservatoryPanel({ catalog, simulation }: Props) {
   const [lastFetchedAt, setLastFetchedAt] = useState<string>("");
 
   const refreshStudySnapshot = useCallback(async () => {
-    const baseUrl = window.location.port === "5173" ? "http://127.0.0.1:8787" : "";
     setLoading(true);
     setError("");
     try {
-      const studyRes = await fetch(`${baseUrl}/api/study?limit=10`);
+      const studyRes = await fetch(runtimeApiUrl("/api/study?limit=10"));
       if (studyRes.ok) {
         const payload = (await studyRes.json()) as StudySnapshotPayload;
         setStudy(payload);
@@ -174,9 +174,9 @@ export function StabilityObservatoryPanel({ catalog, simulation }: Props) {
       }
 
       const [councilRes, queueRes, driftRes] = await Promise.all([
-        fetch(`${baseUrl}/api/council?limit=10`),
-        fetch(`${baseUrl}/api/task/queue`),
-        fetch(`${baseUrl}/api/drift/scan`, {
+        fetch(runtimeApiUrl("/api/council?limit=10")),
+        fetch(runtimeApiUrl("/api/task/queue")),
+        fetch(runtimeApiUrl("/api/drift/scan"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({}),
@@ -222,10 +222,9 @@ export function StabilityObservatoryPanel({ catalog, simulation }: Props) {
   }, [refreshStudySnapshot]);
 
   const exportStudySnapshot = useCallback(async () => {
-    const baseUrl = window.location.port === "5173" ? "http://127.0.0.1:8787" : "";
     setExportStatus("exporting evidence...");
     try {
-      const response = await fetch(`${baseUrl}/api/study/export`, {
+      const response = await fetch(runtimeApiUrl("/api/study/export"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

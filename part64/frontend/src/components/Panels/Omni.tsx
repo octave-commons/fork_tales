@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { runtimeApiUrl } from "../../runtime/endpoints";
 import type { Catalog } from "../../types";
 
 interface Props {
@@ -18,16 +19,15 @@ export function OmniPanel({ catalog }: Props) {
 
   useEffect(() => {
     const fetchMemories = async () => {
-        try {
-            const baseUrl = window.location.port === '5173' ? 'http://127.0.0.1:8787' : '';
-            const res = await fetch(`${baseUrl}/api/memories`);
-            if(res.ok) {
-                const data = await res.json() as { memories?: Memory[] };
-                setMemories(data.memories || []);
-            }
-        } catch {
-          // ignore
+      try {
+        const res = await fetch(runtimeApiUrl("/api/memories"));
+        if (res.ok) {
+          const data = (await res.json()) as { memories?: Memory[] };
+          setMemories(data.memories || []);
         }
+      } catch {
+        // ignore
+      }
     };
     fetchMemories();
     const interval = setInterval(fetchMemories, 10000);
