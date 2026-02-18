@@ -10,10 +10,18 @@ interface WeaverNode {
   url?: string;
   domain?: string;
   depth?: number;
+  source_url?: string | null;
   status?: string;
   compliance?: string;
   content_type?: string | null;
   title?: string;
+  activation_potential?: number;
+  interaction_count?: number;
+  cooldown_until?: number;
+  last_requested_at?: number;
+  analysis_summary?: string;
+  analysis_provider?: string;
+  last_analyzed_at?: number;
 }
 
 interface WeaverEdge {
@@ -66,6 +74,23 @@ interface WeaverStatus {
     wiki_reference_edges?: number;
     cross_reference_edges?: number;
     paper_pdf_edges?: number;
+    host_concurrency_waits?: number;
+    cooldown_blocked?: number;
+    interactions?: number;
+    activation_enqueues?: number;
+    entity_moves?: number;
+    entity_visits?: number;
+    llm_analysis_success?: number;
+    llm_analysis_fail?: number;
+  };
+  config?: {
+    max_depth?: number;
+    max_nodes?: number;
+    concurrency?: number;
+    max_requests_per_host?: number;
+    node_cooldown_ms?: number;
+    activation_threshold?: number;
+    default_delay_ms?: number;
   };
   graph_counts: {
     nodes_total: number;
@@ -84,6 +109,41 @@ interface WeaverStatus {
       wikipedia_article?: number;
       web_url?: number;
     };
+  };
+  entities?: WeaverEntityStateEnvelope;
+  llm?: {
+    enabled?: boolean;
+    model?: string;
+    base_url?: string;
+  };
+}
+
+interface WeaverEntityState {
+  id: string;
+  label: string;
+  state: "idle" | "moving" | "visiting" | "cooldown";
+  current_url?: string | null;
+  from_url?: string | null;
+  target_url?: string | null;
+  progress?: number;
+  visits?: number;
+  last_visit_at?: number;
+  next_available_at?: number;
+}
+
+interface WeaverEntityStateEnvelope {
+  ok?: boolean;
+  enabled?: boolean;
+  paused?: boolean;
+  count?: number;
+  activation_threshold?: number;
+  node_cooldown_ms?: number;
+  max_requests_per_host?: number;
+  entities?: WeaverEntityState[];
+  llm?: {
+    enabled?: boolean;
+    model?: string;
+    base_url?: string;
   };
 }
 
@@ -245,12 +305,32 @@ function mergeGraph(
   };
 }
 
-function useGraphLayout(nodes: WeaverNode[]) {
+function edgeLayoutPriority(kind: WeaverEdge["kind"]): number {
+  switch (kind) {
+    case "hyperlink":
+      return 0;
+    case "canonical_redirect":
+      return 1;
+    case "citation":
+      return 2;
+    case "wiki_reference":
+      return 3;
+    case "cross_reference":
+      return 4;
+    case "paper_pdf":
+      return 5;
+    default:
+      return 9;
+  }
+}
+
+function useGraphLayout(nodes: WeaverNode[], edges: WeaverEdge[]) {
   return useMemo(() => {
     const points = new Map<string, GraphPoint>();
     const domainNodes = nodes.filter((node) => node.kind === "domain");
     const urlNodes = nodes.filter((node) => node.kind === "url");
     const contentNodes = nodes.filter((node) => node.kind === "content");
+    const urlNodeIds = new Set(urlNodes.map((node) => node.id));
 
     const domainAnchors = new Map<string, GraphPoint>();
     const domainCount = Math.max(1, domainNodes.length);
@@ -265,29 +345,190 @@ function useGraphLayout(nodes: WeaverNode[]) {
       }
     });
 
-    const perDomainIndex = new Map<string, number>();
-    urlNodes.forEach((node) => {
+    const parentById = new Map<string, string>();
+    for (const node of urlNodes) {
+      const sourceUrl = String(node.source_url || "").trim();
+      if (!sourceUrl) {
+        continue;
+      }
+      const sourceId = `url:${sourceUrl}`;
+      if (sourceId !== node.id && urlNodeIds.has(sourceId)) {
+        parentById.set(node.id, sourceId);
+      }
+    }
+
+    const inboundByTarget = new Map<string, Array<{ sourceId: string; rank: number }>>();
+    for (const edge of edges) {
+      if (!urlNodeIds.has(edge.source) || !urlNodeIds.has(edge.target)) {
+        continue;
+      }
+      if (edge.source === edge.target) {
+        continue;
+      }
+      const rows = inboundByTarget.get(edge.target) || [];
+      rows.push({
+        sourceId: edge.source,
+        rank: edgeLayoutPriority(edge.kind),
+      });
+      inboundByTarget.set(edge.target, rows);
+    }
+
+    for (const node of urlNodes) {
+      if (parentById.has(node.id)) {
+        continue;
+      }
+      const candidates = inboundByTarget.get(node.id);
+      if (!candidates || candidates.length === 0) {
+        continue;
+      }
+      candidates.sort((left, right) => {
+        if (left.rank !== right.rank) {
+          return left.rank - right.rank;
+        }
+        return left.sourceId.localeCompare(right.sourceId);
+      });
+      const chosen = candidates[0];
+      if (chosen.sourceId && chosen.sourceId !== node.id) {
+        parentById.set(node.id, chosen.sourceId);
+      }
+    }
+
+    const childrenByParent = new Map<string, WeaverNode[]>();
+    for (const node of urlNodes) {
+      const parentId = parentById.get(node.id);
+      if (!parentId) {
+        continue;
+      }
+      const children = childrenByParent.get(parentId) || [];
+      children.push(node);
+      childrenByParent.set(parentId, children);
+    }
+
+    const roots = urlNodes
+      .filter((node) => !parentById.has(node.id))
+      .sort((left, right) => {
+        const depthDelta = Number(left.depth || 0) - Number(right.depth || 0);
+        if (depthDelta !== 0) {
+          return depthDelta;
+        }
+        return left.id.localeCompare(right.id);
+      });
+
+    const rootIndexByDomain = new Map<string, number>();
+    for (const node of roots) {
       const domain = node.domain || "unknown";
       const anchor = domainAnchors.get(domain) || { x: 0, y: 0 };
-      const idx = perDomainIndex.get(domain) || 0;
+      const idx = rootIndexByDomain.get(domain) || 0;
       const depth = Number(node.depth || 0);
-      const angle = idx * 0.72 + (hashString(node.id) % 628) / 100;
-      const radial = 30 + depth * 28 + (idx % 9) * 11;
+      const angle = idx * 0.86 + (hashString(node.id) % 628) / 100;
+      const radial = 34 + depth * 26 + (idx % 7) * 13;
       const x = anchor.x + Math.cos(angle) * radial;
       const y = anchor.y + Math.sin(angle) * radial * 0.82;
       points.set(node.id, { x, y });
-      perDomainIndex.set(domain, idx + 1);
-    });
+      rootIndexByDomain.set(domain, idx + 1);
+    }
+
+    const placedUrlIds = new Set(roots.map((node) => node.id));
+    const queue = roots.map((node) => node.id);
+    while (queue.length > 0) {
+      const parentId = queue.shift();
+      if (!parentId) {
+        break;
+      }
+      const parentPoint = points.get(parentId);
+      if (!parentPoint) {
+        continue;
+      }
+      const children = [...(childrenByParent.get(parentId) || [])].sort((left, right) =>
+        left.id.localeCompare(right.id),
+      );
+      if (children.length === 0) {
+        continue;
+      }
+
+      const spread = Math.min(Math.PI * 1.35, 0.52 * Math.max(1, children.length - 1));
+      const anchorAngle = (hashString(parentId) % 628) / 100;
+
+      for (let index = 0; index < children.length; index += 1) {
+        const child = children[index];
+        if (placedUrlIds.has(child.id)) {
+          continue;
+        }
+        const ratio = children.length <= 1 ? 0.5 : index / (children.length - 1);
+        const angle = anchorAngle - spread / 2 + spread * ratio;
+        const depth = Number(child.depth || 0);
+        const radial = 26 + depth * 12 + (index % 3) * 7;
+        const x = parentPoint.x + Math.cos(angle) * radial;
+        const y = parentPoint.y + Math.sin(angle) * radial * 0.86;
+        points.set(child.id, { x, y });
+        placedUrlIds.add(child.id);
+        queue.push(child.id);
+      }
+    }
+
+    const fallbackIndexByDomain = new Map<string, number>();
+    for (const node of urlNodes) {
+      if (placedUrlIds.has(node.id)) {
+        continue;
+      }
+      const domain = node.domain || "unknown";
+      const anchor = domainAnchors.get(domain) || { x: 0, y: 0 };
+      const idx = fallbackIndexByDomain.get(domain) || 0;
+      const depth = Number(node.depth || 0);
+      const angle = idx * 0.93 + (hashString(node.id) % 628) / 100;
+      const radial = 48 + depth * 14 + (idx % 5) * 9;
+      points.set(node.id, {
+        x: anchor.x + Math.cos(angle) * radial,
+        y: anchor.y + Math.sin(angle) * radial * 0.84,
+      });
+      fallbackIndexByDomain.set(domain, idx + 1);
+      placedUrlIds.add(node.id);
+    }
+
+    const contentNodeIds = new Set(contentNodes.map((node) => node.id));
+    const contentIndexByUrlNode = new Map<string, number>();
+    for (const edge of edges) {
+      if (edge.kind !== "content_membership") {
+        continue;
+      }
+      let contentId = "";
+      let urlId = "";
+      if (contentNodeIds.has(edge.source) && urlNodeIds.has(edge.target)) {
+        contentId = edge.source;
+        urlId = edge.target;
+      } else if (contentNodeIds.has(edge.target) && urlNodeIds.has(edge.source)) {
+        contentId = edge.target;
+        urlId = edge.source;
+      }
+      if (!contentId || points.has(contentId)) {
+        continue;
+      }
+      const anchor = points.get(urlId);
+      if (!anchor) {
+        continue;
+      }
+      const idx = contentIndexByUrlNode.get(urlId) || 0;
+      const angle = (hashString(contentId) % 628) / 100 + idx * 0.9;
+      const radial = 18 + (idx % 4) * 10;
+      points.set(contentId, {
+        x: anchor.x + Math.cos(angle) * radial,
+        y: anchor.y + Math.sin(angle) * radial * 0.8,
+      });
+      contentIndexByUrlNode.set(urlId, idx + 1);
+    }
 
     const contentCount = Math.max(1, contentNodes.length);
     contentNodes.forEach((node, index) => {
+      if (points.has(node.id)) {
+        return;
+      }
       const x = -220 + (index * 440) / Math.max(1, contentCount - 1);
       const y = 320 + ((index % 2) * 26);
       points.set(node.id, { x, y });
     });
 
     return points;
-  }, [nodes]);
+  }, [edges, nodes]);
 }
 
 export function WebGraphWeaverPanel() {
@@ -321,6 +562,9 @@ export function WebGraphWeaverPanel() {
   const [maxDepth, setMaxDepth] = useState(3);
   const [maxNodes, setMaxNodes] = useState(2500);
   const [concurrency, setConcurrency] = useState(2);
+  const [maxPerHost, setMaxPerHost] = useState(2);
+  const [entityCount, setEntityCount] = useState(4);
+  const [interactionDelta, setInteractionDelta] = useState(0.35);
   const [optOutInput, setOptOutInput] = useState("");
   const [domainFilter, setDomainFilter] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -331,6 +575,7 @@ export function WebGraphWeaverPanel() {
   const [viewScale, setViewScale] = useState(1);
   const [viewOffsetX, setViewOffsetX] = useState(0);
   const [viewOffsetY, setViewOffsetY] = useState(0);
+  const [entityState, setEntityState] = useState<WeaverEntityStateEnvelope | null>(null);
 
   const visibleGraph = useMemo(() => {
     if (!domainFilter) {
@@ -419,7 +664,17 @@ export function WebGraphWeaverPanel() {
     };
   }, [selectedNodeId, visibleGraph.edges, visibleGraph.nodes]);
 
-  const layout = useGraphLayout(renderGraph.nodes);
+  const layout = useGraphLayout(renderGraph.nodes, renderGraph.edges);
+
+  const selectedNode = useMemo(
+    () => graph.nodes.find((node) => node.id === selectedNodeId) || null,
+    [graph.nodes, selectedNodeId],
+  );
+
+  const entityRows = useMemo(
+    () => entityState?.entities || status?.entities?.entities || [],
+    [entityState?.entities, status?.entities?.entities],
+  );
 
   const appendEvent = useCallback((event: WeaverEvent) => {
     setEvents((prev) => {
@@ -469,6 +724,32 @@ export function WebGraphWeaverPanel() {
     }
     const payload = (await response.json()) as WeaverStatus;
     setStatus(payload);
+    if (payload.entities) {
+      setEntityState(payload.entities);
+      if (typeof payload.entities.count === "number") {
+        setEntityCount(payload.entities.count);
+      }
+    }
+    const maxPerHostFromStatus = Number(payload.config?.max_requests_per_host);
+    if (Number.isFinite(maxPerHostFromStatus) && maxPerHostFromStatus > 0) {
+      setMaxPerHost(maxPerHostFromStatus);
+    }
+  }, [requestWeaver]);
+
+  const refreshEntities = useCallback(async () => {
+    const response = await requestWeaver("/api/weaver/entities");
+    if (!response.ok) {
+      throw new Error(`entities request failed (${response.status})`);
+    }
+    const payload = (await response.json()) as WeaverEntityStateEnvelope;
+    setEntityState(payload);
+    if (typeof payload.count === "number") {
+      setEntityCount(payload.count);
+    }
+    const maxPerHostFromEntities = Number(payload.max_requests_per_host);
+    if (Number.isFinite(maxPerHostFromEntities) && maxPerHostFromEntities > 0) {
+      setMaxPerHost(maxPerHostFromEntities);
+    }
   }, [requestWeaver]);
 
   const refreshGraph = useCallback(
@@ -501,8 +782,13 @@ export function WebGraphWeaverPanel() {
 
   const bootstrap = useCallback(async () => {
     setErrorMessage(null);
-    await Promise.all([refreshStatus(), refreshGraph(domainFilter), refreshEvents()]);
-  }, [domainFilter, refreshEvents, refreshGraph, refreshStatus]);
+    await Promise.all([
+      refreshStatus(),
+      refreshGraph(domainFilter),
+      refreshEvents(),
+      refreshEntities(),
+    ]);
+  }, [domainFilter, refreshEntities, refreshEvents, refreshGraph, refreshStatus]);
 
   const postControl = useCallback(
     async (action: "start" | "pause" | "resume" | "stop") => {
@@ -521,6 +807,8 @@ export function WebGraphWeaverPanel() {
           max_depth: maxDepth,
           max_nodes: maxNodes,
           concurrency,
+          max_per_host: maxPerHost,
+          entity_count: entityCount,
         }),
       });
       const payload = await response.json();
@@ -529,6 +817,10 @@ export function WebGraphWeaverPanel() {
       }
       if (payload.status) {
         setStatus(payload.status as WeaverStatus);
+        const entitiesFromStatus = (payload.status as WeaverStatus).entities;
+        if (entitiesFromStatus) {
+          setEntityState(entitiesFromStatus);
+        }
       }
       appendEvent({
         event: "crawl_state",
@@ -536,7 +828,69 @@ export function WebGraphWeaverPanel() {
         reason: action,
       });
     },
-    [appendEvent, concurrency, maxDepth, maxNodes, requestWeaver, seedInput],
+    [appendEvent, concurrency, entityCount, maxDepth, maxNodes, maxPerHost, requestWeaver, seedInput],
+  );
+
+  const postEntityControl = useCallback(
+    async (action: "start" | "pause" | "resume" | "stop" | "configure") => {
+      setErrorMessage(null);
+      const response = await requestWeaver("/api/weaver/entities/control", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action,
+          count: entityCount,
+          max_per_host: maxPerHost,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok || payload?.ok !== true) {
+        throw new Error(payload?.error || `entity control failed (${response.status})`);
+      }
+      if (payload.status) {
+        setStatus(payload.status as WeaverStatus);
+      }
+      if (payload.status?.entities) {
+        setEntityState(payload.status.entities as WeaverEntityStateEnvelope);
+      }
+      appendEvent({
+        event: "entity_control",
+        timestamp: Date.now(),
+        reason: action,
+      });
+    },
+    [appendEvent, entityCount, maxPerHost, requestWeaver],
+  );
+
+  const interactWithNode = useCallback(
+    async (url: string) => {
+      const normalized = url.trim();
+      if (!normalized) {
+        return;
+      }
+      setErrorMessage(null);
+      const response = await requestWeaver("/api/weaver/entities/interact", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: normalized,
+          delta: interactionDelta,
+          source: "frontend_manual_interaction",
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok || payload?.ok !== true) {
+        throw new Error(payload?.error || `node interaction failed (${response.status})`);
+      }
+      if (payload.status) {
+        setStatus(payload.status as WeaverStatus);
+        if ((payload.status as WeaverStatus).entities) {
+          setEntityState((payload.status as WeaverStatus).entities as WeaverEntityStateEnvelope);
+        }
+      }
+      await refreshGraph(domainFilter);
+    },
+    [domainFilter, interactionDelta, refreshGraph, requestWeaver],
   );
 
   const addOptOutDomain = useCallback(async () => {
@@ -600,6 +954,7 @@ export function WebGraphWeaverPanel() {
           const payload = JSON.parse(String(event.data)) as {
             event: string;
             status?: WeaverStatus;
+            entities?: WeaverEntityStateEnvelope;
             graph?: WeaverGraph;
             recent_events?: WeaverEvent[];
             nodes?: WeaverNode[];
@@ -609,6 +964,12 @@ export function WebGraphWeaverPanel() {
           if (payload.event === "snapshot") {
             if (payload.status) {
               setStatus(payload.status);
+              if (payload.status.entities) {
+                setEntityState(payload.status.entities);
+              }
+            }
+            if (payload.entities) {
+              setEntityState(payload.entities);
             }
             if (payload.graph) {
               setGraph(payload.graph);
@@ -623,6 +984,21 @@ export function WebGraphWeaverPanel() {
             setGraph((prev) => mergeGraph(prev, payload.nodes || [], payload.edges || []));
           }
 
+          if (payload.event === "entity_tick") {
+            const nextEntities: WeaverEntityStateEnvelope = {
+              ok: true,
+              enabled: Boolean(payload.entities_enabled),
+              paused: Boolean(payload.entities_paused),
+              activation_threshold: Number(payload.activation_threshold || 1),
+              node_cooldown_ms: Number(payload.node_cooldown_ms || 0),
+              max_requests_per_host: Number(payload.max_requests_per_host || 0),
+              entities: Array.isArray(payload.entities)
+                ? (payload.entities as WeaverEntityState[])
+                : [],
+            };
+            setEntityState(nextEntities);
+          }
+
           appendEvent(payload);
 
           const now = Date.now();
@@ -630,7 +1006,7 @@ export function WebGraphWeaverPanel() {
             statusRefreshRef.current = now;
             refreshStatus().catch(() => {});
           }
-        } catch (_err) {
+        } catch {
           // ignore malformed event
         }
       };
@@ -879,6 +1255,41 @@ export function WebGraphWeaverPanel() {
         }
       }
 
+      for (let i = 0; i < entityRows.length; i += 1) {
+        const entity = entityRows[i];
+        const fromUrl = String(entity.from_url || entity.current_url || "");
+        const targetUrl = String(entity.target_url || entity.current_url || "");
+        if (!targetUrl) {
+          continue;
+        }
+        const fromPoint = layout.get(`url:${fromUrl}`) || layout.get(`url:${targetUrl}`);
+        const targetPoint = layout.get(`url:${targetUrl}`) || fromPoint;
+        if (!fromPoint || !targetPoint) {
+          continue;
+        }
+        const progress = entity.state === "moving"
+          ? clamp(Number(entity.progress || 0), 0, 1)
+          : 1;
+        const px = fromPoint.x + (targetPoint.x - fromPoint.x) * progress;
+        const py = fromPoint.y + (targetPoint.y - fromPoint.y) * progress;
+        const x = centerX + px * scale;
+        const y = centerY + py * scale;
+
+        const hue = (hashString(entity.id || String(i)) % 360);
+        context.fillStyle = `hsla(${hue}, 85%, 62%, 0.95)`;
+        context.beginPath();
+        context.arc(x, y, denseMode ? 2.4 : 3.8, 0, Math.PI * 2);
+        context.fill();
+
+        if (!denseMode) {
+          context.strokeStyle = `hsla(${hue}, 92%, 70%, 0.55)`;
+          context.lineWidth = 0.9;
+          context.beginPath();
+          context.arc(x, y, 7, 0, Math.PI * 2);
+          context.stroke();
+        }
+      }
+
       if (selectedNodeId) {
         const selected = nodeById.get(selectedNodeId);
         if (selected) {
@@ -897,7 +1308,7 @@ export function WebGraphWeaverPanel() {
       context.font = `${10 * dpr}px ui-monospace, SFMono-Regular, Menlo, monospace`;
       context.textAlign = "left";
       context.fillText(
-        `nodes ${renderGraph.nodes.length}/${visibleGraph.nodes.length} / edges ${renderGraph.edges.length}/${visibleGraph.edges.length} / zoom ${viewScale.toFixed(2)}x`,
+        `nodes ${renderGraph.nodes.length}/${visibleGraph.nodes.length} / edges ${renderGraph.edges.length}/${visibleGraph.edges.length} / entities ${entityRows.length} / zoom ${viewScale.toFixed(2)}x`,
         16 * dpr,
         (height / dpr - 14) * dpr,
       );
@@ -914,7 +1325,7 @@ export function WebGraphWeaverPanel() {
     return () => {
       window.cancelAnimationFrame(rafId);
     };
-  }, [layout, renderGraph.edges, renderGraph.nodes, renderGraph.sampledEdges, renderGraph.sampledNodes, selectedNodeId, viewOffsetX, viewOffsetY, viewScale, visibleGraph.edges.length, visibleGraph.nodes.length]);
+  }, [entityRows, layout, renderGraph.edges, renderGraph.nodes, renderGraph.sampledEdges, renderGraph.sampledNodes, selectedNodeId, viewOffsetX, viewOffsetY, viewScale, visibleGraph.edges.length, visibleGraph.nodes.length]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1044,7 +1455,7 @@ export function WebGraphWeaverPanel() {
       <div className="grid gap-3 xl:grid-cols-[1.7fr_1fr]">
         <div className="space-y-3">
           <article className="mindfuck-panel">
-            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-6">
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-8">
               <label className="md:col-span-2 xl:col-span-3">
                 <span className="mindfuck-k">Seed URLs (one per line or comma)</span>
                 <textarea
@@ -1089,6 +1500,30 @@ export function WebGraphWeaverPanel() {
                   className="mindfuck-input mt-1"
                 />
               </label>
+
+              <label>
+                <span className="mindfuck-k">max per host</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={12}
+                  value={maxPerHost}
+                  onChange={(event) => setMaxPerHost(Number(event.target.value || 1))}
+                  className="mindfuck-input mt-1"
+                />
+              </label>
+
+              <label>
+                <span className="mindfuck-k">entity walkers</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={24}
+                  value={entityCount}
+                  onChange={(event) => setEntityCount(Number(event.target.value || 0))}
+                  className="mindfuck-input mt-1"
+                />
+              </label>
             </div>
 
             <div className="mt-3 flex flex-wrap gap-2">
@@ -1106,6 +1541,18 @@ export function WebGraphWeaverPanel() {
               </button>
               <button type="button" className="mindfuck-action-btn" onClick={() => bootstrap().catch((err) => setFriendlyError(err))}>
                 Refresh
+              </button>
+              <button type="button" className="mindfuck-action-btn" onClick={() => postEntityControl("start").catch((err) => setFriendlyError(err))}>
+                Start Entities
+              </button>
+              <button type="button" className="mindfuck-action-btn" onClick={() => postEntityControl("pause").catch((err) => setFriendlyError(err))}>
+                Pause Entities
+              </button>
+              <button type="button" className="mindfuck-action-btn" onClick={() => postEntityControl("resume").catch((err) => setFriendlyError(err))}>
+                Resume Entities
+              </button>
+              <button type="button" className="mindfuck-action-btn" onClick={() => postEntityControl("configure").catch((err) => setFriendlyError(err))}>
+                Apply Entity Config
               </button>
             </div>
 
@@ -1125,6 +1572,29 @@ export function WebGraphWeaverPanel() {
                 onClick={() => addOptOutDomain().catch((err) => setFriendlyError(err))}
               >
                 Add Opt-Out
+              </button>
+            </div>
+
+            <div className="mt-3 grid gap-2 md:grid-cols-[1fr_auto]">
+              <div>
+                <span className="mindfuck-k">interaction delta</span>
+                <input
+                  type="number"
+                  min={0.05}
+                  max={2}
+                  step={0.05}
+                  value={interactionDelta}
+                  onChange={(event) => setInteractionDelta(Number(event.target.value || 0.05))}
+                  className="mindfuck-input mt-1"
+                />
+              </div>
+              <button
+                type="button"
+                className="mindfuck-action-btn self-end"
+                onClick={() => selectedNode?.url && interactWithNode(selectedNode.url).catch((err) => setFriendlyError(err))}
+                disabled={!selectedNode?.url}
+              >
+                Interact Selected Node
               </button>
             </div>
 
@@ -1159,10 +1629,64 @@ export function WebGraphWeaverPanel() {
                 wheel = zoom, drag = pan, click node = highlight path
               </div>
             </div>
+
+            <div className="mt-3 rounded-lg border border-[rgba(102,217,239,0.28)] p-3 bg-[rgba(17,22,31,0.55)]">
+              <p className="mindfuck-k">Selected node</p>
+              {!selectedNode && <p className="mindfuck-small">(click a URL node in the graph)</p>}
+              {selectedNode && (
+                <div className="space-y-1 text-xs text-ink">
+                  <p className="font-mono break-all">{selectedNode.url || selectedNode.label}</p>
+                  <p className="text-muted">
+                    - discovered from: {selectedNode.source_url ? shortText(selectedNode.source_url, 96) : "(seed/manual)"}
+                  </p>
+                  <p>- activation: {Number(selectedNode.activation_potential || 0).toFixed(3)}</p>
+                  <p>- interactions: {selectedNode.interaction_count ?? 0}</p>
+                  <p>
+                    - cooldown until: {selectedNode.cooldown_until
+                      ? new Date(selectedNode.cooldown_until).toLocaleTimeString()
+                      : "ready"}
+                  </p>
+                  <p>- analysis provider: {selectedNode.analysis_provider || "(none yet)"}</p>
+                  {selectedNode.analysis_summary && (
+                    <p className="text-[11px] text-[#dceaf8] leading-snug">
+                      {shortText(selectedNode.analysis_summary, 240)}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
           </article>
         </div>
 
         <div className="space-y-3">
+          <article className="mindfuck-panel">
+            <h3 className="mindfuck-subhead">Entity Walkers</h3>
+            <p className="mindfuck-small">
+              state: {entityState?.enabled ? (entityState?.paused ? "paused" : "active") : "disabled"}
+              {" · "}
+              count {entityRows.length}
+            </p>
+            <p className="mindfuck-small">
+              cooldown {Math.round(Number(entityState?.node_cooldown_ms || status?.config?.node_cooldown_ms || 0) / 1000)}s
+              {" · "}
+              max/host {entityState?.max_requests_per_host ?? status?.config?.max_requests_per_host ?? maxPerHost}
+            </p>
+            <div className="mt-2 space-y-1 max-h-[170px] overflow-auto pr-1">
+              {entityRows.length === 0 && <p className="mindfuck-small">(no entities)</p>}
+              {entityRows.slice(0, 16).map((entity) => (
+                <div key={entity.id} className="rounded border border-[rgba(102,217,239,0.25)] px-2 py-1.5 text-xs">
+                  <p className="font-mono text-[#dceaf8]">
+                    {entity.label} · {entity.state}
+                  </p>
+                  <p className="text-muted font-mono break-all">
+                    {shortText(String(entity.current_url || entity.target_url || "(idle)"), 72)}
+                  </p>
+                  <p className="text-muted">visits {entity.visits ?? 0}</p>
+                </div>
+              ))}
+            </div>
+          </article>
+
           <article className="mindfuck-panel">
             <h3 className="mindfuck-subhead">Crawl Status</h3>
             <ul className="space-y-1.5 text-xs text-ink">
@@ -1176,6 +1700,14 @@ export function WebGraphWeaverPanel() {
               <li>- wiki references: {status?.metrics?.wiki_reference_edges ?? 0}</li>
               <li>- cross references: {status?.metrics?.cross_reference_edges ?? 0}</li>
               <li>- paper pdf links: {status?.metrics?.paper_pdf_edges ?? 0}</li>
+              <li>- host waits: {status?.metrics?.host_concurrency_waits ?? 0}</li>
+              <li>- cooldown blocked: {status?.metrics?.cooldown_blocked ?? 0}</li>
+              <li>- interactions: {status?.metrics?.interactions ?? 0}</li>
+              <li>- activation enqueues: {status?.metrics?.activation_enqueues ?? 0}</li>
+              <li>- entity moves: {status?.metrics?.entity_moves ?? 0}</li>
+              <li>- entity visits: {status?.metrics?.entity_visits ?? 0}</li>
+              <li>- llm analyzed: {status?.metrics?.llm_analysis_success ?? 0}</li>
+              <li>- llm failed: {status?.metrics?.llm_analysis_fail ?? 0}</li>
             </ul>
 
             <div className="mt-3">

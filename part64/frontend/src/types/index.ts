@@ -35,10 +35,33 @@ export interface EntityState {
 export interface SimPoint {
   x: number;
   y: number;
+  z?: number;
   size: number;
   r: number;
   g: number;
   b: number;
+}
+
+export interface BackendFieldParticle {
+  id: string;
+  presence_id: string;
+  presence_role?: string;
+  particle_mode?: "neutral" | "role-bound";
+  x: number;
+  y: number;
+  size: number;
+  r: number;
+  g: number;
+  b: number;
+}
+
+export interface FileGraphEmbeddingParticle {
+  id: string;
+  x: number;
+  y: number;
+  hue: number;
+  cohesion: number;
+  text_density: number;
 }
 
 export interface FileGraphInboxState {
@@ -46,10 +69,21 @@ export interface FileGraphInboxState {
   path: string;
   pending_count: number;
   processed_count: number;
+  skipped_count?: number;
   failed_count: number;
+  rejected_count?: number;
+  deferred_count?: number;
   is_empty: boolean;
   knowledge_entries: number;
+  registry_entries?: number;
   last_ingested_at: string;
+  spaces?: Record<string, unknown>;
+  stats?: Record<string, number>;
+  packets?: {
+    count: number;
+    last: string;
+  };
+  artifacts?: Record<string, string>;
   errors: Array<{ path: string; error: string }>;
 }
 
@@ -115,8 +149,9 @@ export interface FileGraphOrganizerPresence {
 export interface FileGraphNode {
   id: string;
   node_id: string;
-  node_type: "field" | "file" | "presence";
+  node_type: "field" | "file" | "presence" | "tag";
   field?: string;
+  tag?: string;
   label: string;
   label_ja?: string;
   presence_kind?: "organizer" | "concept";
@@ -133,6 +168,10 @@ export interface FileGraphNode {
   dominant_presence?: string;
   field_scores?: Record<string, number>;
   text_excerpt?: string;
+  summary?: string;
+  tags?: string[];
+  labels?: string[];
+  member_count?: number;
   embed_layer_points?: FileGraphEmbedLayerPoint[];
   embed_layer_count?: number;
   vecstore_collection?: string;
@@ -156,10 +195,12 @@ export interface FileGraph {
   inbox: FileGraphInboxState;
   nodes: FileGraphNode[];
   field_nodes: FileGraphNode[];
+  tag_nodes?: FileGraphNode[];
   file_nodes: FileGraphNode[];
   embed_layers?: FileGraphEmbedLayerSummary[];
   organizer_presence?: FileGraphOrganizerPresence;
   concept_presences?: FileGraphConceptPresence[];
+  embedding_particles?: FileGraphEmbeddingParticle[];
   edges: FileGraphEdge[];
   stats: {
     field_count: number;
@@ -172,6 +213,10 @@ export interface FileGraph {
     organizer_presence_count?: number;
     concept_presence_count?: number;
     organized_file_count?: number;
+    tag_count?: number;
+    tag_edge_count?: number;
+    tag_pair_edge_count?: number;
+    docmeta_enriched_count?: number;
     knowledge_entries: number;
   };
 }
@@ -337,11 +382,13 @@ export interface LogicalGraph {
   };
   stats: {
     file_nodes: number;
+    tag_nodes?: number;
     fact_nodes: number;
     rule_nodes: number;
     derivation_nodes: number;
     contradiction_nodes: number;
     gate_nodes: number;
+    tag_edges?: number;
     edge_count: number;
   };
 }
@@ -486,6 +533,7 @@ export interface SimulationState {
   image: number;
   video: number;
   points: SimPoint[];
+  field_particles?: BackendFieldParticle[];
   file_graph?: FileGraph;
   crawler_graph?: CrawlerGraph;
   truth_state?: TruthState;
@@ -736,6 +784,31 @@ export interface PresenceDynamics {
   file_events: number;
   log_events_180s?: number;
   resource_events_180s?: number;
+  compute_jobs_180s?: number;
+  compute_summary?: {
+    llm_jobs: number;
+    embedding_jobs: number;
+    ok_count: number;
+    error_count: number;
+    resource_counts: Record<string, number>;
+  };
+  compute_jobs?: Array<{
+    id: string;
+    at: string;
+    ts: number;
+    kind: string;
+    op: string;
+    backend: string;
+    resource: string;
+    emitter_presence_id: string;
+    target_presence_id: string;
+    model: string;
+    status: string;
+    latency_ms?: number | null;
+    error?: string;
+  }>;
+  field_particles_record?: string;
+  field_particles?: BackendFieldParticle[];
   simulation_budget?: {
     point_limit: number;
     point_limit_max: number;
@@ -1001,6 +1074,47 @@ export interface NamedFieldItem {
   hue?: number;
 }
 
+export interface WorldLogEventRelation {
+  event_id: string;
+  node_id?: string;
+  score: number;
+  kind: string;
+}
+
+export interface WorldLogEvent {
+  id: string;
+  ts: string;
+  source: string;
+  kind: string;
+  status: string;
+  title: string;
+  detail: string;
+  refs: string[];
+  tags: string[];
+  path?: string;
+  embedding_id?: string;
+  node_id?: string;
+  x?: number;
+  y?: number;
+  dominant_field?: string;
+  dominant_presence?: string;
+  dominant_weight?: number;
+  relations?: WorldLogEventRelation[];
+}
+
+export interface WorldLogPayload {
+  ok: boolean;
+  record: string;
+  generated_at: string;
+  count: number;
+  limit: number;
+  pending_inbox: number;
+  sources: Record<string, number>;
+  kinds: Record<string, number>;
+  relation_count: number;
+  events: WorldLogEvent[];
+}
+
 export interface Catalog {
   generated_at: string;
   part_roots: string[];
@@ -1019,6 +1133,7 @@ export interface Catalog {
   ui_projection?: UIProjectionBundle;
   entity_manifest?: EntityManifestItem[];
   named_fields?: NamedFieldItem[];
+  world_log?: WorldLogPayload;
   cover_fields: Array<{
     id: string;
     part: string;
@@ -1035,6 +1150,29 @@ export interface Catalog {
     file_changes_120s: number;
     log_events_180s?: number;
     resource_events_180s?: number;
+    compute_jobs_180s?: number;
+    compute_summary?: {
+      llm_jobs: number;
+      embedding_jobs: number;
+      ok_count: number;
+      error_count: number;
+      resource_counts: Record<string, number>;
+    };
+    compute_jobs?: Array<{
+      id: string;
+      at: string;
+      ts: number;
+      kind: string;
+      op: string;
+      backend: string;
+      resource: string;
+      emitter_presence_id: string;
+      target_presence_id: string;
+      model: string;
+      status: string;
+      latency_ms?: number | null;
+      error?: string;
+    }>;
     recent_click_targets: string[];
     recent_file_paths: string[];
     recent_logs?: Array<{

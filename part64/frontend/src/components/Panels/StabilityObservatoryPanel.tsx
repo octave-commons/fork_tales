@@ -96,6 +96,20 @@ function decisionStatusClass(status: string): string {
   return "text-[#66d9ef]";
 }
 
+function resourceStatusClass(status: string): string {
+  const normalized = status.trim().toLowerCase();
+  if (normalized === "hot") {
+    return "text-[#f92672]";
+  }
+  if (normalized === "watch") {
+    return "text-[#fd971f]";
+  }
+  if (normalized === "ok") {
+    return "text-[#a6e22e]";
+  }
+  return "text-muted";
+}
+
 function summarizeDriftSeverities(payload: DriftScanPayload | null): DriftSeverityCount {
   const summary: DriftSeverityCount = { high: 0, medium: 0, low: 0 };
   if (!payload) {
@@ -270,6 +284,13 @@ export function StabilityObservatoryPanel({ catalog, simulation }: Props) {
   const resourceLogErrorRatio =
     study?.signals?.resource_log_error_ratio ?? runtimeResource?.log_watch?.error_ratio ?? 0;
   const resourceCpuUtilization = runtimeResource?.devices?.cpu?.utilization ?? 0;
+  const npuDevice = runtimeResource?.devices?.npu0;
+  const npuStatus = String(npuDevice?.status || "n/a");
+  const npuUtilization = typeof npuDevice?.utilization === "number" ? npuDevice.utilization : 0;
+  const npuQueueDepth = typeof npuDevice?.queue_depth === "number" ? npuDevice.queue_depth : 0;
+  const npuTemperature = typeof npuDevice?.temperature === "number" ? npuDevice.temperature : 0;
+  const npuDeviceLabel = String(npuDevice?.device || "NPU").trim() || "NPU";
+  const npuTemperatureLabel = npuTemperature > 0 ? `${npuTemperature.toFixed(1)}C` : "n/a";
   const resourceAutoEmbeddings =
     runtimeResource?.auto_backend?.embeddings_order?.join(" -> ") ?? "(n/a)";
   const resourceAutoText = runtimeResource?.auto_backend?.text_order?.join(" -> ") ?? "(n/a)";
@@ -403,6 +424,17 @@ export function StabilityObservatoryPanel({ catalog, simulation }: Props) {
           <div className="rounded-md border border-[var(--line)] bg-[rgba(31,32,29,0.84)] px-3 py-2">
             <p className="text-[10px] uppercase tracking-wide text-muted">cpu utilization</p>
             <p className="text-sm font-semibold text-ink">{Math.round(resourceCpuUtilization)}%</p>
+          </div>
+          <div className="rounded-md border border-[var(--line)] bg-[rgba(31,32,29,0.84)] px-3 py-2 sm:col-span-2 lg:col-span-2">
+            <p className="text-[10px] uppercase tracking-wide text-muted">npu lane</p>
+            <p className="text-sm font-semibold text-ink">
+              <span className={resourceStatusClass(npuStatus)}>{npuStatus}</span>
+              <span className="text-muted"> - </span>
+              {Math.round(npuUtilization)}% utilization
+            </p>
+            <p className="text-[11px] text-muted mt-1">
+              queue <code>{npuQueueDepth}</code> | temp <code>{npuTemperatureLabel}</code> | device <code>{npuDeviceLabel}</code>
+            </p>
           </div>
         </div>
 

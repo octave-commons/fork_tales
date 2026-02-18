@@ -6,26 +6,88 @@ import {
   useRef,
   lazy,
   Suspense,
-  type ReactNode,
-  type CSSProperties,
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
 } from "react";
-import { motion, type PanInfo } from "framer-motion";
+import { type PanInfo } from "framer-motion";
+import { useAutopilotController } from "./hooks/useAutopilotController";
 import { useWorldState } from "./hooks/useWorldState";
 import { OVERLAY_VIEW_OPTIONS, SimulationCanvas, type OverlayViewId } from "./components/Simulation/Canvas";
+import { CoreBackdrop } from "./components/App/CoreBackdrop";
+import { CoreControlPanel } from "./components/App/CoreControlPanel";
+import { CoreLayerManagerOverlay } from "./components/App/CoreLayerManagerOverlay";
+import { WorldPanelsViewport } from "./components/App/WorldPanelsViewport";
 import { ChatPanel } from "./components/Panels/Chat";
 import { PresenceCallDeck } from "./components/Panels/PresenceCallDeck";
 import { ProjectionLedgerPanel } from "./components/Panels/ProjectionLedgerPanel";
 import {
-  Autopilot,
-  type AskPayload,
-  type AutopilotActionEvent,
-  type AutopilotActionResult,
-  type GateVerdict,
-  type IntentHypothesis,
-  type PlannedAction,
-} from "./autopilot";
+  CORE_CAMERA_PITCH_MAX,
+  CORE_CAMERA_PITCH_MIN,
+  CORE_CAMERA_X_LIMIT,
+  CORE_CAMERA_YAW_MAX,
+  CORE_CAMERA_YAW_MIN,
+  CORE_CAMERA_Y_LIMIT,
+  CORE_CAMERA_Z_MAX,
+  CORE_CAMERA_Z_MIN,
+  CORE_CAMERA_ZOOM_MAX,
+  CORE_CAMERA_ZOOM_MIN,
+  CORE_FLIGHT_BASE_SPEED,
+  CORE_FLIGHT_SPEED_MAX,
+  CORE_FLIGHT_SPEED_MIN,
+  CORE_LAYER_OPTIONS,
+  CORE_ORBIT_PERIOD_SECONDS,
+  CORE_ORBIT_RADIUS_X,
+  CORE_ORBIT_RADIUS_Y,
+  CORE_ORBIT_RADIUS_Z,
+  CORE_ORBIT_SPEED_MAX,
+  CORE_ORBIT_SPEED_MIN,
+  CORE_SIM_LAYER_DEPTH_MAX,
+  CORE_SIM_LAYER_DEPTH_MIN,
+  CORE_SIM_MOTION_SPEED_MAX,
+  CORE_SIM_MOTION_SPEED_MIN,
+  CORE_SIM_MOUSE_INFLUENCE_MAX,
+  CORE_SIM_MOUSE_INFLUENCE_MIN,
+  CORE_SIM_PARTICLE_DENSITY_MAX,
+  CORE_SIM_PARTICLE_DENSITY_MIN,
+  CORE_SIM_PARTICLE_SCALE_MAX,
+  CORE_SIM_PARTICLE_SCALE_MIN,
+  CORE_VISUAL_BRIGHTNESS_MAX,
+  CORE_VISUAL_BRIGHTNESS_MIN,
+  CORE_VISUAL_CONTRAST_MAX,
+  CORE_VISUAL_CONTRAST_MIN,
+  CORE_VISUAL_HUE_MAX,
+  CORE_VISUAL_HUE_MIN,
+  CORE_VISUAL_SATURATION_MAX,
+  CORE_VISUAL_SATURATION_MIN,
+  CORE_VISUAL_VIGNETTE_MAX,
+  CORE_VISUAL_VIGNETTE_MIN,
+  CORE_VISUAL_WASH_MAX,
+  CORE_VISUAL_WASH_MIN,
+  DEFAULT_CORE_LAYER_VISIBILITY,
+  DEFAULT_CORE_SIMULATION_TUNING,
+  DEFAULT_CORE_VISUAL_TUNING,
+  HIGH_VISIBILITY_CORE_VISUAL_TUNING,
+  type CoreLayerId,
+  type CoreSimulationTuning,
+  type CoreVisualTuning,
+} from "./app/coreSimulationConfig";
+import {
+  PANEL_ANCHOR_PRESETS,
+  WORLD_PANEL_MARGIN,
+  containsAnchorNoCoverZone,
+  defaultPinnedPanelMap,
+  normalizeUnit,
+  overlapAmount,
+  panelSizeForWorld,
+  preferredSideForAnchor,
+  type PanelConfig,
+  type PanelPreferredSide,
+  type PanelWindowState,
+  type WorldAnchorTarget,
+  type WorldPanelNexusEntry,
+  type WorldPanelLayoutEntry,
+} from "./app/worldPanelLayout";
+import { runtimeBaseUrl } from "./runtime/endpoints";
 import type {
   CouncilApiResponse,
   DriftScanPayload,
@@ -68,23 +130,17 @@ const StabilityObservatoryPanel = lazy(() =>
     default: module.StabilityObservatoryPanel,
   })),
 );
+const WorldLogPanel = lazy(() =>
+  import("./components/Panels/WorldLogPanel").then((module) => ({
+    default: module.WorldLogPanel,
+  })),
+);
 
 interface OverlayApi {
-  pulseAt?: (x: number, y: number, power: number) => void;
+  pulseAt?: (x: number, y: number, power: number, target?: string) => void;
   singAll?: () => void;
-}
-
-type AutopilotHealth = "green" | "yellow" | "red";
-
-interface AutopilotSenseContext {
-  isConnected: boolean;
-  blockedGateCount: number;
-  activeDriftCount: number;
-  queuePendingCount: number;
-  truthGateBlocked: boolean;
-  health: AutopilotHealth;
-  healthReasons: string[];
-  permissions: Record<string, boolean>;
+  getAnchorRatio?: (kind: string, targetId: string) => { x: number; y: number; kind: string; label?: string } | null;
+  projectRatioToClient?: (xRatio: number, yRatio: number) => { x: number; y: number; w: number; h: number };
 }
 
 interface UiToast {
@@ -93,57 +149,49 @@ interface UiToast {
   body: string;
 }
 
-const AUTOPILOT_C_MIN = 0.72;
-const AUTOPILOT_R_MAX = 0.45;
-const PROJECTION_GRID_COLUMNS = 12;
-const PROJECTION_GRID_ROWS = 24;
-const CORE_CAMERA_ZOOM_MIN = 0.6;
-const CORE_CAMERA_ZOOM_MAX = 1.8;
-const CORE_CAMERA_PITCH_MIN = -36;
-const CORE_CAMERA_PITCH_MAX = 36;
-const CORE_CAMERA_YAW_MIN = -52;
-const CORE_CAMERA_YAW_MAX = 52;
-const CORE_CAMERA_X_LIMIT = 860;
-const CORE_CAMERA_Y_LIMIT = 560;
-const CORE_CAMERA_Z_MIN = -520;
-const CORE_CAMERA_Z_MAX = 460;
-const CORE_FLIGHT_BASE_SPEED = 230;
-const CORE_FLIGHT_SPEED_MIN = 0.55;
-const CORE_FLIGHT_SPEED_MAX = 2.4;
+type ParticleDisposition = "neutral" | "role-bound";
 
-const DEFAULT_AUTOPILOT_PERMISSIONS: Record<string, boolean> = {
-  "runtime.read": true,
-  "truth.push.dry-run": false,
+interface RankedPanel extends PanelConfig {
+  priority: number;
+  depth: number;
+  councilScore: number;
+  councilBoost: number;
+  councilReason: string;
+  presenceId: string;
+  presenceLabel: string;
+  presenceLabelJa: string;
+  presenceRole: string;
+  particleDisposition: ParticleDisposition;
+  particleCount: number;
+  toolHints: string[];
+}
+
+const PRESENCE_OPERATIONAL_ROLE_BY_ID: Record<string, string> = {
+  witness_thread: "crawl-routing",
+  keeper_of_receipts: "file-analysis",
+  mage_of_receipts: "image-captioning",
+  anchor_registry: "council-orchestration",
+  gates_of_truth: "compliance-gating",
+  health_sentinel_gpu1: "compute-scheduler",
+  health_sentinel_gpu0: "compute-scheduler",
+  health_sentinel_npu0: "compute-scheduler",
+  health_sentinel_cpu: "compute-scheduler",
 };
 
-function directiveToGoal(input: string): string {
-  const normalized = input.trim().toLowerCase();
-  if (normalized.includes("drift")) {
-    return "scan-drift";
-  }
-  if (normalized.includes("queue") || normalized.includes("study")) {
-    return "reduce-queue";
-  }
-  if (normalized.includes("truth") || normalized.includes("push")) {
-    return "clear-gates";
-  }
-  return "maintain-observability";
-}
-
-function isAffirmativeResponse(input: string): boolean {
-  const normalized = input.trim().toLowerCase();
-  return (
-    normalized === "yes" ||
-    normalized === "y" ||
-    normalized.includes("grant") ||
-    normalized.includes("allow") ||
-    normalized.includes("approve")
-  );
-}
-
-function runtimeBaseUrl(): string {
-  return window.location.port === "5173" ? "http://127.0.0.1:8787" : "";
-}
+const PANEL_TOOL_HINTS: Record<string, string[]> = {
+  "nexus.ui.command_center": ["call", "say", "webrtc"],
+  "nexus.ui.chat.witness_thread": ["chat", "voice", "intent"],
+  "nexus.ui.web_graph_weaver": ["crawl", "queue", "graph"],
+  "nexus.ui.inspiration_atlas": ["search", "curate", "seed"],
+  "nexus.ui.entity_vitals": ["vitals", "telemetry", "watch"],
+  "nexus.ui.projection_ledger": ["projection", "trace", "audit"],
+  "nexus.ui.autopilot_ledger": ["autopilot", "risk", "gates"],
+  "nexus.ui.world_log": ["receipts", "events", "review"],
+  "nexus.ui.stability_observatory": ["study", "drift", "council"],
+  "nexus.ui.omni_archive": ["catalog", "memories", "artifacts"],
+  "nexus.ui.myth_commons": ["interact", "pray", "speak"],
+  "nexus.ui.dedicated_views": ["overlay", "focus", "monitor"],
+};
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -160,9 +208,37 @@ function isTextEntryTarget(target: EventTarget | null): boolean {
   return tagName === "input" || tagName === "textarea" || tagName === "select";
 }
 
+function shouldRouteWheelToCore(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) {
+    return true;
+  }
+  if (
+    target.closest(
+      "input, textarea, select, option, [contenteditable='true'], [role='slider'], [data-core-wheel='block']",
+    )
+  ) {
+    return false;
+  }
+
+  if (target.closest(".world-panel-body")) {
+    return false;
+  }
+
+  return true;
+}
+
 function projectionOpacity(raw: number | undefined, floor = 0.9): number {
   const normalized = clamp(typeof raw === "number" ? raw : 1, 0, 1);
   return floor + normalized * (1 - floor);
+}
+
+function stableUnitHash(seed: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash ^= seed.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) / 4294967295;
 }
 
 function DeferredPanelPlaceholder({ title }: { title: string }) {
@@ -171,220 +247,6 @@ function DeferredPanelPlaceholder({ title }: { title: string }) {
       <p className="text-sm font-semibold text-ink">{title}</p>
       <p className="text-xs text-muted mt-1">warming up panel...</p>
     </div>
-  );
-}
-
-type PanelAnchorKind = "node" | "cluster" | "region";
-type PanelPreferredSide = "left" | "right" | "top" | "bottom";
-type PanelWorldSize = "s" | "m" | "l" | "xl";
-
-interface PanelConfig {
-  id: string;
-  fallbackSpan: number;
-  className?: string;
-  anchorKind?: PanelAnchorKind;
-  anchorId?: string;
-  worldSize?: PanelWorldSize;
-  pinnedByDefault?: boolean;
-  render: () => ReactNode;
-}
-
-interface WorldAnchorTarget {
-  kind: PanelAnchorKind;
-  id: string;
-  label: string;
-  x: number;
-  y: number;
-  radius: number;
-  hue: number;
-  confidence: number;
-  presenceSignature: Record<string, number>;
-}
-
-interface WorldPanelLayoutEntry {
-  id: string;
-  panel: PanelConfig & { priority: number; depth: number };
-  anchor: WorldAnchorTarget;
-  anchorScreenX: number;
-  anchorScreenY: number;
-  side: PanelPreferredSide;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  tetherX: number;
-  tetherY: number;
-  glow: number;
-  collapse: boolean;
-}
-
-interface PanelAnchorPreset {
-  kind: PanelAnchorKind;
-  worldSize: PanelWorldSize;
-  pinnedByDefault?: boolean;
-  anchorId?: string;
-}
-
-const MAX_WORLD_PANELS_VISIBLE = 8;
-const WORLD_PANEL_MARGIN = 16;
-
-const PANEL_ANCHOR_PRESETS: Record<string, PanelAnchorPreset> = {
-  "nexus.ui.command_center": {
-    kind: "node",
-    worldSize: "xl",
-    pinnedByDefault: true,
-    anchorId: "anchor_registry",
-  },
-  "nexus.ui.chat.witness_thread": {
-    kind: "node",
-    worldSize: "l",
-    pinnedByDefault: true,
-    anchorId: "witness_thread",
-  },
-  "nexus.ui.web_graph_weaver": {
-    kind: "cluster",
-    worldSize: "m",
-  },
-  "nexus.ui.inspiration_atlas": {
-    kind: "cluster",
-    worldSize: "m",
-  },
-  "nexus.ui.entity_vitals": {
-    kind: "node",
-    worldSize: "m",
-  },
-  "nexus.ui.projection_ledger": {
-    kind: "region",
-    worldSize: "m",
-    pinnedByDefault: true,
-  },
-  "nexus.ui.autopilot_ledger": {
-    kind: "region",
-    worldSize: "m",
-  },
-  "nexus.ui.stability_observatory": {
-    kind: "region",
-    worldSize: "l",
-    pinnedByDefault: true,
-    anchorId: "gates_of_truth",
-  },
-  "nexus.ui.omni_archive": {
-    kind: "cluster",
-    worldSize: "l",
-  },
-  "nexus.ui.myth_commons": {
-    kind: "region",
-    worldSize: "m",
-  },
-  "nexus.ui.dedicated_views": {
-    kind: "region",
-    worldSize: "xl",
-    anchorId: "anchor_registry",
-  },
-};
-
-function defaultPinnedPanelMap(panelIds: string[]): Record<string, boolean> {
-  const pinned: Record<string, boolean> = {};
-  panelIds.forEach((panelId) => {
-    pinned[panelId] = Boolean(PANEL_ANCHOR_PRESETS[panelId]?.pinnedByDefault);
-  });
-  return pinned;
-}
-
-function normalizeUnit(raw: number | undefined | null, fallback = 0.5): number {
-  if (typeof raw !== "number" || Number.isNaN(raw)) {
-    return fallback;
-  }
-  return clamp(raw, 0, 1);
-}
-
-function panelSizeForWorld(
-  worldSize: PanelWorldSize,
-  priority: number,
-  zoom: number,
-  speedNorm: number,
-): { width: number; height: number; collapse: boolean } {
-  const bySize: Record<PanelWorldSize, { w: number; h: number }> = {
-    s: { w: 220, h: 150 },
-    m: { w: 286, h: 196 },
-    l: { w: 342, h: 232 },
-    xl: { w: 418, h: 282 },
-  };
-  const base = bySize[worldSize];
-  const zoomScale = clamp(0.9 + ((zoom - 1) * 0.42), 0.76, 1.28);
-  const priorityScale = 0.9 + (priority * 0.34);
-  const motionScale = 1 - (speedNorm * 0.22);
-  const width = clamp(Math.round(base.w * zoomScale * priorityScale * motionScale), 188, 560);
-  const height = clamp(Math.round(base.h * zoomScale * (0.94 + priority * 0.26) * motionScale), 126, 420);
-  const collapse = speedNorm > 0.62;
-  return { width: collapse ? Math.round(width * 0.58) : width, height: collapse ? 56 : height, collapse };
-}
-
-function preferredSideForAnchor(
-  panelId: string,
-  px: number,
-  py: number,
-  viewportWidth: number,
-  viewportHeight: number,
-  sideByPanel: Map<string, PanelPreferredSide>,
-): PanelPreferredSide {
-  const dx = px - (viewportWidth / 2);
-  const dy = py - (viewportHeight / 2);
-  const axisDominant = Math.abs(dx) > Math.abs(dy) * 1.2;
-  const suggested: PanelPreferredSide = axisDominant
-    ? (dx < 0 ? "left" : "right")
-    : (dy < 0 ? "top" : "bottom");
-  const previous = sideByPanel.get(panelId);
-  if (!previous) {
-    sideByPanel.set(panelId, suggested);
-    return suggested;
-  }
-  const shouldFlip =
-    (previous === "left" && dx > 88)
-    || (previous === "right" && dx < -88)
-    || (previous === "top" && dy > 64)
-    || (previous === "bottom" && dy < -64);
-  if (shouldFlip) {
-    sideByPanel.set(panelId, suggested);
-    return suggested;
-  }
-  return previous;
-}
-
-function anchorOffsetForSide(side: PanelPreferredSide): { x: number; y: number } {
-  if (side === "left") {
-    return { x: -34, y: -8 };
-  }
-  if (side === "right") {
-    return { x: 34, y: -8 };
-  }
-  if (side === "top") {
-    return { x: 0, y: -32 };
-  }
-  return { x: 0, y: 32 };
-}
-
-function overlapAmount(a: WorldPanelLayoutEntry, b: WorldPanelLayoutEntry): { x: number; y: number } | null {
-  const ax2 = a.x + a.width;
-  const ay2 = a.y + a.height;
-  const bx2 = b.x + b.width;
-  const by2 = b.y + b.height;
-  const overlapX = Math.min(ax2, bx2) - Math.max(a.x, b.x);
-  const overlapY = Math.min(ay2, by2) - Math.max(a.y, b.y);
-  if (overlapX <= 0 || overlapY <= 0) {
-    return null;
-  }
-  return { x: overlapX, y: overlapY };
-}
-
-function containsAnchorNoCoverZone(panel: WorldPanelLayoutEntry, radius = 28): boolean {
-  const cx = panel.anchorScreenX;
-  const cy = panel.anchorScreenY;
-  return (
-    cx >= panel.x - radius
-    && cx <= panel.x + panel.width + radius
-    && cy >= panel.y - radius
-    && cy <= panel.y + panel.height + radius
   );
 }
 
@@ -400,29 +262,13 @@ export default function App() {
   const [worldInteraction, setWorldInteraction] = useState<WorldInteractionResponse | null>(null);
   const [interactingPersonId, setInteractingPersonId] = useState<string | null>(null);
   const [deferredPanelsReady, setDeferredPanelsReady] = useState(false);
-  const [isWideViewport, setIsWideViewport] = useState(
-    () => window.matchMedia("(min-width: 1280px)").matches,
-  );
-  const [autopilotEnabled, setAutopilotEnabled] = useState(true);
-  const [autopilotStatus, setAutopilotStatus] = useState<"running" | "waiting" | "stopped">("stopped");
-  const [autopilotSummary, setAutopilotSummary] = useState("booting");
-  const [autopilotEvents, setAutopilotEvents] = useState<AutopilotActionEvent[]>([]);
-  const [autopilotPermissions, setAutopilotPermissions] = useState<Record<string, boolean>>(
-    DEFAULT_AUTOPILOT_PERMISSIONS,
-  );
   const [uiToasts, setUiToasts] = useState<UiToast[]>([]);
 
-  const autopilotRef = useRef<Autopilot<AutopilotSenseContext> | null>(null);
-  const autopilotPendingAskRef = useRef<AskPayload | null>(null);
-  const autopilotDirectiveRef = useRef<string | null>(null);
-  const autopilotPermissionsRef = useRef(autopilotPermissions);
-  const autopilotLastActionRef = useRef<{ id: string; ts: number } | null>(null);
-  const runtimeSnapshotRef = useRef({ catalog, simulation, isConnected });
   const toastSeqRef = useRef(0);
   const toastTimeoutsRef = useRef<Map<number, number>>(new Map());
-  const gridContainerRef = useRef<HTMLDivElement>(null);
   const panelSideRef = useRef<Map<string, PanelPreferredSide>>(new Map());
   const panelScreenRef = useRef<Map<string, { x: number; y: number }>>(new Map());
+  const panelWorldScaleRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   const cameraFlightRef = useRef<number | null>(null);
   const coreDragRef = useRef<{
     active: boolean;
@@ -446,10 +292,12 @@ export default function App() {
   });
   const coreFlightVelocityRef = useRef({ x: 0, y: 0, z: 0 });
 
-  const [layoutOverrides, setLayoutOverrides] = useState<Record<string, { x: number; y: number; w: number; h: number }>>({});
-  const [panelScreenBiases, setPanelScreenBiases] = useState<Record<string, { x: number; y: number }>>({});
+  const [panelWorldBiases, setPanelWorldBiases] = useState<Record<string, { x: number; y: number }>>({});
+  const [panelWindowStates, setPanelWindowStates] = useState<Record<string, PanelWindowState>>({});
+  const [panelCouncilBoosts, setPanelCouncilBoosts] = useState<Record<string, number>>({});
   const [selectedPanelId, setSelectedPanelId] = useState<string | null>(null);
   const [hoveredPanelId, setHoveredPanelId] = useState<string | null>(null);
+  const [tertiaryPinnedPanelId, setTertiaryPinnedPanelId] = useState<string | null>(null);
   const [pinnedPanels, setPinnedPanels] = useState<Record<string, boolean>>(() =>
     defaultPinnedPanelMap(Object.keys(PANEL_ANCHOR_PRESETS)),
   );
@@ -457,12 +305,19 @@ export default function App() {
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const [viewportHeight, setViewportHeight] = useState(() => window.innerHeight);
   const [coreCameraZoom, setCoreCameraZoom] = useState(1);
-  const [coreCameraPitch, setCoreCameraPitch] = useState(10);
-  const [coreCameraYaw, setCoreCameraYaw] = useState(-12);
+  const [coreCameraPitch, setCoreCameraPitch] = useState(0);
+  const [coreCameraYaw, setCoreCameraYaw] = useState(0);
   const [coreCameraPosition, setCoreCameraPosition] = useState({ x: 0, y: 0, z: 0 });
   const [coreOverlayView, setCoreOverlayView] = useState<OverlayViewId>("omni");
   const [coreFlightEnabled, setCoreFlightEnabled] = useState(true);
   const [coreFlightSpeed, setCoreFlightSpeed] = useState(1);
+  const [coreOrbitEnabled, setCoreOrbitEnabled] = useState(false);
+  const [coreOrbitSpeed, setCoreOrbitSpeed] = useState(0.58);
+  const [coreOrbitPhase, setCoreOrbitPhase] = useState(0);
+  const [coreSimulationTuning, setCoreSimulationTuning] = useState<CoreSimulationTuning>(DEFAULT_CORE_SIMULATION_TUNING);
+  const [coreVisualTuning, setCoreVisualTuning] = useState<CoreVisualTuning>(DEFAULT_CORE_VISUAL_TUNING);
+  const [coreLayerVisibility, setCoreLayerVisibility] = useState<Record<CoreLayerId, boolean>>(DEFAULT_CORE_LAYER_VISIBILITY);
+  const [coreLayerManagerOpen, setCoreLayerManagerOpen] = useState(true);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -470,18 +325,6 @@ export default function App() {
     }, 220);
     return () => {
       window.clearTimeout(timer);
-    };
-  }, []);
-
-  useEffect(() => {
-    const query = window.matchMedia("(min-width: 1280px)");
-    const handleViewportChange = (event: MediaQueryListEvent) => {
-      setIsWideViewport(event.matches);
-    };
-    setIsWideViewport(query.matches);
-    query.addEventListener("change", handleViewportChange);
-    return () => {
-      query.removeEventListener("change", handleViewportChange);
     };
   }, []);
 
@@ -497,14 +340,6 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
-    runtimeSnapshotRef.current = { catalog, simulation, isConnected };
-  }, [catalog, isConnected, simulation]);
-
-  useEffect(() => {
-    autopilotPermissionsRef.current = autopilotPermissions;
-  }, [autopilotPermissions]);
-
   const dismissToast = useCallback((id: number) => {
     const timeoutId = toastTimeoutsRef.current.get(id);
     if (timeoutId !== undefined) {
@@ -515,6 +350,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const toastTimeouts = toastTimeoutsRef.current;
     const handler: EventListener = (event) => {
       const customEvent = event as CustomEvent<{ title?: unknown; body?: unknown }>;
       const title =
@@ -531,18 +367,18 @@ export default function App() {
 
       const timeoutId = window.setTimeout(() => {
         setUiToasts((prev) => prev.filter((toast) => toast.id !== id));
-        toastTimeoutsRef.current.delete(id);
+        toastTimeouts.delete(id);
       }, 5200);
-      toastTimeoutsRef.current.set(id, timeoutId);
+      toastTimeouts.set(id, timeoutId);
     };
 
     window.addEventListener("ui:toast", handler);
     return () => {
       window.removeEventListener("ui:toast", handler);
-      toastTimeoutsRef.current.forEach((timeoutId) => {
+      toastTimeouts.forEach((timeoutId) => {
         window.clearTimeout(timeoutId);
       });
-      toastTimeoutsRef.current.clear();
+      toastTimeouts.clear();
     };
   }, []);
 
@@ -673,512 +509,21 @@ export default function App() {
     );
   }, []);
 
-  const runAutopilotStudySnapshot = useCallback(async (): Promise<AutopilotActionResult> => {
-    const baseUrl = runtimeBaseUrl();
-    try {
-      const response = await fetch(`${baseUrl}/api/study?limit=6`);
-      if (!response.ok) {
-        return {
-          ok: false,
-          summary: `study snapshot failed (${response.status})`,
-        };
-      }
-      const study = (await response.json()) as StudySnapshotPayload;
-      emitSystemMessage(
-        [
-          "autopilot /study",
-          `stability=${Math.round(study.stability.score * 100)}%`,
-          `blocked_gates=${study.signals.blocked_gate_count}`,
-          `active_drifts=${study.signals.active_drift_count}`,
-          `queue_pending=${study.signals.queue_pending_count}`,
-        ].join("\n"),
-      );
-      return {
-        ok: true,
-        summary: `study snapshot sampled (stability=${Math.round(study.stability.score * 100)}%)`,
-        meta: { queue_pending: study.signals.queue_pending_count },
-      };
-    } catch {
-      return {
-        ok: false,
-        summary: "study snapshot request crashed",
-      };
-    }
-  }, [emitSystemMessage]);
-
-  const runAutopilotDriftScan = useCallback(async (): Promise<AutopilotActionResult> => {
-    const baseUrl = runtimeBaseUrl();
-    try {
-      const response = await fetch(`${baseUrl}/api/drift/scan`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      if (!response.ok) {
-        return {
-          ok: false,
-          summary: `drift scan failed (${response.status})`,
-        };
-      }
-      const payload = (await response.json()) as DriftScanPayload;
-      emitSystemMessage(
-        [
-          "autopilot /drift",
-          `active_drifts=${payload.active_drifts.length}`,
-          `blocked_gates=${payload.blocked_gates.length}`,
-        ].join("\n"),
-      );
-      return {
-        ok: true,
-        summary: `drift scanned (blocked=${payload.blocked_gates.length})`,
-      };
-    } catch {
-      return {
-        ok: false,
-        summary: "drift scan request crashed",
-      };
-    }
-  }, [emitSystemMessage]);
-
-  const runAutopilotPushTruthDryRun = useCallback(async (): Promise<AutopilotActionResult> => {
-    const baseUrl = runtimeBaseUrl();
-    try {
-      const response = await fetch(`${baseUrl}/api/push-truth/dry-run`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      if (!response.ok) {
-        return {
-          ok: false,
-          summary: `push-truth dry-run failed (${response.status})`,
-        };
-      }
-      const payload = (await response.json()) as {
-        gate?: { blocked?: boolean };
-        needs?: string[];
-      };
-      const blocked = payload?.gate?.blocked ? "blocked" : "pass";
-      const needs = Array.isArray(payload?.needs) ? payload.needs.join(", ") : "(none)";
-      emitSystemMessage(`autopilot /push-truth --dry-run\ngate=${blocked}\nneeds=${needs}`);
-      return {
-        ok: true,
-        summary: `push-truth dry-run gate=${blocked}`,
-      };
-    } catch {
-      return {
-        ok: false,
-        summary: "push-truth dry-run request crashed",
-      };
-    }
-  }, [emitSystemMessage]);
-
-  const senseAutopilotContext = useCallback(async (): Promise<AutopilotSenseContext> => {
-    const runtime = runtimeSnapshotRef.current;
-    const baseUrl = runtimeBaseUrl();
-
-    let study: StudySnapshotPayload | null = null;
-    try {
-      const studyRes = await fetch(`${baseUrl}/api/study?limit=4`);
-      if (studyRes.ok) {
-        study = (await studyRes.json()) as StudySnapshotPayload;
-      }
-    } catch {
-      // best effort
-    }
-
-    const blockedGateCount = study?.signals.blocked_gate_count ?? 0;
-    const activeDriftCount = study?.signals.active_drift_count ?? 0;
-    const queuePendingCount =
-      study?.signals.queue_pending_count ?? runtime.catalog?.task_queue?.pending_count ?? 0;
-    const truthGateBlocked =
-      study?.signals.truth_gate_blocked ??
-      Boolean(runtime.simulation?.truth_state?.gate?.blocked ?? runtime.catalog?.truth_state?.gate?.blocked);
-
-    let health: AutopilotHealth = "green";
-    const healthReasons: string[] = [];
-    if (!runtime.isConnected) {
-      health = "red";
-      healthReasons.push("runtime websocket disconnected");
-    } else if (blockedGateCount >= 4 || activeDriftCount >= 8) {
-      health = "red";
-      healthReasons.push("high drift or blocked gate pressure");
-    } else if (blockedGateCount >= 2 || activeDriftCount >= 4 || queuePendingCount >= 8) {
-      health = "yellow";
-      healthReasons.push("moderate pressure; run reduced-cost actions");
-    }
-
-    return {
-      isConnected: runtime.isConnected,
-      blockedGateCount,
-      activeDriftCount,
-      queuePendingCount,
-      truthGateBlocked,
-      health,
-      healthReasons,
-      permissions: autopilotPermissionsRef.current,
-    };
+  const handleOverlayInit = useCallback((api: unknown) => {
+    setOverlayApi(api as OverlayApi);
   }, []);
 
-  const hypothesizeAutopilotIntent = useCallback(
-    async (ctx: AutopilotSenseContext): Promise<IntentHypothesis> => {
-      if (autopilotDirectiveRef.current) {
-        const goal = directiveToGoal(autopilotDirectiveRef.current);
-        autopilotDirectiveRef.current = null;
-        return {
-          goal,
-          confidence: 0.99,
-          rationale: "user supplied directive",
-        };
-      }
-
-      if (!ctx.isConnected) {
-        return {
-          goal: "restore-connectivity",
-          confidence: 0.98,
-          rationale: "runtime stream disconnected",
-        };
-      }
-      if (ctx.blockedGateCount > 0 || ctx.truthGateBlocked) {
-        return {
-          goal: "clear-gates",
-          confidence: clamp(0.82 + ctx.blockedGateCount * 0.03, 0, 0.98),
-          alternatives: [
-            { goal: "scan-drift", confidence: 0.79 },
-            { goal: "reduce-queue", confidence: 0.74 },
-          ],
-        };
-      }
-      if (ctx.queuePendingCount > 3) {
-        return {
-          goal: "reduce-queue",
-          confidence: clamp(0.77 + ctx.queuePendingCount * 0.015, 0, 0.94),
-          alternatives: [{ goal: "scan-drift", confidence: 0.68 }],
-        };
-      }
-      if (ctx.activeDriftCount > 0) {
-        return {
-          goal: "scan-drift",
-          confidence: clamp(0.76 + ctx.activeDriftCount * 0.02, 0, 0.9),
-        };
-      }
-      return {
-        goal: "maintain-observability",
-        confidence: 0.64,
-        alternatives: [
-          { goal: "reduce-queue", confidence: 0.59 },
-          { goal: "scan-drift", confidence: 0.57 },
-        ],
-      };
-    },
-    [],
-  );
-
-  const planAutopilotAction = useCallback(
-    async (
-      ctx: AutopilotSenseContext,
-      goal: string,
-    ): Promise<PlannedAction<AutopilotSenseContext>> => {
-      const lastAction = autopilotLastActionRef.current;
-      const isFreshAction = (actionId: string, maxAgeMs: number): boolean => {
-        if (!lastAction) {
-          return true;
-        }
-        if (lastAction.id !== actionId) {
-          return true;
-        }
-        return Date.now() - lastAction.ts > maxAgeMs;
-      };
-
-      if (goal === "restore-connectivity") {
-        return {
-          id: "autopilot.wait-runtime",
-          label: "wait runtime recovery",
-          goal,
-          risk: 0.1,
-          cost: 0.05,
-          requiredPerms: [],
-          run: async () => ({ ok: false, summary: "runtime disconnected" }),
-        };
-      }
-
-      if (goal === "clear-gates") {
-        if (ctx.blockedGateCount >= 2 && isFreshAction("autopilot.push-truth-dry-run", 15000)) {
-          return {
-            id: "autopilot.push-truth-dry-run",
-            label: "push truth dry-run",
-            goal,
-            risk: 0.58,
-            cost: 0.42,
-            requiredPerms: ["runtime.read", "truth.push.dry-run"],
-            run: runAutopilotPushTruthDryRun,
-          };
-        }
-        return {
-          id: "autopilot.drift-scan",
-          label: "drift scan",
-          goal,
-          risk: 0.22,
-          cost: 0.18,
-          requiredPerms: ["runtime.read"],
-          run: runAutopilotDriftScan,
-        };
-      }
-
-      if (goal === "reduce-queue") {
-        return {
-          id: "autopilot.study-snapshot",
-          label: "study snapshot",
-          goal,
-          risk: 0.24,
-          cost: 0.22,
-          requiredPerms: ["runtime.read"],
-          run: runAutopilotStudySnapshot,
-        };
-      }
-
-      if (goal === "scan-drift") {
-        return {
-          id: "autopilot.drift-scan",
-          label: "drift scan",
-          goal,
-          risk: 0.2,
-          cost: 0.18,
-          requiredPerms: ["runtime.read"],
-          run: runAutopilotDriftScan,
-        };
-      }
-
-      if (!isFreshAction("autopilot.study-snapshot", 20000)) {
-        return {
-          id: "autopilot.idle",
-          label: "idle hold",
-          goal,
-          risk: 0.02,
-          cost: 0.01,
-          requiredPerms: [],
-          run: async () => ({ ok: true, summary: "idle cadence hold" }),
-        };
-      }
-
-      return {
-        id: "autopilot.study-snapshot",
-        label: "study snapshot",
-        goal,
-        risk: 0.19,
-        cost: 0.2,
-        requiredPerms: ["runtime.read"],
-        run: runAutopilotStudySnapshot,
-      };
-    },
-    [runAutopilotDriftScan, runAutopilotPushTruthDryRun, runAutopilotStudySnapshot],
-  );
-
-  const gateAutopilotAction = useCallback(
-    (
-      ctx: AutopilotSenseContext,
-      hyp: IntentHypothesis,
-      action: PlannedAction<AutopilotSenseContext>,
-    ): GateVerdict<AutopilotSenseContext> => {
-      if (ctx.health === "red") {
-        return {
-          ok: false,
-          ask: {
-            gate: "health",
-            reason: `I paused because runtime health is red (${ctx.healthReasons.join("; ") || "unstable"}).`,
-            need: "Should I keep waiting, or do you want me to pause autopilot?",
-            options: ["keep waiting", "pause autopilot", "run /study now"],
-            urgency: "high",
-            context: {
-              connected: ctx.isConnected,
-              blocked_gates: ctx.blockedGateCount,
-              active_drifts: ctx.activeDriftCount,
-            },
-          },
-        };
-      }
-
-      if (hyp.confidence < AUTOPILOT_C_MIN) {
-        return {
-          ok: false,
-          ask: {
-            gate: "confidence",
-            reason: `I tried to infer the next goal but confidence is ${hyp.confidence.toFixed(2)} (< ${AUTOPILOT_C_MIN}).`,
-            need: "Pick the next move so I can continue.",
-            options: ["run /study now", "run /drift", "pause autopilot"],
-            urgency: "low",
-            context: {
-              inferred_goal: hyp.goal,
-              alternatives: hyp.alternatives ?? [],
-            },
-          },
-        };
-      }
-
-      const missingPerms = action.requiredPerms.filter((permission) => !ctx.permissions[permission]);
-      if (missingPerms.length > 0) {
-        const permission = missingPerms[0];
-        return {
-          ok: false,
-          ask: {
-            gate: "permission",
-            reason: `I selected '${action.label}', but permission '${permission}' is missing.`,
-            need: `Grant ${permission} so I can continue?`,
-            options: ["grant permission", "deny", "pause autopilot"],
-            urgency: "med",
-            context: {
-              permission,
-              action_id: action.id,
-            },
-          },
-        };
-      }
-
-      if (action.risk > AUTOPILOT_R_MAX) {
-        const riskPermission = `risk:${action.id}`;
-        if (!ctx.permissions[riskPermission]) {
-          return {
-            ok: false,
-            ask: {
-              gate: "risk",
-              reason: `I can run '${action.label}', but risk ${action.risk.toFixed(2)} is above ${AUTOPILOT_R_MAX.toFixed(2)}.`,
-              need: `Approve this higher-risk step (${action.label})?`,
-              options: ["approve step", "skip", "pause autopilot"],
-              urgency: "med",
-              context: {
-                permission: riskPermission,
-                action_id: action.id,
-                risk: action.risk,
-              },
-            },
-          };
-        }
-      }
-
-      return { ok: true, action };
-    },
-    [],
-  );
-
-  const handleAutopilotActionEvent = useCallback((event: AutopilotActionEvent) => {
-    setAutopilotEvents((prev) => [event, ...prev].slice(0, 8));
-    setAutopilotSummary(`${event.intent}: ${event.summary}`);
-    if (event.result !== "skipped") {
-      autopilotLastActionRef.current = {
-        id: event.actionId,
-        ts: Date.now(),
-      };
-    }
-  }, []);
-
-  const handleAutopilotAsk = useCallback((ask: AskPayload) => {
-    autopilotPendingAskRef.current = ask;
-    setAutopilotStatus("waiting");
-    setAutopilotSummary(`${ask.gate || "unknown"} gate: ${ask.need}`);
-  }, []);
-
-  useEffect(() => {
-    const autopilot = new Autopilot<AutopilotSenseContext>({
-      sense: senseAutopilotContext,
-      hypothesize: hypothesizeAutopilotIntent,
-      plan: planAutopilotAction,
-      gate: gateAutopilotAction,
-      onActionEvent: handleAutopilotActionEvent,
-      onAsk: handleAutopilotAsk,
-      onTickError: () => {
-        setAutopilotSummary("tick error; waiting for next cycle");
-      },
-      tickDelayMs: 5000,
-    });
-
-    autopilotRef.current = autopilot;
-
-    if (autopilotEnabled) {
-      autopilot.start();
-      setAutopilotStatus("running");
-      setAutopilotSummary("running");
-    } else {
-      setAutopilotStatus("stopped");
-      setAutopilotSummary("disabled");
-    }
-
-    return () => {
-      autopilot.stop();
-      if (autopilotRef.current === autopilot) {
-        autopilotRef.current = null;
-      }
-    };
-  }, [
+  const {
     autopilotEnabled,
-    gateAutopilotAction,
-    handleAutopilotActionEvent,
-    handleAutopilotAsk,
-    hypothesizeAutopilotIntent,
-    planAutopilotAction,
-    senseAutopilotContext,
-  ]);
-
-  const handleAutopilotUserInput = useCallback(
-    (text: string): boolean => {
-      const autopilot = autopilotRef.current;
-      const pendingAsk = autopilotPendingAskRef.current;
-      if (!autopilot || !pendingAsk || !autopilot.isWaitingForInput()) {
-        return false;
-      }
-
-      const normalized = text.trim().toLowerCase();
-      const pauseRequested =
-        normalized.includes("pause autopilot") ||
-        normalized.includes("disable autopilot") ||
-        normalized === "/autopilot off";
-
-      if (pauseRequested) {
-        autopilot.stop();
-        setAutopilotEnabled(false);
-        autopilotPendingAskRef.current = null;
-        setAutopilotStatus("stopped");
-        setAutopilotSummary("paused by user");
-        emitSystemMessage("autopilot paused by user");
-        return true;
-      }
-
-      const permission =
-        typeof pendingAsk.context?.permission === "string" ? pendingAsk.context.permission : null;
-      if (permission && isAffirmativeResponse(text)) {
-        setAutopilotPermissions((prev) => ({
-          ...prev,
-          [permission]: true,
-        }));
-        emitSystemMessage(`autopilot permission granted: ${permission}`);
-      } else if (permission && normalized.includes("deny")) {
-        emitSystemMessage(`autopilot permission denied: ${permission}`);
-      } else {
-        autopilotDirectiveRef.current = text;
-      }
-
-      autopilotPendingAskRef.current = null;
-      setAutopilotStatus("running");
-      setAutopilotSummary("resumed");
-      autopilot.resume();
-      return true;
-    },
-    [emitSystemMessage],
-  );
-
-  const toggleAutopilot = useCallback(() => {
-    setAutopilotEnabled((prev) => !prev);
-  }, []);
+    autopilotStatus,
+    autopilotSummary,
+    autopilotEvents,
+    handleAutopilotUserInput,
+    toggleAutopilot,
+  } = useAutopilotController({ catalog, simulation, isConnected, emitSystemMessage });
 
   const nudgeCoreZoom = useCallback((delta: number) => {
     setCoreCameraZoom((prev) => clamp(prev + delta, CORE_CAMERA_ZOOM_MIN, CORE_CAMERA_ZOOM_MAX));
-  }, []);
-
-  const nudgeCorePitch = useCallback((delta: number) => {
-    setCoreCameraPitch((prev) => clamp(prev + delta, CORE_CAMERA_PITCH_MIN, CORE_CAMERA_PITCH_MAX));
-  }, []);
-
-  const nudgeCoreYaw = useCallback((delta: number) => {
-    setCoreCameraYaw((prev) => clamp(prev + delta, CORE_CAMERA_YAW_MIN, CORE_CAMERA_YAW_MAX));
   }, []);
 
   const toggleCoreFlight = useCallback(() => {
@@ -1189,10 +534,188 @@ export default function App() {
     setCoreFlightSpeed((prev) => clamp(prev + delta, CORE_FLIGHT_SPEED_MIN, CORE_FLIGHT_SPEED_MAX));
   }, []);
 
+  const toggleCoreOrbit = useCallback(() => {
+    setCoreOrbitEnabled((prev) => !prev);
+  }, []);
+
+  const nudgeCoreOrbitSpeed = useCallback((delta: number) => {
+    setCoreOrbitSpeed((prev) => clamp(prev + delta, CORE_ORBIT_SPEED_MIN, CORE_ORBIT_SPEED_MAX));
+  }, []);
+
+  const setCoreSimulationDial = useCallback((dial: keyof CoreSimulationTuning, value: number) => {
+    setCoreSimulationTuning((prev) => {
+      if (dial === "particleDensity") {
+        return {
+          ...prev,
+          particleDensity: clamp(value, CORE_SIM_PARTICLE_DENSITY_MIN, CORE_SIM_PARTICLE_DENSITY_MAX),
+        };
+      }
+      if (dial === "particleScale") {
+        return {
+          ...prev,
+          particleScale: clamp(value, CORE_SIM_PARTICLE_SCALE_MIN, CORE_SIM_PARTICLE_SCALE_MAX),
+        };
+      }
+      if (dial === "mouseInfluence") {
+        return {
+          ...prev,
+          mouseInfluence: clamp(value, CORE_SIM_MOUSE_INFLUENCE_MIN, CORE_SIM_MOUSE_INFLUENCE_MAX),
+        };
+      }
+      if (dial === "layerDepth") {
+        return {
+          ...prev,
+          layerDepth: clamp(value, CORE_SIM_LAYER_DEPTH_MIN, CORE_SIM_LAYER_DEPTH_MAX),
+        };
+      }
+      return {
+        ...prev,
+        motionSpeed: clamp(value, CORE_SIM_MOTION_SPEED_MIN, CORE_SIM_MOTION_SPEED_MAX),
+      };
+    });
+  }, []);
+
+  const resetCoreSimulationTuning = useCallback(() => {
+    setCoreSimulationTuning(DEFAULT_CORE_SIMULATION_TUNING);
+  }, []);
+
+  const setCoreVisualDial = useCallback((dial: keyof CoreVisualTuning, value: number) => {
+    setCoreVisualTuning((prev) => {
+      if (dial === "brightness") {
+        return {
+          ...prev,
+          brightness: clamp(value, CORE_VISUAL_BRIGHTNESS_MIN, CORE_VISUAL_BRIGHTNESS_MAX),
+        };
+      }
+      if (dial === "contrast") {
+        return {
+          ...prev,
+          contrast: clamp(value, CORE_VISUAL_CONTRAST_MIN, CORE_VISUAL_CONTRAST_MAX),
+        };
+      }
+      if (dial === "saturation") {
+        return {
+          ...prev,
+          saturation: clamp(value, CORE_VISUAL_SATURATION_MIN, CORE_VISUAL_SATURATION_MAX),
+        };
+      }
+      if (dial === "hueRotate") {
+        return {
+          ...prev,
+          hueRotate: clamp(value, CORE_VISUAL_HUE_MIN, CORE_VISUAL_HUE_MAX),
+        };
+      }
+      if (dial === "backgroundWash") {
+        return {
+          ...prev,
+          backgroundWash: clamp(value, CORE_VISUAL_WASH_MIN, CORE_VISUAL_WASH_MAX),
+        };
+      }
+      return {
+        ...prev,
+        vignette: clamp(value, CORE_VISUAL_VIGNETTE_MIN, CORE_VISUAL_VIGNETTE_MAX),
+      };
+    });
+  }, []);
+
+  const resetCoreVisualTuning = useCallback(() => {
+    setCoreVisualTuning(DEFAULT_CORE_VISUAL_TUNING);
+  }, []);
+
+  const boostCoreVisibility = useCallback(() => {
+    setCoreVisualTuning(HIGH_VISIBILITY_CORE_VISUAL_TUNING);
+  }, []);
+
+  const applyCoreLayerPreset = useCallback((nextView: OverlayViewId) => {
+    setCoreOverlayView(nextView);
+    if (nextView === "omni") {
+      setCoreLayerVisibility({ ...DEFAULT_CORE_LAYER_VISIBILITY });
+      return;
+    }
+    setCoreLayerVisibility({
+      presence: nextView === "presence",
+      "file-impact": nextView === "file-impact",
+      "file-graph": nextView === "file-graph",
+      "crawler-graph": nextView === "crawler-graph",
+      "truth-gate": nextView === "truth-gate",
+      logic: nextView === "logic",
+      "pain-field": nextView === "pain-field",
+    });
+  }, []);
+
+  const setCoreLayerEnabled = useCallback((layerId: CoreLayerId, enabled: boolean) => {
+    setCoreLayerVisibility((prev) => ({
+      ...prev,
+      [layerId]: enabled,
+    }));
+  }, []);
+
+  const setAllCoreLayers = useCallback((enabled: boolean) => {
+    setCoreLayerVisibility({
+      presence: enabled,
+      "file-impact": enabled,
+      "file-graph": enabled,
+      "crawler-graph": enabled,
+      "truth-gate": enabled,
+      logic: enabled,
+      "pain-field": enabled,
+    });
+    setCoreOverlayView(enabled ? "omni" : "presence");
+  }, []);
+
+  const activeCoreLayerCount = useMemo(
+    () => CORE_LAYER_OPTIONS.reduce((count, option) => count + (coreLayerVisibility[option.id] ? 1 : 0), 0),
+    [coreLayerVisibility],
+  );
+
   const togglePanelPin = useCallback((panelId: string) => {
     setPinnedPanels((prev) => ({
       ...prev,
       [panelId]: !prev[panelId],
+    }));
+  }, []);
+
+  const adjustPanelCouncilRank = useCallback((panelId: string, delta: number) => {
+    if (!panelId || !Number.isFinite(delta) || delta === 0) {
+      return;
+    }
+    setPanelCouncilBoosts((prev) => {
+      const current = prev[panelId] ?? 0;
+      const next = clamp(current + delta, -6, 8);
+      if (next === 0) {
+        if (current === 0) {
+          return prev;
+        }
+        const { [panelId]: _unused, ...rest } = prev;
+        return rest;
+      }
+      return {
+        ...prev,
+        [panelId]: next,
+      };
+    });
+    setSelectedPanelId(panelId);
+    setPanelWindowStates((prev) => ({
+      ...prev,
+      [panelId]: {
+        open: true,
+        minimized: false,
+      },
+    }));
+  }, []);
+
+  const pinPanelToTertiary = useCallback((panelId: string) => {
+    const id = panelId.trim();
+    if (!id) {
+      return;
+    }
+    setTertiaryPinnedPanelId((prev) => (prev === id ? null : id));
+    setPanelWindowStates((prev) => ({
+      ...prev,
+      [id]: {
+        open: true,
+        minimized: false,
+      },
     }));
   }, []);
 
@@ -1206,14 +729,55 @@ export default function App() {
   const resetCoreCamera = useCallback(() => {
     stopCameraFlight();
     setCoreCameraZoom(1);
-    setCoreCameraPitch(10);
-    setCoreCameraYaw(-12);
+    setCoreCameraPitch(0);
+    setCoreCameraYaw(0);
     setCoreCameraPosition({ x: 0, y: 0, z: 0 });
     coreFlightVelocityRef.current = { x: 0, y: 0, z: 0 };
   }, [stopCameraFlight]);
 
+  const resolveOverlayAnchorRatio = useCallback(
+    (anchor: WorldAnchorTarget, panelAnchorId?: string): { x: number; y: number; label?: string } | null => {
+      const getAnchorRatio = overlayApi?.getAnchorRatio;
+      if (!getAnchorRatio) {
+        return null;
+      }
+
+      const candidateIds = Array.from(
+        new Set([
+          String(panelAnchorId ?? "").trim(),
+          String(anchor.id ?? "").trim(),
+          String(anchor.label ?? "").trim(),
+        ].filter((value) => value.length > 0)),
+      );
+      if (candidateIds.length === 0) {
+        return null;
+      }
+
+      const candidateKinds = Array.from(new Set([anchor.kind, "presence", "region", "cluster", "node"]));
+      for (const candidateId of candidateIds) {
+        for (const kind of candidateKinds) {
+          const found = getAnchorRatio(kind, candidateId);
+          if (!found) {
+            continue;
+          }
+          return {
+            x: clamp(Number(found.x ?? 0.5), 0, 1),
+            y: clamp(Number(found.y ?? 0.5), 0, 1),
+            label: typeof found.label === "string" ? found.label : undefined,
+          };
+        }
+      }
+
+      return null;
+    },
+    [overlayApi],
+  );
+
   const flyCameraToAnchor = useCallback((anchor: WorldAnchorTarget) => {
     stopCameraFlight();
+    const overlayAnchor = resolveOverlayAnchorRatio(anchor);
+    const anchorX = overlayAnchor?.x ?? anchor.x;
+    const anchorY = overlayAnchor?.y ?? anchor.y;
     const start = {
       x: coreCameraPosition.x,
       y: coreCameraPosition.y,
@@ -1223,17 +787,22 @@ export default function App() {
       zoom: coreCameraZoom,
     };
     const target = {
-      x: clamp((0.5 - anchor.x) * 640, -CORE_CAMERA_X_LIMIT, CORE_CAMERA_X_LIMIT),
-      y: clamp((0.5 - anchor.y) * 520, -CORE_CAMERA_Y_LIMIT, CORE_CAMERA_Y_LIMIT),
+      x: clamp((0.5 - anchorX) * 640, -CORE_CAMERA_X_LIMIT, CORE_CAMERA_X_LIMIT),
+      y: clamp((0.5 - anchorY) * 520, -CORE_CAMERA_Y_LIMIT, CORE_CAMERA_Y_LIMIT),
       z: clamp(
         anchor.kind === "node" ? 180 : anchor.kind === "cluster" ? 40 : -120,
         CORE_CAMERA_Z_MIN,
         CORE_CAMERA_Z_MAX,
       ),
-      yaw: clamp((anchor.x - 0.5) * 68, CORE_CAMERA_YAW_MIN, CORE_CAMERA_YAW_MAX),
-      pitch: clamp((0.5 - anchor.y) * 52, CORE_CAMERA_PITCH_MIN, CORE_CAMERA_PITCH_MAX),
+      yaw: clamp((anchorX - 0.5) * 68, CORE_CAMERA_YAW_MIN, CORE_CAMERA_YAW_MAX),
+      pitch: clamp((0.5 - anchorY) * 52, CORE_CAMERA_PITCH_MIN, CORE_CAMERA_PITCH_MAX),
       zoom: clamp(anchor.kind === "node" ? 1.18 : anchor.kind === "cluster" ? 1.06 : 0.94, CORE_CAMERA_ZOOM_MIN, CORE_CAMERA_ZOOM_MAX),
     };
+
+    if (overlayAnchor) {
+      overlayApi?.pulseAt?.(overlayAnchor.x, overlayAnchor.y, 1.12, anchor.id);
+    }
+
     const startTs = performance.now();
     const durationMs = 760;
     const ease = (t: number) => 1 - ((1 - t) ** 3);
@@ -1257,7 +826,7 @@ export default function App() {
       cameraFlightRef.current = window.requestAnimationFrame(tick);
     };
     cameraFlightRef.current = window.requestAnimationFrame(tick);
-  }, [coreCameraPitch, coreCameraPosition.x, coreCameraPosition.y, coreCameraPosition.z, coreCameraYaw, coreCameraZoom, stopCameraFlight]);
+  }, [coreCameraPitch, coreCameraPosition.x, coreCameraPosition.y, coreCameraPosition.z, coreCameraYaw, coreCameraZoom, overlayApi, resolveOverlayAnchorRatio, stopCameraFlight]);
 
   useEffect(() => {
     return () => {
@@ -1265,10 +834,63 @@ export default function App() {
     };
   }, [stopCameraFlight]);
 
+  useEffect(() => {
+    if (!coreOrbitEnabled) {
+      setCoreOrbitPhase(0);
+      return;
+    }
+
+    let rafId = 0;
+    const startTs = performance.now();
+    let lastEmitTs = startTs;
+    const frameIntervalMs = 1000 / 30;
+    const angularVelocity = ((Math.PI * 2) / CORE_ORBIT_PERIOD_SECONDS) * coreOrbitSpeed;
+
+    const tick = (ts: number) => {
+      if (ts - lastEmitTs >= frameIntervalMs) {
+        const elapsedSeconds = (ts - startTs) / 1000;
+        setCoreOrbitPhase(elapsedSeconds * angularVelocity);
+        lastEmitTs = ts;
+      }
+      rafId = window.requestAnimationFrame(tick);
+    };
+
+    rafId = window.requestAnimationFrame(tick);
+    return () => {
+      window.cancelAnimationFrame(rafId);
+    };
+  }, [coreOrbitEnabled, coreOrbitSpeed]);
+
+  const coreOrbitOffset = useMemo(() => {
+    if (!coreOrbitEnabled) {
+      return { x: 0, y: 0, z: 0 };
+    }
+    return {
+      x: Math.cos(coreOrbitPhase) * CORE_ORBIT_RADIUS_X,
+      y: Math.sin((coreOrbitPhase * 0.63) + 0.42) * CORE_ORBIT_RADIUS_Y,
+      z: Math.sin(coreOrbitPhase) * CORE_ORBIT_RADIUS_Z,
+    };
+  }, [coreOrbitEnabled, coreOrbitPhase]);
+
+  const coreRenderedCameraPosition = useMemo(
+    () => ({
+      x: clamp(coreCameraPosition.x + coreOrbitOffset.x, -CORE_CAMERA_X_LIMIT, CORE_CAMERA_X_LIMIT),
+      y: clamp(coreCameraPosition.y + coreOrbitOffset.y, -CORE_CAMERA_Y_LIMIT, CORE_CAMERA_Y_LIMIT),
+      z: clamp(coreCameraPosition.z + coreOrbitOffset.z, CORE_CAMERA_Z_MIN, CORE_CAMERA_Z_MAX),
+    }),
+    [coreCameraPosition, coreOrbitOffset],
+  );
+
   const coreCameraTransform = useMemo(
     () =>
-      `perspective(1800px) translate3d(${coreCameraPosition.x.toFixed(1)}px, ${coreCameraPosition.y.toFixed(1)}px, ${coreCameraPosition.z.toFixed(1)}px) rotateX(${coreCameraPitch.toFixed(2)}deg) rotateY(${coreCameraYaw.toFixed(2)}deg) scale(${coreCameraZoom.toFixed(3)})`,
-    [coreCameraPitch, coreCameraPosition, coreCameraYaw, coreCameraZoom],
+      `perspective(1800px) translate3d(${coreRenderedCameraPosition.x.toFixed(1)}px, ${coreRenderedCameraPosition.y.toFixed(1)}px, ${coreRenderedCameraPosition.z.toFixed(1)}px) rotateX(${coreCameraPitch.toFixed(2)}deg) rotateY(${coreCameraYaw.toFixed(2)}deg) scale(${coreCameraZoom.toFixed(3)})`,
+    [coreCameraPitch, coreCameraYaw, coreCameraZoom, coreRenderedCameraPosition],
+  );
+
+  const coreSimulationFilter = useMemo(
+    () =>
+      `saturate(${coreVisualTuning.saturation.toFixed(3)}) contrast(${coreVisualTuning.contrast.toFixed(3)}) brightness(${coreVisualTuning.brightness.toFixed(3)}) hue-rotate(${coreVisualTuning.hueRotate.toFixed(1)}deg)`,
+    [coreVisualTuning],
   );
 
   const handleCorePointerDown = useCallback(
@@ -1276,7 +898,7 @@ export default function App() {
       if (isTextEntryTarget(event.target)) {
         return;
       }
-      const mode = event.shiftKey || event.button === 1 ? "pan" : "orbit";
+      const mode = "pan";
       coreDragRef.current = {
         active: true,
         pointerId: event.pointerId,
@@ -1321,16 +943,43 @@ export default function App() {
     event.currentTarget.releasePointerCapture(event.pointerId);
   }, []);
 
-  const handleCoreWheel = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    if (event.shiftKey) {
-      const speedDelta = event.deltaY < 0 ? 0.08 : -0.08;
+  const applyCoreWheelDelta = useCallback((deltaY: number, shiftKey: boolean) => {
+    if (shiftKey) {
+      const speedDelta = deltaY < 0 ? 0.08 : -0.08;
       setCoreFlightSpeed((prev) => clamp(prev + speedDelta, CORE_FLIGHT_SPEED_MIN, CORE_FLIGHT_SPEED_MAX));
       return;
     }
-    const delta = event.deltaY < 0 ? 0.06 : -0.06;
+    const delta = deltaY < 0 ? 0.06 : -0.06;
     setCoreCameraZoom((prev) => clamp(prev + delta, CORE_CAMERA_ZOOM_MIN, CORE_CAMERA_ZOOM_MAX));
   }, []);
+
+  const handleCoreWheel = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
+    if (event.defaultPrevented) {
+      return;
+    }
+    if (!shouldRouteWheelToCore(event.target)) {
+      return;
+    }
+    event.preventDefault();
+    applyCoreWheelDelta(event.deltaY, event.shiftKey);
+  }, [applyCoreWheelDelta]);
+
+  useEffect(() => {
+    const onGlobalWheel = (event: WheelEvent) => {
+      if (event.defaultPrevented) {
+        return;
+      }
+      if (!shouldRouteWheelToCore(event.target)) {
+        return;
+      }
+      event.preventDefault();
+      applyCoreWheelDelta(event.deltaY, event.shiftKey);
+    };
+    window.addEventListener("wheel", onGlobalWheel, { passive: false, capture: true });
+    return () => {
+      window.removeEventListener("wheel", onGlobalWheel, true);
+    };
+  }, [applyCoreWheelDelta]);
 
   useEffect(() => {
     const keyFromEvent = (event: KeyboardEvent): string | null => {
@@ -1391,6 +1040,11 @@ export default function App() {
 
     let rafId = 0;
     let lastTs = performance.now();
+    let lastEmitTs = lastTs;
+    let pendingX = 0;
+    let pendingY = 0;
+    let pendingZ = 0;
+    const emitIntervalMs = 1000 / 45;
 
     const tick = (now: number) => {
       const dt = Math.min(0.05, (now - lastTs) / 1000);
@@ -1414,11 +1068,21 @@ export default function App() {
       velocity.y = (velocity.y * 0.88) + (climb * accel * dt);
       velocity.z = (velocity.z * 0.88) + ((forwardZ * thrust + rightZ * strafe) * accel * dt);
 
-      setCoreCameraPosition((prev) => ({
-        x: clamp(prev.x + velocity.x, -CORE_CAMERA_X_LIMIT, CORE_CAMERA_X_LIMIT),
-        y: clamp(prev.y + velocity.y, -CORE_CAMERA_Y_LIMIT, CORE_CAMERA_Y_LIMIT),
-        z: clamp(prev.z + velocity.z, CORE_CAMERA_Z_MIN, CORE_CAMERA_Z_MAX),
-      }));
+      pendingX += velocity.x;
+      pendingY += velocity.y;
+      pendingZ += velocity.z;
+
+      if (now - lastEmitTs >= emitIntervalMs) {
+        setCoreCameraPosition((prev) => ({
+          x: clamp(prev.x + pendingX, -CORE_CAMERA_X_LIMIT, CORE_CAMERA_X_LIMIT),
+          y: clamp(prev.y + pendingY, -CORE_CAMERA_Y_LIMIT, CORE_CAMERA_Y_LIMIT),
+          z: clamp(prev.z + pendingZ, CORE_CAMERA_Z_MIN, CORE_CAMERA_Z_MAX),
+        }));
+        pendingX = 0;
+        pendingY = 0;
+        pendingZ = 0;
+        lastEmitTs = now;
+      }
 
       rafId = window.requestAnimationFrame(tick);
     };
@@ -1786,6 +1450,33 @@ export default function App() {
     return map;
   }, [activeProjection?.elements]);
 
+  const presenceManifestById = useMemo(() => {
+    const map = new Map<string, { en: string; ja: string }>();
+    (catalog?.entity_manifest ?? []).forEach((entry) => {
+      const id = String(entry?.id ?? "").trim();
+      if (!id) {
+        return;
+      }
+      const en = String(entry?.en ?? id).trim() || id;
+      const ja = String(entry?.ja ?? "").trim();
+      map.set(id, { en, ja });
+    });
+    return map;
+  }, [catalog?.entity_manifest]);
+
+  const particleCountsByPresence = useMemo(() => {
+    const byPresence: Record<string, number> = {};
+    const rows = simulation?.presence_dynamics?.field_particles ?? simulation?.field_particles ?? [];
+    for (const row of rows) {
+      const presenceId = String(row?.presence_id ?? "").trim();
+      if (!presenceId) {
+        continue;
+      }
+      byPresence[presenceId] = (byPresence[presenceId] ?? 0) + 1;
+    }
+    return byPresence;
+  }, [simulation?.field_particles, simulation?.presence_dynamics?.field_particles]);
+
   const presenceAnchors = useMemo(() => {
     const map = new Map<string, WorldAnchorTarget>();
     (catalog?.entity_manifest ?? []).forEach((item: EntityManifestItem) => {
@@ -1994,132 +1685,26 @@ export default function App() {
     return map;
   }, [activeProjection]);
   
-  const projectionLayoutRects = useMemo(
-    () => activeProjection?.layout?.rects ?? {},
-    [activeProjection?.layout?.rects],
-  );
+  const handleWorldPanelDragEnd = useCallback((panelId: string, info: PanInfo) => {
+    const panelScale = panelWorldScaleRef.current.get(panelId);
+    const fallbackPixelsPerWorldX = Math.max(140, viewportWidth * 0.34 * coreCameraZoom);
+    const fallbackPixelsPerWorldY = Math.max(110, Math.max(160, viewportHeight - 126) * 0.47 * coreCameraZoom);
+    const pixelsPerWorldX = Math.max(90, panelScale?.x ?? fallbackPixelsPerWorldX);
+    const pixelsPerWorldY = Math.max(74, panelScale?.y ?? fallbackPixelsPerWorldY);
+    const worldDeltaX = info.offset.x / pixelsPerWorldX;
+    const worldDeltaY = info.offset.y / pixelsPerWorldY;
 
-  const mergedLayoutRects = useMemo(() => ({
-    ...projectionLayoutRects,
-    ...layoutOverrides,
-  }), [projectionLayoutRects, layoutOverrides]);
-
-  const projectionDensitySignalFor = useCallback(
-    (state: UIProjectionElementState | undefined): number => {
-      if (!state) {
-        return 0.42;
-      }
-      const minArea = clamp(activeProjection?.layout?.clamps?.min_area ?? 0.1, 0.05, 1);
-      const maxArea = Math.max(
-        minArea + 0.001,
-        clamp(activeProjection?.layout?.clamps?.max_area ?? 0.36, minArea + 0.001, 1),
-      );
-      const areaSignal = clamp((state.area - minArea) / (maxArea - minArea), 0, 1);
-      const prioritySignal = clamp(state.priority, 0, 1);
-      return clamp(areaSignal * 0.72 + prioritySignal * 0.28, 0, 1);
-    },
-    [activeProjection?.layout?.clamps?.max_area, activeProjection?.layout?.clamps?.min_area],
-  );
-
-  const projectionStyleFor = useCallback(
-    (elementId: string, fallbackSpan = 12) => {
-      const state = projectionStateByElement.get(elementId);
-      const densitySignal = projectionDensitySignalFor(state);
-      const baseStyle = {
-        opacity: state ? projectionOpacity(state.opacity, 0.9) : 1,
-        transform: state ? `scale(${(1 + clamp(state.pulse, 0, 1) * 0.014).toFixed(3)})` : undefined,
-        transformOrigin: "center top",
-      } as const;
-
-      if (!isWideViewport) {
-        return {
-          ...baseStyle,
-          transition: "transform 260ms ease, opacity 220ms ease",
-        } as const;
-      }
-
-      const rect = mergedLayoutRects[elementId];
-      if (rect) {
-        const colStart = clamp(
-          Math.floor(clamp(rect.x, 0, 0.98) * PROJECTION_GRID_COLUMNS) + 1,
-          1,
-          PROJECTION_GRID_COLUMNS,
-        );
-        const rowStart = clamp(
-          Math.floor(clamp(rect.y, 0, 0.98) * PROJECTION_GRID_ROWS) + 1,
-          1,
-          PROJECTION_GRID_ROWS,
-        );
-        const maxColSpan = Math.max(1, PROJECTION_GRID_COLUMNS - colStart + 1);
-        const maxRowSpan = Math.max(1, PROJECTION_GRID_ROWS - rowStart + 1);
-        const colSpan = clamp(
-          Math.round(clamp(rect.w, 0.05, 1) * PROJECTION_GRID_COLUMNS),
-          1,
-          maxColSpan,
-        );
-        const rowSpan = clamp(
-          Math.round(clamp(rect.h, 0.05, 1) * PROJECTION_GRID_ROWS),
-          1,
-          maxRowSpan,
-        );
-
-        return {
-          ...baseStyle,
-          gridColumn: `${colStart} / span ${colSpan}`,
-          gridRow: `${rowStart} / span ${rowSpan}`,
-          transition:
-            "grid-column 220ms ease, grid-row 220ms ease, transform 260ms ease, opacity 220ms ease",
-        } as const;
-      }
-
-      const baseColSpan = clamp(fallbackSpan, 2, 12);
-      const minColSpan = baseColSpan >= 10 ? 4 : baseColSpan >= 6 ? 3 : 2;
-      const colSpan = clamp(
-        Math.round(baseColSpan * (0.44 + densitySignal * 0.28)),
-        minColSpan,
-        baseColSpan,
-      );
-      const baseRowSpan = baseColSpan >= 10 ? 4 : baseColSpan >= 6 ? 3 : 2;
-      const minRowSpan = baseRowSpan >= 4 ? 2 : 1;
-      const rowSpan = clamp(
-        Math.round(baseRowSpan * (0.52 + densitySignal * 0.28)),
-        minRowSpan,
-        baseRowSpan,
-      );
-
+    setPanelWorldBiases((prev) => {
+      const current = prev[panelId] ?? { x: 0, y: 0 };
       return {
-        ...baseStyle,
-        gridColumn: `span ${colSpan} / span ${colSpan}`,
-        gridRow: `span ${rowSpan} / span ${rowSpan}`,
-        transition:
-          "grid-column 220ms ease, grid-row 220ms ease, transform 260ms ease, opacity 220ms ease",
-      } as const;
-    },
-    [isWideViewport, projectionDensitySignalFor, mergedLayoutRects, projectionStateByElement],
-  );
-
-  const handleDragEnd = useCallback((_: MouseEvent | TouchEvent | PointerEvent, info: PanInfo, elementId: string) => {
-    if (!gridContainerRef.current) return;
-    const containerRect = gridContainerRef.current.getBoundingClientRect();
-    const x = (info.point.x - containerRect.left) / containerRect.width;
-    const y = (info.point.y - containerRect.top) / containerRect.height;
-    
-    // We update position but keep dimensions unless resized (resize logic separate)
-    // Note: this simple drag updates x/y based on top-left.
-    // Ideally we snap? x/y are normalized 0..1.
-    // The projectionStyleFor logic snaps to grid cells.
-    
-    setLayoutOverrides(prev => ({
-      ...prev,
-      [elementId]: {
-        ...prev[elementId],
-        x: clamp(x, 0, 0.95),
-        y: clamp(y, 0, 0.95),
-        w: prev[elementId]?.w ?? 0.25, // preserve or default
-        h: prev[elementId]?.h ?? 0.2,
-      }
-    }));
-  }, []);
+        ...prev,
+        [panelId]: {
+          x: clamp(current.x + worldDeltaX, -1.24, 1.24),
+          y: clamp(current.y + worldDeltaY, -1.02, 1.02),
+        },
+      };
+    });
+  }, [coreCameraZoom, viewportHeight, viewportWidth]);
 
   const dedicatedOverlayViews = useMemo(
     () => OVERLAY_VIEW_OPTIONS.filter((option) => option.id !== "omni"),
@@ -2188,6 +1773,11 @@ export default function App() {
                   overlayViewLocked
                   compactHud
                   interactive={false}
+                  particleDensity={coreSimulationTuning.particleDensity}
+                  particleScale={coreSimulationTuning.particleScale}
+                  motionSpeed={coreSimulationTuning.motionSpeed}
+                  mouseInfluence={coreSimulationTuning.mouseInfluence}
+                  layerDepth={coreSimulationTuning.layerDepth}
                 />
               </section>
             ))}
@@ -2383,6 +1973,27 @@ export default function App() {
       ),
     },
     {
+      id: "nexus.ui.world_log",
+      fallbackSpan: 6,
+      className: "card relative overflow-hidden",
+      render: () => (
+        <>
+          <div className="absolute top-0 left-0 w-1 h-full bg-[#a6e22e] opacity-70" />
+          <h2 className="text-2xl font-bold mb-2">World Log / 世界記録</h2>
+          <p className="text-muted mb-4">
+            Live timeline for receipts, eta-mu ingest, pending inbox files, presence account updates, and commentary events.
+          </p>
+          {deferredPanelsReady ? (
+            <Suspense fallback={<DeferredPanelPlaceholder title="World Log" />}>
+              <WorldLogPanel catalog={catalog} />
+            </Suspense>
+          ) : (
+            <DeferredPanelPlaceholder title="World Log" />
+          )}
+        </>
+      ),
+    },
+    {
       id: "nexus.ui.stability_observatory",
       fallbackSpan: 6,
       className: "card relative overflow-hidden",
@@ -2461,6 +2072,7 @@ export default function App() {
     autopilotEvents,
     catalog,
     chatLensState,
+    coreSimulationTuning,
     dedicatedOverlayViews,
     deferredPanelsReady,
     handleAutopilotUserInput,
@@ -2478,15 +2090,35 @@ export default function App() {
     worldInteraction
   ]);
 
-  const sortedPanels = useMemo(() => {
+  const sortedPanels = useMemo<RankedPanel[]>(() => {
     return panelConfigs
       .filter((config) => config.id !== "nexus.ui.simulation_map")
       .map((config) => {
         const state = projectionStateByElement.get(config.id);
+        const element = projectionElementById.get(config.id);
         const preset = PANEL_ANCHOR_PRESETS[config.id];
         const priority = state?.priority ?? 0.1;
-        const style = projectionStyleFor(config.id, config.fallbackSpan);
-        const depth = Math.round(clamp(priority, 0, 1) * 160) + 24;
+        const councilBoost = panelCouncilBoosts[config.id] ?? 0;
+        const councilScore = clamp(priority + (councilBoost * 0.11), 0, 2);
+        const depth = Math.round(clamp(councilScore, 0, 1) * 160) + 24;
+
+        const rawPresenceId = String(
+          element?.presence
+          ?? config.anchorId
+          ?? preset?.anchorId
+          ?? "particle_field",
+        ).trim();
+        const presenceId = rawPresenceId || "particle_field";
+        const presenceMeta = presenceManifestById.get(presenceId);
+        const presenceLabel = presenceMeta?.en ?? presenceId.replace(/[_-]+/g, " ");
+        const presenceLabelJa = presenceMeta?.ja ?? "";
+        const presenceRole = PRESENCE_OPERATIONAL_ROLE_BY_ID[presenceId] ?? "neutral";
+        const particleDisposition: ParticleDisposition =
+          presenceRole === "neutral" ? "neutral" : "role-bound";
+        const particleCount = particleCountsByPresence[presenceId] ?? 0;
+        const toolHints = PANEL_TOOL_HINTS[config.id] ?? ["inspect", "focus", "act"];
+        const councilReason = String(state?.explain?.reason_en ?? "Council rank follows live field and presence signal.");
+
         return {
           ...config,
           anchorKind: config.anchorKind ?? preset?.kind ?? "node",
@@ -2494,12 +2126,87 @@ export default function App() {
           worldSize: config.worldSize ?? preset?.worldSize ?? "m",
           pinnedByDefault: config.pinnedByDefault ?? preset?.pinnedByDefault ?? false,
           priority,
-          style,
           depth,
+          councilScore,
+          councilBoost,
+          councilReason,
+          presenceId,
+          presenceLabel,
+          presenceLabelJa,
+          presenceRole,
+          particleDisposition,
+          particleCount,
+          toolHints,
         };
       })
-      .sort((a, b) => b.priority - a.priority);
-  }, [panelConfigs, projectionStateByElement, projectionStyleFor]);
+      .sort((left, right) => {
+        if (right.councilScore !== left.councilScore) {
+          return right.councilScore - left.councilScore;
+        }
+        return right.priority - left.priority;
+      });
+  }, [
+    panelConfigs,
+    panelCouncilBoosts,
+    particleCountsByPresence,
+    presenceManifestById,
+    projectionElementById,
+    projectionStateByElement,
+  ]);
+
+  const panelWindowStateById = useMemo<Record<string, PanelWindowState>>(() => {
+    const stateById: Record<string, PanelWindowState> = {};
+    sortedPanels.forEach((panel, index) => {
+      const existing = panelWindowStates[panel.id];
+      if (existing) {
+        stateById[panel.id] = existing;
+        return;
+      }
+      stateById[panel.id] = {
+        open: Boolean(panel.pinnedByDefault || index < 3),
+        minimized: false,
+      };
+    });
+    return stateById;
+  }, [panelWindowStates, sortedPanels]);
+
+  const activatePanelWindow = useCallback((panelId: string) => {
+    const current = panelWindowStateById[panelId] ?? { open: true, minimized: false };
+    if (!current.open || current.minimized) {
+      setPanelWindowStates((prev) => ({
+        ...prev,
+        [panelId]: {
+          open: true,
+          minimized: false,
+        },
+      }));
+    }
+    setSelectedPanelId(panelId);
+  }, [panelWindowStateById]);
+
+  const minimizePanelWindow = useCallback((panelId: string) => {
+    setPanelWindowStates((prev) => ({
+      ...prev,
+      [panelId]: {
+        open: true,
+        minimized: true,
+      },
+    }));
+    setSelectedPanelId((prev) => (prev === panelId ? null : prev));
+    setHoveredPanelId((prev) => (prev === panelId ? null : prev));
+  }, []);
+
+  const closePanelWindow = useCallback((panelId: string) => {
+    setPanelWindowStates((prev) => ({
+      ...prev,
+      [panelId]: {
+        open: false,
+        minimized: false,
+      },
+    }));
+    setSelectedPanelId((prev) => (prev === panelId ? null : prev));
+    setHoveredPanelId((prev) => (prev === panelId ? null : prev));
+  }, []);
 
   const panelAnchorById = useMemo(() => {
     const map = new Map<string, WorldAnchorTarget>();
@@ -2623,41 +2330,182 @@ export default function App() {
     sortedPanels,
   ]);
 
+  const panelStateSpaceBiases = useMemo(() => {
+    const byPanel: Record<string, { x: number; y: number }> = {};
+    const dynamics = simulation?.presence_dynamics;
+    const impactRows = Array.isArray(dynamics?.presence_impacts) ? dynamics.presence_impacts : [];
+    if (impactRows.length === 0) {
+      return byPanel;
+    }
+
+    const anchorLookup = new Map<string, WorldAnchorTarget>();
+    const indexAnchor = (id: string, anchor: WorldAnchorTarget) => {
+      if (!id || anchorLookup.has(id)) {
+        return;
+      }
+      anchorLookup.set(id, anchor);
+    };
+    presenceAnchors.forEach((anchor, id) => {
+      indexAnchor(id, anchor);
+    });
+    namedRegionAnchors.forEach((anchor, id) => {
+      indexAnchor(id, anchor);
+    });
+    fieldRegionAnchors.forEach((anchor, id) => {
+      indexAnchor(id, anchor);
+    });
+    clusterAnchors.forEach((anchor, id) => {
+      indexAnchor(id, anchor);
+    });
+
+    const impactById = new Map<string, number>();
+    let centroidX = 0;
+    let centroidY = 0;
+    let centroidWeight = 0;
+
+    impactRows.forEach((row) => {
+      const impactId = String(row.id ?? "").trim();
+      if (!impactId) {
+        return;
+      }
+      const affectedBy = row.affected_by ?? {};
+      const affects = row.affects ?? {};
+      const intensity = clamp(
+        (clamp(Number(affectedBy.clicks ?? 0), 0, 1) * 0.44)
+        + (clamp(Number(affectedBy.files ?? 0), 0, 1) * 0.31)
+        + (clamp(Number(affects.world ?? 0), 0, 1) * 0.25),
+        0,
+        1,
+      );
+      if (intensity <= 0.02) {
+        return;
+      }
+      impactById.set(impactId, intensity);
+      const anchor = anchorLookup.get(impactId);
+      if (!anchor) {
+        return;
+      }
+      centroidX += anchor.x * intensity;
+      centroidY += anchor.y * intensity;
+      centroidWeight += intensity;
+    });
+
+    if (impactById.size === 0) {
+      return byPanel;
+    }
+
+    const centroid = centroidWeight > 0
+      ? {
+          x: centroidX / centroidWeight,
+          y: centroidY / centroidWeight,
+        }
+      : { x: 0.5, y: 0.5 };
+
+    const flowRate = clamp(Number(dynamics?.river_flow?.rate ?? 0), 0, 1);
+    const turbulence = clamp(Number(dynamics?.river_flow?.turbulence ?? 0), 0, 1);
+    const clickPressure = clamp(Number(dynamics?.click_events ?? 0) / 16, 0, 1);
+    const filePressure = clamp(Number(dynamics?.file_events ?? 0) / 18, 0, 1);
+    const timestampMillis = Date.parse(String(simulation?.timestamp ?? ""));
+    const timeSeed = Number.isFinite(timestampMillis)
+      ? timestampMillis / 1000
+      : Number(simulation?.world?.tick ?? 0);
+
+    sortedPanels.forEach((panel) => {
+      const anchor = panelAnchorById.get(panel.id);
+      if (!anchor) {
+        return;
+      }
+
+      let coupling = 0;
+      Object.entries(anchor.presenceSignature ?? {}).forEach(([signatureId, rawWeight]) => {
+        const weight = clamp(Number(rawWeight), 0, 1);
+        if (weight <= 0) {
+          return;
+        }
+        const normalizedId = signatureId.replace(/^field:/, "");
+        const impact = impactById.get(signatureId) ?? impactById.get(normalizedId) ?? 0;
+        coupling += weight * impact;
+      });
+      coupling += (impactById.get(anchor.id) ?? 0) * 0.35;
+
+      const projectionState = projectionStateByElement.get(panel.id);
+      const projectionPresenceSignal = clamp(Number(projectionState?.explain?.presence_signal ?? 0), 0, 1);
+      const pulseSignal = clamp(Number(projectionState?.pulse ?? 0), 0, 1);
+      const magnitude = clamp(
+        (coupling * (0.12 + (projectionPresenceSignal * 0.18)))
+        + (pulseSignal * 0.03)
+        + ((clickPressure + filePressure) * 0.02),
+        0,
+        0.28,
+      );
+      if (magnitude <= 0.0006) {
+        return;
+      }
+
+      const driftX = centroid.x - anchor.x;
+      const driftY = centroid.y - anchor.y;
+      const phase = timeSeed * (0.46 + (flowRate * 0.34)) + (stableUnitHash(panel.id) * Math.PI * 2);
+      const swirl = 0.008 + (turbulence * 0.022);
+      byPanel[panel.id] = {
+        x: clamp((driftX * magnitude * 0.92) + (Math.cos(phase) * swirl), -0.34, 0.34),
+        y: clamp((driftY * magnitude * 0.92) + (Math.sin(phase * 1.1) * swirl), -0.28, 0.28),
+      };
+    });
+
+    return byPanel;
+  }, [
+    clusterAnchors,
+    fieldRegionAnchors,
+    namedRegionAnchors,
+    panelAnchorById,
+    presenceAnchors,
+    projectionStateByElement,
+    simulation?.presence_dynamics,
+    simulation?.timestamp,
+    simulation?.world?.tick,
+    sortedPanels,
+  ]);
+
+  const openPanelIds = useMemo(() => {
+    return sortedPanels
+      .filter((panel) => {
+        const windowState = panelWindowStateById[panel.id] ?? { open: true, minimized: false };
+        return windowState.open && !windowState.minimized;
+      })
+      .map((panel) => panel.id);
+  }, [panelWindowStateById, sortedPanels]);
+
   const visiblePanelIds = useMemo(() => {
-    const selected = new Set<string>();
-    const include = (panelId: string | null | undefined) => {
+    const ordered = [...openPanelIds];
+    const bringToFront = (panelId: string | null | undefined) => {
       if (!panelId) {
         return;
       }
-      if (!sortedPanels.some((panel) => panel.id === panelId)) {
+      const index = ordered.indexOf(panelId);
+      if (index <= 0) {
         return;
       }
-      selected.add(panelId);
+      ordered.splice(index, 1);
+      ordered.unshift(panelId);
     };
-    include(selectedPanelId);
-    include(hoveredPanelId);
+
+    bringToFront(selectedPanelId);
+    bringToFront(hoveredPanelId);
     sortedPanels.forEach((panel) => {
       if (pinnedPanels[panel.id]) {
-        selected.add(panel.id);
+        bringToFront(panel.id);
       }
     });
-    sortedPanels.forEach((panel) => {
-      if (selected.size < MAX_WORLD_PANELS_VISIBLE) {
-        selected.add(panel.id);
-      }
-    });
-    return Array.from(selected).slice(0, MAX_WORLD_PANELS_VISIBLE);
-  }, [hoveredPanelId, pinnedPanels, selectedPanelId, sortedPanels]);
+
+    return ordered;
+  }, [hoveredPanelId, openPanelIds, pinnedPanels, selectedPanelId, sortedPanels]);
 
   const worldPanelLayout = useMemo<WorldPanelLayoutEntry[]>(() => {
-    if (!isWideViewport) {
-      return [];
-    }
     const panelsById = new Map(sortedPanels.map((panel) => [panel.id, panel]));
     const velocity = coreFlightVelocityRef.current;
     const speedNorm = clamp(Math.hypot(velocity.x, velocity.y, velocity.z) / 26, 0, 1);
-    const stageTop = 118;
-    const stageBottom = viewportHeight - 14;
+    const stageTop = viewportHeight < 860 ? 104 : 118;
+    const stageBottom = Math.max(stageTop + 132, viewportHeight - 14);
     const stageHeight = Math.max(120, stageBottom - stageTop);
     const centerX = viewportWidth / 2;
     const centerY = stageTop + (stageHeight / 2);
@@ -2667,16 +2515,20 @@ export default function App() {
     const sinYaw = Math.sin(yaw);
     const cosPitch = Math.cos(pitch);
     const sinPitch = Math.sin(pitch);
+    const cameraOffsetX = coreRenderedCameraPosition.x / 660;
+    const cameraOffsetY = coreRenderedCameraPosition.y / 560;
+    const cameraOffsetZ = coreRenderedCameraPosition.z / 920;
 
-    const projectAnchor = (anchor: WorldAnchorTarget) => {
-      const zBase = anchor.kind === "node" ? 0.62 : anchor.kind === "cluster" ? 0.24 : -0.14;
-      let wx = (anchor.x - 0.5) * 2.25;
-      let wy = (anchor.y - 0.5) * 1.86;
-      let wz = zBase;
+    const anchorToWorldPoint = (anchor: WorldAnchorTarget) => ({
+      x: (anchor.x - 0.5) * 2.25,
+      y: (anchor.y - 0.5) * 1.86,
+      z: anchor.kind === "node" ? 0.62 : anchor.kind === "cluster" ? 0.24 : -0.14,
+    });
 
-      wx -= coreCameraPosition.x / 660;
-      wy -= coreCameraPosition.y / 560;
-      wz -= coreCameraPosition.z / 920;
+    const projectWorldPoint = (worldX: number, worldY: number, worldZ: number) => {
+      const wx = worldX - cameraOffsetX;
+      const wy = worldY - cameraOffsetY;
+      const wz = worldZ - cameraOffsetZ;
 
       const x1 = (wx * cosYaw) - (wz * sinYaw);
       const z1 = (wx * sinYaw) + (wz * cosYaw);
@@ -2692,6 +2544,7 @@ export default function App() {
     };
 
     const entries: WorldPanelLayoutEntry[] = [];
+    const trackedScaleIds = new Set<string>();
     visiblePanelIds.forEach((panelId) => {
       const panel = panelsById.get(panelId);
       if (!panel) {
@@ -2701,7 +2554,21 @@ export default function App() {
       if (!anchor) {
         return;
       }
-      const projected = projectAnchor(anchor);
+      const overlayAnchor = resolveOverlayAnchorRatio(anchor, panel.anchorId);
+      const anchorWorld = overlayAnchor
+        ? {
+            x: (overlayAnchor.x - 0.5) * 2.25,
+            y: (overlayAnchor.y - 0.5) * 1.86,
+            z: anchor.kind === "node" ? 0.62 : anchor.kind === "cluster" ? 0.24 : -0.14,
+          }
+        : anchorToWorldPoint(anchor);
+      const projected = overlayAnchor
+        ? {
+            x: overlayAnchor.x * viewportWidth,
+            y: stageTop + (overlayAnchor.y * stageHeight),
+            perspective: clamp(0.96 + ((coreCameraZoom - 1) * 0.18), 0.72, 1.34),
+          }
+        : projectWorldPoint(anchorWorld.x, anchorWorld.y, anchorWorld.z);
       const side = preferredSideForAnchor(
         panelId,
         projected.x,
@@ -2710,23 +2577,44 @@ export default function App() {
         viewportHeight,
         panelSideRef.current,
       );
-      const sideOffset = anchorOffsetForSide(side);
-      const size = panelSizeForWorld(panel.worldSize ?? "m", panel.priority, coreCameraZoom, speedNorm);
-      const bias = panelScreenBiases[panelId] ?? { x: 0, y: 0 };
+      const baseSize = panelSizeForWorld(panel.worldSize ?? "m", panel.priority, coreCameraZoom, speedNorm);
+      const size = {
+        width: Math.round(Math.min(baseSize.width, Math.max(176, viewportWidth - (WORLD_PANEL_MARGIN * 2)))),
+        height: Math.round(Math.min(baseSize.height, Math.max(120, stageBottom - stageTop - 8))),
+        collapse: baseSize.collapse,
+      };
+      const pixelsPerWorldX = Math.max(90, viewportWidth * 0.34 * projected.perspective * coreCameraZoom);
+      const pixelsPerWorldY = Math.max(74, stageHeight * 0.47 * projected.perspective * coreCameraZoom);
+      panelWorldScaleRef.current.set(panelId, { x: pixelsPerWorldX, y: pixelsPerWorldY });
+      trackedScaleIds.add(panelId);
 
-      let x = projected.x + sideOffset.x + bias.x;
-      let y = projected.y + sideOffset.y + bias.y;
+      const halfWorldWidth = (size.width / pixelsPerWorldX) * 0.5;
+      const halfWorldHeight = (size.height / pixelsPerWorldY) * 0.5;
+      const gapWorldX = Math.max(0.04, 22 / pixelsPerWorldX);
+      const gapWorldY = Math.max(0.04, 18 / pixelsPerWorldY);
+
+      let panelWorldX = anchorWorld.x;
+      let panelWorldY = anchorWorld.y;
       if (side === "left") {
-        x -= size.width;
-        y -= size.height * 0.5;
+        panelWorldX -= halfWorldWidth + gapWorldX;
+        panelWorldY -= gapWorldY * 0.34;
       } else if (side === "right") {
-        y -= size.height * 0.5;
+        panelWorldX += halfWorldWidth + gapWorldX;
+        panelWorldY -= gapWorldY * 0.34;
       } else if (side === "top") {
-        x -= size.width * 0.5;
-        y -= size.height;
+        panelWorldY -= halfWorldHeight + gapWorldY;
       } else {
-        x -= size.width * 0.5;
+        panelWorldY += halfWorldHeight + gapWorldY;
       }
+
+      const manualBias = panelWorldBiases[panelId] ?? { x: 0, y: 0 };
+      const stateSpaceBias = panelStateSpaceBiases[panelId] ?? { x: 0, y: 0 };
+      panelWorldX += manualBias.x + stateSpaceBias.x;
+      panelWorldY += manualBias.y + stateSpaceBias.y;
+
+      const panelScreen = projectWorldPoint(panelWorldX, panelWorldY, anchorWorld.z);
+      let x = panelScreen.x - (size.width / 2);
+      let y = panelScreen.y - (size.height / 2);
 
       const glow = selectedPanelId === panelId
         ? 0.96
@@ -2747,11 +2635,22 @@ export default function App() {
         y,
         width: size.width,
         height: size.height,
+        panelWorldX,
+        panelWorldY,
+        panelWorldZ: anchorWorld.z,
+        pixelsPerWorldX,
+        pixelsPerWorldY,
         tetherX: projected.x,
         tetherY: projected.y,
         glow,
         collapse: size.collapse,
       });
+    });
+
+    panelWorldScaleRef.current.forEach((_scale, panelId) => {
+      if (!trackedScaleIds.has(panelId)) {
+        panelWorldScaleRef.current.delete(panelId);
+      }
     });
 
     const clampEntry = (entry: WorldPanelLayoutEntry) => {
@@ -2827,14 +2726,15 @@ export default function App() {
     return entries;
   }, [
     coreCameraPitch,
-    coreCameraPosition,
+    coreRenderedCameraPosition,
     coreCameraYaw,
     coreCameraZoom,
     hoveredPanelId,
-    isWideViewport,
     panelAnchorById,
-    panelScreenBiases,
+    panelStateSpaceBiases,
+    panelWorldBiases,
     pinnedPanels,
+    resolveOverlayAnchorRatio,
     selectedPanelId,
     sortedPanels,
     viewportHeight,
@@ -2842,15 +2742,55 @@ export default function App() {
     visiblePanelIds,
   ]);
 
-  const overflowPanels = useMemo(() => {
-    const visible = new Set(visiblePanelIds);
-    return sortedPanels.filter((panel) => !visible.has(panel.id)).slice(0, 6);
-  }, [sortedPanels, visiblePanelIds]);
+  const panelNexusLayout = useMemo<WorldPanelNexusEntry[]>(() => {
+    const visibleEntryById = new Map(worldPanelLayout.map((entry) => [entry.id, entry]));
+    const stageTop = viewportHeight < 860 ? 104 : 118;
+    const stageBottom = Math.max(stageTop + 132, viewportHeight - 14);
+    const stageHeight = Math.max(120, stageBottom - stageTop);
+
+    return sortedPanels.flatMap((panel) => {
+      const anchor = panelAnchorById.get(panel.id);
+      if (!anchor) {
+        return [];
+      }
+      const windowState = panelWindowStateById[panel.id] ?? { open: true, minimized: false };
+      const visibleEntry = visibleEntryById.get(panel.id);
+      const overlayAnchor = resolveOverlayAnchorRatio(anchor, panel.anchorId);
+      const x = visibleEntry?.anchorScreenX
+        ?? (overlayAnchor ? overlayAnchor.x * viewportWidth : anchor.x * viewportWidth);
+      const y = visibleEntry?.anchorScreenY
+        ?? (overlayAnchor ? stageTop + (overlayAnchor.y * stageHeight) : stageTop + (anchor.y * stageHeight));
+
+      return [
+        {
+          panelId: panel.id,
+          panelLabel: panel.id.split(".").slice(-1)[0].replace(/_/g, " "),
+          anchor,
+          x,
+          y,
+          hue: anchor.hue,
+          confidence: anchor.confidence,
+          open: windowState.open,
+          minimized: windowState.minimized,
+          selected: selectedPanelId === panel.id,
+        },
+      ];
+    });
+  }, [
+    panelAnchorById,
+    panelWindowStateById,
+    resolveOverlayAnchorRatio,
+    selectedPanelId,
+    sortedPanels,
+    viewportHeight,
+    viewportWidth,
+    worldPanelLayout,
+  ]);
 
   const galaxyLayerStyles = useMemo(() => {
-    const driftX = coreCameraPosition.x;
-    const driftY = coreCameraPosition.y;
-    const driftZ = coreCameraPosition.z;
+    const driftX = coreRenderedCameraPosition.x;
+    const driftY = coreRenderedCameraPosition.y;
+    const driftZ = coreRenderedCameraPosition.z;
     return {
       far: {
         transform: `translate3d(${((-driftX * 0.07) + (coreCameraYaw * 1.4)).toFixed(1)}px, ${((-driftY * 0.05) + (coreCameraPitch * 1.3)).toFixed(1)}px, ${(driftZ * 0.04).toFixed(1)}px) scale(${(1 + (driftZ * 0.00018)).toFixed(3)})`,
@@ -2862,43 +2802,39 @@ export default function App() {
         transform: `translate3d(${((-driftX * 0.22) + (coreCameraYaw * 3.1)).toFixed(1)}px, ${((-driftY * 0.18) + (coreCameraPitch * 2.4)).toFixed(1)}px, ${(driftZ * 0.14).toFixed(1)}px) scale(${(1.1 + (driftZ * 0.00032)).toFixed(3)})`,
       },
     };
-  }, [coreCameraPitch, coreCameraPosition, coreCameraYaw]);
+  }, [coreCameraPitch, coreCameraYaw, coreRenderedCameraPosition]);
 
   return (
     <>
-      <div
-        className="simulation-core-backdrop"
+      <CoreBackdrop
+        simulation={simulation}
+        catalog={catalog}
+        viewportHeight={viewportHeight}
+        coreCameraTransform={coreCameraTransform}
+        coreSimulationFilter={coreSimulationFilter}
+        coreOverlayView={coreOverlayView}
+        coreSimulationTuning={coreSimulationTuning}
+        coreVisualTuning={coreVisualTuning}
+        coreLayerVisibility={coreLayerVisibility}
+        galaxyLayerStyles={galaxyLayerStyles}
+        onOverlayInit={handleOverlayInit}
         onPointerDown={handleCorePointerDown}
         onPointerMove={handleCorePointerMove}
         onPointerUp={handleCorePointerUp}
-        onPointerCancel={handleCorePointerUp}
         onWheel={handleCoreWheel}
-      >
-        <div className="simulation-galaxy-layer simulation-galaxy-layer-far" style={galaxyLayerStyles.far} />
-        <div className="simulation-galaxy-layer simulation-galaxy-layer-mid" style={galaxyLayerStyles.mid} />
-        <div className="simulation-galaxy-layer simulation-galaxy-layer-near" style={galaxyLayerStyles.near} />
-        <div className="simulation-core-stage" style={{ transform: coreCameraTransform }}>
-          <SimulationCanvas
-            simulation={simulation}
-            catalog={catalog}
-            onOverlayInit={(api) => setOverlayApi(api)}
-            height={viewportHeight}
-            defaultOverlayView={coreOverlayView}
-            overlayViewLocked
-            compactHud
-            interactive={false}
-            backgroundMode
-            className="simulation-core-canvas"
-          />
-        </div>
-        <p className="simulation-core-hint">
-          drag orbit • shift+drag pan • wheel zoom • wasd strafe/drive • r/f rise/fall
-        </p>
-        <div className="simulation-core-vignette" />
-      </div>
+      />
 
-      <main className="relative z-20 max-w-[1920px] mx-auto px-2 py-2 md:px-4 md:py-4 pb-20 transition-colors">
-        <header className="mb-4 border-b border-[rgba(166,205,235,0.25)] pb-3 flex flex-col gap-2 bg-[rgba(8,14,22,0.42)] backdrop-blur-[2px] rounded-xl px-3">
+      <CoreLayerManagerOverlay
+        activeLayerCount={activeCoreLayerCount}
+        isOpen={coreLayerManagerOpen}
+        layerVisibility={coreLayerVisibility}
+        onToggleOpen={() => setCoreLayerManagerOpen((prev) => !prev)}
+        onSetAllLayers={setAllCoreLayers}
+        onSetLayerEnabled={setCoreLayerEnabled}
+      />
+
+      <main className="relative z-20 max-w-[1920px] mx-auto px-2 py-2 md:px-4 md:py-4 pb-20 transition-colors pointer-events-none">
+        <header className="mb-4 border-b border-[rgba(166,205,235,0.32)] pb-3 flex flex-col gap-2 bg-[rgba(8,14,22,0.66)] backdrop-blur-[4px] rounded-xl px-3 shadow-[0_12px_30px_rgba(2,8,14,0.34)] pointer-events-auto">
           <div className="flex justify-between items-center">
             <h1 className="text-2xl font-bold tracking-tight text-ink flex items-center gap-3">
               <span className="opacity-50">ημ</span>
@@ -2916,317 +2852,74 @@ export default function App() {
             </div>
           </div>
 
-          <div className="grid gap-2 lg:grid-cols-[1fr_auto] lg:items-center">
-            <div className="text-[10px] text-muted space-y-0.5 font-mono opacity-70">
-              <div className="flex flex-wrap gap-x-3 gap-y-1">
-                <span>perspective: <code>{projectionPerspective}</code></span>
-                <span>autopilot: <code>{autopilotEnabled ? autopilotStatus : "stopped"}</code></span>
-                <span className="opacity-80">note: <code>{autopilotSummary}</code></span>
-              </div>
-              <div className="flex flex-wrap gap-x-3 gap-y-1">
-                <span>
-                  core-camera: <code>{coreCameraZoom.toFixed(2)}x</code> / pitch
-                  <code>{coreCameraPitch.toFixed(0)}deg</code> / yaw
-                  <code>{coreCameraYaw.toFixed(0)}deg</code> / xyz
-                  <code>{coreCameraPosition.x.toFixed(0)}</code>,
-                  <code>{coreCameraPosition.y.toFixed(0)}</code>,
-                  <code>{coreCameraPosition.z.toFixed(0)}</code>
-                </span>
-                <span>
-                  flight: <code>{coreFlightEnabled ? "armed" : "paused"}</code> speed
-                  <code>{coreFlightSpeed.toFixed(2)}x</code>
-                </span>
-                {activeChatLens ? (
-                  <span>chat-lens: <code>{activeChatLens.presence}</code> ({activeChatLens.status})</span>
-                ) : null}
-                {latestAutopilotEvent ? (
-                  <span>last: <code>{latestAutopilotEvent.actionId}</code> ({latestAutopilotEvent.result})</span>
-                ) : null}
-              </div>
-            </div>
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={toggleAutopilot}
-                className={`border rounded px-2 py-0.5 text-[10px] font-semibold transition-colors ${
-                  autopilotEnabled
-                    ? "bg-[rgba(166,226,46,0.16)] border-[rgba(166,226,46,0.48)] text-[#a6e22e]"
-                    : "bg-[rgba(249,38,114,0.16)] border-[rgba(249,38,114,0.48)] text-[#f92672]"
-                }`}
-              >
-                {autopilotEnabled ? "Autopilot On" : "Autopilot Off"}
-              </button>
-
-              <button
-                type="button"
-                onClick={toggleCoreFlight}
-                className={`border rounded px-2 py-0.5 text-[10px] font-semibold transition-colors ${
-                  coreFlightEnabled
-                    ? "bg-[rgba(122,214,255,0.18)] border-[rgba(122,214,255,0.52)] text-[#9de3ff]"
-                    : "bg-[rgba(180,180,180,0.14)] border-[rgba(182,182,182,0.34)] text-[#d2d7de]"
-                }`}
-              >
-                {coreFlightEnabled ? "Flight Armed" : "Flight Paused"}
-              </button>
-
-              <div className="flex items-center gap-1 border rounded px-1 py-0.5 text-[10px] bg-[rgba(10,22,34,0.68)] border-[rgba(120,178,221,0.35)]">
-                <button type="button" onClick={() => nudgeCoreFlightSpeed(-0.12)} className="px-1 text-[#bdd9f2]">thrust-</button>
-                <button type="button" onClick={() => nudgeCoreFlightSpeed(0.12)} className="px-1 text-[#9ed6f8]">thrust+</button>
-              </div>
-
-              <select
-                value={coreOverlayView}
-                onChange={(event) => setCoreOverlayView(event.target.value as OverlayViewId)}
-                className="border rounded px-2 py-0.5 text-[10px] font-semibold bg-[rgba(10,22,34,0.74)] text-[#9dd5f8] border-[rgba(120,178,221,0.4)]"
-                title="simulation-core overlay lane"
-              >
-                {OVERLAY_VIEW_OPTIONS.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    core:{option.label}
-                  </option>
-                ))}
-              </select>
-
-              <div className="flex items-center gap-1 border rounded px-1 py-0.5 text-[10px] bg-[rgba(10,22,34,0.68)] border-[rgba(120,178,221,0.35)]">
-                <button type="button" onClick={() => nudgeCoreZoom(-0.08)} className="px-1 text-[#9ed6f8]">-</button>
-                <button type="button" onClick={() => nudgeCoreZoom(0.08)} className="px-1 text-[#9ed6f8]">+</button>
-                <button type="button" onClick={() => nudgeCorePitch(4)} className="px-1 text-[#a8e6bf]">tilt+</button>
-                <button type="button" onClick={() => nudgeCorePitch(-4)} className="px-1 text-[#a8e6bf]">tilt-</button>
-                <button type="button" onClick={() => nudgeCoreYaw(-4)} className="px-1 text-[#f5c18a]">yaw-</button>
-                <button type="button" onClick={() => nudgeCoreYaw(4)} className="px-1 text-[#f5c18a]">yaw+</button>
-                <button type="button" onClick={resetCoreCamera} className="px-1 text-[#f3d9b8]">reset</button>
-              </div>
-
-              {projectionOptions.map((option) => (
-                <button
-                  key={option.id}
-                  type="button"
-                  onClick={() => setUiPerspective(option.id as UIPerspective)}
-                  className={`border rounded px-2 py-0.5 text-[10px] font-semibold transition-colors ${
-                    projectionPerspective === option.id
-                      ? "bg-[rgba(102,217,239,0.2)] text-[#66d9ef] border-[rgba(102,217,239,0.7)]"
-                      : "bg-[rgba(39,40,34,0.78)] text-[var(--ink)] border-[var(--line)] hover:bg-[rgba(55,56,48,0.92)]"
-                  }`}
-                  title={option.description}
-                >
-                  {option.name}
-                </button>
-              ))}
-            </div>
-          </div>
+          <CoreControlPanel
+            projectionPerspective={projectionPerspective}
+            autopilotEnabled={autopilotEnabled}
+            autopilotStatus={autopilotStatus}
+            autopilotSummary={autopilotSummary}
+            coreCameraZoom={coreCameraZoom}
+            coreCameraPitch={coreCameraPitch}
+            coreCameraYaw={coreCameraYaw}
+            coreRenderedCameraPosition={coreRenderedCameraPosition}
+            coreFlightEnabled={coreFlightEnabled}
+            coreFlightSpeed={coreFlightSpeed}
+            coreOrbitEnabled={coreOrbitEnabled}
+            coreOrbitSpeed={coreOrbitSpeed}
+            coreSimulationTuning={coreSimulationTuning}
+            coreVisualTuning={coreVisualTuning}
+            coreOverlayView={coreOverlayView}
+            activeChatLens={activeChatLens}
+            latestAutopilotEvent={latestAutopilotEvent}
+            projectionOptions={projectionOptions}
+            onToggleAutopilot={toggleAutopilot}
+            onToggleCoreFlight={toggleCoreFlight}
+            onToggleCoreOrbit={toggleCoreOrbit}
+            onNudgeCoreFlightSpeed={nudgeCoreFlightSpeed}
+            onNudgeCoreOrbitSpeed={nudgeCoreOrbitSpeed}
+            onApplyCoreLayerPreset={applyCoreLayerPreset}
+            onNudgeCoreZoom={nudgeCoreZoom}
+            onResetCoreCamera={resetCoreCamera}
+            onSelectPerspective={setUiPerspective}
+            onBoostCoreVisibility={boostCoreVisibility}
+            onResetCoreVisualTuning={resetCoreVisualTuning}
+            onSetCoreVisualDial={setCoreVisualDial}
+            onResetCoreSimulationTuning={resetCoreSimulationTuning}
+            onSetCoreSimulationDial={setCoreSimulationDial}
+            onSetCoreOrbitSpeed={(value) => setCoreOrbitSpeed(clamp(value, CORE_ORBIT_SPEED_MIN, CORE_ORBIT_SPEED_MAX))}
+          />
         </header>
 
-        <div className="flex justify-end px-2 mb-2 sticky top-2 z-50">
-          <button
-            type="button"
-            onClick={() => setIsEditMode(!isEditMode)}
-            className={`text-sm font-bold px-4 py-2 rounded-lg shadow-lg transition-all duration-200 ${
-              isEditMode
-                ? "bg-[#ae81ff] text-white ring-2 ring-white/20 scale-105"
-                : "bg-[rgba(45,46,39,0.9)] text-[#ae81ff] border border-[#ae81ff]/40 hover:bg-[#ae81ff]/10 hover:border-[#ae81ff]"
-            }`}
-          >
-            {isEditMode ? "Done Editing" : "Edit Layout"}
-          </button>
-        </div>
-
-        {isWideViewport ? (
-          <section className="world-panel-stage" aria-label="world anchored panels">
-            <svg className="world-panel-tethers" viewBox={`0 0 ${viewportWidth} ${viewportHeight}`} preserveAspectRatio="none">
-              <title>World panel tethers</title>
-              {worldPanelLayout.map((entry) => {
-                const controlOffset = entry.side === "left" || entry.side === "right" ? 70 : 44;
-                const cx1 = entry.anchorScreenX + ((entry.side === "left" || entry.side === "right")
-                  ? (entry.side === "left" ? -controlOffset : controlOffset)
-                  : 0);
-                const cy1 = entry.anchorScreenY + ((entry.side === "top" || entry.side === "bottom")
-                  ? (entry.side === "top" ? -controlOffset : controlOffset)
-                  : 0);
-                const cx2 = entry.tetherX + ((entry.side === "left" || entry.side === "right")
-                  ? (entry.side === "left" ? controlOffset : -controlOffset)
-                  : 0);
-                const cy2 = entry.tetherY + ((entry.side === "top" || entry.side === "bottom")
-                  ? (entry.side === "top" ? controlOffset : -controlOffset)
-                  : 0);
-                const curvePath = `M ${entry.anchorScreenX.toFixed(1)} ${entry.anchorScreenY.toFixed(1)} C ${cx1.toFixed(1)} ${cy1.toFixed(1)}, ${cx2.toFixed(1)} ${cy2.toFixed(1)}, ${entry.tetherX.toFixed(1)} ${entry.tetherY.toFixed(1)}`;
-                const glowAlpha = clamp(entry.glow, 0.2, 1);
-                const haloRadius = Math.max(8, entry.anchor.radius * Math.min(viewportWidth, viewportHeight) * 0.22);
-                return (
-                  <g key={`tether-${entry.id}`}>
-                    <circle
-                      cx={entry.anchorScreenX}
-                      cy={entry.anchorScreenY}
-                      r={haloRadius * 1.8}
-                      fill={`hsla(${entry.anchor.hue}, 86%, 64%, ${0.11 + (glowAlpha * 0.18)})`}
-                    />
-                    <circle
-                      cx={entry.anchorScreenX}
-                      cy={entry.anchorScreenY}
-                      r={haloRadius}
-                      fill={`hsla(${entry.anchor.hue}, 92%, 74%, ${0.28 + (glowAlpha * 0.28)})`}
-                      stroke={`hsla(${entry.anchor.hue}, 96%, 84%, ${0.48 + (glowAlpha * 0.34)})`}
-                      strokeWidth={1.2}
-                    />
-                    <path
-                      d={curvePath}
-                      stroke={`hsla(${entry.anchor.hue}, 92%, 72%, ${0.24 + (glowAlpha * 0.44)})`}
-                      strokeWidth={1.1 + (glowAlpha * 1.4)}
-                      strokeDasharray={entry.collapse ? "4 8" : "6 6"}
-                      fill="none"
-                    />
-                  </g>
-                );
-              })}
-            </svg>
-
-            {worldPanelLayout.map((entry) => {
-              const panelTitle = entry.panel.id.split(".").slice(-1)[0].replace(/_/g, " ");
-              const isPinned = Boolean(pinnedPanels[entry.id]);
-              const isSelected = selectedPanelId === entry.id;
-              return (
-                <motion.section
-                  key={entry.id}
-                  className={`floating-overlay-panel world-panel-shell ${isSelected ? "world-panel-selected" : ""} ${entry.collapse ? "world-panel-collapsed" : ""}`}
-                  style={{
-                    left: entry.x,
-                    top: entry.y,
-                    width: entry.width,
-                    height: entry.height,
-                    zIndex: Math.round(24 + (entry.glow * 18) + (isSelected ? 24 : 0)),
-                    opacity: clamp(0.54 + (entry.glow * 0.54), 0.5, 1),
-                  }}
-                  drag={isEditMode}
-                  dragMomentum={false}
-                  dragElastic={0.08}
-                  onHoverStart={() => setHoveredPanelId(entry.id)}
-                  onHoverEnd={() => setHoveredPanelId((current) => (current === entry.id ? null : current))}
-                  onClick={() => setSelectedPanelId(entry.id)}
-                  onDoubleClick={() => flyCameraToAnchor(entry.anchor)}
-                  onDragEnd={(_, info) => {
-                    setPanelScreenBiases((prev) => {
-                      const current = prev[entry.id] ?? { x: 0, y: 0 };
-                      return {
-                        ...prev,
-                        [entry.id]: {
-                          x: clamp(current.x + info.offset.x, -520, 520),
-                          y: clamp(current.y + info.offset.y, -420, 420),
-                        },
-                      };
-                    });
-                  }}
-                >
-                  <header className="world-panel-header">
-                    <div>
-                      <p className="world-panel-title">{panelTitle}</p>
-                      <p className="world-panel-subtitle">
-                        {entry.anchor.kind}:{entry.anchor.label}
-                      </p>
-                    </div>
-                    <div className="world-panel-actions">
-                      <button
-                        type="button"
-                        className="world-panel-action"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          togglePanelPin(entry.id);
-                        }}
-                        title={isPinned ? "unpin panel" : "pin panel"}
-                      >
-                        {isPinned ? "pinned" : "pin"}
-                      </button>
-                      <button
-                        type="button"
-                        className="world-panel-action"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          flyCameraToAnchor(entry.anchor);
-                        }}
-                        title="fly camera to anchor"
-                      >
-                        inspect
-                      </button>
-                    </div>
-                  </header>
-
-                  {entry.collapse ? (
-                    <div className="world-panel-collapsed-body">
-                      <p>
-                        moving at velocity <code>{coreFlightSpeed.toFixed(2)}x</code>
-                      </p>
-                      <p>
-                        anchor confidence <code>{Math.round(entry.anchor.confidence * 100)}%</code>
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="world-panel-body">{entry.panel.render()}</div>
-                  )}
-
-                  {isEditMode ? (
-                    <div className="world-panel-edit-tag">drag bias</div>
-                  ) : null}
-                </motion.section>
-              );
-            })}
-
-            {overflowPanels.length > 0 ? (
-              <aside className="world-panel-chip-rack" aria-label="deferred panels">
-                {overflowPanels.map((panel) => {
-                  const label = panel.id.split(".").slice(-1)[0].replace(/_/g, " ");
-                  const anchor = panelAnchorById.get(panel.id);
-                  return (
-                    <button
-                      key={`chip-${panel.id}`}
-                      type="button"
-                      className="world-panel-chip"
-                      onClick={() => setSelectedPanelId(panel.id)}
-                      onDoubleClick={() => {
-                        if (anchor) {
-                          flyCameraToAnchor(anchor);
-                        }
-                      }}
-                    >
-                      {label}
-                    </button>
-                  );
-                })}
-              </aside>
-            ) : null}
-          </section>
-        ) : (
-          <div
-            ref={gridContainerRef}
-            className="overlay-constellation grid grid-cols-1 gap-3 items-start"
-          >
-            {sortedPanels.map((panel) => (
-              <motion.section
-                key={panel.id}
-                className={`${panel.className ?? "card relative overflow-hidden"} floating-overlay-panel ${isEditMode ? "cursor-grab active:cursor-grabbing ring-2 ring-[#ae81ff] shadow-[0_0_15px_rgba(174,129,255,0.3)] z-10" : ""}`}
-                style={panel.style as CSSProperties}
-                drag={isEditMode}
-                dragMomentum={false}
-                dragElastic={0.1}
-                whileHover={isEditMode ? { scale: 1.02, zIndex: 20 } : undefined}
-                whileTap={isEditMode ? { scale: 1.05, zIndex: 30, cursor: "grabbing" } : undefined}
-                onDragEnd={(_, info) => handleDragEnd(_, info, panel.id)}
-                layout
-              >
-                {panel.render()}
-                {isEditMode && (
-                  <div className="absolute top-2 right-2 px-2 py-1 bg-black/60 rounded text-[10px] text-[#ae81ff] font-mono pointer-events-none">
-                    DRAG ME
-                  </div>
-                )}
-              </motion.section>
-            ))}
-          </div>
-        )}
+        <WorldPanelsViewport
+          viewportWidth={viewportWidth}
+          viewportHeight={viewportHeight}
+          worldPanelLayout={worldPanelLayout}
+          panelNexusLayout={panelNexusLayout}
+          sortedPanels={sortedPanels}
+          panelWindowStateById={panelWindowStateById}
+          tertiaryPinnedPanelId={tertiaryPinnedPanelId}
+          pinnedPanels={pinnedPanels}
+          selectedPanelId={selectedPanelId}
+          isEditMode={isEditMode}
+          coreFlightSpeed={coreFlightSpeed}
+          onToggleEditMode={() => setIsEditMode((prev) => !prev)}
+          onHoverPanel={setHoveredPanelId}
+          onSelectPanel={activatePanelWindow}
+          onTogglePanelPin={togglePanelPin}
+          onActivatePanel={activatePanelWindow}
+          onMinimizePanel={minimizePanelWindow}
+          onClosePanel={closePanelWindow}
+          onAdjustPanelCouncilRank={adjustPanelCouncilRank}
+          onPinPanelToTertiary={pinPanelToTertiary}
+          onFlyCameraToAnchor={flyCameraToAnchor}
+          onWorldPanelDragEnd={handleWorldPanelDragEnd}
+        />
 
         {uiToasts.length > 0 ? (
-          <div className="fixed bottom-4 right-4 z-[80] flex w-[min(92vw,360px)] flex-col gap-2">
+          <div className="fixed bottom-4 right-4 z-[80] pointer-events-none flex w-[min(92vw,360px)] flex-col gap-2">
             {uiToasts.map((toast) => (
               <div
                 key={toast.id}
-                className="rounded-lg border border-[rgba(102,217,239,0.45)] bg-[rgba(12,23,31,0.94)] px-3 py-2 shadow-[0_8px_24px_rgba(0,0,0,0.45)]"
+                className="pointer-events-auto rounded-lg border border-[rgba(102,217,239,0.45)] bg-[rgba(12,23,31,0.94)] px-3 py-2 shadow-[0_8px_24px_rgba(0,0,0,0.45)]"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div>

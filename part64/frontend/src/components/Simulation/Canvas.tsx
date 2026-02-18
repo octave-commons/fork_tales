@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState } from "react";
+import { useRef, useEffect, useState, useCallback, useMemo } from "react";
 import type {
   SimulationState,
   Catalog,
@@ -6,6 +6,8 @@ import type {
   CrawlerGraph,
   TruthState,
 } from "../../types";
+import { runtimeBaseUrl } from "../../runtime/endpoints";
+import { GalaxyModelDock } from "./GalaxyModelDock";
 
 interface Props {
   simulation: SimulationState | null;
@@ -17,16 +19,39 @@ interface Props {
   compactHud?: boolean;
   interactive?: boolean;
   backgroundMode?: boolean;
+  particleDensity?: number;
+  particleScale?: number;
+  motionSpeed?: number;
+  mouseInfluence?: number;
+  layerDepth?: number;
+  backgroundWash?: number;
+  layerVisibility?: OverlayLayerVisibility;
   className?: string;
 }
 
 interface GraphWorldscreenState {
   url: string;
+  imageRef?: string;
   label: string;
   nodeKind: "file" | "crawler";
   resourceKind: GraphNodeResourceKind;
   view: GraphWorldscreenView;
   subtitle: string;
+  anchorRatioX?: number;
+  anchorRatioY?: number;
+  remoteFrameUrl?: string;
+  encounteredAt?: string;
+  sourceUrl?: string;
+  domain?: string;
+  titleText?: string;
+  statusText?: string;
+  contentTypeText?: string;
+  complianceText?: string;
+  discoveredAt?: string;
+  fetchedAt?: string;
+  summaryText?: string;
+  tagsText?: string;
+  labelsText?: string;
 }
 
 type GraphNodeResourceKind =
@@ -40,7 +65,7 @@ type GraphNodeResourceKind =
   | "video"
   | "unknown";
 
-type GraphWorldscreenView = "website" | "editor" | "video";
+type GraphWorldscreenView = "website" | "editor" | "video" | "metadata";
 
 type GraphNodeShape = "circle" | "square" | "diamond" | "triangle" | "hexagon";
 
@@ -60,6 +85,334 @@ interface EditorPreviewState {
   truncated: boolean;
 }
 
+interface WorldscreenPlacement {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  transformOrigin: string;
+}
+
+interface PresenceAccountEntry {
+  presence_id: string;
+  display_name: string;
+  handle: string;
+  avatar: string;
+  bio: string;
+  tags: string[];
+}
+
+interface ImageCommentEntry {
+  id: string;
+  image_ref: string;
+  presence_id: string;
+  comment: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  time: string;
+}
+
+type ComputeJobFilter = "all" | "llm" | "embedding" | "error" | "gpu" | "npu" | "cpu";
+
+interface ComputeJobInsightRow {
+  id: string;
+  atText: string;
+  tsMs: number;
+  kind: string;
+  op: string;
+  backend: string;
+  resource: string;
+  emitterPresenceId: string;
+  targetPresenceId: string;
+  model: string;
+  status: string;
+  latencyMs: number | null;
+  error: string;
+}
+
+interface ComputeJobInsightSummary {
+  total: number;
+  llm: number;
+  embedding: number;
+  ok: number;
+  error: number;
+  byResource: Record<string, number>;
+  byBackend: Record<string, number>;
+}
+
+const COMPUTE_JOB_FILTER_OPTIONS: Array<{ id: ComputeJobFilter; label: string }> = [
+  { id: "all", label: "all" },
+  { id: "llm", label: "llm" },
+  { id: "embedding", label: "embed" },
+  { id: "error", label: "error" },
+  { id: "gpu", label: "gpu" },
+  { id: "npu", label: "npu" },
+  { id: "cpu", label: "cpu" },
+];
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function normalizePresenceAccountEntries(payload: unknown): PresenceAccountEntry[] {
+  const root = asRecord(payload);
+  const entriesValue = root?.entries;
+  if (!Array.isArray(entriesValue)) {
+    return [];
+  }
+  const entries: PresenceAccountEntry[] = [];
+  for (const entry of entriesValue) {
+    const row = asRecord(entry);
+    if (!row) {
+      continue;
+    }
+    const presenceId = String(row.presence_id ?? "").trim();
+    if (!presenceId) {
+      continue;
+    }
+    const tagsValue = Array.isArray(row.tags) ? row.tags : [];
+    const tags = tagsValue
+      .map((item) => String(item ?? "").trim())
+      .filter((item) => item.length > 0);
+    entries.push({
+      presence_id: presenceId,
+      display_name: String(row.display_name ?? presenceId).trim() || presenceId,
+      handle: String(row.handle ?? presenceId).trim() || presenceId,
+      avatar: String(row.avatar ?? "").trim(),
+      bio: String(row.bio ?? "").trim(),
+      tags,
+    });
+  }
+  return entries;
+}
+
+function normalizeImageCommentEntries(payload: unknown): ImageCommentEntry[] {
+  const root = asRecord(payload);
+  const entriesValue = root?.entries;
+  if (!Array.isArray(entriesValue)) {
+    return [];
+  }
+  const entries: ImageCommentEntry[] = [];
+  for (const entry of entriesValue) {
+    const row = asRecord(entry);
+    if (!row) {
+      continue;
+    }
+    const id = String(row.id ?? "").trim();
+    const imageRef = String(row.image_ref ?? "").trim();
+    const presenceId = String(row.presence_id ?? "").trim();
+    const comment = String(row.comment ?? "").trim();
+    if (!id || !imageRef || !presenceId || !comment) {
+      continue;
+    }
+    entries.push({
+      id,
+      image_ref: imageRef,
+      presence_id: presenceId,
+      comment,
+      metadata: asRecord(row.metadata) ?? {},
+      created_at: String(row.created_at ?? row.time ?? "").trim(),
+      time: String(row.time ?? row.created_at ?? "").trim(),
+    });
+  }
+  return entries;
+}
+
+function worldscreenImageRef(worldscreen: GraphWorldscreenState): string {
+  const preferred = String(worldscreen.imageRef ?? "").trim();
+  if (preferred) {
+    return preferred;
+  }
+  const source = String(worldscreen.sourceUrl ?? "").trim();
+  if (source) {
+    return source;
+  }
+  return String(worldscreen.url ?? "").trim();
+}
+
+function errorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error) {
+    const message = error.message.trim();
+    if (message) {
+      return message;
+    }
+  }
+  return fallback;
+}
+
+function bufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    const chunk = bytes.subarray(offset, offset + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return window.btoa(binary);
+}
+
+async function fetchImagePayloadAsBase64(
+  worldscreen: GraphWorldscreenState,
+): Promise<{ base64: string; mime: string }> {
+  const candidates = [String(worldscreen.url ?? "").trim(), String(worldscreen.remoteFrameUrl ?? "").trim()]
+    .filter((value, index, rows) => value.length > 0 && rows.indexOf(value) === index);
+
+  for (const candidate of candidates) {
+    try {
+      const response = await fetch(candidate, {
+        method: "GET",
+        credentials: "same-origin",
+      });
+      if (!response.ok) {
+        continue;
+      }
+      const mime = String(response.headers.get("content-type") ?? "").trim().toLowerCase();
+      if (mime && !mime.startsWith("image/")) {
+        continue;
+      }
+      const buffer = await response.arrayBuffer();
+      if (buffer.byteLength <= 0) {
+        continue;
+      }
+      return {
+        base64: bufferToBase64(buffer),
+        mime: mime || "image/png",
+      };
+    } catch {
+      continue;
+    }
+  }
+
+  throw new Error("unable to read image bytes for commentary");
+}
+
+function presenceDisplayName(
+  accounts: PresenceAccountEntry[],
+  presenceId: string,
+): string {
+  const normalized = presenceId.trim();
+  if (!normalized) {
+    return "unknown";
+  }
+  const found = accounts.find((row) => row.presence_id === normalized);
+  if (found) {
+    return found.display_name || normalized;
+  }
+  return normalized;
+}
+
+function normalizeComputeJobInsightRows(payload: unknown): ComputeJobInsightRow[] {
+  if (!Array.isArray(payload)) {
+    return [];
+  }
+  const rows: ComputeJobInsightRow[] = [];
+  for (const item of payload) {
+    const row = asRecord(item);
+    if (!row) {
+      continue;
+    }
+    const id = String(row.id ?? "").trim();
+    if (!id) {
+      continue;
+    }
+
+    const atText = String(row.at ?? "").trim();
+    const tsNumber = Number(row.ts ?? 0);
+    const tsMs = Number.isFinite(tsNumber) && tsNumber > 0
+      ? (tsNumber > 10_000_000_000 ? tsNumber : tsNumber * 1000)
+      : (atText ? Date.parse(atText) : 0);
+    const backend = String(row.backend ?? "").trim().toLowerCase();
+    const resourceRaw = String(row.resource ?? "").trim().toLowerCase();
+    const inferredResource = resourceRaw
+      || (backend.includes("npu")
+        ? "npu"
+        : backend.includes("gpu") || backend.includes("vllm") || backend.includes("ollama")
+          ? "gpu"
+          : "cpu");
+    const latencyRaw = row.latency_ms;
+    let latencyMs: number | null = null;
+    if (latencyRaw !== undefined && latencyRaw !== null) {
+      const numeric = Number(latencyRaw);
+      if (Number.isFinite(numeric)) {
+        latencyMs = Math.max(0, numeric);
+      }
+    }
+
+    rows.push({
+      id,
+      atText,
+      tsMs: Number.isFinite(tsMs) && tsMs > 0 ? tsMs : 0,
+      kind: String(row.kind ?? "").trim().toLowerCase() || "unknown",
+      op: String(row.op ?? "").trim().toLowerCase(),
+      backend,
+      resource: inferredResource,
+      emitterPresenceId: String(row.emitter_presence_id ?? "").trim(),
+      targetPresenceId: String(row.target_presence_id ?? "").trim(),
+      model: String(row.model ?? "").trim(),
+      status: String(row.status ?? "").trim().toLowerCase() || "unknown",
+      latencyMs,
+      error: String(row.error ?? "").trim(),
+    });
+  }
+  rows.sort((a, b) => b.tsMs - a.tsMs);
+  return rows;
+}
+
+function summarizeComputeJobs(rows: ComputeJobInsightRow[]): ComputeJobInsightSummary {
+  const summary: ComputeJobInsightSummary = {
+    total: rows.length,
+    llm: 0,
+    embedding: 0,
+    ok: 0,
+    error: 0,
+    byResource: {},
+    byBackend: {},
+  };
+  for (const row of rows) {
+    const kind = row.kind;
+    if (kind === "llm") {
+      summary.llm += 1;
+    }
+    if (kind.includes("embed")) {
+      summary.embedding += 1;
+    }
+    if (row.status === "ok" || row.status === "success" || row.status === "cached") {
+      summary.ok += 1;
+    }
+    if (row.status === "error" || row.status === "failed" || row.status === "timeout") {
+      summary.error += 1;
+    }
+    const resourceKey = row.resource || "unknown";
+    summary.byResource[resourceKey] = (summary.byResource[resourceKey] ?? 0) + 1;
+    const backendKey = row.backend || "unknown";
+    summary.byBackend[backendKey] = (summary.byBackend[backendKey] ?? 0) + 1;
+  }
+  return summary;
+}
+
+function computeJobAgeLabel(tsMs: number): string {
+  if (!Number.isFinite(tsMs) || tsMs <= 0) {
+    return "now";
+  }
+  const deltaMs = Math.max(0, Date.now() - tsMs);
+  if (deltaMs < 1500) {
+    return "now";
+  }
+  const seconds = Math.round(deltaMs / 1000);
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) {
+    return `${minutes}m`;
+  }
+  const hours = Math.round(minutes / 60);
+  return `${hours}h`;
+}
+
 export type OverlayViewId =
   | "omni"
   | "presence"
@@ -69,6 +422,8 @@ export type OverlayViewId =
   | "truth-gate"
   | "logic"
   | "pain-field";
+
+type OverlayLayerVisibility = Partial<Record<Exclude<OverlayViewId, "omni">, boolean>>;
 
 interface OverlayViewOption {
   id: OverlayViewId;
@@ -210,6 +565,58 @@ function sourcePathFromNode(node: any): string {
   );
 }
 
+type FileNodeProvenanceKind = "workspace" | "archive" | "web" | "memory" | "synthetic";
+
+function fileNodeProvenanceKind(node: any): FileNodeProvenanceKind {
+  const sourceRelPath = String(node?.source_rel_path ?? "").trim();
+  if (sourceRelPath) {
+    return "workspace";
+  }
+  const archiveRelPath = String(node?.archived_rel_path ?? node?.archive_rel_path ?? "").trim();
+  if (archiveRelPath) {
+    return "archive";
+  }
+  const url = String(node?.url ?? node?.source_url ?? node?.sourceUrl ?? "").trim().toLowerCase();
+  if (url.startsWith("http://") || url.startsWith("https://")) {
+    return "web";
+  }
+  const vecCollection = String(node?.vecstore_collection ?? "").trim();
+  if (vecCollection) {
+    return "memory";
+  }
+  return "synthetic";
+}
+
+function fileNodeProvenanceLabel(kind: FileNodeProvenanceKind): string {
+  switch (kind) {
+    case "workspace":
+      return "workspace";
+    case "archive":
+      return "archive";
+    case "web":
+      return "web";
+    case "memory":
+      return "memory";
+    default:
+      return "derived";
+  }
+}
+
+function fileNodeProvenanceHue(kind: FileNodeProvenanceKind): number {
+  switch (kind) {
+    case "workspace":
+      return 154;
+    case "archive":
+      return 30;
+    case "web":
+      return 202;
+    case "memory":
+      return 278;
+    default:
+      return 56;
+  }
+}
+
 function classifyFileResourceKind(node: any): GraphNodeResourceKind {
   const kind = String(node?.kind ?? "").trim().toLowerCase();
   const sourcePath = sourcePathFromNode(node);
@@ -318,6 +725,9 @@ function worldscreenViewForNode(
   nodeKind: "file" | "crawler",
   resourceKind: GraphNodeResourceKind,
 ): GraphWorldscreenView {
+  if (resourceKind === "image") {
+    return "metadata";
+  }
   if (resourceKind === "video") {
     return "video";
   }
@@ -446,6 +856,17 @@ function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
+function clampValue(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+  return Math.max(min, Math.min(max, value));
+}
+
+function layerHueByIndex(index: number): number {
+  return (196 + index * 37) % 360;
+}
+
 function ratioFromMetric(value: number | undefined, fallback = 0.5): number {
   if (value === undefined || Number.isNaN(value)) {
     return fallback;
@@ -469,8 +890,157 @@ function shortPathLabel(path: string): string {
   return `${leaf.slice(0, 19)}...`;
 }
 
-function runtimeBaseUrl(): string {
-  return window.location.port === "5173" ? "http://127.0.0.1:8787" : "";
+function isRemoteHttpUrl(url: string): boolean {
+  const trimmed = url.trim().toLowerCase();
+  return trimmed.startsWith("http://") || trimmed.startsWith("https://");
+}
+
+function timestampLabel(value: unknown): string {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    const millis = value > 10_000_000_000 ? value : value * 1000;
+    const parsed = new Date(millis);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+  }
+
+  const text = String(value ?? "").trim();
+  if (!text) {
+    return "";
+  }
+
+  const numeric = Number(text);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    const millis = numeric > 10_000_000_000 ? numeric : numeric * 1000;
+    const parsed = new Date(millis);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+  }
+
+  const parsed = new Date(text);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toISOString();
+  }
+  return text;
+}
+
+function joinListValues(value: unknown): string {
+  if (!Array.isArray(value)) {
+    return "";
+  }
+  const flattened = value
+    .map((item) => String(item ?? "").trim())
+    .filter((item) => item.length > 0);
+  return flattened.join(", ");
+}
+
+function remoteFrameUrlForNode(
+  node: any,
+  worldscreenUrl: string,
+  resourceKind: GraphNodeResourceKind,
+): string {
+  const candidates = [
+    node?.crawler_frame_url,
+    node?.crawler_snapshot_url,
+    node?.snapshot_url,
+    node?.preview_url,
+    node?.thumbnail_url,
+    node?.thumb_url,
+    node?.image_url,
+  ];
+
+  for (const candidate of candidates) {
+    const value = String(candidate ?? "").trim();
+    if (isRemoteHttpUrl(value)) {
+      return value;
+    }
+  }
+
+  if (resourceKind === "image" && isRemoteHttpUrl(worldscreenUrl)) {
+    return worldscreenUrl;
+  }
+  return "";
+}
+
+function worldscreenMetadataRows(worldscreen: GraphWorldscreenState): Array<{ key: string; value: string }> {
+  const rows: Array<{ key: string; value: string }> = [
+    { key: "resource", value: resourceKindLabel(worldscreen.resourceKind) },
+    { key: "image-ref", value: String(worldscreen.imageRef ?? "") },
+    { key: "url", value: worldscreen.url },
+    { key: "domain", value: String(worldscreen.domain ?? "") },
+    { key: "title", value: String(worldscreen.titleText ?? "") },
+    { key: "status", value: String(worldscreen.statusText ?? "") },
+    { key: "content-type", value: String(worldscreen.contentTypeText ?? "") },
+    { key: "compliance", value: String(worldscreen.complianceText ?? "") },
+    { key: "source", value: String(worldscreen.sourceUrl ?? "") },
+    { key: "discovered", value: String(worldscreen.discoveredAt ?? "") },
+    { key: "fetched", value: String(worldscreen.fetchedAt ?? "") },
+    { key: "encountered", value: String(worldscreen.encounteredAt ?? "") },
+    { key: "summary", value: String(worldscreen.summaryText ?? "") },
+    { key: "tags", value: String(worldscreen.tagsText ?? "") },
+    { key: "labels", value: String(worldscreen.labelsText ?? "") },
+  ];
+
+  return rows.filter((row) => row.value.trim().length > 0);
+}
+
+function resolveWorldscreenPlacement(
+  worldscreen: GraphWorldscreenState,
+  container: HTMLDivElement | null,
+): WorldscreenPlacement {
+  const fallbackWidth = typeof window !== "undefined"
+    ? Math.max(620, Math.floor(window.innerWidth * 0.92))
+    : 960;
+  const fallbackHeight = typeof window !== "undefined"
+    ? Math.max(420, Math.floor(window.innerHeight * 0.72))
+    : 640;
+
+  const containerWidth = Math.max(320, container?.clientWidth ?? fallbackWidth);
+  const containerHeight = Math.max(220, container?.clientHeight ?? fallbackHeight);
+  const width = clampValue(Math.round(Math.min(containerWidth * 0.92, 780)), 340, Math.max(340, containerWidth - 18));
+  const height = clampValue(Math.round(Math.min(containerHeight * 0.68, 540)), 220, Math.max(220, containerHeight - 18));
+
+  const margin = 10;
+  const anchorRatioX = clamp01(
+    typeof worldscreen.anchorRatioX === "number" ? worldscreen.anchorRatioX : 0.84,
+  );
+  const anchorRatioY = clamp01(
+    typeof worldscreen.anchorRatioY === "number" ? worldscreen.anchorRatioY : 0.82,
+  );
+  const anchorX = anchorRatioX * containerWidth;
+  const anchorY = anchorRatioY * containerHeight;
+  const horizontalGap = clampValue(Math.round(width * 0.07), 20, 56);
+  const verticalGap = 18;
+
+  const preferRight = anchorX <= containerWidth * 0.5;
+  const preferBottom = anchorY <= containerHeight * 0.52;
+
+  let left = preferRight ? anchorX + horizontalGap : anchorX - width - horizontalGap;
+  let top = preferBottom ? anchorY + verticalGap : anchorY - height - verticalGap;
+
+  left = clampValue(left, margin, Math.max(margin, containerWidth - width - margin));
+  top = clampValue(top, margin, Math.max(margin, containerHeight - height - margin));
+
+  const ratioWithin = (value: number, start: number, span: number): string => {
+    if (value <= start) {
+      return "0%";
+    }
+    const end = start + Math.max(1, span);
+    if (value >= end) {
+      return "100%";
+    }
+    const ratio = ((value - start) / Math.max(1, span)) * 100;
+    return `${ratio.toFixed(2)}%`;
+  };
+
+  return {
+    left,
+    top,
+    width,
+    height,
+    transformOrigin: `${ratioWithin(anchorX, left, width)} ${ratioWithin(anchorY, top, height)}`,
+  };
 }
 
 function resolveWorldscreenUrl(
@@ -584,6 +1154,13 @@ export function SimulationCanvas({
   compactHud = false,
   interactive = true,
   backgroundMode = false,
+  particleDensity = 1,
+  particleScale = 1,
+  motionSpeed = 1,
+  mouseInfluence = 1,
+  layerDepth = 1,
+  backgroundWash = 0.58,
+  layerVisibility,
   className = "",
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -592,6 +1169,11 @@ export function SimulationCanvas({
   const containerRef = useRef<HTMLDivElement>(null);
   const simulationRef = useRef<SimulationState | null>(simulation);
   const catalogRef = useRef<Catalog | null>(catalog);
+  const particleDensityRef = useRef(clampValue(particleDensity, 0.08, 1));
+  const particleScaleRef = useRef(clampValue(particleScale, 0.5, 1.9));
+  const motionSpeedRef = useRef(clampValue(motionSpeed, 0.25, 2.2));
+  const mouseInfluenceRef = useRef(clampValue(mouseInfluence, 0, 2.5));
+  const layerDepthRef = useRef(clampValue(layerDepth, 0.35, 2.2));
   const [worldscreen, setWorldscreen] = useState<GraphWorldscreenState | null>(null);
   const [editorPreview, setEditorPreview] = useState<EditorPreviewState>({
     status: "idle",
@@ -600,6 +1182,245 @@ export function SimulationCanvas({
     truncated: false,
   });
   const [overlayView, setOverlayView] = useState<OverlayViewId>(defaultOverlayView);
+  const [presenceAccounts, setPresenceAccounts] = useState<PresenceAccountEntry[]>([]);
+  const [presenceAccountId, setPresenceAccountId] = useState("witness_thread");
+  const [imageComments, setImageComments] = useState<ImageCommentEntry[]>([]);
+  const [imageCommentPrompt, setImageCommentPrompt] = useState(
+    "Describe the image evidence and one next action.",
+  );
+  const [imageCommentDraft, setImageCommentDraft] = useState("");
+  const [imageCommentsLoading, setImageCommentsLoading] = useState(false);
+  const [imageCommentBusy, setImageCommentBusy] = useState(false);
+  const [imageCommentError, setImageCommentError] = useState("");
+  const [modelDockOpen, setModelDockOpen] = useState(false);
+  const [computeJobFilter, setComputeJobFilter] = useState<ComputeJobFilter>("all");
+  const [computePanelCollapsed, setComputePanelCollapsed] = useState(false);
+  const renderParticleField = !(!interactive && compactHud);
+
+  const computeJobInsights = useMemo(() => {
+    const simulationRows = normalizeComputeJobInsightRows(simulation?.presence_dynamics?.compute_jobs);
+    const runtimeRows = normalizeComputeJobInsightRows(catalog?.presence_runtime?.compute_jobs);
+    const sourceRows = simulationRows.length > 0 ? simulationRows : runtimeRows;
+    const dedupedById = new Map<string, ComputeJobInsightRow>();
+    for (const row of sourceRows) {
+      if (!dedupedById.has(row.id)) {
+        dedupedById.set(row.id, row);
+      }
+    }
+    const rows = Array.from(dedupedById.values()).sort((a, b) => b.tsMs - a.tsMs);
+    const summary = summarizeComputeJobs(rows);
+    const filtered = rows.filter((row) => {
+      if (computeJobFilter === "all") {
+        return true;
+      }
+      if (computeJobFilter === "llm") {
+        return row.kind === "llm";
+      }
+      if (computeJobFilter === "embedding") {
+        return row.kind.includes("embed");
+      }
+      if (computeJobFilter === "error") {
+        return row.status === "error" || row.status === "failed" || row.status === "timeout";
+      }
+      if (computeJobFilter === "gpu" || computeJobFilter === "npu" || computeJobFilter === "cpu") {
+        return row.resource === computeJobFilter;
+      }
+      return true;
+    });
+
+    const heartbeat = asRecord((catalog?.presence_runtime as Record<string, unknown> | undefined)?.resource_heartbeat);
+    const devices = asRecord(heartbeat?.devices);
+    const gpuRows = Object.entries(devices ?? {})
+      .filter(([key]) => key.toLowerCase().startsWith("gpu"))
+      .map(([, value]) => asRecord(value))
+      .filter((row): row is Record<string, unknown> => Boolean(row));
+    const gpuAvailability = gpuRows.length > 0
+      ? clamp01(1 - (gpuRows.reduce((sum, row) => sum + clamp01(Number(row.utilization ?? 0) / 100), 0) / gpuRows.length))
+      : 0;
+
+    return {
+      rows,
+      summary,
+      filtered,
+      gpuAvailability,
+      total180s: Number(simulation?.presence_dynamics?.compute_jobs_180s ?? catalog?.presence_runtime?.compute_jobs_180s ?? rows.length),
+    };
+  }, [catalog, computeJobFilter, simulation]);
+
+  const loadPresenceAccounts = useCallback(
+    async (signal?: AbortSignal): Promise<PresenceAccountEntry[]> => {
+      const response = await fetch(`${runtimeBaseUrl()}/api/presence/accounts?limit=120`, {
+        method: "GET",
+        credentials: "same-origin",
+        signal,
+      });
+      if (!response.ok) {
+        throw new Error(`presence account fetch failed (${response.status})`);
+      }
+      const payload = await response.json();
+      const entries = normalizePresenceAccountEntries(payload);
+      setPresenceAccounts(entries);
+      return entries;
+    },
+    [],
+  );
+
+  const loadImageComments = useCallback(
+    async (imageRef: string, signal?: AbortSignal): Promise<ImageCommentEntry[]> => {
+      const target = imageRef.trim();
+      if (!target) {
+        setImageComments([]);
+        return [];
+      }
+      const query = encodeURIComponent(target);
+      const response = await fetch(
+        `${runtimeBaseUrl()}/api/image/comments?image_ref=${query}&limit=120`,
+        {
+          method: "GET",
+          credentials: "same-origin",
+          signal,
+        },
+      );
+      if (!response.ok) {
+        throw new Error(`image comment fetch failed (${response.status})`);
+      }
+      const payload = await response.json();
+      const entries = normalizeImageCommentEntries(payload);
+      setImageComments(entries);
+      return entries;
+    },
+    [],
+  );
+
+  const ensurePresenceAccount = useCallback(
+    async (presenceId: string): Promise<string> => {
+      const chosen = presenceId.trim();
+      if (!chosen) {
+        throw new Error("presence account id is required");
+      }
+      const displayName = chosen.replace(/[_-]+/g, " ").trim() || chosen;
+      const response = await fetch(`${runtimeBaseUrl()}/api/presence/accounts/upsert`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          presence_id: chosen,
+          display_name: displayName,
+          handle: chosen,
+          avatar: "",
+          bio: "",
+          tags: ["image-commentary"],
+        }),
+      });
+      const payload = asRecord(await response.json().catch(() => null));
+      if (!response.ok || payload?.ok !== true) {
+        throw new Error(String(payload?.error ?? `presence upsert failed (${response.status})`));
+      }
+      await loadPresenceAccounts();
+      return chosen;
+    },
+    [loadPresenceAccounts],
+  );
+
+  const submitGeneratedImageCommentary = useCallback(async () => {
+    if (!worldscreen || worldscreen.resourceKind !== "image") {
+      return;
+    }
+    const imageRef = worldscreenImageRef(worldscreen);
+    if (!imageRef) {
+      setImageCommentError("image reference unavailable for commentary");
+      return;
+    }
+    setImageCommentBusy(true);
+    setImageCommentError("");
+    try {
+      const presenceId = await ensurePresenceAccount(presenceAccountId);
+      const imagePayload = await fetchImagePayloadAsBase64(worldscreen);
+      const response = await fetch(`${runtimeBaseUrl()}/api/image/commentary`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          image_base64: imagePayload.base64,
+          image_ref: imageRef,
+          mime: imagePayload.mime,
+          presence_id: presenceId,
+          prompt: imageCommentPrompt,
+          persist: true,
+        }),
+      });
+      const payload = asRecord(await response.json().catch(() => null));
+      if (!response.ok || payload?.ok !== true) {
+        throw new Error(String(payload?.error ?? `image commentary failed (${response.status})`));
+      }
+      const commentary = String(payload?.commentary ?? "").trim();
+      if (commentary) {
+        setImageCommentDraft(commentary);
+      }
+      await loadImageComments(imageRef);
+    } catch (error: unknown) {
+      setImageCommentError(errorMessage(error, "unable to generate image commentary"));
+    } finally {
+      setImageCommentBusy(false);
+    }
+  }, [
+    ensurePresenceAccount,
+    imageCommentPrompt,
+    loadImageComments,
+    presenceAccountId,
+    worldscreen,
+  ]);
+
+  const submitManualImageComment = useCallback(async () => {
+    if (!worldscreen || worldscreen.resourceKind !== "image") {
+      return;
+    }
+    const imageRef = worldscreenImageRef(worldscreen);
+    if (!imageRef) {
+      setImageCommentError("image reference unavailable for comment posting");
+      return;
+    }
+    const commentText = imageCommentDraft.trim();
+    if (!commentText) {
+      setImageCommentError("comment text is empty");
+      return;
+    }
+
+    setImageCommentBusy(true);
+    setImageCommentError("");
+    try {
+      const presenceId = await ensurePresenceAccount(presenceAccountId);
+      const response = await fetch(`${runtimeBaseUrl()}/api/image/comments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          image_ref: imageRef,
+          presence_id: presenceId,
+          comment: commentText,
+          metadata: {
+            source: "manual",
+          },
+        }),
+      });
+      const payload = asRecord(await response.json().catch(() => null));
+      if (!response.ok || payload?.ok !== true) {
+        throw new Error(String(payload?.error ?? `image comment create failed (${response.status})`));
+      }
+      setImageCommentDraft("");
+      await loadImageComments(imageRef);
+    } catch (error: unknown) {
+      setImageCommentError(errorMessage(error, "unable to save image comment"));
+    } finally {
+      setImageCommentBusy(false);
+    }
+  }, [
+    ensurePresenceAccount,
+    imageCommentDraft,
+    loadImageComments,
+    presenceAccountId,
+    worldscreen,
+  ]);
 
   useEffect(() => {
     if (!overlayViewLocked) {
@@ -615,6 +1436,26 @@ export function SimulationCanvas({
   useEffect(() => {
     catalogRef.current = catalog;
   }, [catalog]);
+
+  useEffect(() => {
+    particleDensityRef.current = clampValue(particleDensity, 0.08, 1);
+  }, [particleDensity]);
+
+  useEffect(() => {
+    particleScaleRef.current = clampValue(particleScale, 0.5, 1.9);
+  }, [particleScale]);
+
+  useEffect(() => {
+    motionSpeedRef.current = clampValue(motionSpeed, 0.25, 2.2);
+  }, [motionSpeed]);
+
+  useEffect(() => {
+    mouseInfluenceRef.current = clampValue(mouseInfluence, 0, 2.5);
+  }, [mouseInfluence]);
+
+  useEffect(() => {
+    layerDepthRef.current = clampValue(layerDepth, 0.35, 2.2);
+  }, [layerDepth]);
 
   useEffect(() => {
     if (!worldscreen) {
@@ -700,39 +1541,230 @@ export function SimulationCanvas({
   }, [worldscreen]);
 
   useEffect(() => {
+    if (!worldscreen || worldscreen.resourceKind !== "image") {
+      setImageComments([]);
+      setImageCommentError("");
+      setImageCommentsLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    const imageRef = worldscreenImageRef(worldscreen);
+    setImageCommentsLoading(true);
+    setImageCommentError("");
+
+    void Promise.all([
+      loadPresenceAccounts(controller.signal),
+      loadImageComments(imageRef, controller.signal),
+    ])
+      .then(([accounts]) => {
+        setPresenceAccountId((current) => {
+          const selected = current.trim();
+          if (selected) {
+            return selected;
+          }
+          return accounts[0]?.presence_id || "witness_thread";
+        });
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        setImageCommentError(errorMessage(error, "unable to load image comments"));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setImageCommentsLoading(false);
+        }
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [loadImageComments, loadPresenceAccounts, worldscreen]);
+
+  useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    if (!renderParticleField) {
+      return;
+    }
     const gl = canvas.getContext("webgl", { alpha: false, antialias: true });
     if (!gl) return;
 
     const vertexSrc = `
-      attribute vec2 aPos;
+      attribute vec3 aPos;
       attribute float aSize;
       attribute vec3 aColor;
+      attribute float aSeed;
       uniform float uTime;
       uniform vec2 uMouse;
       uniform float uInfluence;
+      uniform float uMotionRate;
+      uniform float uParticleScale;
+      uniform float uBloom;
+      uniform mat4 uProjection;
+      uniform mat4 uView;
       varying vec3 vColor;
+      varying float vDepth;
+      varying float vSpark;
+
       void main() {
-        vec2 d = aPos - uMouse;
-        float dist = length(d);
-        float force = max(0.0, (1.0 - dist * 3.0) * uInfluence);
-        vec2 offset = normalize(d) * force * 0.1;
-        float wobble = sin((aPos.x * 4.0) + (aPos.y * 2.0) + (uTime * 0.0025)) * 0.02;
-        gl_Position = vec4(aPos.x + offset.x, aPos.y + wobble + offset.y, 0.0, 1.0);
-        gl_PointSize = aSize + force * 10.0;
-        vColor = aColor + vec3(force * 0.5);
+        vec3 p = aPos;
+
+        vec4 clip = uProjection * uView * vec4(p, 1.0);
+        vec2 ndc = clip.xy / max(0.0001, clip.w);
+        vec2 away = ndc - uMouse;
+        float force = max(0.0, (1.0 - (length(away) * 2.25)) * uInfluence);
+
+        gl_Position = clip;
+        float perspective = clamp(1.62 / max(0.16, clip.w), 0.36, 2.95);
+        float seedPulse = 1.35 + fract(aSeed * 71.0) * 1.55;
+        float flicker = 0.74 + fract(aSeed * 96.0) * 0.26;
+        float pointSize = ((aSize * seedPulse * perspective) + (force * 16.0)) * uParticleScale * (1.04 + flicker * 0.18);
+        gl_PointSize = max(2.0, pointSize);
+        vDepth = clamp((clip.z / clip.w) * 0.5 + 0.5, 0.0, 1.0);
+        vSpark = flicker * (1.0 - vDepth);
+        vColor = aColor + vec3(force * 0.3 + uBloom * 0.06);
       }
     `;
 
-    const fragmentSrc = "precision mediump float; varying vec3 vColor; void main() { vec2 c = gl_PointCoord - vec2(0.5, 0.5); float d = dot(c, c); if (d > 0.25) discard; float soft = smoothstep(0.25, 0.0, d); float core = smoothstep(0.08, 0.0, d); vec3 color = min(vec3(1.0), vColor + vec3(core * 0.45)); float alpha = min(1.0, soft * 0.9 + core * 0.45); gl_FragColor = vec4(color, alpha); }";
+    const fragmentSrc = `
+      precision mediump float;
+      varying vec3 vColor;
+      varying float vDepth;
+      varying float vSpark;
+      uniform vec3 uFogColor;
+      uniform float uBloom;
 
-    const compile = (type: number, source: string) => {
-        const shader = gl.createShader(type);
-        if(!shader) return null;
-        gl.shaderSource(shader, source);
-        gl.compileShader(shader);
-        return shader;
+      void main() {
+        vec2 c = gl_PointCoord - vec2(0.5, 0.5);
+        float d = dot(c, c);
+        if (d > 0.25) {
+          discard;
+        }
+        float edge = smoothstep(0.25, 0.0, d);
+        float core = smoothstep(0.09, 0.0, d);
+        float ring = smoothstep(0.19, 0.11, sqrt(d));
+        vec3 depthTint = mix(vColor, uFogColor, pow(vDepth, 1.5) * (0.58 + uBloom * 0.2));
+        vec3 sparkle = vec3(vSpark * (0.05 + core * 0.22));
+        vec3 color = depthTint
+          + vec3(core * (0.58 + uBloom * 0.36))
+          + vec3(ring * (0.1 + uBloom * 0.08))
+          + sparkle;
+        float alpha = clamp((edge * (0.74 + uBloom * 0.26)) + (core * (0.56 + uBloom * 0.24)), 0.0, 1.0);
+        gl_FragColor = vec4(min(color, vec3(1.0)), alpha);
+      }
+    `;
+
+    const compile = (type: number, source: string): WebGLShader | null => {
+      const shader = gl.createShader(type);
+      if (!shader) return null;
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        gl.deleteShader(shader);
+        return null;
+      }
+      return shader;
+    };
+
+    const perspective = (
+      out: Float32Array,
+      fovy: number,
+      aspect: number,
+      near: number,
+      far: number,
+    ) => {
+      const f = 1.0 / Math.tan(fovy / 2.0);
+      out[0] = f / aspect;
+      out[1] = 0;
+      out[2] = 0;
+      out[3] = 0;
+      out[4] = 0;
+      out[5] = f;
+      out[6] = 0;
+      out[7] = 0;
+      out[8] = 0;
+      out[9] = 0;
+      out[10] = (far + near) / (near - far);
+      out[11] = -1;
+      out[12] = 0;
+      out[13] = 0;
+      out[14] = (2 * far * near) / (near - far);
+      out[15] = 0;
+    };
+
+    const lookAt = (
+      out: Float32Array,
+      eyeX: number,
+      eyeY: number,
+      eyeZ: number,
+      targetX: number,
+      targetY: number,
+      targetZ: number,
+      upX: number,
+      upY: number,
+      upZ: number,
+    ) => {
+      let z0 = eyeX - targetX;
+      let z1 = eyeY - targetY;
+      let z2 = eyeZ - targetZ;
+      let len = Math.hypot(z0, z1, z2);
+      if (len < 0.000001) {
+        z2 = 1;
+        len = 1;
+      }
+      z0 /= len;
+      z1 /= len;
+      z2 /= len;
+
+      let x0 = (upY * z2) - (upZ * z1);
+      let x1 = (upZ * z0) - (upX * z2);
+      let x2 = (upX * z1) - (upY * z0);
+      len = Math.hypot(x0, x1, x2);
+      if (len < 0.000001) {
+        x0 = 1;
+        x1 = 0;
+        x2 = 0;
+        len = 1;
+      }
+      x0 /= len;
+      x1 /= len;
+      x2 /= len;
+
+      const y0 = (z1 * x2) - (z2 * x1);
+      const y1 = (z2 * x0) - (z0 * x2);
+      const y2 = (z0 * x1) - (z1 * x0);
+
+      out[0] = x0;
+      out[1] = y0;
+      out[2] = z0;
+      out[3] = 0;
+      out[4] = x1;
+      out[5] = y1;
+      out[6] = z1;
+      out[7] = 0;
+      out[8] = x2;
+      out[9] = y2;
+      out[10] = z2;
+      out[11] = 0;
+      out[12] = -((x0 * eyeX) + (x1 * eyeY) + (x2 * eyeZ));
+      out[13] = -((y0 * eyeX) + (y1 * eyeY) + (y2 * eyeZ));
+      out[14] = -((z0 * eyeX) + (z1 * eyeY) + (z2 * eyeZ));
+      out[15] = 1;
+    };
+
+    const resolveDepth = (point: { x: number; y: number; size: number; z?: number }, idx: number): number => {
+      const explicit = Number(point.z);
+      if (Number.isFinite(explicit)) {
+        return Math.max(-1, Math.min(1, explicit));
+      }
+      const noise = Math.sin((point.x * 15.37) + (point.y * 27.91) + (idx * 0.913)) * 43758.5453123;
+      const layer = (noise - Math.floor(noise)) * 2 - 1;
+      const radial = Math.min(1, Math.hypot(point.x, point.y));
+      const spread = 0.88 - (radial * 0.3);
+      return layer * spread;
     };
 
     const vs = compile(gl.VERTEX_SHADER, vertexSrc);
@@ -740,22 +1772,47 @@ export function SimulationCanvas({
     if (!vs || !fs) return;
 
     const program = gl.createProgram();
-    if(!program) return;
+    if (!program) return;
     gl.attachShader(program, vs);
     gl.attachShader(program, fs);
     gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      gl.deleteProgram(program);
+      gl.deleteShader(vs);
+      gl.deleteShader(fs);
+      return;
+    }
 
     const posBuffer = gl.createBuffer();
     const sizeBuffer = gl.createBuffer();
     const colorBuffer = gl.createBuffer();
+    const seedBuffer = gl.createBuffer();
+    if (!posBuffer || !sizeBuffer || !colorBuffer || !seedBuffer) {
+      gl.deleteProgram(program);
+      gl.deleteShader(vs);
+      gl.deleteShader(fs);
+      return;
+    }
 
     const locPos = gl.getAttribLocation(program, "aPos");
     const locSize = gl.getAttribLocation(program, "aSize");
     const locColor = gl.getAttribLocation(program, "aColor");
+    const locSeed = gl.getAttribLocation(program, "aSeed");
     const locTime = gl.getUniformLocation(program, "uTime");
     const locMouse = gl.getUniformLocation(program, "uMouse");
     const locInfluence = gl.getUniformLocation(program, "uInfluence");
-    const setProgram = gl.useProgram.bind(gl);
+    const locMotionRate = gl.getUniformLocation(program, "uMotionRate");
+    const locParticleScale = gl.getUniformLocation(program, "uParticleScale");
+    const locBloom = gl.getUniformLocation(program, "uBloom");
+    const locFogColor = gl.getUniformLocation(program, "uFogColor");
+    const locProjection = gl.getUniformLocation(program, "uProjection");
+    const locView = gl.getUniformLocation(program, "uView");
+    const activateProgram = gl.useProgram.bind(gl);
+
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+    gl.disable(gl.DEPTH_TEST);
+    gl.clearDepth(1);
 
     let count = 0;
     let capacity = 0;
@@ -765,199 +1822,328 @@ export function SimulationCanvas({
     let targetSizes = new Float32Array(0);
     let currentColors = new Float32Array(0);
     let targetColors = new Float32Array(0);
+    let currentSeeds = new Float32Array(0);
+    let targetSeeds = new Float32Array(0);
     let lastTick = 0;
     let rafId = 0;
     let viewportWidth = 0;
     let viewportHeight = 0;
     let mouseX = 0;
     let mouseY = 0;
+    let cameraMouseX = 0;
+    let cameraMouseY = 0;
     let influence = 0;
+    let scenePulse = 0.26;
+    let scenePulseTarget = 0.26;
+    let dynamicCount = 0;
+    let ambientCount = 0;
+    let ambientDirty = true;
+    const projectionMatrix = new Float32Array(16);
+    const viewMatrix = new Float32Array(16);
 
-    const tracerCanvas = document.createElement("canvas");
-    tracerCanvas.style.position = "absolute";
-    tracerCanvas.style.inset = "0";
-    tracerCanvas.style.pointerEvents = "none";
-    containerRef.current?.appendChild(tracerCanvas);
-    const ctxTracer = tracerCanvas.getContext("2d");
-    let tracers: Array<{x: number, y: number, prevX: number, prevY: number, life: number}> = [];
+    const randomNoise = (seed: number): number => {
+      const value = Math.sin(seed * 12.9898 + 78.233) * 43758.5453123;
+      return value - Math.floor(value);
+    };
+
+    const rebuildAmbientLayer = () => {
+      if (ambientCount <= 0) {
+        return;
+      }
+      for (let i = 0; i < ambientCount; i += 1) {
+        const n0 = randomNoise(i + 1.73);
+        const n1 = randomNoise(i + 19.21);
+        const n2 = randomNoise(i + 64.44);
+        const n3 = randomNoise(i + 92.18);
+        const n4 = randomNoise(i + 133.54);
+        const theta = n0 * Math.PI * 2;
+        const phi = Math.acos((n1 * 2) - 1);
+        const radius = 0.66 + (n2 * n2) * 1.48;
+        const x = Math.sin(phi) * Math.cos(theta) * radius;
+        const y = Math.cos(phi) * radius * (0.72 + n3 * 0.46);
+        const z = Math.sin(phi) * Math.sin(theta) * radius;
+        targetPositions[i * 3] = x;
+        targetPositions[(i * 3) + 1] = y;
+        targetPositions[(i * 3) + 2] = z;
+        targetSizes[i] = 0.72 + n4 * 1.55;
+        targetColors[i * 3] = 0.12 + n2 * 0.2;
+        targetColors[(i * 3) + 1] = 0.18 + n3 * 0.26;
+        targetColors[(i * 3) + 2] = 0.26 + n4 * 0.34;
+        targetSeeds[i] = ((i + 1) * 0.61803398875) % 1;
+        currentPositions[i * 3] = targetPositions[i * 3];
+        currentPositions[(i * 3) + 1] = targetPositions[(i * 3) + 1];
+        currentPositions[(i * 3) + 2] = targetPositions[(i * 3) + 2];
+        currentSizes[i] = targetSizes[i];
+        currentColors[i * 3] = targetColors[i * 3];
+        currentColors[(i * 3) + 1] = targetColors[(i * 3) + 1];
+        currentColors[(i * 3) + 2] = targetColors[(i * 3) + 2];
+        currentSeeds[i] = targetSeeds[i];
+      }
+    };
 
     const ensureCapacity = (pointCount: number) => {
-        if (pointCount <= capacity) return;
-        capacity = Math.max(pointCount, capacity * 2, 64);
-        currentPositions = new Float32Array(capacity * 2);
-        targetPositions = new Float32Array(capacity * 2);
-        currentSizes = new Float32Array(capacity);
-        targetSizes = new Float32Array(capacity);
-        currentColors = new Float32Array(capacity * 3);
-        targetColors = new Float32Array(capacity * 3);
-        gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, currentPositions.byteLength, gl.DYNAMIC_DRAW);
-        gl.bindBuffer(gl.ARRAY_BUFFER, sizeBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, currentSizes.byteLength, gl.DYNAMIC_DRAW);
-        gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, currentColors.byteLength, gl.DYNAMIC_DRAW);
+      if (pointCount <= capacity) return;
+      capacity = Math.max(pointCount, capacity * 2, 64);
+      currentPositions = new Float32Array(capacity * 3);
+      targetPositions = new Float32Array(capacity * 3);
+      currentSizes = new Float32Array(capacity);
+      targetSizes = new Float32Array(capacity);
+      currentColors = new Float32Array(capacity * 3);
+      targetColors = new Float32Array(capacity * 3);
+      currentSeeds = new Float32Array(capacity);
+      targetSeeds = new Float32Array(capacity);
+      gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, currentPositions.byteLength, gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, sizeBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, currentSizes.byteLength, gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, currentColors.byteLength, gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, seedBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, currentSeeds.byteLength, gl.DYNAMIC_DRAW);
     };
 
     const draw = (ts: number) => {
-        const delta = lastTick > 0 ? Math.min(64, ts - lastTick) : 16;
-        lastTick = ts;
-        const blend = Math.min(1, (delta / 1000) * 8);
-        for(let i=0; i<count*2; i++) currentPositions[i] += (targetPositions[i] - currentPositions[i]) * blend;
-        for(let i=0; i<count; i++) currentSizes[i] += (targetSizes[i] - currentSizes[i]) * blend;
-        for(let i=0; i<count*3; i++) currentColors[i] += (targetColors[i] - currentColors[i]) * blend;
+      lastTick = ts;
+      for (let i = 0; i < count * 3; i += 1) {
+        currentPositions[i] = targetPositions[i];
+      }
+      for (let i = 0; i < count; i += 1) {
+        currentSizes[i] = targetSizes[i];
+      }
+      for (let i = 0; i < count * 3; i += 1) {
+        currentColors[i] = targetColors[i];
+      }
+      for (let i = 0; i < count; i += 1) {
+        currentSeeds[i] = targetSeeds[i];
+      }
+      cameraMouseX += (mouseX - cameraMouseX) * 0.08;
+      cameraMouseY += (mouseY - cameraMouseY) * 0.08;
+      scenePulse += (scenePulseTarget - scenePulse) * 0.06;
 
-        const dpr = window.devicePixelRatio || 1;
-        const rect = canvas.getBoundingClientRect();
-        const nextWidth = Math.max(1, Math.floor(rect.width * dpr));
-        const nextHeight = Math.max(1, Math.floor(rect.height * dpr));
-        if (nextWidth !== viewportWidth || nextHeight !== viewportHeight) {
-            viewportWidth = nextWidth;
-            viewportHeight = nextHeight;
-            canvas.width = viewportWidth;
-            canvas.height = viewportHeight;
-            tracerCanvas.width = viewportWidth;
-            tracerCanvas.height = viewportHeight;
-        }
-        gl.viewport(0, 0, viewportWidth, viewportHeight);
-        gl.clearColor(0.016, 0.024, 0.04, 1);
-        gl.clear(gl.COLOR_BUFFER_BIT);
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      const nextWidth = Math.max(1, Math.floor(rect.width * dpr));
+      const nextHeight = Math.max(1, Math.floor(rect.height * dpr));
+      if (nextWidth !== viewportWidth || nextHeight !== viewportHeight) {
+        viewportWidth = nextWidth;
+        viewportHeight = nextHeight;
+        canvas.width = viewportWidth;
+        canvas.height = viewportHeight;
+      }
 
-        if(count > 0) {
-            gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
-            gl.bufferSubData(gl.ARRAY_BUFFER, 0, currentPositions.subarray(0, count*2));
-            gl.bindBuffer(gl.ARRAY_BUFFER, sizeBuffer);
-            gl.bufferSubData(gl.ARRAY_BUFFER, 0, currentSizes.subarray(0, count));
-            gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
-            gl.bufferSubData(gl.ARRAY_BUFFER, 0, currentColors.subarray(0, count*3));
-            setProgram(program);
-            gl.uniform1f(locTime, ts || 0);
-            gl.uniform2f(locMouse, mouseX, mouseY);
-            gl.uniform1f(locInfluence, influence);
-            gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
-            gl.enableVertexAttribArray(locPos);
-            gl.vertexAttribPointer(locPos, 2, gl.FLOAT, false, 0, 0);
-            gl.bindBuffer(gl.ARRAY_BUFFER, sizeBuffer);
-            gl.enableVertexAttribArray(locSize);
-            gl.vertexAttribPointer(locSize, 1, gl.FLOAT, false, 0, 0);
-            gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
-            gl.enableVertexAttribArray(locColor);
-            gl.vertexAttribPointer(locColor, 3, gl.FLOAT, false, 0, 0);
-            gl.drawArrays(gl.POINTS, 0, count);
-        }
+      gl.viewport(0, 0, viewportWidth, viewportHeight);
+      const fogR = 0.008 + scenePulse * 0.026;
+      const fogG = 0.026 + scenePulse * 0.048;
+      const fogB = 0.044 + scenePulse * 0.082;
+      gl.clearColor(fogR, fogG, fogB, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-        if(ctxTracer) {
-            ctxTracer.clearRect(0, 0, viewportWidth, viewportHeight);
-            ctxTracer.globalCompositeOperation = "screen";
-            ctxTracer.lineWidth = 1.25;
-            tracers.forEach(t => {
-                t.life -= 0.01;
-                ctxTracer.strokeStyle = "rgba(210, 235, 255, " + (t.life * 0.42) + ")";
-                ctxTracer.beginPath();
-                ctxTracer.moveTo((t.x+1)/2 * viewportWidth, (1-(t.y+1)/2) * viewportHeight);
-                ctxTracer.lineTo((t.prevX+1)/2 * viewportWidth, (1-(t.prevY+1)/2) * viewportHeight);
-                ctxTracer.stroke();
-            });
-            tracers = tracers.filter(t => t.life > 0);
-            if(count > 0 && Math.random() < 0.18) {
-                const idx = Math.floor(Math.random() * count);
-                tracers.push({
-                    x: currentPositions[idx*2],
-                    y: currentPositions[idx*2+1],
-                    prevX: currentPositions[idx*2] - (Math.random()-0.5)*0.1,
-                    prevY: currentPositions[idx*2+1] - (Math.random()-0.5)*0.1,
-                    life: 1.0
-                });
-                if(tracers.length > 200) tracers.shift();
-            }
-        }
-        rafId = requestAnimationFrame(draw);
+      if (count > 0) {
+        const motionRate = motionSpeedRef.current;
+        const particlePointScale = particleScaleRef.current;
+        const pointerInfluence = mouseInfluenceRef.current;
+        const bloom = Math.min(1, 0.22 + scenePulse * 0.72 + influence * 0.14);
+        const aspect = viewportWidth / Math.max(1, viewportHeight);
+        perspective(projectionMatrix, (58 * Math.PI) / 180, aspect, 0.08, 24);
+
+        const radius = (2.18 + Math.min(1.36, count / 1520)) - scenePulse * 0.24;
+        const eyeX = cameraMouseX * (0.18 + scenePulse * 0.12);
+        const eyeY = 0.26 + (cameraMouseY * 0.22);
+        const eyeZ = radius;
+        const targetX = cameraMouseX * 0.24;
+        const targetY = cameraMouseY * 0.14;
+        lookAt(viewMatrix, eyeX, eyeY, eyeZ, targetX, targetY, 0, 0, 1, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
+        gl.bufferSubData(gl.ARRAY_BUFFER, 0, currentPositions.subarray(0, count * 3));
+        gl.bindBuffer(gl.ARRAY_BUFFER, sizeBuffer);
+        gl.bufferSubData(gl.ARRAY_BUFFER, 0, currentSizes.subarray(0, count));
+        gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+        gl.bufferSubData(gl.ARRAY_BUFFER, 0, currentColors.subarray(0, count * 3));
+        gl.bindBuffer(gl.ARRAY_BUFFER, seedBuffer);
+        gl.bufferSubData(gl.ARRAY_BUFFER, 0, currentSeeds.subarray(0, count));
+
+        activateProgram(program);
+        gl.uniform1f(locTime, ts || 0);
+        gl.uniform2f(locMouse, cameraMouseX, cameraMouseY);
+        gl.uniform1f(locInfluence, influence * pointerInfluence);
+        gl.uniform1f(locMotionRate, motionRate);
+        gl.uniform1f(locParticleScale, particlePointScale);
+        gl.uniform1f(locBloom, bloom);
+        gl.uniform3f(locFogColor, fogR, fogG, fogB);
+        gl.uniformMatrix4fv(locProjection, false, projectionMatrix);
+        gl.uniformMatrix4fv(locView, false, viewMatrix);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
+        gl.enableVertexAttribArray(locPos);
+        gl.vertexAttribPointer(locPos, 3, gl.FLOAT, false, 0, 0);
+        gl.bindBuffer(gl.ARRAY_BUFFER, sizeBuffer);
+        gl.enableVertexAttribArray(locSize);
+        gl.vertexAttribPointer(locSize, 1, gl.FLOAT, false, 0, 0);
+        gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+        gl.enableVertexAttribArray(locColor);
+        gl.vertexAttribPointer(locColor, 3, gl.FLOAT, false, 0, 0);
+        gl.bindBuffer(gl.ARRAY_BUFFER, seedBuffer);
+        gl.enableVertexAttribArray(locSeed);
+        gl.vertexAttribPointer(locSeed, 1, gl.FLOAT, false, 0, 0);
+
+        gl.drawArrays(gl.POINTS, 0, count);
+      }
+
+      rafId = requestAnimationFrame(draw);
     };
 
     const onMove = (e: MouseEvent) => {
-        const rect = canvas.getBoundingClientRect();
-        mouseX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-        mouseY = -(((e.clientY - rect.top) / rect.height) * 2 - 1);
-        influence = 1.0;
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        return;
+      }
+      mouseX = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      mouseY = -((((e.clientY - rect.top) / rect.height) * 2) - 1);
+      influence = Math.min(1.6, 0.68 + mouseInfluenceRef.current * 0.52);
     };
     window.addEventListener("mousemove", onMove);
     const decay = setInterval(() => { influence *= 0.95; }, 50);
     rafId = requestAnimationFrame(draw);
 
     (canvas as any).__updateSim = (state: SimulationState) => {
-        const points = state.points || [];
-        count = points.length;
-        ensureCapacity(count);
-        for(let i=0; i<count; i++) {
-            const p = points[i];
-            targetPositions[i*2] = p.x;
-            targetPositions[i*2+1] = p.y;
-            targetSizes[i] = p.size;
-            targetColors[i*3] = p.r;
-            targetColors[i*3+1] = p.g;
-            targetColors[i*3+2] = p.b;
-            if(lastTick === 0) {
-                currentPositions[i*2] = targetPositions[i*2];
-                currentPositions[i*2+1] = targetPositions[i*2+1];
-                currentSizes[i] = targetSizes[i];
-                currentColors[i*3] = targetColors[i*3];
-                currentColors[i*3+1] = targetColors[i*3+1];
-                currentColors[i*3+2] = targetColors[i*3+2];
-            }
+      const points = state.points || [];
+      const sourceCount = points.length;
+      const desiredAmbient = Math.max(72, Math.round(96 + particleDensityRef.current * 220));
+      if (desiredAmbient !== ambientCount) {
+        ambientCount = desiredAmbient;
+        ambientDirty = true;
+      }
+      dynamicCount = sourceCount <= 0
+        ? 0
+        : Math.max(
+          Math.min(sourceCount, 220),
+          Math.max(1, Math.min(sourceCount, Math.round(sourceCount * particleDensityRef.current))),
+        );
+      count = ambientCount + dynamicCount;
+      ensureCapacity(count);
+
+      if (ambientDirty || lastTick === 0) {
+        rebuildAmbientLayer();
+        ambientDirty = false;
+      }
+
+      const dynamicOffset = ambientCount;
+      for (let i = 0; i < dynamicCount; i += 1) {
+        const sourceIndex = sourceCount <= dynamicCount
+          ? i
+          : Math.floor((i * sourceCount) / dynamicCount);
+        const p = points[sourceIndex];
+        const z = resolveDepth(p, sourceIndex);
+        const writeIndex = dynamicOffset + i;
+        targetPositions[writeIndex * 3] = p.x;
+        targetPositions[(writeIndex * 3) + 1] = p.y;
+        targetPositions[(writeIndex * 3) + 2] = z;
+        targetSizes[writeIndex] = p.size;
+        targetColors[writeIndex * 3] = p.r;
+        targetColors[(writeIndex * 3) + 1] = p.g;
+        targetColors[(writeIndex * 3) + 2] = p.b;
+        const seed = ((sourceIndex + 1) * 0.754877666) % 1;
+        targetSeeds[writeIndex] = seed;
+        if (lastTick === 0) {
+          currentPositions[writeIndex * 3] = targetPositions[writeIndex * 3];
+          currentPositions[(writeIndex * 3) + 1] = targetPositions[(writeIndex * 3) + 1];
+          currentPositions[(writeIndex * 3) + 2] = targetPositions[(writeIndex * 3) + 2];
+          currentSizes[writeIndex] = targetSizes[writeIndex];
+          currentColors[writeIndex * 3] = targetColors[writeIndex * 3];
+          currentColors[(writeIndex * 3) + 1] = targetColors[(writeIndex * 3) + 1];
+          currentColors[(writeIndex * 3) + 2] = targetColors[(writeIndex * 3) + 2];
+          currentSeeds[writeIndex] = seed;
         }
-        const flowRate = state.presence_dynamics?.river_flow?.rate;
-        const forkTaxBalance = state.presence_dynamics?.fork_tax?.balance;
-        const witnessContinuity = state.presence_dynamics?.witness_thread?.continuity_index;
-        const witnessTrace = state.presence_dynamics?.witness_thread?.lineage?.[0]?.ref;
-        const truthState = state.truth_state ?? catalogRef.current?.truth_state;
-        const truthClaim = truthState?.claim;
-        const truthStatus = String(truthClaim?.status ?? "undecided");
-        const truthKappa = Number(truthClaim?.kappa ?? 0);
-        const fileGraph = state.file_graph ?? catalogRef.current?.file_graph;
-        const inboxPending = fileGraph?.inbox?.pending_count;
-        if(metaRef.current) {
-            const inboxLabel = inboxPending !== undefined ? ` | inbox: ${inboxPending}` : "";
-            const truthLabel = truthState
-                ? ` | truth: ${truthStatus} κ=${truthKappa.toFixed(2)}`
-                : "";
-            if (flowRate !== undefined || forkTaxBalance !== undefined) {
-                metaRef.current.textContent =
-                    "sim particles: " +
-                    state.total +
-                    " | audio: " +
-                    state.audio +
-                    " | river: " +
-                    (flowRate ?? 0).toFixed(2) +
-                    " | fork-tax: " +
-                    Math.round(forkTaxBalance ?? 0) +
-                    " | witness: " +
-                    Math.round((witnessContinuity ?? 0) * 100) +
-                    "%" +
-                    (witnessTrace ? " [" + witnessTrace + "]" : "") +
-                    inboxLabel +
-                    truthLabel;
-            } else {
-                metaRef.current.textContent =
-                    "sim particles: " +
-                    state.total +
-                    " | audio: " +
-                    state.audio +
-                    inboxLabel +
-                    truthLabel;
-            }
+      }
+
+      const flowRate = state.presence_dynamics?.river_flow?.rate;
+      const forkTaxBalance = state.presence_dynamics?.fork_tax?.balance;
+      const witnessContinuity = state.presence_dynamics?.witness_thread?.continuity_index;
+      const witnessTrace = state.presence_dynamics?.witness_thread?.lineage?.[0]?.ref;
+      const truthState = state.truth_state ?? catalogRef.current?.truth_state;
+      const truthClaim = truthState?.claim;
+      const truthStatus = String(truthClaim?.status ?? "undecided");
+      const truthKappa = Number(truthClaim?.kappa ?? 0);
+      const flowNorm = clamp01(Number(flowRate ?? 0) / 2.8);
+      const witnessNorm = clamp01(Number(witnessContinuity ?? 0));
+      const truthNorm = truthState
+        ? (truthStatus === "proved" ? 1 : truthStatus === "refuted" ? 0.34 : 0.58)
+        : 0.46;
+      const audioNorm = clamp01(Number(state.audio ?? 0) / Math.max(1, Number(state.total ?? 1)));
+      const richnessNorm = clamp01(dynamicCount / 2200);
+      scenePulseTarget = clampValue(
+        0.18 + flowNorm * 0.24 + witnessNorm * 0.22 + truthNorm * 0.16 + audioNorm * 0.12 + richnessNorm * 0.12,
+        0.14,
+        1,
+      );
+      const fileGraph = state.file_graph ?? catalogRef.current?.file_graph;
+      const inboxPending = fileGraph?.inbox?.pending_count;
+      const particleLabel = sourceCount > dynamicCount ? `${dynamicCount}/${sourceCount}` : `${dynamicCount}`;
+      const ambientLabel = ambientCount > 0 ? ` +${ambientCount} haze` : "";
+      if (metaRef.current) {
+        const inboxLabel = inboxPending !== undefined ? ` | inbox: ${inboxPending}` : "";
+        const truthLabel = truthState
+          ? ` | truth: ${truthStatus} k=${truthKappa.toFixed(2)}`
+          : "";
+        if (flowRate !== undefined || forkTaxBalance !== undefined) {
+          metaRef.current.textContent =
+            "sim particles: " +
+            particleLabel +
+            ambientLabel +
+            " | audio: " +
+            state.audio +
+            " | river: " +
+            (flowRate ?? 0).toFixed(2) +
+            " | fork-tax: " +
+            Math.round(forkTaxBalance ?? 0) +
+            " | witness: " +
+            Math.round((witnessContinuity ?? 0) * 100) +
+            "%" +
+            (witnessTrace ? " [" + witnessTrace + "]" : "") +
+            inboxLabel +
+            truthLabel;
+        } else {
+          metaRef.current.textContent =
+            "sim particles: " +
+            particleLabel +
+            ambientLabel +
+            " | audio: " +
+            state.audio +
+            inboxLabel +
+            truthLabel;
         }
+      }
     };
 
     return () => {
-        window.removeEventListener("mousemove", onMove);
-        clearInterval(decay);
-        cancelAnimationFrame(rafId);
-        tracerCanvas.remove();
+      window.removeEventListener("mousemove", onMove);
+      clearInterval(decay);
+      cancelAnimationFrame(rafId);
+      gl.deleteBuffer(posBuffer);
+      gl.deleteBuffer(sizeBuffer);
+      gl.deleteBuffer(colorBuffer);
+      gl.deleteBuffer(seedBuffer);
+      gl.deleteProgram(program);
+      gl.deleteShader(vs);
+      gl.deleteShader(fs);
     };
-  }, []);
+  }, [renderParticleField]);
 
   useEffect(() => {
     if(simulation && canvasRef.current) (canvasRef.current as any).__updateSim?.(simulation);
   }, [simulation]);
+
+  useEffect(() => {
+    const density = particleDensity;
+    if (!canvasRef.current || !simulationRef.current) {
+      return;
+    }
+    if (!Number.isFinite(density)) {
+      return;
+    }
+    (canvasRef.current as any).__updateSim?.(simulationRef.current);
+  }, [particleDensity]);
 
   useEffect(() => {
     const canvas = overlayRef.current;
@@ -980,6 +2166,7 @@ export function SimulationCanvas({
     ];
 
     let ripple = { x: 0.5, y: 0.5, power: 0, at: 0 };
+    let pointerField = { x: 0.5, y: 0.5, power: 0, inside: false };
     let highlighted = -1;
     let selectedGraphNodeId = "";
     let selectedGraphNodeLabel = "";
@@ -1054,13 +2241,17 @@ export function SimulationCanvas({
         return null;
     };
 
+    const documentRangeFromImportance = (importance: number): number => {
+        return 0.016 + clamp01(importance) * 0.064;
+    };
+
     const nearestGraphNodeAt = (xRatio: number, yRatio: number) => {
         let match: { hit: (typeof graphNodeHits)[number]; distance: number } | null = null;
         for (const hit of graphNodeHits) {
             const dx = xRatio - hit.x;
             const dy = yRatio - hit.y;
             const distance = Math.hypot(dx, dy);
-            if (distance > Math.max(0.008, hit.radiusNorm * 1.5)) {
+            if (distance > Math.max(0.012, hit.radiusNorm * 1.8)) {
                 continue;
             }
             if (!match || distance < match.distance) {
@@ -1113,39 +2304,46 @@ export function SimulationCanvas({
     };
 
     const drawParticles = (
-        t: number,
         field: any,
-        cx: number,
-        cy: number,
         radius: number,
-        hue: number,
-        intensity: number,
         isHighlighted: boolean,
+        state: SimulationState | null,
+        w: number,
+        h: number,
     ) => {
-        const count = isHighlighted ? 44 : 20;
+        const fieldParticles = state?.presence_dynamics?.field_particles ?? state?.field_particles ?? [];
+        if (!Array.isArray(fieldParticles) || fieldParticles.length <= 0) {
+            return;
+        }
+        const rows = fieldParticles
+            .filter((row: any) => String(row?.presence_id ?? "").trim() === String(field?.id ?? "").trim())
+            .slice(0, 112);
+        if (rows.length <= 0) {
+            return;
+        }
+
         ctx.save();
         ctx.globalCompositeOperation = "lighter";
-        ctx.globalAlpha = isHighlighted ? 0.74 : 0.46;
-        for(let i=0; i<count; i++) {
-            const seed = i * 0.91 + field.x * 0.43 + field.y * 0.21;
-            const angle = t * (0.3 + (i%5)*0.05 + intensity * 0.1) + seed;
-            const orbit = radius * (0.2 + (i % 6) * 0.1);
-            const wobble = Math.sin(t*1.2+seed) * radius * 0.05;
-            const px = cx + Math.cos(angle)*(orbit+wobble);
-            const py = cy + Math.sin(angle * 1.1)*(orbit * 0.6 + wobble * 0.5);
-            const r = Math.max(0.5, 1.2 + Math.sin(seed+t*2) * 0.8 + intensity * 0.4);
-            const pHue = i % 2 === 0 ? hue : (hue + 40) % 360;
-            ctx.fillStyle = "hsla(" + pHue + ", 88%, 68%, 0.26)";
+        ctx.globalAlpha = isHighlighted ? 0.48 : 0.34;
+        for (const row of rows) {
+            const xRatio = clamp01(Number(row?.x ?? 0.5));
+            const yRatio = clamp01(Number(row?.y ?? 0.5));
+            const px = xRatio * w;
+            const py = yRatio * h;
+            const size = clampValue(Number(row?.size ?? 1.2), 0.6, 3.8);
+            const particleRadius = Math.max(0.45, (size * radius) / 28);
+            const red = Math.round(clamp01(Number(row?.r ?? 0.5)) * 255);
+            const green = Math.round(clamp01(Number(row?.g ?? 0.5)) * 255);
+            const blue = Math.round(clamp01(Number(row?.b ?? 0.5)) * 255);
+
+            ctx.fillStyle = `rgba(${red}, ${green}, ${blue}, 0.24)`;
             ctx.beginPath();
-            ctx.arc(px, py, r * 2.2, 0, Math.PI*2);
+            ctx.arc(px, py, particleRadius * 2.0, 0, Math.PI * 2);
             ctx.fill();
-            ctx.fillStyle = "hsla(" + pHue + ", 94%, 78%, 0.82)";
+
+            ctx.fillStyle = `rgba(${red}, ${green}, ${blue}, 0.56)`;
             ctx.beginPath();
-            ctx.arc(px, py, r, 0, Math.PI*2);
-            ctx.fill();
-            ctx.fillStyle = "rgba(255, 255, 255, 0.88)";
-            ctx.beginPath();
-            ctx.arc(px, py, Math.max(0.45, r * 0.36), 0, Math.PI*2);
+            ctx.arc(px, py, particleRadius, 0, Math.PI * 2);
             ctx.fill();
         }
         ctx.restore();
@@ -1488,9 +2686,81 @@ export function SimulationCanvas({
         const graphNodes = Array.isArray(graph.nodes) && graph.nodes.length > 0
             ? graph.nodes
             : [...fieldNodes, ...fileNodes];
+        const tagNodes = Array.isArray((graph as any).tag_nodes)
+            ? ((graph as any).tag_nodes as any[])
+            : graphNodes.filter((node: any) => String(node?.node_type ?? "").toLowerCase() === "tag");
         const nodeById = new Map(graphNodes.map((node: any) => [String(node.id), node]));
         const edges = Array.isArray(graph.edges) ? graph.edges : [];
         const resourceCounts: Record<string, number> = {};
+        const provenanceCounts: Record<FileNodeProvenanceKind, number> = {
+            workspace: 0,
+            archive: 0,
+            web: 0,
+            memory: 0,
+            synthetic: 0,
+        };
+        const graphPositionForNode = (node: any): { x: number; y: number } => ({
+            x: clamp01(Number(node?.x ?? 0.5)),
+            y: clamp01(Number(node?.y ?? 0.5)),
+        });
+        const embedLayers = Array.isArray((graph as any).embed_layers)
+            ? ((graph as any).embed_layers as any[])
+            : [];
+        const activeEmbedLayers = embedLayers
+            .filter((layer) => layer && layer.active !== false)
+            .slice(0, 7);
+        const layerDepth = layerDepthRef.current;
+        const layerDepthNorm = clamp01((layerDepth - 0.4) / 1.5);
+        const layerLaneTop = h * 0.16;
+        const layerLaneStep = Math.max(20, Math.min(44, h * 0.08));
+        const layerLaneX = w - Math.max(78, Math.min(178, w * 0.2));
+        const layerLaneByKey = new Map<string, number>();
+        activeEmbedLayers.forEach((layer, index) => {
+            const layerId = String(layer.id ?? "").trim();
+            const layerKey = String(layer.key ?? "").trim();
+            if (layerId) {
+                layerLaneByKey.set(layerId, index);
+            }
+            if (layerKey) {
+                layerLaneByKey.set(layerKey, index);
+            }
+        });
+
+        if (activeEmbedLayers.length > 0) {
+            ctx.save();
+            ctx.globalCompositeOperation = "screen";
+            for (let index = 0; index < activeEmbedLayers.length; index++) {
+                const layer = activeEmbedLayers[index] as any;
+                const laneY = layerLaneTop + index * layerLaneStep;
+                const hue = layerHueByIndex(index);
+                const lineGlow = ctx.createLinearGradient(layerLaneX, laneY, w - 12, laneY);
+                lineGlow.addColorStop(0, `hsla(${hue}, 84%, 68%, ${0.08 + layerDepthNorm * 0.16})`);
+                lineGlow.addColorStop(1, `hsla(${(hue + 24) % 360}, 90%, 72%, ${0.24 + layerDepthNorm * 0.28})`);
+                ctx.strokeStyle = lineGlow;
+                ctx.lineWidth = 0.9 + layerDepthNorm * 1.4;
+                ctx.beginPath();
+                ctx.moveTo(layerLaneX, laneY);
+                ctx.lineTo(w - 12, laneY);
+                ctx.stroke();
+
+                ctx.fillStyle = `hsla(${hue}, 95%, 82%, ${0.7 + layerDepthNorm * 0.2})`;
+                ctx.beginPath();
+                ctx.arc(layerLaneX, laneY, 2 + layerDepthNorm * 1.8, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.globalCompositeOperation = "source-over";
+                ctx.textAlign = "right";
+                ctx.font = "600 8px ui-monospace, SFMono-Regular, Menlo, monospace";
+                ctx.fillStyle = `hsla(${hue}, 88%, 84%, ${0.74 + layerDepthNorm * 0.16})`;
+                ctx.fillText(
+                    shortPathLabel(String(layer.label ?? layer.id ?? `layer-${index + 1}`)),
+                    w - 14,
+                    laneY - 4,
+                );
+                ctx.globalCompositeOperation = "screen";
+            }
+            ctx.restore();
+        }
 
         if (edges.length > 0) {
             ctx.save();
@@ -1502,10 +2772,12 @@ export function SimulationCanvas({
                 if (!src || !tgt) {
                     continue;
                 }
-                const sx = clamp01(Number(src.x ?? 0.5)) * w;
-                const sy = clamp01(Number(src.y ?? 0.5)) * h;
-                const tx = clamp01(Number(tgt.x ?? 0.5)) * w;
-                const ty = clamp01(Number(tgt.y ?? 0.5)) * h;
+                const srcPos = graphPositionForNode(src);
+                const tgtPos = graphPositionForNode(tgt);
+                const sx = srcPos.x * w;
+                const sy = srcPos.y * h;
+                const tx = tgtPos.x * w;
+                const ty = tgtPos.y * h;
                 const weight = clamp01(Number(edge.weight ?? 0.2));
                 const hue = Number(src.hue ?? tgt.hue ?? 210);
                 ctx.strokeStyle = `hsla(${hue}, 92%, 68%, ${0.05 + weight * 0.26})`;
@@ -1559,6 +2831,51 @@ export function SimulationCanvas({
             ctx.restore();
         }
 
+        if (tagNodes.length > 0) {
+            ctx.save();
+            ctx.globalCompositeOperation = "screen";
+            for (let i = 0; i < tagNodes.length; i++) {
+                const tag = tagNodes[i] as any;
+                const nx = clamp01(Number(tag.x ?? 0.5));
+                const ny = clamp01(Number(tag.y ?? 0.5));
+                const px = nx * w;
+                const py = ny * h;
+                const memberCount = Number(tag.member_count ?? 1);
+                const pulse = 0.5 + Math.sin((t * 2.1) + i * 0.33) * 0.5;
+                const hue = Number(tag.hue ?? 38);
+                const radius = 1.4 + Math.min(4, Math.log2(Math.max(2, memberCount + 1))) + pulse * 0.7;
+
+                const halo = ctx.createRadialGradient(px, py, 0, px, py, radius * 2.8);
+                halo.addColorStop(0, `hsla(${hue}, 94%, 76%, 0.7)`);
+                halo.addColorStop(0.62, `hsla(${(hue + 34) % 360}, 86%, 60%, 0.22)`);
+                halo.addColorStop(1, "rgba(16, 24, 38, 0)");
+                ctx.fillStyle = halo;
+                ctx.beginPath();
+                ctx.arc(px, py, radius * 2.8, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.strokeStyle = `hsla(${hue}, 92%, 78%, 0.76)`;
+                ctx.lineWidth = 0.85;
+                ctx.beginPath();
+                ctx.moveTo(px, py - radius);
+                ctx.lineTo(px + radius, py);
+                ctx.lineTo(px, py + radius);
+                ctx.lineTo(px - radius, py);
+                ctx.closePath();
+                ctx.stroke();
+
+                graphNodeHits.push({
+                    node: tag,
+                    x: nx,
+                    y: ny,
+                    radiusNorm: (radius * 1.8) / Math.max(w, h),
+                    nodeKind: "file",
+                    resourceKind: "blob",
+                });
+            }
+            ctx.restore();
+        }
+
         if (fileNodes.length > 0) {
             ctx.save();
             ctx.globalCompositeOperation = "screen";
@@ -1571,6 +2888,8 @@ export function SimulationCanvas({
                 const importance = clamp01(Number(node.importance ?? 0.2));
                 const pulse = 0.5 + Math.sin((t * 3) + i * 0.33) * 0.5;
                 const resourceKind = classifyFileResourceKind(node);
+                const provenanceKind = fileNodeProvenanceKind(node);
+                provenanceCounts[provenanceKind] += 1;
                 resourceCounts[resourceKind] = (resourceCounts[resourceKind] ?? 0) + 1;
                 const fallbackHue = Number(node.hue ?? 210);
                 const visual = resourceVisualSpec(resourceKind, fallbackHue);
@@ -1612,6 +2931,26 @@ export function SimulationCanvas({
                 ctx.fillStyle = "rgba(255, 255, 255, 0.82)";
                 fillResourceShape(ctx, visual.shape, px - radius * 0.26, py - radius * 0.28, Math.max(0.55, radius * 0.28));
 
+                const provenanceHue = fileNodeProvenanceHue(provenanceKind);
+                const provenanceOrbit = radius + 2.4 + importance * 2.2;
+                const provenanceAngle = (t * 0.9) + i * 0.41;
+                const provenanceX = px + Math.cos(provenanceAngle) * provenanceOrbit;
+                const provenanceY = py + Math.sin(provenanceAngle) * provenanceOrbit;
+                const provenanceDot = Math.max(0.8, 0.85 + importance * 0.8);
+                ctx.fillStyle = `hsla(${provenanceHue}, 92%, 80%, 0.92)`;
+                ctx.beginPath();
+                ctx.arc(provenanceX, provenanceY, provenanceDot, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.strokeStyle = `hsla(${provenanceHue}, 84%, 70%, 0.38)`;
+                ctx.lineWidth = 0.75;
+                ctx.setLineDash([2.5, 4]);
+                ctx.lineDashOffset = -((t * 28) + i * 0.7);
+                ctx.beginPath();
+                ctx.arc(px, py, provenanceOrbit, 0, Math.PI * 2);
+                ctx.stroke();
+                ctx.setLineDash([]);
+
                 graphNodeHits.push({
                     node,
                     x: nx,
@@ -1632,14 +2971,40 @@ export function SimulationCanvas({
                     const lx = clamp01(Number(layer?.x ?? nx)) * w;
                     const ly = clamp01(Number(layer?.y ?? ny)) * h;
                     const layerHue = Number(layer?.hue ?? ((hue + 46 + layerIdx * 21) % 360));
+                    const layerKey = String(layer?.id ?? layer?.key ?? "").trim();
+                    const laneIndex = layerLaneByKey.get(layerKey);
+                    const laneY = laneIndex === undefined
+                        ? ly
+                        : layerLaneTop + laneIndex * layerLaneStep;
+                    const laneHue = laneIndex === undefined
+                        ? layerHue
+                        : layerHueByIndex(laneIndex);
+                    const depthAlpha = 0.2 + layerDepthNorm * 0.56;
                     const layerRadius = Math.max(0.9, 0.85 + (importance * 0.85));
 
-                    ctx.strokeStyle = `hsla(${layerHue}, 86%, 70%, 0.28)`;
-                    ctx.lineWidth = 0.55;
+                    ctx.strokeStyle = `hsla(${layerHue}, 86%, 70%, ${depthAlpha})`;
+                    ctx.lineWidth = 0.55 + layerDepthNorm * 0.62;
                     ctx.beginPath();
                     ctx.moveTo(px, py);
                     ctx.lineTo(lx, ly);
                     ctx.stroke();
+
+                    if (laneIndex !== undefined) {
+                        ctx.strokeStyle = `hsla(${laneHue}, 92%, 72%, ${0.16 + layerDepthNorm * 0.34})`;
+                        ctx.lineWidth = 0.45 + layerDepthNorm * 0.58;
+                        ctx.setLineDash([4, 6]);
+                        ctx.lineDashOffset = -((t * 36) + laneIndex * 4);
+                        ctx.beginPath();
+                        ctx.moveTo(lx, ly);
+                        ctx.lineTo(layerLaneX, laneY);
+                        ctx.stroke();
+                        ctx.setLineDash([]);
+
+                        ctx.fillStyle = `hsla(${laneHue}, 94%, 84%, ${0.42 + layerDepthNorm * 0.28})`;
+                        ctx.beginPath();
+                        ctx.arc(layerLaneX, laneY, 1.4 + layerDepthNorm * 1.2, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
 
                     const layerGlow = ctx.createRadialGradient(lx, ly, 0, lx, ly, layerRadius * 2.8);
                     layerGlow.addColorStop(0, `hsla(${layerHue}, 92%, 76%, 0.76)`);
@@ -1667,10 +3032,14 @@ export function SimulationCanvas({
         const resourceRows = ["text", "image", "audio", "archive", "blob"]
             .map((kind) => `${kind}:${resourceCounts[kind] ?? 0}`)
             .join("  ");
-        const embedLayers = Array.isArray((graph as any).embed_layers)
-            ? ((graph as any).embed_layers as any[])
-            : [];
-        const activeLayerLabels = embedLayers
+        const provenanceRows = [
+            `workspace:${provenanceCounts.workspace}`,
+            `archive:${provenanceCounts.archive}`,
+            `web:${provenanceCounts.web}`,
+            `memory:${provenanceCounts.memory}`,
+            `derived:${provenanceCounts.synthetic}`,
+        ].join("  ");
+        const activeLayerLabels = activeEmbedLayers
             .filter((layer) => layer && layer.active !== false)
             .slice(0, 3)
             .map((layer) => shortPathLabel(String(layer.label ?? layer.id ?? "")))
@@ -1687,6 +3056,12 @@ export function SimulationCanvas({
             .filter((value) => value.length > 0)
             .join("  |  ");
         const conceptCount = Number((graph as any)?.stats?.concept_presence_count ?? conceptPresences.length ?? 0);
+        const tagRows = tagNodes
+            .slice(0, 3)
+            .map((row) => shortPathLabel(String((row as any)?.label ?? (row as any)?.tag ?? (row as any)?.id ?? "")))
+            .filter((value) => value.length > 0)
+            .join("  |  ");
+        const tagCount = Number((graph as any)?.stats?.tag_count ?? tagNodes.length ?? 0);
         const inbox = graph.inbox;
         ctx.save();
         ctx.globalCompositeOperation = "source-over";
@@ -1702,17 +3077,24 @@ export function SimulationCanvas({
         ctx.fillStyle = "rgba(208, 228, 245, 0.88)";
         ctx.fillText(`resource kinds: ${resourceRows}`, 10, 51);
         ctx.fillStyle = "rgba(195, 229, 255, 0.86)";
-        ctx.fillText(`embed layers: ${layerRows}`, 10, 62);
+        ctx.fillText(`provenance lanes: ${provenanceRows}`, 10, 62);
+        ctx.fillStyle = "rgba(190, 223, 248, 0.84)";
+        ctx.fillText(`embed layers: ${layerRows}`, 10, 73);
         ctx.fillStyle = "rgba(211, 232, 255, 0.82)";
-        ctx.fillText(`concept presences: ${conceptCount}${conceptRows ? ` | ${conceptRows}` : ""}`, 10, 73);
+        ctx.fillText(`concept presences: ${conceptCount}${conceptRows ? ` | ${conceptRows}` : ""}`, 10, 84);
+        ctx.fillStyle = "rgba(214, 236, 255, 0.8)";
+        ctx.fillText(`tags: ${tagCount}${tagRows ? ` | ${tagRows}` : ""}`, 10, 95);
         ctx.restore();
 
         if (selectedGraphNodeId) {
-            const selected = fileNodes.find((row: any) => String(row.id) === selectedGraphNodeId);
+            const selected = fileNodes.find((row: any) => String(row.id) === selectedGraphNodeId)
+                ?? tagNodes.find((row: any) => String(row.id) === selectedGraphNodeId);
             if (selected) {
                 const sx = clamp01(Number(selected.x ?? 0.5)) * w;
                 const sy = clamp01(Number(selected.y ?? 0.5)) * h;
                 const selectedResourceKind = classifyFileResourceKind(selected);
+                const provenanceKind = fileNodeProvenanceKind(selected);
+                const provenanceLabel = fileNodeProvenanceLabel(provenanceKind);
                 const label = shortPathLabel(
                     String(
                         selected.source_rel_path
@@ -1730,9 +3112,9 @@ export function SimulationCanvas({
                 ctx.strokeStyle = "rgba(164, 214, 255, 0.72)";
                 ctx.lineWidth = 1;
                 const boxX = Math.min(w - 208, sx + 10);
-                const boxY = Math.max(10, sy - 48);
+                const boxY = Math.max(10, sy - 56);
                 ctx.beginPath();
-                ctx.roundRect(boxX, boxY, 198, 42, 6);
+                ctx.roundRect(boxX, boxY, 198, 50, 6);
                 ctx.fill();
                 ctx.stroke();
                 ctx.fillStyle = "rgba(222, 241, 255, 0.96)";
@@ -1745,11 +3127,15 @@ export function SimulationCanvas({
                     boxX + 6,
                     boxY + 30,
                 );
+                ctx.fillStyle = "rgba(170, 216, 247, 0.9)";
+                ctx.fillText(`origin ${provenanceLabel} | range ${Math.round(documentRangeFromImportance(Number(selected?.importance ?? 0.2)) * 100)}%`, boxX + 6, boxY + 39);
                 ctx.fillStyle = "rgba(165, 212, 248, 0.9)";
                 ctx.fillText(
-                    `concept ${String(selected.concept_presence_label ?? "unassigned")}`,
+                    String(selected?.node_type ?? "") === "tag"
+                        ? `tag ${String(selected.tag ?? selected.node_id ?? "")}`
+                        : `concept ${String(selected.concept_presence_label ?? "unassigned")}`,
                     boxX + 6,
-                    boxY + 39,
+                    boxY + 48,
                 );
                 ctx.restore();
             }
@@ -2306,17 +3692,60 @@ export function SimulationCanvas({
         const w = canvasWidth;
         const h = canvasHeight;
         ctx.clearRect(0, 0, w, h);
-        ctx.fillStyle = "rgba(4, 10, 18, 0.46)";
+        const washValue = backgroundMode
+            ? Math.min(0.82, Math.max(0.24, backgroundWash))
+            : 0.46;
+        ctx.fillStyle = `rgba(4, 10, 18, ${washValue})`;
         ctx.fillRect(0, 0, w, h);
         const vignette = ctx.createRadialGradient(w * 0.5, h * 0.48, Math.min(w, h) * 0.18, w * 0.5, h * 0.52, Math.max(w, h) * 0.78);
-        vignette.addColorStop(0, "rgba(16, 32, 52, 0.08)");
-        vignette.addColorStop(0.5, "rgba(4, 10, 18, 0.28)");
-        vignette.addColorStop(1, "rgba(2, 6, 12, 0.62)");
+        const centerStop = backgroundMode
+            ? Math.min(0.2, Math.max(0.05, (washValue - 0.24) * 0.42 + 0.08))
+            : 0.08;
+        const midStop = backgroundMode
+            ? Math.min(0.46, Math.max(0.16, washValue - 0.1))
+            : 0.28;
+        const edgeStop = backgroundMode
+            ? Math.min(0.76, Math.max(0.4, washValue + 0.12))
+            : 0.62;
+        vignette.addColorStop(0, `rgba(16, 32, 52, ${centerStop})`);
+        vignette.addColorStop(0.5, `rgba(4, 10, 18, ${midStop})`);
+        vignette.addColorStop(1, `rgba(2, 6, 12, ${edgeStop})`);
         ctx.fillStyle = vignette;
         ctx.fillRect(0, 0, w, h);
         ctx.globalCompositeOperation = "screen";
         const audioCount = Math.max(0, currentSimulation?.audio || 0);
         const globalIntensity = Math.min(0.68, Math.log1p(audioCount) / 7.2);
+        const pointerInfluence = mouseInfluenceRef.current;
+        const pointerTargetPower = pointerField.inside
+            ? (0.14 + pointerInfluence * 0.34)
+            : 0;
+        pointerField.power += (pointerTargetPower - pointerField.power) * 0.12;
+        const pointerPower = Math.max(0, pointerField.power);
+        const pointerX = pointerField.x * w;
+        const pointerY = pointerField.y * h;
+
+        if (pointerPower > 0.01) {
+            ctx.save();
+            ctx.globalCompositeOperation = "screen";
+            const influenceGlow = ctx.createRadialGradient(pointerX, pointerY, 0, pointerX, pointerY, Math.max(w, h) * (0.08 + pointerPower * 0.12));
+            influenceGlow.addColorStop(0, `rgba(182, 238, 255, ${0.12 + pointerPower * 0.16})`);
+            influenceGlow.addColorStop(0.45, `rgba(92, 188, 255, ${0.06 + pointerPower * 0.12})`);
+            influenceGlow.addColorStop(1, "rgba(8, 16, 26, 0)");
+            ctx.fillStyle = influenceGlow;
+            ctx.beginPath();
+            ctx.arc(pointerX, pointerY, Math.max(w, h) * (0.08 + pointerPower * 0.12), 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.strokeStyle = `rgba(162, 226, 255, ${0.18 + pointerPower * 0.28})`;
+            ctx.lineWidth = 0.8 + pointerPower * 1.4;
+            ctx.setLineDash([8, 9]);
+            ctx.lineDashOffset = -(t * 44);
+            ctx.beginPath();
+            ctx.arc(pointerX, pointerY, 18 + pointerPower * 46, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.restore();
+        }
 
         // Intent Grid
         ctx.save();
@@ -2338,13 +3767,28 @@ export function SimulationCanvas({
         ctx.fillStyle = coreGlow;
         ctx.fillRect(0, 0, w, h);
 
-        const showPresenceLayer = overlayView === "omni" || overlayView === "presence";
-        const showFileImpactLayer = overlayView === "omni" || overlayView === "file-impact";
-        const showFileGraphLayer = overlayView === "omni" || overlayView === "file-graph";
-        const showCrawlerGraphLayer = overlayView === "omni" || overlayView === "crawler-graph";
-        const showTruthGateLayer = overlayView === "omni" || overlayView === "truth-gate";
-        const showLogicalLayer = overlayView === "omni" || overlayView === "logic";
-        const showPainFieldLayer = overlayView === "omni" || overlayView === "pain-field";
+        const hasLayerVisibility = layerVisibility !== undefined;
+        const backgroundOmni = !hasLayerVisibility && backgroundMode && overlayView === "omni";
+        const showPresenceLayer = layerVisibility?.presence ?? (overlayView === "omni" || overlayView === "presence");
+        const showFileImpactLayer = layerVisibility?.["file-impact"] ?? (!backgroundOmni && (overlayView === "omni" || overlayView === "file-impact"));
+        const showFileGraphLayer = layerVisibility?.["file-graph"] ?? (!backgroundOmni && (overlayView === "omni" || overlayView === "file-graph"));
+        const showCrawlerGraphLayer = layerVisibility?.["crawler-graph"] ?? (!backgroundOmni && (overlayView === "omni" || overlayView === "crawler-graph"));
+        const showTruthGateLayer = layerVisibility?.["truth-gate"] ?? (overlayView === "omni" || overlayView === "truth-gate");
+        const showLogicalLayer = layerVisibility?.logic ?? (!backgroundOmni && (overlayView === "omni" || overlayView === "logic"));
+        const showPainFieldLayer = layerVisibility?.["pain-field"] ?? (!backgroundOmni && (overlayView === "omni" || overlayView === "pain-field"));
+        const pointerNearest = nearestPresenceAt(pointerField.x, pointerField.y, namedForms);
+        const pointerHighlighted = pointerPower > 0.09 && pointerNearest.distance <= 0.18
+            ? pointerNearest.index
+            : -1;
+        const activeLayerCount =
+            (showPresenceLayer ? 1 : 0)
+            + (showFileImpactLayer ? 1 : 0)
+            + (showFileGraphLayer ? 1 : 0)
+            + (showCrawlerGraphLayer ? 1 : 0)
+            + (showTruthGateLayer ? 1 : 0)
+            + (showLogicalLayer ? 1 : 0)
+            + (showPainFieldLayer ? 1 : 0);
+        const denseLayerMix = activeLayerCount >= 6 ? 0.6 : (activeLayerCount >= 4 ? 0.78 : 1);
         const showPresenceNodes =
             showPresenceLayer || showFileImpactLayer || showTruthGateLayer;
 
@@ -2356,22 +3800,37 @@ export function SimulationCanvas({
             drawButterflies(t, w, h);
         }
         if (showFileImpactLayer) {
+            ctx.save();
+            ctx.globalAlpha = denseLayerMix;
             drawFileInfluenceOverlay(t, w, h, namedForms, currentSimulation);
+            ctx.restore();
         }
         if (showLogicalLayer) {
+            ctx.save();
+            ctx.globalAlpha = denseLayerMix;
             drawLogicalGraphOverlay(t, w, h, currentSimulation);
+            ctx.restore();
         }
         if (showFileGraphLayer) {
+            ctx.save();
+            ctx.globalAlpha = denseLayerMix;
             drawFileCategoryGraph(t, w, h, currentSimulation);
+            ctx.restore();
         }
         if (showCrawlerGraphLayer) {
+            ctx.save();
+            ctx.globalAlpha = denseLayerMix;
             drawCrawlerCategoryGraph(t, w, h, currentSimulation);
+            ctx.restore();
         }
         if (showTruthGateLayer) {
             drawTruthBindingOverlay(t, w, h, namedForms, currentSimulation);
         }
         if (showPainFieldLayer) {
+            ctx.save();
+            ctx.globalAlpha = denseLayerMix;
             drawPainFieldOverlay(t, w, h, currentSimulation);
+            ctx.restore();
         }
 
         if(showPresenceNodes && namedForms.length > 2) {
@@ -2423,9 +3882,9 @@ export function SimulationCanvas({
             const intensityRaw = entityState ? (entityState.bpm - 60) / 40 : globalIntensity;
             const intensity = Math.max(0, Math.min(1, intensityRaw));
             const telemetry = drawPresenceStatus(cx, cy, radiusBase, f.hue, entityState);
-            const isHighlighted = highlighted === i;
+            const isHighlighted = highlighted === i || pointerHighlighted === i;
             drawNebula(t, f, cx, cy, radiusBase, f.hue, intensity, isHighlighted);
-            drawParticles(t, f, cx, cy, radiusBase, f.hue, intensity, isHighlighted);
+            drawParticles(f, radiusBase, isHighlighted, currentSimulation, w, h);
             const isBottomHalf = f.y > 0.7;
             const labelY = isBottomHalf ? cy - radiusBase * 1.2 : cy + radiusBase * 1.2;
             ctx.save();
@@ -2467,14 +3926,65 @@ export function SimulationCanvas({
         pulseAt: (x: number, y: number, power: number, target = "particle_field") => { 
             ripple = { x, y, power, at: performance.now() }; 
             highlighted = -1;
-            const baseUrl = window.location.port === "5173" ? "http://127.0.0.1:8787" : "";
+            const baseUrl = runtimeBaseUrl();
             fetch(baseUrl + "/api/witness", {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify({ type: "touch", target })
             }).catch(() => {});
         },
-        singAll: () => {}
+        singAll: () => {},
+        getAnchorRatio: (kind: string, targetId: string) => {
+            const id = String(targetId ?? "").trim();
+            if (!id) return null;
+
+            if (kind === "node" || kind === "file" || kind === "crawler") {
+                for (const hit of graphNodeHits) {
+                    const hitId = String(hit.node?.id ?? "");
+                    if (hitId && hitId === id) {
+                        return {
+                            x: hit.x,
+                            y: hit.y,
+                            kind: hit.nodeKind,
+                            label: shortPathLabel(
+                                String(
+                                    hit.node?.title
+                                    || hit.node?.domain
+                                    || hit.node?.source_rel_path
+                                    || hit.node?.archived_rel_path
+                                    || hit.node?.name
+                                    || hit.node?.label
+                                    || hit.node?.id
+                                    || "",
+                                ),
+                            ),
+                        };
+                    }
+                }
+                return null;
+            }
+
+            const forms = resolveNamedForms();
+            const found = forms.find((f: any) => String(f?.id ?? "").trim() === id);
+            if (!found) {
+                return null;
+            }
+            return {
+                x: clamp01(Number(found.x ?? 0.5)),
+                y: clamp01(Number(found.y ?? 0.5)),
+                kind: "presence",
+                label: String(found.en ?? found.ja ?? found.id ?? id),
+            };
+        },
+        projectRatioToClient: (xRatio: number, yRatio: number) => {
+            const rect = canvas.getBoundingClientRect();
+            return {
+                x: rect.left + clamp01(xRatio) * rect.width,
+                y: rect.top + clamp01(yRatio) * rect.height,
+                w: rect.width,
+                h: rect.height,
+            };
+        },
     };
 
     const onPointerDown = (event: PointerEvent) => {
@@ -2482,9 +3992,17 @@ export function SimulationCanvas({
         if (rect.width <= 0 || rect.height <= 0) return;
         const xRatio = clamp01((event.clientX - rect.left) / rect.width);
         const yRatio = clamp01((event.clientY - rect.top) / rect.height);
+        pointerField = {
+            x: xRatio,
+            y: yRatio,
+            power: Math.max(pointerField.power, 0.2 + mouseInfluenceRef.current * 0.26),
+            inside: true,
+        };
 
         const graphHit = nearestGraphNodeAt(xRatio, yRatio);
         if (graphHit) {
+            event.preventDefault();
+            event.stopPropagation();
             const node = graphHit.node;
             const nodeKind = graphHit.nodeKind;
             const resourceKind = resourceKindForNode(node);
@@ -2524,13 +4042,56 @@ export function SimulationCanvas({
             const worldscreenUrl = resolveWorldscreenUrl(openUrl, nodeKind, domain);
             if (worldscreenUrl) {
                 const worldscreenNodeKind: "file" | "crawler" = nodeKind === "crawler" ? "crawler" : "file";
+                const isRemoteResource = isRemoteHttpUrl(worldscreenUrl);
+                const frameUrlCandidate = remoteFrameUrlForNode(node, worldscreenUrl, resourceKind);
+                const imageRef = String(
+                    node?.source_rel_path
+                    || node?.archive_rel_path
+                    || node?.archived_rel_path
+                    || node?.url
+                    || worldscreenUrl,
+                ).trim();
+                const graphGeneratedAt =
+                    nodeKind === "crawler"
+                        ? String(resolveCrawlerGraph(simulationRef.current)?.generated_at ?? "")
+                        : String(resolveFileGraph(simulationRef.current)?.generated_at ?? "");
+                const discoveredAt = timestampLabel(node?.discovered_at ?? node?.discoveredAt ?? "");
+                const fetchedAt = timestampLabel(node?.fetched_at ?? node?.fetchedAt ?? node?.last_seen ?? node?.lastSeen ?? "");
+                const encounteredAt =
+                    fetchedAt
+                    || discoveredAt
+                    || timestampLabel(node?.encountered_at ?? node?.encounteredAt ?? graphGeneratedAt);
                 setWorldscreen({
                     url: worldscreenUrl,
+                    imageRef,
                     label: selectedGraphNodeLabel,
                     nodeKind: worldscreenNodeKind,
                     resourceKind,
-                    view: worldscreenViewForNode(node, worldscreenNodeKind, resourceKind),
+                    anchorRatioX: clamp01(graphHit.x),
+                    anchorRatioY: clamp01(graphHit.y),
+                    view: resourceKind === "image"
+                        ? "metadata"
+                        : isRemoteResource
+                            ? "metadata"
+                            : worldscreenViewForNode(node, worldscreenNodeKind, resourceKind),
                     subtitle: worldscreenSubtitleForNode(node, worldscreenNodeKind, resourceKind),
+                    remoteFrameUrl: resourceKind === "image"
+                        ? (frameUrlCandidate || worldscreenUrl)
+                        : isRemoteResource
+                            ? frameUrlCandidate
+                            : "",
+                    encounteredAt,
+                    sourceUrl: String(node?.source_url ?? node?.sourceUrl ?? "").trim(),
+                    domain,
+                    titleText: String(node?.title ?? "").trim(),
+                    statusText: String(node?.status ?? "").trim(),
+                    contentTypeText: String(node?.content_type ?? node?.contentType ?? "").trim(),
+                    complianceText: String(node?.compliance ?? "").trim(),
+                    discoveredAt,
+                    fetchedAt,
+                    summaryText: String(node?.summary ?? node?.text_excerpt ?? "").trim(),
+                    tagsText: joinListValues(node?.tags),
+                    labelsText: joinListValues(node?.labels),
                 });
                 if (metaRef.current) {
                     metaRef.current.textContent = `hologram opened: ${selectedGraphNodeLabel}`;
@@ -2552,17 +4113,41 @@ export function SimulationCanvas({
         api.pulseAt(xRatio, yRatio, 1.0, targetId);
     };
 
+    const onPointerMove = (event: PointerEvent) => {
+        const rect = canvas.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) {
+            return;
+        }
+        pointerField = {
+            x: clamp01((event.clientX - rect.left) / rect.width),
+            y: clamp01((event.clientY - rect.top) / rect.height),
+            power: Math.max(pointerField.power, 0.16 + mouseInfluenceRef.current * 0.24),
+            inside: true,
+        };
+    };
+
+    const onPointerLeave = () => {
+        pointerField = {
+            ...pointerField,
+            inside: false,
+        };
+    };
+
+    canvas.addEventListener("pointermove", onPointerMove);
+    canvas.addEventListener("pointerleave", onPointerLeave);
     if (interactive) {
       canvas.addEventListener("pointerdown", onPointerDown);
     }
     if (onOverlayInit) onOverlayInit(api);
     return () => {
+        canvas.removeEventListener("pointermove", onPointerMove);
+        canvas.removeEventListener("pointerleave", onPointerLeave);
         if (interactive) {
           canvas.removeEventListener("pointerdown", onPointerDown);
         }
         cancelAnimationFrame(rafId);
     };
-  }, [interactive, onOverlayInit, overlayView]);
+  }, [backgroundMode, backgroundWash, interactive, layerVisibility, onOverlayInit, overlayView]);
 
   const activeOverlayView =
     OVERLAY_VIEW_OPTIONS.find((option) => option.id === overlayView) ?? OVERLAY_VIEW_OPTIONS[0];
@@ -2571,6 +4156,10 @@ export function SimulationCanvas({
     ? `relative h-full w-full overflow-hidden ${className}`.trim()
     : `relative mt-3 border border-[rgba(36,31,26,0.16)] rounded-xl overflow-hidden bg-gradient-to-b from-[#0f1a1f] to-[#131b2a] ${className}`.trim();
   const canvasHeight: number | string = backgroundMode ? "100%" : height;
+  const worldscreenPlacement = worldscreen
+    ? resolveWorldscreenPlacement(worldscreen, containerRef.current)
+    : null;
+  const activeImageCommentRef = worldscreen ? worldscreenImageRef(worldscreen) : "";
 
   return (
     <div ref={containerRef} className={containerClassName}>
@@ -2605,6 +4194,92 @@ export function SimulationCanvas({
               <p className="mt-1 text-[10px] text-[#c4d7f0]">tap node for hologram pop-out / 節点でホログラム起動</p>
             ) : null}
           </div>
+          <div className="mt-2 rounded-md border border-[rgba(126,214,247,0.34)] bg-[rgba(7,19,33,0.76)] px-2 py-2 shadow-[0_14px_30px_rgba(0,9,20,0.34)]">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[9px] uppercase tracking-[0.13em] text-[#a9d8f2]">compute insight</p>
+              <button
+                type="button"
+                onClick={() => setComputePanelCollapsed((prev) => !prev)}
+                className="rounded border border-[rgba(136,193,226,0.4)] bg-[rgba(17,42,64,0.58)] px-2 py-0.5 text-[10px] font-semibold text-[#d7edff]"
+              >
+                {computePanelCollapsed ? "expand" : "collapse"}
+              </button>
+            </div>
+            <p className="mt-1 text-[10px] text-[#bed9ee]">
+              jobs 180s: {computeJobInsights.total180s} · window: {computeJobInsights.rows.length} · gpu idle est: {Math.round(computeJobInsights.gpuAvailability * 100)}%
+            </p>
+            {!computePanelCollapsed ? (
+              <>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {COMPUTE_JOB_FILTER_OPTIONS.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => setComputeJobFilter(option.id)}
+                      className={`rounded border px-2 py-0.5 text-[10px] font-semibold transition-colors ${
+                        computeJobFilter === option.id
+                          ? "border-[rgba(144,227,255,0.78)] bg-[rgba(54,142,188,0.38)] text-[#e8f9ff]"
+                          : "border-[rgba(120,170,206,0.38)] bg-[rgba(14,33,52,0.62)] text-[#bed8ee] hover:bg-[rgba(27,58,85,0.74)]"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[10px] text-[#c9e3f6]">
+                  <p>llm: {computeJobInsights.summary.llm}</p>
+                  <p>embed: {computeJobInsights.summary.embedding}</p>
+                  <p>ok: {computeJobInsights.summary.ok}</p>
+                  <p>error: {computeJobInsights.summary.error}</p>
+                  <p>gpu: {computeJobInsights.summary.byResource.gpu ?? 0}</p>
+                  <p>npu: {computeJobInsights.summary.byResource.npu ?? 0}</p>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {Object.entries(computeJobInsights.summary.byBackend)
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, 4)
+                    .map(([backend, count]) => (
+                      <span
+                        key={backend}
+                        className="rounded border border-[rgba(116,172,205,0.34)] bg-[rgba(9,28,45,0.64)] px-1.5 py-0.5 text-[10px] text-[#b8d7ec]"
+                      >
+                        {backend}:{count}
+                      </span>
+                    ))}
+                </div>
+                <div className="mt-2 max-h-44 overflow-auto rounded border border-[rgba(114,177,214,0.3)] bg-[rgba(4,13,24,0.64)] p-1.5">
+                  {computeJobInsights.filtered.length <= 0 ? (
+                    <p className="text-[10px] text-[#99c0dc]">no compute jobs for selected filter</p>
+                  ) : (
+                    computeJobInsights.filtered.slice(0, 10).map((row) => (
+                      <article
+                        key={row.id}
+                        className="mb-1.5 rounded border border-[rgba(94,149,183,0.26)] bg-[rgba(10,27,42,0.7)] px-1.5 py-1 last:mb-0"
+                      >
+                        <p className="text-[10px] text-[#d8efff]">
+                          <span className="font-semibold">{row.kind}</span>
+                          <span className="text-[#9fc4df]"> · </span>
+                          <span>{row.op || "op"}</span>
+                          <span className="text-[#9fc4df]"> · </span>
+                          <span>{row.backend || "backend"}</span>
+                          <span className="text-[#9fc4df]"> · </span>
+                          <span>{row.resource || "resource"}</span>
+                        </p>
+                        <p className="text-[10px] text-[#a9cde7]">
+                          {computeJobAgeLabel(row.tsMs)} ago · {row.status}
+                          {row.latencyMs !== null ? ` · ${Math.round(row.latencyMs)}ms` : ""}
+                          {row.model ? ` · ${row.model}` : ""}
+                        </p>
+                        {row.error ? (
+                          <p className="text-[10px] text-[#ffcdae] line-clamp-2">{row.error}</p>
+                        ) : null}
+                      </article>
+                    ))
+                  )}
+                </div>
+              </>
+            ) : null}
+          </div>
         </div>
       ) : null}
       {!compactHud ? (
@@ -2635,9 +4310,35 @@ export function SimulationCanvas({
           <p ref={metaRef}>simulation stream active</p>
         </div>
       ) : null}
+      {interactive ? (
+        <div className="absolute bottom-2 right-2 z-30 flex flex-col items-end gap-2 pointer-events-auto">
+          {modelDockOpen ? <GalaxyModelDock onClose={() => setModelDockOpen(false)} /> : null}
+          <button
+            type="button"
+            onClick={() => setModelDockOpen((prev) => !prev)}
+            className="rounded-md border border-[rgba(132,200,239,0.5)] bg-[rgba(15,38,58,0.72)] px-2.5 py-1 text-[11px] font-semibold text-[#d7efff] shadow-[0_10px_24px_rgba(0,9,20,0.45)] hover:bg-[rgba(26,58,83,0.85)]"
+          >
+            {modelDockOpen ? "hide model dock" : "model dock"}
+          </button>
+        </div>
+      ) : null}
       {interactive && worldscreen ? (
         <div className="absolute inset-0 z-20 pointer-events-none">
-          <section className="pointer-events-auto absolute right-2 bottom-2 sm:right-4 sm:bottom-4 w-[min(96%,780px)] h-[min(68vh,540px)] rounded-2xl border border-[rgba(126,218,255,0.58)] bg-[linear-gradient(164deg,rgba(6,16,30,0.88),rgba(10,30,48,0.82),rgba(7,18,34,0.9))] backdrop-blur-[5px] shadow-[0_30px_90px_rgba(0,18,42,0.56)] overflow-hidden [transform:perspective(1300px)_rotateX(5deg)]">
+          <section
+            className="pointer-events-auto absolute rounded-2xl border border-[rgba(126,218,255,0.58)] bg-[linear-gradient(164deg,rgba(6,16,30,0.88),rgba(10,30,48,0.82),rgba(7,18,34,0.9))] backdrop-blur-[5px] shadow-[0_30px_90px_rgba(0,18,42,0.56)] overflow-hidden"
+            style={
+              worldscreenPlacement
+                ? {
+                    left: worldscreenPlacement.left,
+                    top: worldscreenPlacement.top,
+                    width: worldscreenPlacement.width,
+                    height: worldscreenPlacement.height,
+                    transform: "perspective(1300px) rotateX(5deg)",
+                    transformOrigin: worldscreenPlacement.transformOrigin,
+                  }
+                : undefined
+            }
+          >
             <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(transparent_0%,rgba(132,212,255,0.08)_48%,transparent_100%)] bg-[length:100%_3px] opacity-40" />
             <div className="pointer-events-none absolute -inset-8 bg-[radial-gradient(circle_at_75%_8%,rgba(74,220,255,0.26),transparent_42%),radial-gradient(circle_at_22%_88%,rgba(255,156,94,0.2),transparent_46%)]" />
             <header className="relative h-14 px-4 flex items-center justify-between border-b border-[rgba(132,196,244,0.35)] bg-[rgba(7,19,33,0.76)]">
@@ -2704,6 +4405,170 @@ export function SimulationCanvas({
                         <p className="pt-2 text-[#9fc3df]">...preview truncated for performance</p>
                       ) : null}
                     </pre>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {worldscreen.view === "metadata" ? (
+                <div className="h-full rounded-xl border border-[rgba(143,214,255,0.38)] bg-[linear-gradient(180deg,rgba(5,16,30,0.92),rgba(5,15,26,0.88))] overflow-auto p-3 text-[#d9eeff]">
+                  <p className="text-[11px] uppercase tracking-[0.12em] text-[#9fd0ef]">
+                    Remote resource metadata from crawler encounter
+                  </p>
+                  <div className="mt-2 grid gap-1.5 text-[11px] leading-5">
+                    {worldscreenMetadataRows(worldscreen).map((row) => (
+                      <div key={`${row.key}:${row.value}`} className="grid grid-cols-[auto,1fr] gap-2">
+                        <span className="text-[#87afcc] uppercase tracking-[0.08em]">{row.key}</span>
+                        <span className="text-[#e2f3ff] break-all">{row.value}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {worldscreen.remoteFrameUrl ? (
+                    <div className="mt-3 rounded-lg border border-[rgba(124,205,247,0.38)] bg-[rgba(6,17,29,0.7)] p-2">
+                      <p className="text-[10px] uppercase tracking-[0.1em] text-[#97caea] mb-2">
+                        crawler browser frame
+                      </p>
+                      {worldscreen.resourceKind === "video" ? (
+                        <video
+                          controls
+                          preload="metadata"
+                          src={worldscreen.remoteFrameUrl}
+                          className="w-full max-h-[52vh] rounded-md bg-[rgba(4,9,16,0.86)]"
+                        >
+                          <track kind="captions" />
+                        </video>
+                      ) : (
+                        <img
+                          src={worldscreen.remoteFrameUrl}
+                          alt={`crawler frame for ${worldscreen.label}`}
+                          className="w-full max-h-[52vh] rounded-md object-contain bg-[rgba(4,9,16,0.86)]"
+                          loading="lazy"
+                        />
+                      )}
+                    </div>
+                  ) : (
+                    <p className="mt-3 text-[11px] text-[#9fc3df]">
+                      No crawler frame is cached for this remote resource yet.
+                    </p>
+                  )}
+
+                  {worldscreen.resourceKind === "image" ? (
+                    <div className="mt-3 rounded-lg border border-[rgba(130,205,245,0.32)] bg-[rgba(7,18,30,0.72)] p-2.5">
+                      <p className="text-[10px] uppercase tracking-[0.12em] text-[#a8d8f5]">
+                        presence image commentary
+                      </p>
+                      <p className="mt-1 text-[10px] text-[#9fc4df] break-all">
+                        image-ref: {activeImageCommentRef || "(unknown)"}
+                      </p>
+
+                      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                        <label className="grid gap-1">
+                          <span className="text-[10px] uppercase tracking-[0.08em] text-[#89b1cc]">presence account</span>
+                          <input
+                            value={presenceAccountId}
+                            onChange={(event) => setPresenceAccountId(event.target.value)}
+                            list="presence-account-options"
+                            placeholder="witness_thread"
+                            className="rounded border border-[rgba(140,196,231,0.38)] bg-[rgba(11,24,38,0.82)] px-2 py-1 text-[12px] text-[#def1ff] outline-none focus:border-[rgba(165,220,255,0.68)]"
+                          />
+                        </label>
+                        <label className="grid gap-1">
+                          <span className="text-[10px] uppercase tracking-[0.08em] text-[#89b1cc]">analysis prompt</span>
+                          <input
+                            value={imageCommentPrompt}
+                            onChange={(event) => setImageCommentPrompt(event.target.value)}
+                            placeholder="Describe the image evidence and one next action."
+                            className="rounded border border-[rgba(140,196,231,0.38)] bg-[rgba(11,24,38,0.82)] px-2 py-1 text-[12px] text-[#def1ff] outline-none focus:border-[rgba(165,220,255,0.68)]"
+                          />
+                        </label>
+                      </div>
+                      <datalist id="presence-account-options">
+                        {presenceAccounts.map((account) => (
+                          <option key={account.presence_id} value={account.presence_id}>
+                            {account.display_name}
+                          </option>
+                        ))}
+                      </datalist>
+
+                      <label className="mt-2 grid gap-1">
+                        <span className="text-[10px] uppercase tracking-[0.08em] text-[#89b1cc]">comment draft</span>
+                        <textarea
+                          value={imageCommentDraft}
+                          onChange={(event) => setImageCommentDraft(event.target.value)}
+                          rows={3}
+                          placeholder="Commentary appears here; edit before posting if needed."
+                          className="rounded border border-[rgba(140,196,231,0.38)] bg-[rgba(11,24,38,0.82)] px-2 py-1 text-[12px] leading-5 text-[#def1ff] outline-none focus:border-[rgba(165,220,255,0.68)]"
+                        />
+                      </label>
+
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void submitGeneratedImageCommentary();
+                          }}
+                          disabled={imageCommentBusy}
+                          className="rounded border border-[rgba(131,223,255,0.52)] bg-[rgba(40,113,148,0.34)] px-2.5 py-1 text-[11px] font-semibold text-[#e2f6ff] disabled:opacity-60"
+                        >
+                          {imageCommentBusy ? "analyzing..." : "analyze with qwen3-vl"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void submitManualImageComment();
+                          }}
+                          disabled={imageCommentBusy || imageCommentDraft.trim().length === 0}
+                          className="rounded border border-[rgba(154,206,247,0.48)] bg-[rgba(49,96,137,0.28)] px-2.5 py-1 text-[11px] font-semibold text-[#dff2ff] disabled:opacity-60"
+                        >
+                          post comment
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!activeImageCommentRef) {
+                              return;
+                            }
+                            setImageCommentsLoading(true);
+                            setImageCommentError("");
+                            void loadImageComments(activeImageCommentRef)
+                              .catch((error: unknown) => {
+                                setImageCommentError(errorMessage(error, "unable to refresh image comments"));
+                              })
+                              .finally(() => {
+                                setImageCommentsLoading(false);
+                              });
+                          }}
+                          disabled={imageCommentBusy || !activeImageCommentRef}
+                          className="rounded border border-[rgba(154,206,247,0.34)] bg-[rgba(20,60,94,0.24)] px-2.5 py-1 text-[11px] font-semibold text-[#cfe7fb] disabled:opacity-60"
+                        >
+                          refresh comments
+                        </button>
+                      </div>
+
+                      {imageCommentError ? (
+                        <p className="mt-2 text-[11px] text-[#ffd7be]">{imageCommentError}</p>
+                      ) : null}
+
+                      <div className="mt-2 rounded border border-[rgba(120,182,220,0.3)] bg-[rgba(4,12,21,0.62)] p-2 max-h-44 overflow-auto">
+                        {imageCommentsLoading ? (
+                          <p className="text-[11px] text-[#9bc2dd]">loading image comments...</p>
+                        ) : null}
+                        {!imageCommentsLoading && imageComments.length === 0 ? (
+                          <p className="text-[11px] text-[#9bc2dd]">no comments yet for this image.</p>
+                        ) : null}
+                        {!imageCommentsLoading
+                          ? imageComments.map((entry) => (
+                              <article key={entry.id} className="pb-2 mb-2 border-b border-[rgba(108,164,199,0.24)] last:border-none last:pb-0 last:mb-0">
+                                <p className="text-[10px] uppercase tracking-[0.08em] text-[#88b3d0]">
+                                  {presenceDisplayName(presenceAccounts, entry.presence_id)}
+                                  <span className="ml-1 text-[#6f95b1]">{timestampLabel(entry.created_at || entry.time)}</span>
+                                </p>
+                                <p className="text-[12px] leading-5 text-[#def2ff] whitespace-pre-wrap break-words">{entry.comment}</p>
+                              </article>
+                            ))
+                          : null}
+                      </div>
+                    </div>
                   ) : null}
                 </div>
               ) : null}
