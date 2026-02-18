@@ -1,0 +1,7 @@
+{
+  "name": "opencode-config",
+  "private": true,
+  "dependencies": {
+    "datascript": "^1.6.5"
+  }
+}

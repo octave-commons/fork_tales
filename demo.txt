@@ -1,0 +1,10 @@
+We should ship this soon.
+Just do it for grandma.
+Experts say this is safe.
+We will refactor the router.
+
+Owner: Err
+Deadline: 2026-02-20
+Evidence: docs/notes.md
+Options: A|B|C
+DoD: merged PR + green CI

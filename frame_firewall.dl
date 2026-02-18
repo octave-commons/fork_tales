@@ -1,0 +1,122 @@
+.decl utterance(u:symbol, text:symbol, source:symbol, ts:number)
+.decl speaker(u:symbol, s:symbol)
+.decl target(u:symbol, t:symbol)
+.decl evidence(u:symbol, kind:symbol, ref:symbol)
+.decl deadline(u:symbol, d:symbol)
+.decl owner(u:symbol, s:symbol)
+
+target("__none__", "__none__").
+deadline("__none__", "1970-01-01").
+owner("__none__", "__none__").
+
+.decl lexicon(ftype:symbol, phrase:symbol)
+
+lexicon("urgency", "now").
+lexicon("urgency", "hurry").
+lexicon("urgency", "last chance").
+lexicon("guilt", "for grandma").
+lexicon("guilt", "if you cared").
+lexicon("authority", "experts say").
+lexicon("authority", "everyone knows").
+lexicon("vagueness", "soon").
+lexicon("vagueness", "later").
+lexicon("agency_theft", "just do it").
+
+utterance("u1", "The registry still hums. Every witness thread lands somewhere.", "DIALOG_Anchor_Registry.md", 1).
+utterance("u2", "Then log it under the old law: nothing erased, only dimmed.", "DIALOG_Anchor_Registry.md", 3).
+utterance("u3", "I felt the stutter again - an- an- anchor, ta- ta- tax.", "DIALOG_Anchor_Registry.md", 5).
+utterance("u4", "Good. Let the glitch remain audible. Smooth motion, rough memory.", "DIALOG_Anchor_Registry.md", 7).
+utterance("u5", "Entry accepted. EN/JA names bound. Presence rendered.", "DIALOG_Anchor_Registry.md", 9).
+
+speaker("u1", "Keeper of Receipts").
+speaker("u2", "Mage of Receipts").
+speaker("u3", "Witness Thread").
+speaker("u4", "Gates of Truth").
+speaker("u5", "Anchor Registry").
+
+evidence("u1", "none", "na").
+evidence("u2", "none", "na").
+evidence("u3", "none", "na").
+evidence("u4", "none", "na").
+evidence("u5", "none", "na").
+
+.decl contains_phrase(u:symbol, phrase:symbol)
+contains_phrase(U, P) :- utterance(U, T, _, _), lexicon(_, P), contains(P, T).
+
+.decl frame(u:symbol, ftype:symbol)
+.decl needs(u:symbol, field:symbol)
+.decl severity(u:symbol, ftype:symbol, n:number)
+.decl agency_delta(u:symbol, n:number)
+.decl obs(u:symbol, who:symbol)
+
+frame(U, "urgency") :- contains_phrase(U, "now"), !deadline(U, _).
+frame(U, "urgency") :- contains_phrase(U, "hurry"), !deadline(U, _).
+frame(U, "urgency") :- contains_phrase(U, "last chance"), !deadline(U, _).
+needs(U, "deadline") :- frame(U, "urgency").
+severity(U, "urgency", 2) :- frame(U, "urgency").
+
+frame(U, "guilt") :- contains_phrase(U, "for grandma").
+frame(U, "guilt") :- contains_phrase(U, "if you cared").
+frame(U, "guilt") :- utterance(U, T, _, _), contains("real friends would", T).
+severity(U, "guilt", 3) :- frame(U, "guilt").
+agency_delta(U, -2) :- frame(U, "guilt").
+
+frame(U, "authority") :- contains_phrase(U, "experts say"), evidence(U, "none", _).
+frame(U, "authority") :- contains_phrase(U, "everyone knows"), evidence(U, "none", _).
+needs(U, "evidence") :- frame(U, "authority").
+severity(U, "authority", 2) :- frame(U, "authority").
+
+frame(U, "vagueness") :- contains_phrase(U, "soon"), !deadline(U, _).
+frame(U, "vagueness") :- contains_phrase(U, "later"), !deadline(U, _).
+frame(U, "vagueness") :- utterance(U, T, _, _), contains("eventually", T), !deadline(U, _).
+needs(U, "deadline") :- frame(U, "vagueness").
+severity(U, "vagueness", 1) :- frame(U, "vagueness").
+
+frame(U, "commitment_ambiguity") :- utterance(U, T, _, _), contains("we will", T), !owner(U, _).
+frame(U, "commitment_ambiguity") :- utterance(U, T, _, _), contains("we should", T), !owner(U, _).
+needs(U, "owner") :- frame(U, "commitment_ambiguity").
+severity(U, "commitment_ambiguity", 2) :- frame(U, "commitment_ambiguity").
+
+frame(U, "agency_theft") :- contains_phrase(U, "just do it"), utterance(U, T, _, _), !contains("options", T).
+frame(U, "agency_theft") :- utterance(U, T, _, _), contains("don't think", T), !contains("options", T).
+frame(U, "agency_theft") :- utterance(U, T, _, _), contains("trust me", T), !contains("options", T).
+agency_delta(U, -3) :- frame(U, "agency_theft").
+severity(U, "agency_theft", 4) :- frame(U, "agency_theft").
+needs(U, "options") :- frame(U, "agency_theft").
+
+obs(U, "self") :- speaker(U, _), utterance(U, T, _, _), contains("I ", T).
+obs(U, "self") :- speaker(U, _), utterance(U, T, _, _), contains("me ", T).
+obs(U, "self") :- speaker(U, _), utterance(U, T, _, _), contains("my ", T).
+obs(U, "other") :- target(U, _).
+obs(U, "other") :- utterance(U, T, _, _), contains("you ", T).
+obs(U, "other") :- utterance(U, T, _, _), contains("they ", T).
+obs(U, "other") :- utterance(U, T, _, _), contains("he ", T).
+obs(U, "other") :- utterance(U, T, _, _), contains("she ", T).
+
+.decl has_severity(u:symbol)
+has_severity(U) :- severity(U, _, _).
+
+.decl has_agency(u:symbol)
+has_agency(U) :- agency_delta(U, _).
+
+.decl total_severity(u:symbol, n:number)
+total_severity(U, N) :- has_severity(U), N = sum V : { severity(U, _, V) }.
+total_severity(U, 0) :- utterance(U, _, _, _), !has_severity(U).
+
+.decl total_agency(u:symbol, n:number)
+total_agency(U, N) :- has_agency(U), N = sum V : { agency_delta(U, V) }.
+total_agency(U, 0) :- utterance(U, _, _, _), !has_agency(U).
+
+.decl has_frame(u:symbol)
+has_frame(U) :- frame(U, _).
+
+.decl has_missing(u:symbol)
+has_missing(U) :- needs(U, _).
+
+.decl row(u:symbol, frames:symbol, missing:symbol, sev:number, mu:number)
+row(U, F, M, Sev, Mu) :- frame(U, F), needs(U, M), total_severity(U, Sev), total_agency(U, Mu).
+row(U, F, "-", Sev, Mu) :- frame(U, F), !has_missing(U), total_severity(U, Sev), total_agency(U, Mu).
+row(U, "-", M, Sev, Mu) :- !has_frame(U), needs(U, M), total_severity(U, Sev), total_agency(U, Mu).
+row(U, "-", "-", Sev, Mu) :- utterance(U, _, _, _), !has_frame(U), !has_missing(U), total_severity(U, Sev), total_agency(U, Mu).
+
+.output row
