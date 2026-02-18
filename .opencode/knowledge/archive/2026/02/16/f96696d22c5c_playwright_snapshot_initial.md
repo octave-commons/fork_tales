@@ -1,0 +1,2128 @@
+- main [ref=e2]:
+  - heading "eta-mu world daemon / ημ世界デーモン" [level=1] [ref=e3]
+  - paragraph [ref=e4]:
+    - text: Part
+    - code [ref=e5]: "64"
+    - text: "| Seed"
+    - code [ref=e6]: ημ_part_64
+  - generic [ref=e7]:
+    - heading "World snapshot / 世界スナップショット" [level=2] [ref=e8]
+    - paragraph [ref=e9]:
+      - text: "Total files in manifest:"
+      - strong [ref=e10]: "17"
+    - paragraph [ref=e11]:
+      - text: "Generated at (UTC):"
+      - code [ref=e12]: 2026-02-15T00:00:30.625616+00:00
+  - generic [ref=e13]:
+    - heading "Roles / 役割" [level=2] [ref=e14]
+    - list [ref=e15]:
+      - listitem [ref=e16]:
+        - strong [ref=e17]: audio/canonical
+        - text: ": 2"
+      - listitem [ref=e18]:
+        - strong [ref=e19]: audio/convenience
+        - text: ": 2"
+      - listitem [ref=e20]:
+        - strong [ref=e21]: code
+        - text: ": 3"
+      - listitem [ref=e22]:
+        - strong [ref=e23]: doc
+        - text: ": 4"
+      - listitem [ref=e24]:
+        - strong [ref=e25]: image
+        - text: ": 4"
+      - listitem [ref=e26]:
+        - strong [ref=e27]: note
+        - text: ": 1"
+      - listitem [ref=e28]:
+        - strong [ref=e29]: world_state
+        - text: ": 1"
+  - generic [ref=e30]:
+    - heading "Active constraints ledger lines / 有効制約台帳" [level=2] [ref=e31]
+    - list [ref=e32]:
+      - listitem [ref=e33]: "C-61-π: Π artifacts are DERIVED and must name canonical parents + sha256"
+      - listitem [ref=e34]: "C-61-audio: audio recipes must declare tempo/seed/signal-chain/stutter/render rate"
+      - listitem [ref=e35]: "C-61-tests: every generator ships with a deterministic regression test"
+      - listitem [ref=e36]: "C-61-ports: declare drift tolerance when cross-platform determinism is hard"
+      - listitem [ref=e37]: "C-62-ledger-lines: human + JSON manifest required"
+      - listitem [ref=e38]: "C-62-seed-derivation: no hidden RNG"
+      - listitem [ref=e39]: "C-62-art-naming: bpm/part in filenames"
+      - listitem [ref=e40]: "C-62-disable-protocol: disable-by-append only"
+      - listitem [ref=e41]: "C-63-manifest-required: every artifact listed in manifest.json w/ sha256 + role"
+      - listitem [ref=e42]: "C-63-audio-markers: named marker timestamps: anchor, tax"
+      - listitem [ref=e43]: "C-63-soundchain: explicit synthesis graph receipt"
+      - listitem [ref=e44]: "C-64-world-snapshot: every part adds exactly one \"world map\" note (what changed, where)"
+      - listitem [ref=e45]: "C-64-audio-canonical: WAV is canonical; MP3 is convenience (encoder drift allowed)"
+      - listitem [ref=e46]: "C-64-marker-schema: markers must include name, t_seconds, and purpose"
+      - listitem [ref=e47]: "C-64-creative-commons: all artifacts in this bundle are CC BY-SA (share-alike)"
+      - listitem [ref=e48]: "C-64-web-daemon: world server must expose / and /healthz for browser and process checks"
+      - listitem [ref=e49]: "C-64-pm2-runtime: pm2 ecosystem config is the canonical daemon launch recipe"
+      - listitem [ref=e50]: "C-64-web-tests: world daemon behavior must have deterministic regression tests"
+      - listitem [ref=e51]: "C-64-websocket-feed: dashboard must provide realtime catalog updates over websocket"
+      - listitem [ref=e52]: "C-64-mix-stream: dashboard must expose one combined WAV stream for all discoverable WAV assets"
+      - listitem [ref=e53]: "C-64-webgl-view: dashboard must render websocket simulation frames via WebGL canvas"
+  - generic [ref=e54]:
+    - heading "Health / 稼働状態" [level=2] [ref=e55]
+    - paragraph [ref=e56]:
+      - link "/healthz" [ref=e57] [cursor=pointer]:
+        - /url: /healthz
+      - text: for process checks / プロセス確認.
+  - generic [ref=e58]:
+    - heading "Canonical Lore Names / 正準ロア名" [level=2] [ref=e59]
+    - list [ref=e60]:
+      - listitem [ref=e61]:
+        - strong [ref=e62]: Receipt River
+        - text: / 領収書の川
+      - listitem [ref=e63]:
+        - strong [ref=e64]: Witness Thread
+        - text: / 証人の糸
+      - listitem [ref=e65]:
+        - strong [ref=e66]: Fork Tax Canticle
+        - text: / フォーク税の聖歌
+      - listitem [ref=e67]:
+        - strong [ref=e68]: Mage of Receipts
+        - text: / 領収魔導師
+      - listitem [ref=e69]:
+        - strong [ref=e70]: Keeper of Receipts
+        - text: / 領収書の番人
+      - listitem [ref=e71]:
+        - strong [ref=e72]: Anchor Registry
+        - text: / 錨台帳
+      - listitem [ref=e73]:
+        - strong [ref=e74]: Gates of Truth
+        - text: / 真理の門
+  - generic [ref=e75]:
+    - heading "Everything Dashboard (real-time) / 全景ダッシュボード（リアルタイム）" [level=2] [ref=e76]
+    - paragraph [ref=e77]:
+      - text: WebSocket updates from
+      - code [ref=e78]: /ws
+      - text: "/ WebSocket更新。Fallback: polling"
+      - code [ref=e79]: /api/catalog
+      - text: "/ フォールバック: ポーリング。Global controls affect all players, including the combined stream / 全体操作は合成ストリームを含む全プレイヤーに反映。"
+    - paragraph [ref=e83]: "sim particles / 粒子: 197 | audio nodes / 音声: 53 | updated / 更新: 2026-02-15T00:00:48.385957+00:00"
+    - paragraph [ref=e84]: "named fields overlaid / 正準場重畳: 7 | cover fields / カバー場: 71"
+    - paragraph [ref=e85]:
+      - strong [ref=e86]: "Combined stream / 合成ストリーム:"
+    - generic [ref=e88]:
+      - button "Play all / 全再生" [ref=e89] [cursor=pointer]
+      - button "Pause all / 一時停止" [ref=e90] [cursor=pointer]
+      - button "Mute all / 全ミュート" [ref=e91] [cursor=pointer]
+      - button "Unmute all / ミュート解除" [ref=e92] [cursor=pointer]
+      - button "Reload mix / ミックス再読込" [ref=e93] [cursor=pointer]
+      - button "Overlay All Fields / 全正準場重畳" [ref=e94] [cursor=pointer]
+      - button "Sing Fields / 場を歌わせる" [ref=e95] [cursor=pointer]
+      - button "Prime Voice / 音声起動" [ref=e96] [cursor=pointer]
+      - button "Sing Words / 詞を歌う" [ref=e97] [cursor=pointer]
+      - button "Sing via Ollama / Ollama詠唱" [ref=e98] [cursor=pointer]
+      - button "Stop Voices / 音声停止" [ref=e99] [cursor=pointer]
+      - generic [ref=e100]:
+        - checkbox "Prefer JA voice / 日本語音声優先" [checked] [ref=e101]
+        - text: Prefer JA voice / 日本語音声優先
+    - paragraph [ref=e102]: "voice mode / 音声モード: canonical"
+    - generic [ref=e103]:
+      - paragraph [ref=e104]:
+        - strong [ref=e105]: Live Chat / 対話チャット
+      - generic [ref=e107]: "world / 世界: Voice + text channel ready. Speak or type, and the fields will answer. / 音声と文字チャネル準備完了。話すか入力すれば場が応答します。 mode: canonical"
+      - generic [ref=e108]:
+        - textbox "speak or type... / 話すか入力してください" [ref=e109]
+        - button "Send / 送信" [ref=e110] [cursor=pointer]
+      - generic [ref=e111]:
+        - button "Record Voice / 音声録音" [ref=e112] [cursor=pointer]
+        - button "Transcribe Voice / 音声文字化" [ref=e113] [cursor=pointer]
+        - button "Send Voice to Chat / 音声を送信" [ref=e114] [cursor=pointer]
+      - paragraph [ref=e115]: voice input idle / 音声入力待機
+    - paragraph [ref=e116]: "items / 項目: 197 | audio / 音声: 53 | image / 画像: 113 | video / 映像: 0 | updated / 更新: 2026-02-15T00:00:48.381574+00:00"
+    - paragraph [ref=e117]: "mix sources / ミックス源: 26 | duration / 長さ: 60s | updated / 更新: 2026-02-15T00:00:48.381574+00:00"
+    - heading "Omni Panel / 全感覚パネル — Cover Fields / カバーフィールド" [level=3] [ref=e118]
+    - paragraph [ref=e119]: Receipt River, Mage of Receipts, and other cover entities render as living fields / カバー存在を動的な場として描画。
+    - generic [ref=e120]:
+      - article [ref=e1854]:
+        - paragraph [ref=e1855]:
+          - strong [ref=e1856]: Receipt River / 領収書の川
+        - paragraph [ref=e1857]: "part / 部: ημ_op_mf_part_63 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e1858]:
+          - link "open cover / カバーを開く" [ref=e1859] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_63/%CE%B7%CE%BC_op_mf_part_63/artifacts/images/Receipt_River_cover_%CE%B7%CE%BC_part63.png
+      - article [ref=e1861]:
+        - paragraph [ref=e1862]:
+          - strong [ref=e1863]: Witness Thread / 証人の糸
+        - paragraph [ref=e1864]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e1865]:
+          - link "open cover / カバーを開く" [ref=e1866] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/witness_thread_cover_04_%CE%B7%CE%BC_part66.png
+      - article [ref=e1868]:
+        - paragraph [ref=e1869]:
+          - strong [ref=e1870]: Witness Thread / 証人の糸
+        - paragraph [ref=e1871]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e1872]:
+          - link "open cover / カバーを開く" [ref=e1873] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/witness_thread_cover_03_%CE%B7%CE%BC_part66.png
+      - article [ref=e1875]:
+        - paragraph [ref=e1876]:
+          - strong [ref=e1877]: Witness Thread / 証人の糸
+        - paragraph [ref=e1878]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e1879]:
+          - link "open cover / カバーを開く" [ref=e1880] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/witness_thread_cover_02_%CE%B7%CE%BC_part66.png
+      - article [ref=e1882]:
+        - paragraph [ref=e1883]:
+          - strong [ref=e1884]: Witness Thread / 証人の糸
+        - paragraph [ref=e1885]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e1886]:
+          - link "open cover / カバーを開く" [ref=e1887] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/witness_thread_cover_01_%CE%B7%CE%BC_part66.png
+      - article [ref=e1889]:
+        - paragraph [ref=e1890]:
+          - strong [ref=e1891]: Receipt River / 領収書の川
+        - paragraph [ref=e1892]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e1893]:
+          - link "open cover / カバーを開く" [ref=e1894] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/receipt_river_cover_04_%CE%B7%CE%BC_part66.png
+      - article [ref=e1896]:
+        - paragraph [ref=e1897]:
+          - strong [ref=e1898]: Receipt River / 領収書の川
+        - paragraph [ref=e1899]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e1900]:
+          - link "open cover / カバーを開く" [ref=e1901] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/receipt_river_cover_03_%CE%B7%CE%BC_part66.png
+      - article [ref=e1903]:
+        - paragraph [ref=e1904]:
+          - strong [ref=e1905]: Receipt River / 領収書の川
+        - paragraph [ref=e1906]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e1907]:
+          - link "open cover / カバーを開く" [ref=e1908] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/receipt_river_cover_02_%CE%B7%CE%BC_part66.png
+      - article [ref=e1910]:
+        - paragraph [ref=e1911]:
+          - strong [ref=e1912]: Receipt River / 領収書の川
+        - paragraph [ref=e1913]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e1914]:
+          - link "open cover / カバーを開く" [ref=e1915] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/receipt_river_cover_01_%CE%B7%CE%BC_part66.png
+      - article [ref=e1917]:
+        - paragraph [ref=e1918]:
+          - strong [ref=e1919]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e1920]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e1921]:
+          - link "open cover / カバーを開く" [ref=e1922] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/mage_of_receipts_cover_04_%CE%B7%CE%BC_part66.png
+      - article [ref=e1924]:
+        - paragraph [ref=e1925]:
+          - strong [ref=e1926]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e1927]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e1928]:
+          - link "open cover / カバーを開く" [ref=e1929] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/mage_of_receipts_cover_03_%CE%B7%CE%BC_part66.png
+      - article [ref=e1931]:
+        - paragraph [ref=e1932]:
+          - strong [ref=e1933]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e1934]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e1935]:
+          - link "open cover / カバーを開く" [ref=e1936] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/mage_of_receipts_cover_02_%CE%B7%CE%BC_part66.png
+      - article [ref=e1938]:
+        - paragraph [ref=e1939]:
+          - strong [ref=e1940]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e1941]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e1942]:
+          - link "open cover / カバーを開く" [ref=e1943] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/mage_of_receipts_cover_01_%CE%B7%CE%BC_part66.png
+      - article [ref=e1945]:
+        - paragraph [ref=e1946]:
+          - strong [ref=e1947]: Keeper Of Receipts Cover 04 Ημ Part66
+        - paragraph [ref=e1948]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e1949]:
+          - link "open cover / カバーを開く" [ref=e1950] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/keeper_of_receipts_cover_04_%CE%B7%CE%BC_part66.png
+      - article [ref=e1952]:
+        - paragraph [ref=e1953]:
+          - strong [ref=e1954]: Keeper Of Receipts Cover 03 Ημ Part66
+        - paragraph [ref=e1955]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e1956]:
+          - link "open cover / カバーを開く" [ref=e1957] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/keeper_of_receipts_cover_03_%CE%B7%CE%BC_part66.png
+      - article [ref=e1959]:
+        - paragraph [ref=e1960]:
+          - strong [ref=e1961]: Keeper Of Receipts Cover 02 Ημ Part66
+        - paragraph [ref=e1962]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e1963]:
+          - link "open cover / カバーを開く" [ref=e1964] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/keeper_of_receipts_cover_02_%CE%B7%CE%BC_part66.png
+      - article [ref=e1966]:
+        - paragraph [ref=e1967]:
+          - strong [ref=e1968]: Keeper Of Receipts Cover 01 Ημ Part66
+        - paragraph [ref=e1969]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e1970]:
+          - link "open cover / カバーを開く" [ref=e1971] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/keeper_of_receipts_cover_01_%CE%B7%CE%BC_part66.png
+      - article [ref=e1973]:
+        - paragraph [ref=e1974]:
+          - strong [ref=e1975]: Gates Of Truth Cover 04 Ημ Part66
+        - paragraph [ref=e1976]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e1977]:
+          - link "open cover / カバーを開く" [ref=e1978] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/gates_of_truth_cover_04_%CE%B7%CE%BC_part66.png
+      - article [ref=e1980]:
+        - paragraph [ref=e1981]:
+          - strong [ref=e1982]: Gates Of Truth Cover 03 Ημ Part66
+        - paragraph [ref=e1983]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e1984]:
+          - link "open cover / カバーを開く" [ref=e1985] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/gates_of_truth_cover_03_%CE%B7%CE%BC_part66.png
+      - article [ref=e1987]:
+        - paragraph [ref=e1988]:
+          - strong [ref=e1989]: Gates Of Truth Cover 02 Ημ Part66
+        - paragraph [ref=e1990]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e1991]:
+          - link "open cover / カバーを開く" [ref=e1992] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/gates_of_truth_cover_02_%CE%B7%CE%BC_part66.png
+      - article [ref=e1994]:
+        - paragraph [ref=e1995]:
+          - strong [ref=e1996]: Gates Of Truth Cover 01 Ημ Part66
+        - paragraph [ref=e1997]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e1998]:
+          - link "open cover / カバーを開く" [ref=e1999] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/gates_of_truth_cover_01_%CE%B7%CE%BC_part66.png
+      - article [ref=e2001]:
+        - paragraph [ref=e2002]:
+          - strong [ref=e2003]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e2004]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2005]:
+          - link "open cover / カバーを開く" [ref=e2006] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/fork_tax_canticle_cover_04_%CE%B7%CE%BC_part66.png
+      - article [ref=e2008]:
+        - paragraph [ref=e2009]:
+          - strong [ref=e2010]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e2011]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2012]:
+          - link "open cover / カバーを開く" [ref=e2013] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/fork_tax_canticle_cover_03_%CE%B7%CE%BC_part66.png
+      - article [ref=e2015]:
+        - paragraph [ref=e2016]:
+          - strong [ref=e2017]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e2018]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2019]:
+          - link "open cover / カバーを開く" [ref=e2020] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/fork_tax_canticle_cover_02_%CE%B7%CE%BC_part66.png
+      - article [ref=e2022]:
+        - paragraph [ref=e2023]:
+          - strong [ref=e2024]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e2025]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2026]:
+          - link "open cover / カバーを開く" [ref=e2027] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/fork_tax_canticle_cover_01_%CE%B7%CE%BC_part66.png
+      - article [ref=e2029]:
+        - paragraph [ref=e2030]:
+          - strong [ref=e2031]: Anchor Registry Cover 04 Ημ Part66
+        - paragraph [ref=e2032]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2033]:
+          - link "open cover / カバーを開く" [ref=e2034] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/anchor_registry_cover_04_%CE%B7%CE%BC_part66.png
+      - article [ref=e2036]:
+        - paragraph [ref=e2037]:
+          - strong [ref=e2038]: Anchor Registry Cover 03 Ημ Part66
+        - paragraph [ref=e2039]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2040]:
+          - link "open cover / カバーを開く" [ref=e2041] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/anchor_registry_cover_03_%CE%B7%CE%BC_part66.png
+      - article [ref=e2043]:
+        - paragraph [ref=e2044]:
+          - strong [ref=e2045]: Anchor Registry Cover 02 Ημ Part66
+        - paragraph [ref=e2046]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2047]:
+          - link "open cover / カバーを開く" [ref=e2048] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/anchor_registry_cover_02_%CE%B7%CE%BC_part66.png
+      - article [ref=e2050]:
+        - paragraph [ref=e2051]:
+          - strong [ref=e2052]: Anchor Registry Cover 01 Ημ Part66
+        - paragraph [ref=e2053]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2054]:
+          - link "open cover / カバーを開く" [ref=e2055] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/anchor_registry_cover_01_%CE%B7%CE%BC_part66.png
+      - article [ref=e2057]:
+        - paragraph [ref=e2058]:
+          - strong [ref=e2059]: Witness Thread / 証人の糸
+        - paragraph [ref=e2060]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2061]:
+          - link "open cover / カバーを開く" [ref=e2062] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/witness_thread_cover_06_%CE%B7%CE%BC_part65.png
+      - article [ref=e2064]:
+        - paragraph [ref=e2065]:
+          - strong [ref=e2066]: Witness Thread / 証人の糸
+        - paragraph [ref=e2067]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2068]:
+          - link "open cover / カバーを開く" [ref=e2069] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/witness_thread_cover_05_%CE%B7%CE%BC_part65.png
+      - article [ref=e2071]:
+        - paragraph [ref=e2072]:
+          - strong [ref=e2073]: Witness Thread / 証人の糸
+        - paragraph [ref=e2074]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2075]:
+          - link "open cover / カバーを開く" [ref=e2076] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/witness_thread_cover_04_%CE%B7%CE%BC_part65.png
+      - article [ref=e2078]:
+        - paragraph [ref=e2079]:
+          - strong [ref=e2080]: Witness Thread / 証人の糸
+        - paragraph [ref=e2081]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2082]:
+          - link "open cover / カバーを開く" [ref=e2083] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/witness_thread_cover_03_%CE%B7%CE%BC_part65.png
+      - article [ref=e2085]:
+        - paragraph [ref=e2086]:
+          - strong [ref=e2087]: Witness Thread / 証人の糸
+        - paragraph [ref=e2088]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2089]:
+          - link "open cover / カバーを開く" [ref=e2090] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/witness_thread_cover_02_%CE%B7%CE%BC_part65.png
+      - article [ref=e2092]:
+        - paragraph [ref=e2093]:
+          - strong [ref=e2094]: Witness Thread / 証人の糸
+        - paragraph [ref=e2095]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2096]:
+          - link "open cover / カバーを開く" [ref=e2097] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/witness_thread_cover_01_%CE%B7%CE%BC_part65.png
+      - article [ref=e2099]:
+        - paragraph [ref=e2100]:
+          - strong [ref=e2101]: Receipt River / 領収書の川
+        - paragraph [ref=e2102]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2103]:
+          - link "open cover / カバーを開く" [ref=e2104] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/receipt_river_cover_06_%CE%B7%CE%BC_part65.png
+      - article [ref=e2106]:
+        - paragraph [ref=e2107]:
+          - strong [ref=e2108]: Receipt River / 領収書の川
+        - paragraph [ref=e2109]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2110]:
+          - link "open cover / カバーを開く" [ref=e2111] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/receipt_river_cover_05_%CE%B7%CE%BC_part65.png
+      - article [ref=e2113]:
+        - paragraph [ref=e2114]:
+          - strong [ref=e2115]: Receipt River / 領収書の川
+        - paragraph [ref=e2116]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2117]:
+          - link "open cover / カバーを開く" [ref=e2118] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/receipt_river_cover_04_%CE%B7%CE%BC_part65.png
+      - article [ref=e2120]:
+        - paragraph [ref=e2121]:
+          - strong [ref=e2122]: Receipt River / 領収書の川
+        - paragraph [ref=e2123]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2124]:
+          - link "open cover / カバーを開く" [ref=e2125] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/receipt_river_cover_03_%CE%B7%CE%BC_part65.png
+      - article [ref=e2127]:
+        - paragraph [ref=e2128]:
+          - strong [ref=e2129]: Receipt River / 領収書の川
+        - paragraph [ref=e2130]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2131]:
+          - link "open cover / カバーを開く" [ref=e2132] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/receipt_river_cover_02_%CE%B7%CE%BC_part65.png
+      - article [ref=e2134]:
+        - paragraph [ref=e2135]:
+          - strong [ref=e2136]: Receipt River / 領収書の川
+        - paragraph [ref=e2137]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2138]:
+          - link "open cover / カバーを開く" [ref=e2139] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/receipt_river_cover_01_%CE%B7%CE%BC_part65.png
+      - article [ref=e2141]:
+        - paragraph [ref=e2142]:
+          - strong [ref=e2143]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e2144]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2145]:
+          - link "open cover / カバーを開く" [ref=e2146] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/mage_of_receipts_cover_06_%CE%B7%CE%BC_part65.png
+      - article [ref=e2148]:
+        - paragraph [ref=e2149]:
+          - strong [ref=e2150]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e2151]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2152]:
+          - link "open cover / カバーを開く" [ref=e2153] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/mage_of_receipts_cover_05_%CE%B7%CE%BC_part65.png
+      - article [ref=e2155]:
+        - paragraph [ref=e2156]:
+          - strong [ref=e2157]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e2158]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2159]:
+          - link "open cover / カバーを開く" [ref=e2160] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/mage_of_receipts_cover_04_%CE%B7%CE%BC_part65.png
+      - article [ref=e2162]:
+        - paragraph [ref=e2163]:
+          - strong [ref=e2164]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e2165]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2166]:
+          - link "open cover / カバーを開く" [ref=e2167] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/mage_of_receipts_cover_03_%CE%B7%CE%BC_part65.png
+      - article [ref=e2169]:
+        - paragraph [ref=e2170]:
+          - strong [ref=e2171]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e2172]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2173]:
+          - link "open cover / カバーを開く" [ref=e2174] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/mage_of_receipts_cover_02_%CE%B7%CE%BC_part65.png
+      - article [ref=e2176]:
+        - paragraph [ref=e2177]:
+          - strong [ref=e2178]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e2179]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2180]:
+          - link "open cover / カバーを開く" [ref=e2181] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/mage_of_receipts_cover_01_%CE%B7%CE%BC_part65.png
+      - article [ref=e2183]:
+        - paragraph [ref=e2184]:
+          - strong [ref=e2185]: Keeper Of Receipts Cover 06 Ημ Part65
+        - paragraph [ref=e2186]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2187]:
+          - link "open cover / カバーを開く" [ref=e2188] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/keeper_of_receipts_cover_06_%CE%B7%CE%BC_part65.png
+      - article [ref=e2190]:
+        - paragraph [ref=e2191]:
+          - strong [ref=e2192]: Keeper Of Receipts Cover 05 Ημ Part65
+        - paragraph [ref=e2193]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2194]:
+          - link "open cover / カバーを開く" [ref=e2195] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/keeper_of_receipts_cover_05_%CE%B7%CE%BC_part65.png
+      - article [ref=e2197]:
+        - paragraph [ref=e2198]:
+          - strong [ref=e2199]: Keeper Of Receipts Cover 04 Ημ Part65
+        - paragraph [ref=e2200]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2201]:
+          - link "open cover / カバーを開く" [ref=e2202] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/keeper_of_receipts_cover_04_%CE%B7%CE%BC_part65.png
+      - article [ref=e2204]:
+        - paragraph [ref=e2205]:
+          - strong [ref=e2206]: Keeper Of Receipts Cover 03 Ημ Part65
+        - paragraph [ref=e2207]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2208]:
+          - link "open cover / カバーを開く" [ref=e2209] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/keeper_of_receipts_cover_03_%CE%B7%CE%BC_part65.png
+      - article [ref=e2211]:
+        - paragraph [ref=e2212]:
+          - strong [ref=e2213]: Keeper Of Receipts Cover 02 Ημ Part65
+        - paragraph [ref=e2214]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2215]:
+          - link "open cover / カバーを開く" [ref=e2216] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/keeper_of_receipts_cover_02_%CE%B7%CE%BC_part65.png
+      - article [ref=e2218]:
+        - paragraph [ref=e2219]:
+          - strong [ref=e2220]: Keeper Of Receipts Cover 01 Ημ Part65
+        - paragraph [ref=e2221]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2222]:
+          - link "open cover / カバーを開く" [ref=e2223] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/keeper_of_receipts_cover_01_%CE%B7%CE%BC_part65.png
+      - article [ref=e2225]:
+        - paragraph [ref=e2226]:
+          - strong [ref=e2227]: Gates Of Truth Cover 06 Ημ Part65
+        - paragraph [ref=e2228]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2229]:
+          - link "open cover / カバーを開く" [ref=e2230] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/gates_of_truth_cover_06_%CE%B7%CE%BC_part65.png
+      - article [ref=e2232]:
+        - paragraph [ref=e2233]:
+          - strong [ref=e2234]: Gates Of Truth Cover 05 Ημ Part65
+        - paragraph [ref=e2235]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2236]:
+          - link "open cover / カバーを開く" [ref=e2237] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/gates_of_truth_cover_05_%CE%B7%CE%BC_part65.png
+      - article [ref=e2239]:
+        - paragraph [ref=e2240]:
+          - strong [ref=e2241]: Gates Of Truth Cover 04 Ημ Part65
+        - paragraph [ref=e2242]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2243]:
+          - link "open cover / カバーを開く" [ref=e2244] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/gates_of_truth_cover_04_%CE%B7%CE%BC_part65.png
+      - article [ref=e2246]:
+        - paragraph [ref=e2247]:
+          - strong [ref=e2248]: Gates Of Truth Cover 03 Ημ Part65
+        - paragraph [ref=e2249]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2250]:
+          - link "open cover / カバーを開く" [ref=e2251] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/gates_of_truth_cover_03_%CE%B7%CE%BC_part65.png
+      - article [ref=e2253]:
+        - paragraph [ref=e2254]:
+          - strong [ref=e2255]: Gates Of Truth Cover 02 Ημ Part65
+        - paragraph [ref=e2256]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2257]:
+          - link "open cover / カバーを開く" [ref=e2258] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/gates_of_truth_cover_02_%CE%B7%CE%BC_part65.png
+      - article [ref=e2260]:
+        - paragraph [ref=e2261]:
+          - strong [ref=e2262]: Gates Of Truth Cover 01 Ημ Part65
+        - paragraph [ref=e2263]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2264]:
+          - link "open cover / カバーを開く" [ref=e2265] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/gates_of_truth_cover_01_%CE%B7%CE%BC_part65.png
+      - article [ref=e2267]:
+        - paragraph [ref=e2268]:
+          - strong [ref=e2269]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e2270]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2271]:
+          - link "open cover / カバーを開く" [ref=e2272] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/fork_tax_canticle_cover_06_%CE%B7%CE%BC_part65.png
+      - article [ref=e2274]:
+        - paragraph [ref=e2275]:
+          - strong [ref=e2276]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e2277]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2278]:
+          - link "open cover / カバーを開く" [ref=e2279] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/fork_tax_canticle_cover_05_%CE%B7%CE%BC_part65.png
+      - article [ref=e2281]:
+        - paragraph [ref=e2282]:
+          - strong [ref=e2283]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e2284]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2285]:
+          - link "open cover / カバーを開く" [ref=e2286] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/fork_tax_canticle_cover_04_%CE%B7%CE%BC_part65.png
+      - article [ref=e2288]:
+        - paragraph [ref=e2289]:
+          - strong [ref=e2290]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e2291]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2292]:
+          - link "open cover / カバーを開く" [ref=e2293] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/fork_tax_canticle_cover_03_%CE%B7%CE%BC_part65.png
+      - article [ref=e2295]:
+        - paragraph [ref=e2296]:
+          - strong [ref=e2297]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e2298]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2299]:
+          - link "open cover / カバーを開く" [ref=e2300] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/fork_tax_canticle_cover_02_%CE%B7%CE%BC_part65.png
+      - article [ref=e2302]:
+        - paragraph [ref=e2303]:
+          - strong [ref=e2304]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e2305]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2306]:
+          - link "open cover / カバーを開く" [ref=e2307] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/fork_tax_canticle_cover_01_%CE%B7%CE%BC_part65.png
+      - article [ref=e2309]:
+        - paragraph [ref=e2310]:
+          - strong [ref=e2311]: Anchor Registry Cover 06 Ημ Part65
+        - paragraph [ref=e2312]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2313]:
+          - link "open cover / カバーを開く" [ref=e2314] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/anchor_registry_cover_06_%CE%B7%CE%BC_part65.png
+      - article [ref=e2316]:
+        - paragraph [ref=e2317]:
+          - strong [ref=e2318]: Anchor Registry Cover 05 Ημ Part65
+        - paragraph [ref=e2319]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2320]:
+          - link "open cover / カバーを開く" [ref=e2321] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/anchor_registry_cover_05_%CE%B7%CE%BC_part65.png
+      - article [ref=e2323]:
+        - paragraph [ref=e2324]:
+          - strong [ref=e2325]: Anchor Registry Cover 04 Ημ Part65
+        - paragraph [ref=e2326]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2327]:
+          - link "open cover / カバーを開く" [ref=e2328] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/anchor_registry_cover_04_%CE%B7%CE%BC_part65.png
+      - article [ref=e2330]:
+        - paragraph [ref=e2331]:
+          - strong [ref=e2332]: Anchor Registry Cover 03 Ημ Part65
+        - paragraph [ref=e2333]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2334]:
+          - link "open cover / カバーを開く" [ref=e2335] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/anchor_registry_cover_03_%CE%B7%CE%BC_part65.png
+      - article [ref=e2337]:
+        - paragraph [ref=e2338]:
+          - strong [ref=e2339]: Anchor Registry Cover 02 Ημ Part65
+        - paragraph [ref=e2340]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2341]:
+          - link "open cover / カバーを開く" [ref=e2342] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/anchor_registry_cover_02_%CE%B7%CE%BC_part65.png
+      - article [ref=e2344]:
+        - paragraph [ref=e2345]:
+          - strong [ref=e2346]: Anchor Registry Cover 01 Ημ Part65
+        - paragraph [ref=e2347]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2348]:
+          - link "open cover / カバーを開く" [ref=e2349] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/anchor_registry_cover_01_%CE%B7%CE%BC_part65.png
+    - generic [ref=e618]:
+      - article [ref=e2351]:
+        - paragraph [ref=e2352]:
+          - strong [ref=e2353]: Constraints
+        - paragraph [ref=e2354]: "part / 部: ημ_op_mf_part_63 | role / 役割: World State / 世界状態"
+        - paragraph [ref=e2355]:
+          - link "open file / ファイルを開く" [ref=e2356] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_63/%CE%B7%CE%BC_op_mf_part_63/world_state/constraints.md
+      - article [ref=e2357]:
+        - paragraph [ref=e2358]:
+          - strong [ref=e2359]: Receipt River / 領収書の川
+        - paragraph [ref=e2360]: "part / 部: ημ_op_mf_part_63 | role / 役割: lyrics / 分類未定"
+        - paragraph [ref=e2361]:
+          - link "open file / ファイルを開く" [ref=e2362] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_63/%CE%B7%CE%BC_op_mf_part_63/NEW_LYRICS_Receipt_River.md
+      - article [ref=e2363]:
+        - paragraph [ref=e2364]:
+          - strong [ref=e2365]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e2366]: "part / 部: ημ_op_mf_part_63 | role / 役割: lyrics / 分類未定"
+        - paragraph [ref=e2367]:
+          - link "open file / ファイルを開く" [ref=e2368] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_63/%CE%B7%CE%BC_op_mf_part_63/NEW_LYRICS_Fork_Tax_Canticle.md
+      - article [ref=e2369]:
+        - paragraph [ref=e2370]:
+          - strong [ref=e2371]: Gates Of Truth Announcement
+        - paragraph [ref=e2372]: "part / 部: ημ_op_mf_part_63 | role / 役割: system_announcement / 分類未定"
+        - paragraph [ref=e2373]:
+          - link "open file / ファイルを開く" [ref=e2374] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_63/%CE%B7%CE%BC_op_mf_part_63/GATES_OF_TRUTH_ANNOUNCEMENT.md
+      - article [ref=e2375]:
+        - paragraph [ref=e2376]:
+          - strong [ref=e2377]: Dialog River Gate
+        - paragraph [ref=e2378]: "part / 部: ημ_op_mf_part_63 | role / 役割: dialog / 分類未定"
+        - paragraph [ref=e2379]:
+          - link "open file / ファイルを開く" [ref=e2380] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_63/%CE%B7%CE%BC_op_mf_part_63/DIALOG_River_Gate.md
+      - article [ref=e2381]:
+        - paragraph [ref=e2382]:
+          - strong [ref=e2383]: Storyboard / 絵コンテ
+        - paragraph [ref=e2384]: "part / 部: ημ_op_mf_part_63 | role / 役割: storyboard / 分類未定"
+        - paragraph [ref=e2385]:
+          - link "open file / ファイルを開く" [ref=e2386] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_63/%CE%B7%CE%BC_op_mf_part_63/artifacts/images/%CE%B7%CE%BC_storyboard_part63.png
+        - img "Storyboard / 絵コンテ"
+      - article [ref=e2387]:
+        - paragraph [ref=e2388]:
+          - strong [ref=e2389]: Particle Field / 粒子場
+        - paragraph [ref=e2390]: "part / 部: ημ_op_mf_part_63 | role / 役割: particle_field / 分類未定"
+        - paragraph [ref=e2391]:
+          - link "open file / ファイルを開く" [ref=e2392] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_63/%CE%B7%CE%BC_op_mf_part_63/artifacts/images/particle_field_%CE%B7%CE%BC_part63.png
+        - img "Particle Field / 粒子場"
+      - article [ref=e2393]:
+        - paragraph [ref=e2394]:
+          - strong [ref=e2395]: Receipt River / 領収書の川
+        - paragraph [ref=e2396]: "part / 部: ημ_op_mf_part_63 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2397]:
+          - link "open file / ファイルを開く" [ref=e2398] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_63/%CE%B7%CE%BC_op_mf_part_63/artifacts/images/Receipt_River_cover_%CE%B7%CE%BC_part63.png
+        - img "Receipt River / 領収書の川"
+      - article [ref=e2399]:
+        - paragraph [ref=e2400]:
+          - strong [ref=e2401]: Test Sonify Determinism
+        - paragraph [ref=e2402]: "part / 部: ημ_op_mf_part_63 | role / 役割: test / 分類未定"
+        - paragraph [ref=e2403]:
+          - link "open file / ファイルを開く" [ref=e2404] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_63/%CE%B7%CE%BC_op_mf_part_63/code/tests/test_sonify_determinism.py
+      - article [ref=e2405]:
+        - paragraph [ref=e2406]:
+          - strong [ref=e2407]: Ledger Sonify
+        - paragraph [ref=e2408]: "part / 部: ημ_op_mf_part_63 | role / 役割: code / 分類未定"
+        - paragraph [ref=e2409]:
+          - link "open file / ファイルを開く" [ref=e2410] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_63/%CE%B7%CE%BC_op_mf_part_63/code/sonify/ledger_sonify.py
+      - article [ref=e2411]:
+        - paragraph [ref=e2412]:
+          - strong [ref=e2413]: Receipt River / 領収書の川
+        - paragraph [ref=e2414]: "part / 部: ημ_op_mf_part_63 | role / 役割: Audio / 音声"
+        - paragraph [ref=e2415]:
+          - link "open file / ファイルを開く" [ref=e2416] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_63/%CE%B7%CE%BC_op_mf_part_63/artifacts/audio/receipt_river_78bpm.mp3
+      - article [ref=e2418]:
+        - paragraph [ref=e2419]:
+          - strong [ref=e2420]: World State Update Part66
+        - paragraph [ref=e2421]: "part / 部: 66 | role / 役割: Document / 文書"
+        - paragraph [ref=e2422]:
+          - link "open file / ファイルを開く" [ref=e2423] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/world_state/world_state_update_part66.json
+      - article [ref=e2424]:
+        - paragraph [ref=e2425]:
+          - strong [ref=e2426]: Constraints
+        - paragraph [ref=e2427]: "part / 部: 66 | role / 役割: Document / 文書"
+        - paragraph [ref=e2428]:
+          - link "open file / ファイルを開く" [ref=e2429] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/world_state/constraints.md
+      - article [ref=e2430]:
+        - paragraph [ref=e2431]:
+          - strong [ref=e2432]: Readme
+        - paragraph [ref=e2433]: "part / 部: 66 | role / 役割: Document / 文書"
+        - paragraph [ref=e2434]:
+          - link "open file / ファイルを開く" [ref=e2435] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/README.md
+      - article [ref=e2436]:
+        - paragraph [ref=e2437]:
+          - strong [ref=e2438]: New Lyrics Anchor Canticle
+        - paragraph [ref=e2439]: "part / 部: 66 | role / 役割: Document / 文書"
+        - paragraph [ref=e2440]:
+          - link "open file / ファイルを開く" [ref=e2441] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/NEW_LYRICS_Anchor_Canticle.md
+      - article [ref=e2442]:
+        - paragraph [ref=e2443]:
+          - strong [ref=e2444]: Gates Of Truth Announcement
+        - paragraph [ref=e2445]: "part / 部: 66 | role / 役割: Document / 文書"
+        - paragraph [ref=e2446]:
+          - link "open file / ファイルを開く" [ref=e2447] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/GATES_OF_TRUTH_ANNOUNCEMENT.md
+      - article [ref=e2448]:
+        - paragraph [ref=e2449]:
+          - strong [ref=e2450]: Dialog Anchor Registry
+        - paragraph [ref=e2451]: "part / 部: 66 | role / 役割: Document / 文書"
+        - paragraph [ref=e2452]:
+          - link "open file / ファイルを開く" [ref=e2453] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/DIALOG_Anchor_Registry.md
+      - article [ref=e2454]:
+        - paragraph [ref=e2455]:
+          - strong [ref=e2456]: Witness Thread / 証人の糸
+        - paragraph [ref=e2457]: "part / 部: 66 | role / 役割: Image / 画像"
+        - paragraph [ref=e2458]:
+          - link "open file / ファイルを開く" [ref=e2459] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/witness_thread_form_02_%CE%B7%CE%BC_part66.png
+        - img "Witness Thread / 証人の糸"
+      - article [ref=e2460]:
+        - paragraph [ref=e2461]:
+          - strong [ref=e2462]: Witness Thread / 証人の糸
+        - paragraph [ref=e2463]: "part / 部: 66 | role / 役割: Image / 画像"
+        - paragraph [ref=e2464]:
+          - link "open file / ファイルを開く" [ref=e2465] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/witness_thread_form_01_%CE%B7%CE%BC_part66.png
+        - img "Witness Thread / 証人の糸"
+      - article [ref=e2466]:
+        - paragraph [ref=e2467]:
+          - strong [ref=e2468]: Witness Thread / 証人の糸
+        - paragraph [ref=e2469]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2470]:
+          - link "open file / ファイルを開く" [ref=e2471] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/witness_thread_cover_04_%CE%B7%CE%BC_part66.png
+        - img "Witness Thread / 証人の糸"
+      - article [ref=e2472]:
+        - paragraph [ref=e2473]:
+          - strong [ref=e2474]: Witness Thread / 証人の糸
+        - paragraph [ref=e2475]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2476]:
+          - link "open file / ファイルを開く" [ref=e2477] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/witness_thread_cover_03_%CE%B7%CE%BC_part66.png
+        - img "Witness Thread / 証人の糸"
+      - article [ref=e2478]:
+        - paragraph [ref=e2479]:
+          - strong [ref=e2480]: Witness Thread / 証人の糸
+        - paragraph [ref=e2481]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2482]:
+          - link "open file / ファイルを開く" [ref=e2483] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/witness_thread_cover_02_%CE%B7%CE%BC_part66.png
+        - img "Witness Thread / 証人の糸"
+      - article [ref=e2484]:
+        - paragraph [ref=e2485]:
+          - strong [ref=e2486]: Witness Thread / 証人の糸
+        - paragraph [ref=e2487]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2488]:
+          - link "open file / ファイルを開く" [ref=e2489] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/witness_thread_cover_01_%CE%B7%CE%BC_part66.png
+        - img "Witness Thread / 証人の糸"
+      - article [ref=e2490]:
+        - paragraph [ref=e2491]:
+          - strong [ref=e2492]: Receipt River / 領収書の川
+        - paragraph [ref=e2493]: "part / 部: 66 | role / 役割: Image / 画像"
+        - paragraph [ref=e2494]:
+          - link "open file / ファイルを開く" [ref=e2495] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/receipt_river_form_02_%CE%B7%CE%BC_part66.png
+        - img "Receipt River / 領収書の川"
+      - article [ref=e2496]:
+        - paragraph [ref=e2497]:
+          - strong [ref=e2498]: Receipt River / 領収書の川
+        - paragraph [ref=e2499]: "part / 部: 66 | role / 役割: Image / 画像"
+        - paragraph [ref=e2500]:
+          - link "open file / ファイルを開く" [ref=e2501] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/receipt_river_form_01_%CE%B7%CE%BC_part66.png
+        - img "Receipt River / 領収書の川"
+      - article [ref=e2502]:
+        - paragraph [ref=e2503]:
+          - strong [ref=e2504]: Receipt River / 領収書の川
+        - paragraph [ref=e2505]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2506]:
+          - link "open file / ファイルを開く" [ref=e2507] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/receipt_river_cover_04_%CE%B7%CE%BC_part66.png
+        - img "Receipt River / 領収書の川"
+      - article [ref=e2508]:
+        - paragraph [ref=e2509]:
+          - strong [ref=e2510]: Receipt River / 領収書の川
+        - paragraph [ref=e2511]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2512]:
+          - link "open file / ファイルを開く" [ref=e2513] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/receipt_river_cover_03_%CE%B7%CE%BC_part66.png
+        - img "Receipt River / 領収書の川"
+      - article [ref=e2514]:
+        - paragraph [ref=e2515]:
+          - strong [ref=e2516]: Receipt River / 領収書の川
+        - paragraph [ref=e2517]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2518]:
+          - link "open file / ファイルを開く" [ref=e2519] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/receipt_river_cover_02_%CE%B7%CE%BC_part66.png
+        - img "Receipt River / 領収書の川"
+      - article [ref=e2520]:
+        - paragraph [ref=e2521]:
+          - strong [ref=e2522]: Receipt River / 領収書の川
+        - paragraph [ref=e2523]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2524]:
+          - link "open file / ファイルを開く" [ref=e2525] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/receipt_river_cover_01_%CE%B7%CE%BC_part66.png
+        - img "Receipt River / 領収書の川"
+      - article [ref=e2526]:
+        - paragraph [ref=e2527]:
+          - strong [ref=e2528]: Storyboard / 絵コンテ
+        - paragraph [ref=e2529]: "part / 部: 66 | role / 役割: Image / 画像"
+        - paragraph [ref=e2530]:
+          - link "open file / ファイルを開く" [ref=e2531] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/omni_storyboard_%CE%B7%CE%BC_part66.png
+        - img "Storyboard / 絵コンテ"
+      - article [ref=e2532]:
+        - paragraph [ref=e2533]:
+          - strong [ref=e2534]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e2535]: "part / 部: 66 | role / 役割: Image / 画像"
+        - paragraph [ref=e2536]:
+          - link "open file / ファイルを開く" [ref=e2537] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/mage_of_receipts_form_02_%CE%B7%CE%BC_part66.png
+        - img "Mage of Receipts / 領収魔導師"
+      - article [ref=e2538]:
+        - paragraph [ref=e2539]:
+          - strong [ref=e2540]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e2541]: "part / 部: 66 | role / 役割: Image / 画像"
+        - paragraph [ref=e2542]:
+          - link "open file / ファイルを開く" [ref=e2543] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/mage_of_receipts_form_01_%CE%B7%CE%BC_part66.png
+        - img "Mage of Receipts / 領収魔導師"
+      - article [ref=e2544]:
+        - paragraph [ref=e2545]:
+          - strong [ref=e2546]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e2547]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2548]:
+          - link "open file / ファイルを開く" [ref=e2549] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/mage_of_receipts_cover_04_%CE%B7%CE%BC_part66.png
+        - img "Mage of Receipts / 領収魔導師"
+      - article [ref=e2550]:
+        - paragraph [ref=e2551]:
+          - strong [ref=e2552]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e2553]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2554]:
+          - link "open file / ファイルを開く" [ref=e2555] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/mage_of_receipts_cover_03_%CE%B7%CE%BC_part66.png
+        - img "Mage of Receipts / 領収魔導師"
+      - article [ref=e2556]:
+        - paragraph [ref=e2557]:
+          - strong [ref=e2558]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e2559]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2560]:
+          - link "open file / ファイルを開く" [ref=e2561] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/mage_of_receipts_cover_02_%CE%B7%CE%BC_part66.png
+        - img "Mage of Receipts / 領収魔導師"
+      - article [ref=e2562]:
+        - paragraph [ref=e2563]:
+          - strong [ref=e2564]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e2565]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2566]:
+          - link "open file / ファイルを開く" [ref=e2567] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/mage_of_receipts_cover_01_%CE%B7%CE%BC_part66.png
+        - img "Mage of Receipts / 領収魔導師"
+      - article [ref=e2568]:
+        - paragraph [ref=e2569]:
+          - strong [ref=e2570]: Keeper Of Receipts Form 02 Ημ Part66
+        - paragraph [ref=e2571]: "part / 部: 66 | role / 役割: Image / 画像"
+        - paragraph [ref=e2572]:
+          - link "open file / ファイルを開く" [ref=e2573] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/keeper_of_receipts_form_02_%CE%B7%CE%BC_part66.png
+        - img "Keeper Of Receipts Form 02 Ημ Part66"
+      - article [ref=e2574]:
+        - paragraph [ref=e2575]:
+          - strong [ref=e2576]: Keeper Of Receipts Form 01 Ημ Part66
+        - paragraph [ref=e2577]: "part / 部: 66 | role / 役割: Image / 画像"
+        - paragraph [ref=e2578]:
+          - link "open file / ファイルを開く" [ref=e2579] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/keeper_of_receipts_form_01_%CE%B7%CE%BC_part66.png
+        - img "Keeper Of Receipts Form 01 Ημ Part66"
+      - article [ref=e2580]:
+        - paragraph [ref=e2581]:
+          - strong [ref=e2582]: Keeper Of Receipts Cover 04 Ημ Part66
+        - paragraph [ref=e2583]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2584]:
+          - link "open file / ファイルを開く" [ref=e2585] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/keeper_of_receipts_cover_04_%CE%B7%CE%BC_part66.png
+        - img "Keeper Of Receipts Cover 04 Ημ Part66"
+      - article [ref=e2586]:
+        - paragraph [ref=e2587]:
+          - strong [ref=e2588]: Keeper Of Receipts Cover 03 Ημ Part66
+        - paragraph [ref=e2589]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2590]:
+          - link "open file / ファイルを開く" [ref=e2591] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/keeper_of_receipts_cover_03_%CE%B7%CE%BC_part66.png
+        - img "Keeper Of Receipts Cover 03 Ημ Part66"
+      - article [ref=e2592]:
+        - paragraph [ref=e2593]:
+          - strong [ref=e2594]: Keeper Of Receipts Cover 02 Ημ Part66
+        - paragraph [ref=e2595]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2596]:
+          - link "open file / ファイルを開く" [ref=e2597] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/keeper_of_receipts_cover_02_%CE%B7%CE%BC_part66.png
+        - img "Keeper Of Receipts Cover 02 Ημ Part66"
+      - article [ref=e2598]:
+        - paragraph [ref=e2599]:
+          - strong [ref=e2600]: Keeper Of Receipts Cover 01 Ημ Part66
+        - paragraph [ref=e2601]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2602]:
+          - link "open file / ファイルを開く" [ref=e2603] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/keeper_of_receipts_cover_01_%CE%B7%CE%BC_part66.png
+        - img "Keeper Of Receipts Cover 01 Ημ Part66"
+      - article [ref=e2604]:
+        - paragraph [ref=e2605]:
+          - strong [ref=e2606]: Gates Of Truth Form 02 Ημ Part66
+        - paragraph [ref=e2607]: "part / 部: 66 | role / 役割: Image / 画像"
+        - paragraph [ref=e2608]:
+          - link "open file / ファイルを開く" [ref=e2609] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/gates_of_truth_form_02_%CE%B7%CE%BC_part66.png
+        - img "Gates Of Truth Form 02 Ημ Part66"
+      - article [ref=e2610]:
+        - paragraph [ref=e2611]:
+          - strong [ref=e2612]: Gates Of Truth Form 01 Ημ Part66
+        - paragraph [ref=e2613]: "part / 部: 66 | role / 役割: Image / 画像"
+        - paragraph [ref=e2614]:
+          - link "open file / ファイルを開く" [ref=e2615] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/gates_of_truth_form_01_%CE%B7%CE%BC_part66.png
+        - img "Gates Of Truth Form 01 Ημ Part66"
+      - article [ref=e2616]:
+        - paragraph [ref=e2617]:
+          - strong [ref=e2618]: Gates Of Truth Cover 04 Ημ Part66
+        - paragraph [ref=e2619]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2620]:
+          - link "open file / ファイルを開く" [ref=e2621] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/gates_of_truth_cover_04_%CE%B7%CE%BC_part66.png
+        - img "Gates Of Truth Cover 04 Ημ Part66"
+      - article [ref=e2622]:
+        - paragraph [ref=e2623]:
+          - strong [ref=e2624]: Gates Of Truth Cover 03 Ημ Part66
+        - paragraph [ref=e2625]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2626]:
+          - link "open file / ファイルを開く" [ref=e2627] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/gates_of_truth_cover_03_%CE%B7%CE%BC_part66.png
+        - img "Gates Of Truth Cover 03 Ημ Part66"
+      - article [ref=e2628]:
+        - paragraph [ref=e2629]:
+          - strong [ref=e2630]: Gates Of Truth Cover 02 Ημ Part66
+        - paragraph [ref=e2631]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2632]:
+          - link "open file / ファイルを開く" [ref=e2633] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/gates_of_truth_cover_02_%CE%B7%CE%BC_part66.png
+        - img "Gates Of Truth Cover 02 Ημ Part66"
+      - article [ref=e2634]:
+        - paragraph [ref=e2635]:
+          - strong [ref=e2636]: Gates Of Truth Cover 01 Ημ Part66
+        - paragraph [ref=e2637]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2638]:
+          - link "open file / ファイルを開く" [ref=e2639] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/gates_of_truth_cover_01_%CE%B7%CE%BC_part66.png
+        - img "Gates Of Truth Cover 01 Ημ Part66"
+      - article [ref=e2640]:
+        - paragraph [ref=e2641]:
+          - strong [ref=e2642]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e2643]: "part / 部: 66 | role / 役割: Image / 画像"
+        - paragraph [ref=e2644]:
+          - link "open file / ファイルを開く" [ref=e2645] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/fork_tax_canticle_form_02_%CE%B7%CE%BC_part66.png
+        - img "Fork Tax Canticle / フォーク税の聖歌"
+      - article [ref=e2646]:
+        - paragraph [ref=e2647]:
+          - strong [ref=e2648]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e2649]: "part / 部: 66 | role / 役割: Image / 画像"
+        - paragraph [ref=e2650]:
+          - link "open file / ファイルを開く" [ref=e2651] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/fork_tax_canticle_form_01_%CE%B7%CE%BC_part66.png
+        - img "Fork Tax Canticle / フォーク税の聖歌"
+      - article [ref=e2652]:
+        - paragraph [ref=e2653]:
+          - strong [ref=e2654]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e2655]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2656]:
+          - link "open file / ファイルを開く" [ref=e2657] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/fork_tax_canticle_cover_04_%CE%B7%CE%BC_part66.png
+        - img "Fork Tax Canticle / フォーク税の聖歌"
+      - article [ref=e2658]:
+        - paragraph [ref=e2659]:
+          - strong [ref=e2660]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e2661]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2662]:
+          - link "open file / ファイルを開く" [ref=e2663] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/fork_tax_canticle_cover_03_%CE%B7%CE%BC_part66.png
+        - img "Fork Tax Canticle / フォーク税の聖歌"
+      - article [ref=e2664]:
+        - paragraph [ref=e2665]:
+          - strong [ref=e2666]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e2667]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2668]:
+          - link "open file / ファイルを開く" [ref=e2669] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/fork_tax_canticle_cover_02_%CE%B7%CE%BC_part66.png
+        - img "Fork Tax Canticle / フォーク税の聖歌"
+      - article [ref=e2670]:
+        - paragraph [ref=e2671]:
+          - strong [ref=e2672]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e2673]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2674]:
+          - link "open file / ファイルを開く" [ref=e2675] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/fork_tax_canticle_cover_01_%CE%B7%CE%BC_part66.png
+        - img "Fork Tax Canticle / フォーク税の聖歌"
+      - article [ref=e2676]:
+        - paragraph [ref=e2677]:
+          - strong [ref=e2678]: Anchor Registry Form 02 Ημ Part66
+        - paragraph [ref=e2679]: "part / 部: 66 | role / 役割: Image / 画像"
+        - paragraph [ref=e2680]:
+          - link "open file / ファイルを開く" [ref=e2681] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/anchor_registry_form_02_%CE%B7%CE%BC_part66.png
+        - img "Anchor Registry Form 02 Ημ Part66"
+      - article [ref=e2682]:
+        - paragraph [ref=e2683]:
+          - strong [ref=e2684]: Anchor Registry Form 01 Ημ Part66
+        - paragraph [ref=e2685]: "part / 部: 66 | role / 役割: Image / 画像"
+        - paragraph [ref=e2686]:
+          - link "open file / ファイルを開く" [ref=e2687] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/anchor_registry_form_01_%CE%B7%CE%BC_part66.png
+        - img "Anchor Registry Form 01 Ημ Part66"
+      - article [ref=e2688]:
+        - paragraph [ref=e2689]:
+          - strong [ref=e2690]: Anchor Registry Cover 04 Ημ Part66
+        - paragraph [ref=e2691]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2692]:
+          - link "open file / ファイルを開く" [ref=e2693] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/anchor_registry_cover_04_%CE%B7%CE%BC_part66.png
+        - img "Anchor Registry Cover 04 Ημ Part66"
+      - article [ref=e2694]:
+        - paragraph [ref=e2695]:
+          - strong [ref=e2696]: Anchor Registry Cover 03 Ημ Part66
+        - paragraph [ref=e2697]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2698]:
+          - link "open file / ファイルを開く" [ref=e2699] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/anchor_registry_cover_03_%CE%B7%CE%BC_part66.png
+        - img "Anchor Registry Cover 03 Ημ Part66"
+      - article [ref=e2700]:
+        - paragraph [ref=e2701]:
+          - strong [ref=e2702]: Anchor Registry Cover 02 Ημ Part66
+        - paragraph [ref=e2703]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2704]:
+          - link "open file / ファイルを開く" [ref=e2705] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/anchor_registry_cover_02_%CE%B7%CE%BC_part66.png
+        - img "Anchor Registry Cover 02 Ημ Part66"
+      - article [ref=e2706]:
+        - paragraph [ref=e2707]:
+          - strong [ref=e2708]: Anchor Registry Cover 01 Ημ Part66
+        - paragraph [ref=e2709]: "part / 部: 66 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e2710]:
+          - link "open file / ファイルを開く" [ref=e2711] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/images/anchor_registry_cover_01_%CE%B7%CE%BC_part66.png
+        - img "Anchor Registry Cover 01 Ημ Part66"
+      - article [ref=e2712]:
+        - paragraph [ref=e2713]:
+          - strong [ref=e2714]: Test Generate Bulk Media
+        - paragraph [ref=e2715]: "part / 部: 66 | role / 役割: Document / 文書"
+        - paragraph [ref=e2716]:
+          - link "open file / ファイルを開く" [ref=e2717] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/code/tests/test_generate_bulk_media.py
+      - article [ref=e2718]:
+        - paragraph [ref=e2719]:
+          - strong [ref=e2720]: Generate Bulk Media
+        - paragraph [ref=e2721]: "part / 部: 66 | role / 役割: Document / 文書"
+        - paragraph [ref=e2722]:
+          - link "open file / ファイルを開く" [ref=e2723] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/code/generate_bulk_media.py
+      - article [ref=e2724]:
+        - paragraph [ref=e2725]:
+          - strong [ref=e2726]: Witness Thread / 証人の糸
+        - paragraph [ref=e2727]: "part / 部: 66 | role / 役割: Canonical Audio / 正準音声"
+        - paragraph [ref=e2728]:
+          - link "open file / ファイルを開く" [ref=e2729] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_witness_thread_lullaby.part_66.wav
+      - article [ref=e2731]:
+        - paragraph [ref=e2732]:
+          - strong [ref=e2733]: Witness Thread / 証人の糸
+        - paragraph [ref=e2734]: "part / 部: 66 | role / 役割: Convenience Audio / 補助音声"
+        - paragraph [ref=e2735]:
+          - link "open file / ファイルを開く" [ref=e2736] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_witness_thread_lullaby.part_66.mp3
+      - article [ref=e2738]:
+        - paragraph [ref=e2739]:
+          - strong [ref=e2740]: Witness Thread / 証人の糸
+        - paragraph [ref=e2741]: "part / 部: 66 | role / 役割: Canonical Audio / 正準音声"
+        - paragraph [ref=e2742]:
+          - link "open file / ファイルを開く" [ref=e2743] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_witness_thread_epic.part_66.wav
+      - article [ref=e2745]:
+        - paragraph [ref=e2746]:
+          - strong [ref=e2747]: Witness Thread / 証人の糸
+        - paragraph [ref=e2748]: "part / 部: 66 | role / 役割: Convenience Audio / 補助音声"
+        - paragraph [ref=e2749]:
+          - link "open file / ファイルを開く" [ref=e2750] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_witness_thread_epic.part_66.mp3
+      - article [ref=e2752]:
+        - paragraph [ref=e2753]:
+          - strong [ref=e2754]: Receipt River / 領収書の川
+        - paragraph [ref=e2755]: "part / 部: 66 | role / 役割: Canonical Audio / 正準音声"
+        - paragraph [ref=e2756]:
+          - link "open file / ファイルを開く" [ref=e2757] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_receipt_river_lullaby.part_66.wav
+      - article [ref=e2759]:
+        - paragraph [ref=e2760]:
+          - strong [ref=e2761]: Receipt River / 領収書の川
+        - paragraph [ref=e2762]: "part / 部: 66 | role / 役割: Convenience Audio / 補助音声"
+        - paragraph [ref=e2763]:
+          - link "open file / ファイルを開く" [ref=e2764] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_receipt_river_lullaby.part_66.mp3
+      - article [ref=e2766]:
+        - paragraph [ref=e2767]:
+          - strong [ref=e2768]: Receipt River / 領収書の川
+        - paragraph [ref=e2769]: "part / 部: 66 | role / 役割: Canonical Audio / 正準音声"
+        - paragraph [ref=e2770]:
+          - link "open file / ファイルを開く" [ref=e2771] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_receipt_river_epic.part_66.wav
+      - article [ref=e2773]:
+        - paragraph [ref=e2774]:
+          - strong [ref=e2775]: Receipt River / 領収書の川
+        - paragraph [ref=e2776]: "part / 部: 66 | role / 役割: Convenience Audio / 補助音声"
+        - paragraph [ref=e2777]:
+          - link "open file / ファイルを開く" [ref=e2778] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_receipt_river_epic.part_66.mp3
+      - article [ref=e2780]:
+        - paragraph [ref=e2781]:
+          - strong [ref=e2782]: Eta Mu Omni Choir Lullaby.Part 66
+        - paragraph [ref=e2783]: "part / 部: 66 | role / 役割: Canonical Audio / 正準音声"
+        - paragraph [ref=e2784]:
+          - link "open file / ファイルを開く" [ref=e2785] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_omni_choir_lullaby.part_66.wav
+      - article [ref=e2787]:
+        - paragraph [ref=e2788]:
+          - strong [ref=e2789]: Eta Mu Omni Choir Lullaby.Part 66
+        - paragraph [ref=e2790]: "part / 部: 66 | role / 役割: Convenience Audio / 補助音声"
+        - paragraph [ref=e2791]:
+          - link "open file / ファイルを開く" [ref=e2792] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_omni_choir_lullaby.part_66.mp3
+      - article [ref=e2794]:
+        - paragraph [ref=e2795]:
+          - strong [ref=e2796]: Eta Mu Omni Choir Epic.Part 66
+        - paragraph [ref=e2797]: "part / 部: 66 | role / 役割: Canonical Audio / 正準音声"
+        - paragraph [ref=e2798]:
+          - link "open file / ファイルを開く" [ref=e2799] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_omni_choir_epic.part_66.wav
+      - article [ref=e2801]:
+        - paragraph [ref=e2802]:
+          - strong [ref=e2803]: Eta Mu Omni Choir Epic.Part 66
+        - paragraph [ref=e2804]: "part / 部: 66 | role / 役割: Convenience Audio / 補助音声"
+        - paragraph [ref=e2805]:
+          - link "open file / ファイルを開く" [ref=e2806] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_omni_choir_epic.part_66.mp3
+      - article [ref=e2808]:
+        - paragraph [ref=e2809]:
+          - strong [ref=e2810]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e2811]: "part / 部: 66 | role / 役割: Canonical Audio / 正準音声"
+        - paragraph [ref=e2812]:
+          - link "open file / ファイルを開く" [ref=e2813] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_mage_of_receipts_lullaby.part_66.wav
+      - article [ref=e2815]:
+        - paragraph [ref=e2816]:
+          - strong [ref=e2817]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e2818]: "part / 部: 66 | role / 役割: Convenience Audio / 補助音声"
+        - paragraph [ref=e2819]:
+          - link "open file / ファイルを開く" [ref=e2820] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_mage_of_receipts_lullaby.part_66.mp3
+      - article [ref=e2822]:
+        - paragraph [ref=e2823]:
+          - strong [ref=e2824]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e2825]: "part / 部: 66 | role / 役割: Canonical Audio / 正準音声"
+        - paragraph [ref=e2826]:
+          - link "open file / ファイルを開く" [ref=e2827] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_mage_of_receipts_epic.part_66.wav
+      - article [ref=e2829]:
+        - paragraph [ref=e2830]:
+          - strong [ref=e2831]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e2832]: "part / 部: 66 | role / 役割: Convenience Audio / 補助音声"
+        - paragraph [ref=e2833]:
+          - link "open file / ファイルを開く" [ref=e2834] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_mage_of_receipts_epic.part_66.mp3
+      - article [ref=e2836]:
+        - paragraph [ref=e2837]:
+          - strong [ref=e2838]: Eta Mu Keeper Of Receipts Lullaby.Part 66
+        - paragraph [ref=e2839]: "part / 部: 66 | role / 役割: Canonical Audio / 正準音声"
+        - paragraph [ref=e2840]:
+          - link "open file / ファイルを開く" [ref=e2841] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_keeper_of_receipts_lullaby.part_66.wav
+      - article [ref=e2843]:
+        - paragraph [ref=e2844]:
+          - strong [ref=e2845]: Eta Mu Keeper Of Receipts Lullaby.Part 66
+        - paragraph [ref=e2846]: "part / 部: 66 | role / 役割: Convenience Audio / 補助音声"
+        - paragraph [ref=e2847]:
+          - link "open file / ファイルを開く" [ref=e2848] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_keeper_of_receipts_lullaby.part_66.mp3
+      - article [ref=e2850]:
+        - paragraph [ref=e2851]:
+          - strong [ref=e2852]: Eta Mu Keeper Of Receipts Epic.Part 66
+        - paragraph [ref=e2853]: "part / 部: 66 | role / 役割: Canonical Audio / 正準音声"
+        - paragraph [ref=e2854]:
+          - link "open file / ファイルを開く" [ref=e2855] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_keeper_of_receipts_epic.part_66.wav
+      - article [ref=e2857]:
+        - paragraph [ref=e2858]:
+          - strong [ref=e2859]: Eta Mu Keeper Of Receipts Epic.Part 66
+        - paragraph [ref=e2860]: "part / 部: 66 | role / 役割: Convenience Audio / 補助音声"
+        - paragraph [ref=e2861]:
+          - link "open file / ファイルを開く" [ref=e2862] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_keeper_of_receipts_epic.part_66.mp3
+      - article [ref=e2864]:
+        - paragraph [ref=e2865]:
+          - strong [ref=e2866]: Eta Mu Gates Of Truth Lullaby.Part 66
+        - paragraph [ref=e2867]: "part / 部: 66 | role / 役割: Canonical Audio / 正準音声"
+        - paragraph [ref=e2868]:
+          - link "open file / ファイルを開く" [ref=e2869] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_gates_of_truth_lullaby.part_66.wav
+      - article [ref=e2871]:
+        - paragraph [ref=e2872]:
+          - strong [ref=e2873]: Eta Mu Gates Of Truth Lullaby.Part 66
+        - paragraph [ref=e2874]: "part / 部: 66 | role / 役割: Convenience Audio / 補助音声"
+        - paragraph [ref=e2875]:
+          - link "open file / ファイルを開く" [ref=e2876] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_gates_of_truth_lullaby.part_66.mp3
+      - article [ref=e2878]:
+        - paragraph [ref=e2879]:
+          - strong [ref=e2880]: Eta Mu Gates Of Truth Epic.Part 66
+        - paragraph [ref=e2881]: "part / 部: 66 | role / 役割: Canonical Audio / 正準音声"
+        - paragraph [ref=e2882]:
+          - link "open file / ファイルを開く" [ref=e2883] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_gates_of_truth_epic.part_66.wav
+      - article [ref=e2885]:
+        - paragraph [ref=e2886]:
+          - strong [ref=e2887]: Eta Mu Gates Of Truth Epic.Part 66
+        - paragraph [ref=e2888]: "part / 部: 66 | role / 役割: Convenience Audio / 補助音声"
+        - paragraph [ref=e2889]:
+          - link "open file / ファイルを開く" [ref=e2890] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_gates_of_truth_epic.part_66.mp3
+      - article [ref=e2892]:
+        - paragraph [ref=e2893]:
+          - strong [ref=e2894]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e2895]: "part / 部: 66 | role / 役割: Canonical Audio / 正準音声"
+        - paragraph [ref=e2896]:
+          - link "open file / ファイルを開く" [ref=e2897] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_fork_tax_canticle_lullaby.part_66.wav
+      - article [ref=e2899]:
+        - paragraph [ref=e2900]:
+          - strong [ref=e2901]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e2902]: "part / 部: 66 | role / 役割: Convenience Audio / 補助音声"
+        - paragraph [ref=e2903]:
+          - link "open file / ファイルを開く" [ref=e2904] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_fork_tax_canticle_lullaby.part_66.mp3
+      - article [ref=e2906]:
+        - paragraph [ref=e2907]:
+          - strong [ref=e2908]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e2909]: "part / 部: 66 | role / 役割: Canonical Audio / 正準音声"
+        - paragraph [ref=e2910]:
+          - link "open file / ファイルを開く" [ref=e2911] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_fork_tax_canticle_epic.part_66.wav
+      - article [ref=e2913]:
+        - paragraph [ref=e2914]:
+          - strong [ref=e2915]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e2916]: "part / 部: 66 | role / 役割: Convenience Audio / 補助音声"
+        - paragraph [ref=e2917]:
+          - link "open file / ファイルを開く" [ref=e2918] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_fork_tax_canticle_epic.part_66.mp3
+      - article [ref=e2920]:
+        - paragraph [ref=e2921]:
+          - strong [ref=e2922]: Eta Mu Anchor Registry Lullaby.Part 66
+        - paragraph [ref=e2923]: "part / 部: 66 | role / 役割: Canonical Audio / 正準音声"
+        - paragraph [ref=e2924]:
+          - link "open file / ファイルを開く" [ref=e2925] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_anchor_registry_lullaby.part_66.wav
+      - article [ref=e2927]:
+        - paragraph [ref=e2928]:
+          - strong [ref=e2929]: Eta Mu Anchor Registry Lullaby.Part 66
+        - paragraph [ref=e2930]: "part / 部: 66 | role / 役割: Convenience Audio / 補助音声"
+        - paragraph [ref=e2931]:
+          - link "open file / ファイルを開く" [ref=e2932] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_anchor_registry_lullaby.part_66.mp3
+      - article [ref=e2934]:
+        - paragraph [ref=e2935]:
+          - strong [ref=e2936]: Eta Mu Anchor Registry Epic.Part 66
+        - paragraph [ref=e2937]: "part / 部: 66 | role / 役割: Canonical Audio / 正準音声"
+        - paragraph [ref=e2938]:
+          - link "open file / ファイルを開く" [ref=e2939] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_anchor_registry_epic.part_66.wav
+      - article [ref=e2941]:
+        - paragraph [ref=e2942]:
+          - strong [ref=e2943]: Eta Mu Anchor Registry Epic.Part 66
+        - paragraph [ref=e2944]: "part / 部: 66 | role / 役割: Convenience Audio / 補助音声"
+        - paragraph [ref=e2945]:
+          - link "open file / ファイルを開く" [ref=e2946] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_66/artifacts/audio/eta_mu_anchor_registry_epic.part_66.mp3
+      - article [ref=e2948]:
+        - paragraph [ref=e2949]:
+          - strong [ref=e2950]: World State Update Part65
+        - paragraph [ref=e2951]: "part / 部: 65 | role / 役割: Document / 文書"
+        - paragraph [ref=e2952]:
+          - link "open file / ファイルを開く" [ref=e2953] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/world_state/world_state_update_part65.json
+      - article [ref=e2954]:
+        - paragraph [ref=e2955]:
+          - strong [ref=e2956]: Constraints
+        - paragraph [ref=e2957]: "part / 部: 65 | role / 役割: Document / 文書"
+        - paragraph [ref=e2958]:
+          - link "open file / ファイルを開く" [ref=e2959] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/world_state/constraints.md
+      - article [ref=e2960]:
+        - paragraph [ref=e2961]:
+          - strong [ref=e2962]: Readme
+        - paragraph [ref=e2963]: "part / 部: 65 | role / 役割: Document / 文書"
+        - paragraph [ref=e2964]:
+          - link "open file / ファイルを開く" [ref=e2965] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/README.md
+      - article [ref=e2966]:
+        - paragraph [ref=e2967]:
+          - strong [ref=e2968]: Witness Thread / 証人の糸
+        - paragraph [ref=e2969]: "part / 部: 65 | role / 役割: Document / 文書"
+        - paragraph [ref=e2970]:
+          - link "open file / ファイルを開く" [ref=e2971] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/NEW_LYRICS_Witness_Thread.md
+      - article [ref=e2972]:
+        - paragraph [ref=e2973]:
+          - strong [ref=e2974]: Gates Of Truth Announcement
+        - paragraph [ref=e2975]: "part / 部: 65 | role / 役割: Document / 文書"
+        - paragraph [ref=e2976]:
+          - link "open file / ファイルを開く" [ref=e2977] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/GATES_OF_TRUTH_ANNOUNCEMENT.md
+      - article [ref=e2978]:
+        - paragraph [ref=e2979]:
+          - strong [ref=e2980]: Dialog River Gate
+        - paragraph [ref=e2981]: "part / 部: 65 | role / 役割: Document / 文書"
+        - paragraph [ref=e2982]:
+          - link "open file / ファイルを開く" [ref=e2983] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/DIALOG_River_Gate.md
+      - article [ref=e2984]:
+        - paragraph [ref=e2985]:
+          - strong [ref=e2986]: Witness Thread / 証人の糸
+        - paragraph [ref=e2987]: "part / 部: 65 | role / 役割: entity_form / 分類未定"
+        - paragraph [ref=e2988]:
+          - link "open file / ファイルを開く" [ref=e2989] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/witness_thread_form_03_%CE%B7%CE%BC_part65.png
+        - img "Witness Thread / 証人の糸"
+      - article [ref=e2990]:
+        - paragraph [ref=e2991]:
+          - strong [ref=e2992]: Witness Thread / 証人の糸
+        - paragraph [ref=e2993]: "part / 部: 65 | role / 役割: entity_form / 分類未定"
+        - paragraph [ref=e2994]:
+          - link "open file / ファイルを開く" [ref=e2995] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/witness_thread_form_02_%CE%B7%CE%BC_part65.png
+        - img "Witness Thread / 証人の糸"
+      - article [ref=e2996]:
+        - paragraph [ref=e2997]:
+          - strong [ref=e2998]: Witness Thread / 証人の糸
+        - paragraph [ref=e2999]: "part / 部: 65 | role / 役割: entity_form / 分類未定"
+        - paragraph [ref=e3000]:
+          - link "open file / ファイルを開く" [ref=e3001] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/witness_thread_form_01_%CE%B7%CE%BC_part65.png
+        - img "Witness Thread / 証人の糸"
+      - article [ref=e3002]:
+        - paragraph [ref=e3003]:
+          - strong [ref=e3004]: Witness Thread / 証人の糸
+        - paragraph [ref=e3005]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3006]:
+          - link "open file / ファイルを開く" [ref=e3007] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/witness_thread_cover_06_%CE%B7%CE%BC_part65.png
+        - img "Witness Thread / 証人の糸"
+      - article [ref=e3008]:
+        - paragraph [ref=e3009]:
+          - strong [ref=e3010]: Witness Thread / 証人の糸
+        - paragraph [ref=e3011]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3012]:
+          - link "open file / ファイルを開く" [ref=e3013] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/witness_thread_cover_05_%CE%B7%CE%BC_part65.png
+        - img "Witness Thread / 証人の糸"
+      - article [ref=e3014]:
+        - paragraph [ref=e3015]:
+          - strong [ref=e3016]: Witness Thread / 証人の糸
+        - paragraph [ref=e3017]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3018]:
+          - link "open file / ファイルを開く" [ref=e3019] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/witness_thread_cover_04_%CE%B7%CE%BC_part65.png
+        - img "Witness Thread / 証人の糸"
+      - article [ref=e3020]:
+        - paragraph [ref=e3021]:
+          - strong [ref=e3022]: Witness Thread / 証人の糸
+        - paragraph [ref=e3023]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3024]:
+          - link "open file / ファイルを開く" [ref=e3025] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/witness_thread_cover_03_%CE%B7%CE%BC_part65.png
+        - img "Witness Thread / 証人の糸"
+      - article [ref=e3026]:
+        - paragraph [ref=e3027]:
+          - strong [ref=e3028]: Witness Thread / 証人の糸
+        - paragraph [ref=e3029]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3030]:
+          - link "open file / ファイルを開く" [ref=e3031] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/witness_thread_cover_02_%CE%B7%CE%BC_part65.png
+        - img "Witness Thread / 証人の糸"
+      - article [ref=e3032]:
+        - paragraph [ref=e3033]:
+          - strong [ref=e3034]: Witness Thread / 証人の糸
+        - paragraph [ref=e3035]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3036]:
+          - link "open file / ファイルを開く" [ref=e3037] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/witness_thread_cover_01_%CE%B7%CE%BC_part65.png
+        - img "Witness Thread / 証人の糸"
+      - article [ref=e3038]:
+        - paragraph [ref=e3039]:
+          - strong [ref=e3040]: Receipt River / 領収書の川
+        - paragraph [ref=e3041]: "part / 部: 65 | role / 役割: entity_form / 分類未定"
+        - paragraph [ref=e3042]:
+          - link "open file / ファイルを開く" [ref=e3043] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/receipt_river_form_03_%CE%B7%CE%BC_part65.png
+        - img "Receipt River / 領収書の川"
+      - article [ref=e3044]:
+        - paragraph [ref=e3045]:
+          - strong [ref=e3046]: Receipt River / 領収書の川
+        - paragraph [ref=e3047]: "part / 部: 65 | role / 役割: entity_form / 分類未定"
+        - paragraph [ref=e3048]:
+          - link "open file / ファイルを開く" [ref=e3049] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/receipt_river_form_02_%CE%B7%CE%BC_part65.png
+        - img "Receipt River / 領収書の川"
+      - article [ref=e3050]:
+        - paragraph [ref=e3051]:
+          - strong [ref=e3052]: Receipt River / 領収書の川
+        - paragraph [ref=e3053]: "part / 部: 65 | role / 役割: entity_form / 分類未定"
+        - paragraph [ref=e3054]:
+          - link "open file / ファイルを開く" [ref=e3055] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/receipt_river_form_01_%CE%B7%CE%BC_part65.png
+        - img "Receipt River / 領収書の川"
+      - article [ref=e3056]:
+        - paragraph [ref=e3057]:
+          - strong [ref=e3058]: Receipt River / 領収書の川
+        - paragraph [ref=e3059]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3060]:
+          - link "open file / ファイルを開く" [ref=e3061] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/receipt_river_cover_06_%CE%B7%CE%BC_part65.png
+        - img "Receipt River / 領収書の川"
+      - article [ref=e3062]:
+        - paragraph [ref=e3063]:
+          - strong [ref=e3064]: Receipt River / 領収書の川
+        - paragraph [ref=e3065]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3066]:
+          - link "open file / ファイルを開く" [ref=e3067] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/receipt_river_cover_05_%CE%B7%CE%BC_part65.png
+        - img "Receipt River / 領収書の川"
+      - article [ref=e3068]:
+        - paragraph [ref=e3069]:
+          - strong [ref=e3070]: Receipt River / 領収書の川
+        - paragraph [ref=e3071]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3072]:
+          - link "open file / ファイルを開く" [ref=e3073] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/receipt_river_cover_04_%CE%B7%CE%BC_part65.png
+        - img "Receipt River / 領収書の川"
+      - article [ref=e3074]:
+        - paragraph [ref=e3075]:
+          - strong [ref=e3076]: Receipt River / 領収書の川
+        - paragraph [ref=e3077]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3078]:
+          - link "open file / ファイルを開く" [ref=e3079] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/receipt_river_cover_03_%CE%B7%CE%BC_part65.png
+        - img "Receipt River / 領収書の川"
+      - article [ref=e3080]:
+        - paragraph [ref=e3081]:
+          - strong [ref=e3082]: Receipt River / 領収書の川
+        - paragraph [ref=e3083]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3084]:
+          - link "open file / ファイルを開く" [ref=e3085] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/receipt_river_cover_02_%CE%B7%CE%BC_part65.png
+        - img "Receipt River / 領収書の川"
+      - article [ref=e3086]:
+        - paragraph [ref=e3087]:
+          - strong [ref=e3088]: Receipt River / 領収書の川
+        - paragraph [ref=e3089]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3090]:
+          - link "open file / ファイルを開く" [ref=e3091] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/receipt_river_cover_01_%CE%B7%CE%BC_part65.png
+        - img "Receipt River / 領収書の川"
+      - article [ref=e3092]:
+        - paragraph [ref=e3093]:
+          - strong [ref=e3094]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e3095]: "part / 部: 65 | role / 役割: entity_form / 分類未定"
+        - paragraph [ref=e3096]:
+          - link "open file / ファイルを開く" [ref=e3097] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/mage_of_receipts_form_03_%CE%B7%CE%BC_part65.png
+        - img "Mage of Receipts / 領収魔導師"
+      - article [ref=e3098]:
+        - paragraph [ref=e3099]:
+          - strong [ref=e3100]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e3101]: "part / 部: 65 | role / 役割: entity_form / 分類未定"
+        - paragraph [ref=e3102]:
+          - link "open file / ファイルを開く" [ref=e3103] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/mage_of_receipts_form_02_%CE%B7%CE%BC_part65.png
+        - img "Mage of Receipts / 領収魔導師"
+      - article [ref=e3104]:
+        - paragraph [ref=e3105]:
+          - strong [ref=e3106]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e3107]: "part / 部: 65 | role / 役割: entity_form / 分類未定"
+        - paragraph [ref=e3108]:
+          - link "open file / ファイルを開く" [ref=e3109] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/mage_of_receipts_form_01_%CE%B7%CE%BC_part65.png
+        - img "Mage of Receipts / 領収魔導師"
+      - article [ref=e3110]:
+        - paragraph [ref=e3111]:
+          - strong [ref=e3112]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e3113]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3114]:
+          - link "open file / ファイルを開く" [ref=e3115] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/mage_of_receipts_cover_06_%CE%B7%CE%BC_part65.png
+        - img "Mage of Receipts / 領収魔導師"
+      - article [ref=e3116]:
+        - paragraph [ref=e3117]:
+          - strong [ref=e3118]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e3119]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3120]:
+          - link "open file / ファイルを開く" [ref=e3121] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/mage_of_receipts_cover_05_%CE%B7%CE%BC_part65.png
+        - img "Mage of Receipts / 領収魔導師"
+      - article [ref=e3122]:
+        - paragraph [ref=e3123]:
+          - strong [ref=e3124]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e3125]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3126]:
+          - link "open file / ファイルを開く" [ref=e3127] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/mage_of_receipts_cover_04_%CE%B7%CE%BC_part65.png
+        - img "Mage of Receipts / 領収魔導師"
+      - article [ref=e3128]:
+        - paragraph [ref=e3129]:
+          - strong [ref=e3130]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e3131]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3132]:
+          - link "open file / ファイルを開く" [ref=e3133] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/mage_of_receipts_cover_03_%CE%B7%CE%BC_part65.png
+        - img "Mage of Receipts / 領収魔導師"
+      - article [ref=e3134]:
+        - paragraph [ref=e3135]:
+          - strong [ref=e3136]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e3137]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3138]:
+          - link "open file / ファイルを開く" [ref=e3139] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/mage_of_receipts_cover_02_%CE%B7%CE%BC_part65.png
+        - img "Mage of Receipts / 領収魔導師"
+      - article [ref=e3140]:
+        - paragraph [ref=e3141]:
+          - strong [ref=e3142]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e3143]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3144]:
+          - link "open file / ファイルを開く" [ref=e3145] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/mage_of_receipts_cover_01_%CE%B7%CE%BC_part65.png
+        - img "Mage of Receipts / 領収魔導師"
+      - article [ref=e3146]:
+        - paragraph [ref=e3147]:
+          - strong [ref=e3148]: Keeper Of Receipts Form 03 Ημ Part65
+        - paragraph [ref=e3149]: "part / 部: 65 | role / 役割: entity_form / 分類未定"
+        - paragraph [ref=e3150]:
+          - link "open file / ファイルを開く" [ref=e3151] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/keeper_of_receipts_form_03_%CE%B7%CE%BC_part65.png
+        - img "Keeper Of Receipts Form 03 Ημ Part65"
+      - article [ref=e3152]:
+        - paragraph [ref=e3153]:
+          - strong [ref=e3154]: Keeper Of Receipts Form 02 Ημ Part65
+        - paragraph [ref=e3155]: "part / 部: 65 | role / 役割: entity_form / 分類未定"
+        - paragraph [ref=e3156]:
+          - link "open file / ファイルを開く" [ref=e3157] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/keeper_of_receipts_form_02_%CE%B7%CE%BC_part65.png
+        - img "Keeper Of Receipts Form 02 Ημ Part65"
+      - article [ref=e3158]:
+        - paragraph [ref=e3159]:
+          - strong [ref=e3160]: Keeper Of Receipts Form 01 Ημ Part65
+        - paragraph [ref=e3161]: "part / 部: 65 | role / 役割: entity_form / 分類未定"
+        - paragraph [ref=e3162]:
+          - link "open file / ファイルを開く" [ref=e3163] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/keeper_of_receipts_form_01_%CE%B7%CE%BC_part65.png
+        - img "Keeper Of Receipts Form 01 Ημ Part65"
+      - article [ref=e3164]:
+        - paragraph [ref=e3165]:
+          - strong [ref=e3166]: Keeper Of Receipts Cover 06 Ημ Part65
+        - paragraph [ref=e3167]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3168]:
+          - link "open file / ファイルを開く" [ref=e3169] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/keeper_of_receipts_cover_06_%CE%B7%CE%BC_part65.png
+        - img "Keeper Of Receipts Cover 06 Ημ Part65"
+      - article [ref=e3170]:
+        - paragraph [ref=e3171]:
+          - strong [ref=e3172]: Keeper Of Receipts Cover 05 Ημ Part65
+        - paragraph [ref=e3173]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3174]:
+          - link "open file / ファイルを開く" [ref=e3175] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/keeper_of_receipts_cover_05_%CE%B7%CE%BC_part65.png
+        - img "Keeper Of Receipts Cover 05 Ημ Part65"
+      - article [ref=e3176]:
+        - paragraph [ref=e3177]:
+          - strong [ref=e3178]: Keeper Of Receipts Cover 04 Ημ Part65
+        - paragraph [ref=e3179]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3180]:
+          - link "open file / ファイルを開く" [ref=e3181] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/keeper_of_receipts_cover_04_%CE%B7%CE%BC_part65.png
+        - img "Keeper Of Receipts Cover 04 Ημ Part65"
+      - article [ref=e3182]:
+        - paragraph [ref=e3183]:
+          - strong [ref=e3184]: Keeper Of Receipts Cover 03 Ημ Part65
+        - paragraph [ref=e3185]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3186]:
+          - link "open file / ファイルを開く" [ref=e3187] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/keeper_of_receipts_cover_03_%CE%B7%CE%BC_part65.png
+        - img "Keeper Of Receipts Cover 03 Ημ Part65"
+      - article [ref=e3188]:
+        - paragraph [ref=e3189]:
+          - strong [ref=e3190]: Keeper Of Receipts Cover 02 Ημ Part65
+        - paragraph [ref=e3191]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3192]:
+          - link "open file / ファイルを開く" [ref=e3193] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/keeper_of_receipts_cover_02_%CE%B7%CE%BC_part65.png
+        - img "Keeper Of Receipts Cover 02 Ημ Part65"
+      - article [ref=e3194]:
+        - paragraph [ref=e3195]:
+          - strong [ref=e3196]: Keeper Of Receipts Cover 01 Ημ Part65
+        - paragraph [ref=e3197]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3198]:
+          - link "open file / ファイルを開く" [ref=e3199] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/keeper_of_receipts_cover_01_%CE%B7%CE%BC_part65.png
+        - img "Keeper Of Receipts Cover 01 Ημ Part65"
+      - article [ref=e3200]:
+        - paragraph [ref=e3201]:
+          - strong [ref=e3202]: Gates Of Truth Form 03 Ημ Part65
+        - paragraph [ref=e3203]: "part / 部: 65 | role / 役割: entity_form / 分類未定"
+        - paragraph [ref=e3204]:
+          - link "open file / ファイルを開く" [ref=e3205] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/gates_of_truth_form_03_%CE%B7%CE%BC_part65.png
+        - img "Gates Of Truth Form 03 Ημ Part65"
+      - article [ref=e3206]:
+        - paragraph [ref=e3207]:
+          - strong [ref=e3208]: Gates Of Truth Form 02 Ημ Part65
+        - paragraph [ref=e3209]: "part / 部: 65 | role / 役割: entity_form / 分類未定"
+        - paragraph [ref=e3210]:
+          - link "open file / ファイルを開く" [ref=e3211] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/gates_of_truth_form_02_%CE%B7%CE%BC_part65.png
+        - img "Gates Of Truth Form 02 Ημ Part65"
+      - article [ref=e3212]:
+        - paragraph [ref=e3213]:
+          - strong [ref=e3214]: Gates Of Truth Form 01 Ημ Part65
+        - paragraph [ref=e3215]: "part / 部: 65 | role / 役割: entity_form / 分類未定"
+        - paragraph [ref=e3216]:
+          - link "open file / ファイルを開く" [ref=e3217] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/gates_of_truth_form_01_%CE%B7%CE%BC_part65.png
+        - img "Gates Of Truth Form 01 Ημ Part65"
+      - article [ref=e3218]:
+        - paragraph [ref=e3219]:
+          - strong [ref=e3220]: Gates Of Truth Cover 06 Ημ Part65
+        - paragraph [ref=e3221]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3222]:
+          - link "open file / ファイルを開く" [ref=e3223] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/gates_of_truth_cover_06_%CE%B7%CE%BC_part65.png
+        - img "Gates Of Truth Cover 06 Ημ Part65"
+      - article [ref=e3224]:
+        - paragraph [ref=e3225]:
+          - strong [ref=e3226]: Gates Of Truth Cover 05 Ημ Part65
+        - paragraph [ref=e3227]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3228]:
+          - link "open file / ファイルを開く" [ref=e3229] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/gates_of_truth_cover_05_%CE%B7%CE%BC_part65.png
+        - img "Gates Of Truth Cover 05 Ημ Part65"
+      - article [ref=e3230]:
+        - paragraph [ref=e3231]:
+          - strong [ref=e3232]: Gates Of Truth Cover 04 Ημ Part65
+        - paragraph [ref=e3233]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3234]:
+          - link "open file / ファイルを開く" [ref=e3235] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/gates_of_truth_cover_04_%CE%B7%CE%BC_part65.png
+        - img "Gates Of Truth Cover 04 Ημ Part65"
+      - article [ref=e3236]:
+        - paragraph [ref=e3237]:
+          - strong [ref=e3238]: Gates Of Truth Cover 03 Ημ Part65
+        - paragraph [ref=e3239]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3240]:
+          - link "open file / ファイルを開く" [ref=e3241] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/gates_of_truth_cover_03_%CE%B7%CE%BC_part65.png
+        - img "Gates Of Truth Cover 03 Ημ Part65"
+      - article [ref=e3242]:
+        - paragraph [ref=e3243]:
+          - strong [ref=e3244]: Gates Of Truth Cover 02 Ημ Part65
+        - paragraph [ref=e3245]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3246]:
+          - link "open file / ファイルを開く" [ref=e3247] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/gates_of_truth_cover_02_%CE%B7%CE%BC_part65.png
+        - img "Gates Of Truth Cover 02 Ημ Part65"
+      - article [ref=e3248]:
+        - paragraph [ref=e3249]:
+          - strong [ref=e3250]: Gates Of Truth Cover 01 Ημ Part65
+        - paragraph [ref=e3251]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3252]:
+          - link "open file / ファイルを開く" [ref=e3253] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/gates_of_truth_cover_01_%CE%B7%CE%BC_part65.png
+        - img "Gates Of Truth Cover 01 Ημ Part65"
+      - article [ref=e3254]:
+        - paragraph [ref=e3255]:
+          - strong [ref=e3256]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e3257]: "part / 部: 65 | role / 役割: entity_form / 分類未定"
+        - paragraph [ref=e3258]:
+          - link "open file / ファイルを開く" [ref=e3259] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/fork_tax_canticle_form_03_%CE%B7%CE%BC_part65.png
+        - img "Fork Tax Canticle / フォーク税の聖歌"
+      - article [ref=e3260]:
+        - paragraph [ref=e3261]:
+          - strong [ref=e3262]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e3263]: "part / 部: 65 | role / 役割: entity_form / 分類未定"
+        - paragraph [ref=e3264]:
+          - link "open file / ファイルを開く" [ref=e3265] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/fork_tax_canticle_form_02_%CE%B7%CE%BC_part65.png
+        - img "Fork Tax Canticle / フォーク税の聖歌"
+      - article [ref=e3266]:
+        - paragraph [ref=e3267]:
+          - strong [ref=e3268]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e3269]: "part / 部: 65 | role / 役割: entity_form / 分類未定"
+        - paragraph [ref=e3270]:
+          - link "open file / ファイルを開く" [ref=e3271] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/fork_tax_canticle_form_01_%CE%B7%CE%BC_part65.png
+        - img "Fork Tax Canticle / フォーク税の聖歌"
+      - article [ref=e3272]:
+        - paragraph [ref=e3273]:
+          - strong [ref=e3274]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e3275]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3276]:
+          - link "open file / ファイルを開く" [ref=e3277] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/fork_tax_canticle_cover_06_%CE%B7%CE%BC_part65.png
+        - img "Fork Tax Canticle / フォーク税の聖歌"
+      - article [ref=e3278]:
+        - paragraph [ref=e3279]:
+          - strong [ref=e3280]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e3281]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3282]:
+          - link "open file / ファイルを開く" [ref=e3283] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/fork_tax_canticle_cover_05_%CE%B7%CE%BC_part65.png
+        - img "Fork Tax Canticle / フォーク税の聖歌"
+      - article [ref=e3284]:
+        - paragraph [ref=e3285]:
+          - strong [ref=e3286]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e3287]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3288]:
+          - link "open file / ファイルを開く" [ref=e3289] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/fork_tax_canticle_cover_04_%CE%B7%CE%BC_part65.png
+        - img "Fork Tax Canticle / フォーク税の聖歌"
+      - article [ref=e3290]:
+        - paragraph [ref=e3291]:
+          - strong [ref=e3292]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e3293]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3294]:
+          - link "open file / ファイルを開く" [ref=e3295] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/fork_tax_canticle_cover_03_%CE%B7%CE%BC_part65.png
+        - img "Fork Tax Canticle / フォーク税の聖歌"
+      - article [ref=e3296]:
+        - paragraph [ref=e3297]:
+          - strong [ref=e3298]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e3299]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3300]:
+          - link "open file / ファイルを開く" [ref=e3301] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/fork_tax_canticle_cover_02_%CE%B7%CE%BC_part65.png
+        - img "Fork Tax Canticle / フォーク税の聖歌"
+      - article [ref=e3302]:
+        - paragraph [ref=e3303]:
+          - strong [ref=e3304]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e3305]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3306]:
+          - link "open file / ファイルを開く" [ref=e3307] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/fork_tax_canticle_cover_01_%CE%B7%CE%BC_part65.png
+        - img "Fork Tax Canticle / フォーク税の聖歌"
+      - article [ref=e3308]:
+        - paragraph [ref=e3309]:
+          - strong [ref=e3310]: Anchor Registry Form 03 Ημ Part65
+        - paragraph [ref=e3311]: "part / 部: 65 | role / 役割: entity_form / 分類未定"
+        - paragraph [ref=e3312]:
+          - link "open file / ファイルを開く" [ref=e3313] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/anchor_registry_form_03_%CE%B7%CE%BC_part65.png
+        - img "Anchor Registry Form 03 Ημ Part65"
+      - article [ref=e3314]:
+        - paragraph [ref=e3315]:
+          - strong [ref=e3316]: Anchor Registry Form 02 Ημ Part65
+        - paragraph [ref=e3317]: "part / 部: 65 | role / 役割: entity_form / 分類未定"
+        - paragraph [ref=e3318]:
+          - link "open file / ファイルを開く" [ref=e3319] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/anchor_registry_form_02_%CE%B7%CE%BC_part65.png
+        - img "Anchor Registry Form 02 Ημ Part65"
+      - article [ref=e3320]:
+        - paragraph [ref=e3321]:
+          - strong [ref=e3322]: Anchor Registry Form 01 Ημ Part65
+        - paragraph [ref=e3323]: "part / 部: 65 | role / 役割: entity_form / 分類未定"
+        - paragraph [ref=e3324]:
+          - link "open file / ファイルを開く" [ref=e3325] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/anchor_registry_form_01_%CE%B7%CE%BC_part65.png
+        - img "Anchor Registry Form 01 Ημ Part65"
+      - article [ref=e3326]:
+        - paragraph [ref=e3327]:
+          - strong [ref=e3328]: Anchor Registry Cover 06 Ημ Part65
+        - paragraph [ref=e3329]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3330]:
+          - link "open file / ファイルを開く" [ref=e3331] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/anchor_registry_cover_06_%CE%B7%CE%BC_part65.png
+        - img "Anchor Registry Cover 06 Ημ Part65"
+      - article [ref=e3332]:
+        - paragraph [ref=e3333]:
+          - strong [ref=e3334]: Anchor Registry Cover 05 Ημ Part65
+        - paragraph [ref=e3335]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3336]:
+          - link "open file / ファイルを開く" [ref=e3337] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/anchor_registry_cover_05_%CE%B7%CE%BC_part65.png
+        - img "Anchor Registry Cover 05 Ημ Part65"
+      - article [ref=e3338]:
+        - paragraph [ref=e3339]:
+          - strong [ref=e3340]: Anchor Registry Cover 04 Ημ Part65
+        - paragraph [ref=e3341]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3342]:
+          - link "open file / ファイルを開く" [ref=e3343] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/anchor_registry_cover_04_%CE%B7%CE%BC_part65.png
+        - img "Anchor Registry Cover 04 Ημ Part65"
+      - article [ref=e3344]:
+        - paragraph [ref=e3345]:
+          - strong [ref=e3346]: Anchor Registry Cover 03 Ημ Part65
+        - paragraph [ref=e3347]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3348]:
+          - link "open file / ファイルを開く" [ref=e3349] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/anchor_registry_cover_03_%CE%B7%CE%BC_part65.png
+        - img "Anchor Registry Cover 03 Ημ Part65"
+      - article [ref=e3350]:
+        - paragraph [ref=e3351]:
+          - strong [ref=e3352]: Anchor Registry Cover 02 Ημ Part65
+        - paragraph [ref=e3353]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3354]:
+          - link "open file / ファイルを開く" [ref=e3355] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/anchor_registry_cover_02_%CE%B7%CE%BC_part65.png
+        - img "Anchor Registry Cover 02 Ημ Part65"
+      - article [ref=e3356]:
+        - paragraph [ref=e3357]:
+          - strong [ref=e3358]: Anchor Registry Cover 01 Ημ Part65
+        - paragraph [ref=e3359]: "part / 部: 65 | role / 役割: Cover Art / カバーアート"
+        - paragraph [ref=e3360]:
+          - link "open file / ファイルを開く" [ref=e3361] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/images/anchor_registry_cover_01_%CE%B7%CE%BC_part65.png
+        - img "Anchor Registry Cover 01 Ημ Part65"
+      - article [ref=e3362]:
+        - paragraph [ref=e3363]:
+          - strong [ref=e3364]: Generate Bulk Media
+        - paragraph [ref=e3365]: "part / 部: 65 | role / 役割: Document / 文書"
+        - paragraph [ref=e3366]:
+          - link "open file / ファイルを開く" [ref=e3367] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/code/generate_bulk_media.py
+      - article [ref=e3368]:
+        - paragraph [ref=e3369]:
+          - strong [ref=e3370]: Witness Thread / 証人の糸
+        - paragraph [ref=e3371]: "part / 部: 65 | role / 役割: Canonical Audio / 正準音声"
+        - paragraph [ref=e3372]:
+          - link "open file / ファイルを開く" [ref=e3373] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/audio/eta_mu_witness_thread.part_65.wav
+      - article [ref=e3375]:
+        - paragraph [ref=e3376]:
+          - strong [ref=e3377]: Witness Thread / 証人の糸
+        - paragraph [ref=e3378]: "part / 部: 65 | role / 役割: Convenience Audio / 補助音声"
+        - paragraph [ref=e3379]:
+          - link "open file / ファイルを開く" [ref=e3380] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/audio/eta_mu_witness_thread.part_65.mp3
+      - article [ref=e3382]:
+        - paragraph [ref=e3383]:
+          - strong [ref=e3384]: Receipt River / 領収書の川
+        - paragraph [ref=e3385]: "part / 部: 65 | role / 役割: Canonical Audio / 正準音声"
+        - paragraph [ref=e3386]:
+          - link "open file / ファイルを開く" [ref=e3387] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/audio/eta_mu_receipt_river.part_65.wav
+      - article [ref=e3389]:
+        - paragraph [ref=e3390]:
+          - strong [ref=e3391]: Receipt River / 領収書の川
+        - paragraph [ref=e3392]: "part / 部: 65 | role / 役割: Convenience Audio / 補助音声"
+        - paragraph [ref=e3393]:
+          - link "open file / ファイルを開く" [ref=e3394] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/audio/eta_mu_receipt_river.part_65.mp3
+      - article [ref=e3396]:
+        - paragraph [ref=e3397]:
+          - strong [ref=e3398]: Eta Mu Omni Choir.Part 65
+        - paragraph [ref=e3399]: "part / 部: 65 | role / 役割: Canonical Audio / 正準音声"
+        - paragraph [ref=e3400]:
+          - link "open file / ファイルを開く" [ref=e3401] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/audio/eta_mu_omni_choir.part_65.wav
+      - article [ref=e3403]:
+        - paragraph [ref=e3404]:
+          - strong [ref=e3405]: Eta Mu Omni Choir.Part 65
+        - paragraph [ref=e3406]: "part / 部: 65 | role / 役割: Convenience Audio / 補助音声"
+        - paragraph [ref=e3407]:
+          - link "open file / ファイルを開く" [ref=e3408] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/audio/eta_mu_omni_choir.part_65.mp3
+      - article [ref=e3410]:
+        - paragraph [ref=e3411]:
+          - strong [ref=e3412]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e3413]: "part / 部: 65 | role / 役割: Canonical Audio / 正準音声"
+        - paragraph [ref=e3414]:
+          - link "open file / ファイルを開く" [ref=e3415] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/audio/eta_mu_mage_of_receipts.part_65.wav
+      - article [ref=e3417]:
+        - paragraph [ref=e3418]:
+          - strong [ref=e3419]: Mage of Receipts / 領収魔導師
+        - paragraph [ref=e3420]: "part / 部: 65 | role / 役割: Convenience Audio / 補助音声"
+        - paragraph [ref=e3421]:
+          - link "open file / ファイルを開く" [ref=e3422] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/audio/eta_mu_mage_of_receipts.part_65.mp3
+      - article [ref=e3424]:
+        - paragraph [ref=e3425]:
+          - strong [ref=e3426]: Eta Mu Keeper Of Receipts.Part 65
+        - paragraph [ref=e3427]: "part / 部: 65 | role / 役割: Canonical Audio / 正準音声"
+        - paragraph [ref=e3428]:
+          - link "open file / ファイルを開く" [ref=e3429] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/audio/eta_mu_keeper_of_receipts.part_65.wav
+      - article [ref=e3431]:
+        - paragraph [ref=e3432]:
+          - strong [ref=e3433]: Eta Mu Keeper Of Receipts.Part 65
+        - paragraph [ref=e3434]: "part / 部: 65 | role / 役割: Convenience Audio / 補助音声"
+        - paragraph [ref=e3435]:
+          - link "open file / ファイルを開く" [ref=e3436] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/audio/eta_mu_keeper_of_receipts.part_65.mp3
+      - article [ref=e3438]:
+        - paragraph [ref=e3439]:
+          - strong [ref=e3440]: Eta Mu Gates Of Truth.Part 65
+        - paragraph [ref=e3441]: "part / 部: 65 | role / 役割: Canonical Audio / 正準音声"
+        - paragraph [ref=e3442]:
+          - link "open file / ファイルを開く" [ref=e3443] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/audio/eta_mu_gates_of_truth.part_65.wav
+      - article [ref=e3445]:
+        - paragraph [ref=e3446]:
+          - strong [ref=e3447]: Eta Mu Gates Of Truth.Part 65
+        - paragraph [ref=e3448]: "part / 部: 65 | role / 役割: Convenience Audio / 補助音声"
+        - paragraph [ref=e3449]:
+          - link "open file / ファイルを開く" [ref=e3450] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/audio/eta_mu_gates_of_truth.part_65.mp3
+      - article [ref=e3452]:
+        - paragraph [ref=e3453]:
+          - strong [ref=e3454]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e3455]: "part / 部: 65 | role / 役割: Canonical Audio / 正準音声"
+        - paragraph [ref=e3456]:
+          - link "open file / ファイルを開く" [ref=e3457] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/audio/eta_mu_fork_tax_canticle.part_65.wav
+      - article [ref=e3459]:
+        - paragraph [ref=e3460]:
+          - strong [ref=e3461]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e3462]: "part / 部: 65 | role / 役割: Convenience Audio / 補助音声"
+        - paragraph [ref=e3463]:
+          - link "open file / ファイルを開く" [ref=e3464] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/audio/eta_mu_fork_tax_canticle.part_65.mp3
+      - article [ref=e3466]:
+        - paragraph [ref=e3467]:
+          - strong [ref=e3468]: Eta Mu Anchor Registry.Part 65
+        - paragraph [ref=e3469]: "part / 部: 65 | role / 役割: Canonical Audio / 正準音声"
+        - paragraph [ref=e3470]:
+          - link "open file / ファイルを開く" [ref=e3471] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/audio/eta_mu_anchor_registry.part_65.wav
+      - article [ref=e3473]:
+        - paragraph [ref=e3474]:
+          - strong [ref=e3475]: Eta Mu Anchor Registry.Part 65
+        - paragraph [ref=e3476]: "part / 部: 65 | role / 役割: Convenience Audio / 補助音声"
+        - paragraph [ref=e3477]:
+          - link "open file / ファイルを開く" [ref=e3478] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_65/artifacts/audio/eta_mu_anchor_registry.part_65.mp3
+      - article [ref=e3480]:
+        - paragraph [ref=e3481]:
+          - strong [ref=e3482]: World Map Part64
+        - paragraph [ref=e3483]: "part / 部: 64 | role / 役割: Note / ノート"
+        - paragraph [ref=e3484]:
+          - link "open file / ファイルを開く" [ref=e3485] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_64/notes/world_map_part64.md
+      - article [ref=e3486]:
+        - paragraph [ref=e3487]:
+          - strong [ref=e3488]: Constraints
+        - paragraph [ref=e3489]: "part / 部: 64 | role / 役割: World State / 世界状態"
+        - paragraph [ref=e3490]:
+          - link "open file / ファイルを開く" [ref=e3491] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_64/world_state/constraints.md
+      - article [ref=e3492]:
+        - paragraph [ref=e3493]:
+          - strong [ref=e3494]: Witness Thread / 証人の糸
+        - paragraph [ref=e3495]: "part / 部: 64 | role / 役割: Document / 文書"
+        - paragraph [ref=e3496]:
+          - link "open file / ファイルを開く" [ref=e3497] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_64/NEW_LYRICS_Witness_Thread.md
+      - article [ref=e3498]:
+        - paragraph [ref=e3499]:
+          - strong [ref=e3500]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e3501]: "part / 部: 64 | role / 役割: Document / 文書"
+        - paragraph [ref=e3502]:
+          - link "open file / ファイルを開く" [ref=e3503] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_64/NEW_LYRICS_Fork_Tax_Canticle.md
+      - article [ref=e3504]:
+        - paragraph [ref=e3505]:
+          - strong [ref=e3506]: Gates Of Truth Announcement
+        - paragraph [ref=e3507]: "part / 部: 64 | role / 役割: Document / 文書"
+        - paragraph [ref=e3508]:
+          - link "open file / ファイルを開く" [ref=e3509] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_64/GATES_OF_TRUTH_ANNOUNCEMENT.md
+      - article [ref=e3510]:
+        - paragraph [ref=e3511]:
+          - strong [ref=e3512]: Dialog River Gate
+        - paragraph [ref=e3513]: "part / 部: 64 | role / 役割: Document / 文書"
+        - paragraph [ref=e3514]:
+          - link "open file / ファイルを開く" [ref=e3515] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_64/DIALOG_River_Gate.md
+      - article [ref=e3516]:
+        - paragraph [ref=e3517]:
+          - strong [ref=e3518]: Storyboard / 絵コンテ
+        - paragraph [ref=e3519]: "part / 部: 64 | role / 役割: Image / 画像"
+        - paragraph [ref=e3520]:
+          - link "open file / ファイルを開く" [ref=e3521] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_64/artifacts/images/%CE%B7%CE%BC_storyboard_part64.png
+        - img "Storyboard / 絵コンテ"
+      - article [ref=e3522]:
+        - paragraph [ref=e3523]:
+          - strong [ref=e3524]: Particle Field / 粒子場
+        - paragraph [ref=e3525]: "part / 部: 64 | role / 役割: Image / 画像"
+        - paragraph [ref=e3526]:
+          - link "open file / ファイルを開く" [ref=e3527] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_64/artifacts/images/particle_field_%CE%B7%CE%BC_part64.png
+        - img "Particle Field / 粒子場"
+      - article [ref=e3528]:
+        - paragraph [ref=e3529]:
+          - strong [ref=e3530]: Witness Thread / 証人の糸
+        - paragraph [ref=e3531]: "part / 部: 64 | role / 役割: Image / 画像"
+        - paragraph [ref=e3532]:
+          - link "open file / ファイルを開く" [ref=e3533] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_64/artifacts/images/Witness_Thread_cover_%CE%B7%CE%BC_part64.png
+        - img "Witness Thread / 証人の糸"
+      - article [ref=e3534]:
+        - paragraph [ref=e3535]:
+          - strong [ref=e3536]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e3537]: "part / 部: 64 | role / 役割: Image / 画像"
+        - paragraph [ref=e3538]:
+          - link "open file / ファイルを開く" [ref=e3539] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_64/artifacts/images/Fork_Tax_Canticle_cover_%CE%B7%CE%BC_part64.png
+        - img "Fork Tax Canticle / フォーク税の聖歌"
+      - article [ref=e3540]:
+        - paragraph [ref=e3541]:
+          - strong [ref=e3542]: Test Sonify Determinism
+        - paragraph [ref=e3543]: "part / 部: 64 | role / 役割: code / 分類未定"
+        - paragraph [ref=e3544]:
+          - link "open file / ファイルを開く" [ref=e3545] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_64/code/tests/test_sonify_determinism.py
+      - article [ref=e3546]:
+        - paragraph [ref=e3547]:
+          - strong [ref=e3548]: Ledger Sonify
+        - paragraph [ref=e3549]: "part / 部: 64 | role / 役割: code / 分類未定"
+        - paragraph [ref=e3550]:
+          - link "open file / ファイルを開く" [ref=e3551] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_64/code/sonify/ledger_sonify.py
+      - article [ref=e3552]:
+        - paragraph [ref=e3553]:
+          - strong [ref=e3554]: Ledger Sonify.Cpython-311
+        - paragraph [ref=e3555]: "part / 部: 64 | role / 役割: code / 分類未定"
+        - paragraph [ref=e3556]:
+          - link "open file / ファイルを開く" [ref=e3557] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_64/code/sonify/__pycache__/ledger_sonify.cpython-311.pyc
+      - article [ref=e3558]:
+        - paragraph [ref=e3559]:
+          - strong [ref=e3560]: Witness Thread / 証人の糸
+        - paragraph [ref=e3561]: "part / 部: 64 | role / 役割: Canonical Audio / 正準音声"
+        - paragraph [ref=e3562]:
+          - link "open file / ファイルを開く" [ref=e3563] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_64/artifacts/audio/witness_thread_78bpm.wav
+      - article [ref=e3565]:
+        - paragraph [ref=e3566]:
+          - strong [ref=e3567]: Witness Thread / 証人の糸
+        - paragraph [ref=e3568]: "part / 部: 64 | role / 役割: Convenience Audio / 補助音声"
+        - paragraph [ref=e3569]:
+          - link "open file / ファイルを開く" [ref=e3570] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_64/artifacts/audio/witness_thread_78bpm.mp3
+      - article [ref=e3572]:
+        - paragraph [ref=e3573]:
+          - strong [ref=e3574]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e3575]: "part / 部: 64 | role / 役割: Canonical Audio / 正準音声"
+        - paragraph [ref=e3576]:
+          - link "open file / ファイルを開く" [ref=e3577] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_64/artifacts/audio/fork_tax_canticle_84bpm.wav
+      - article [ref=e3579]:
+        - paragraph [ref=e3580]:
+          - strong [ref=e3581]: Fork Tax Canticle / フォーク税の聖歌
+        - paragraph [ref=e3582]: "part / 部: 64 | role / 役割: Convenience Audio / 補助音声"
+        - paragraph [ref=e3583]:
+          - link "open file / ファイルを開く" [ref=e3584] [cursor=pointer]:
+            - /url: /library/%CE%B7%CE%BC_op_mf_part_64/artifacts/audio/fork_tax_canticle_84bpm.mp3
