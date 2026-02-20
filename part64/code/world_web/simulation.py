@@ -75,9 +75,11 @@ from .db import (
     _cosine_similarity,
     _load_eta_mu_knowledge_entries,
 )
+from .nooi import NooiField
 from .daimoi_probabilistic import (
     build_probabilistic_daimoi_particles,
     DAIMOI_JOB_KEYS,
+    _simplex_noise_2d,
 )
 from .presence_runtime import (
     simulation_fingerprint,
@@ -100,6 +102,10 @@ SIMULATION_GROWTH_CRITICAL_THRESHOLD = 0.82
 SIMULATION_GROWTH_MAX_CLUSTER_NODES = 18
 SIMULATION_FILE_GRAPH_PROJECTION_RECORD = "ημ.file-graph-projection.v1"
 SIMULATION_FILE_GRAPH_PROJECTION_SCHEMA_VERSION = "file-graph.projection.v1"
+SIMULATION_TRUTH_GRAPH_RECORD = "eta-mu.truth-graph.v1"
+SIMULATION_TRUTH_GRAPH_SCHEMA_VERSION = "truth.graph.v1"
+SIMULATION_VIEW_GRAPH_RECORD = "eta-mu.view-graph.v1"
+SIMULATION_VIEW_GRAPH_SCHEMA_VERSION = "view.graph.v1"
 SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD = max(
     120,
     int(os.getenv("SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD", "340") or "340"),
@@ -232,6 +238,7 @@ _SIMULATION_LAYOUT_CACHE: dict[str, Any] = {
     "prepared_graph": None,
     "embedding_points": [],
 }
+_NOOI_FIELD = NooiField()
 
 
 def _world_web_symbol(name: str, default: Any) -> Any:
@@ -342,6 +349,210 @@ def _growth_guard_scores_native(
         )
     except Exception:
         return None
+
+
+def _graph_rows(
+    file_graph: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    graph = file_graph if isinstance(file_graph, dict) else {}
+    node_rows = [
+        row
+        for row in (
+            graph.get("nodes", []) if isinstance(graph.get("nodes", []), list) else []
+        )
+        if isinstance(row, dict)
+    ]
+    if not node_rows:
+        node_rows = [
+            *[
+                row
+                for row in (
+                    graph.get("field_nodes", [])
+                    if isinstance(graph.get("field_nodes", []), list)
+                    else []
+                )
+                if isinstance(row, dict)
+            ],
+            *[
+                row
+                for row in (
+                    graph.get("tag_nodes", [])
+                    if isinstance(graph.get("tag_nodes", []), list)
+                    else []
+                )
+                if isinstance(row, dict)
+            ],
+            *[
+                row
+                for row in (
+                    graph.get("file_nodes", [])
+                    if isinstance(graph.get("file_nodes", []), list)
+                    else []
+                )
+                if isinstance(row, dict)
+            ],
+            *[
+                row
+                for row in (
+                    graph.get("crawler_nodes", [])
+                    if isinstance(graph.get("crawler_nodes", []), list)
+                    else []
+                )
+                if isinstance(row, dict)
+            ],
+        ]
+    edge_rows = [
+        row
+        for row in (
+            graph.get("edges", []) if isinstance(graph.get("edges", []), list) else []
+        )
+        if isinstance(row, dict)
+    ]
+    return node_rows, edge_rows
+
+
+def _graph_node_type_counts(node_rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {
+        "field": 0,
+        "tag": 0,
+        "file": 0,
+        "crawler": 0,
+        "other": 0,
+    }
+    for row in node_rows:
+        node_type = str(row.get("node_type", "")).strip().lower()
+        if node_type == "field":
+            counts["field"] += 1
+        elif node_type == "tag":
+            counts["tag"] += 1
+        elif node_type == "file":
+            if str(row.get("url", "")).strip():
+                counts["crawler"] += 1
+            else:
+                counts["file"] += 1
+        elif node_type == "crawler":
+            counts["crawler"] += 1
+        else:
+            counts["other"] += 1
+    return counts
+
+
+def _build_truth_graph_contract(file_graph: dict[str, Any] | None) -> dict[str, Any]:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    node_rows, edge_rows = _graph_rows(file_graph)
+    node_type_counts = _graph_node_type_counts(node_rows)
+    node_ids = sorted(
+        {
+            str(row.get("id", "")).strip()
+            for row in node_rows
+            if str(row.get("id", "")).strip()
+        }
+    )
+    edge_ids = sorted(
+        {
+            str(row.get("id", "")).strip()
+            for row in edge_rows
+            if str(row.get("id", "")).strip()
+        }
+    )
+    node_digest_input = "\n".join(node_ids)
+    edge_digest_input = "\n".join(edge_ids)
+
+    return {
+        "record": SIMULATION_TRUTH_GRAPH_RECORD,
+        "schema_version": SIMULATION_TRUTH_GRAPH_SCHEMA_VERSION,
+        "generated_at": now_iso,
+        "node_count": int(len(node_rows)),
+        "edge_count": int(len(edge_rows)),
+        "node_type_counts": node_type_counts,
+        "node_id_digest": sha1(node_digest_input.encode("utf-8")).hexdigest()
+        if node_digest_input
+        else "",
+        "edge_id_digest": sha1(edge_digest_input.encode("utf-8")).hexdigest()
+        if edge_digest_input
+        else "",
+        "provenance": {
+            "source": "catalog.file_graph",
+            "lossless": True,
+        },
+    }
+
+
+def _build_view_graph_contract(file_graph: dict[str, Any] | None) -> dict[str, Any]:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    node_rows, edge_rows = _graph_rows(file_graph)
+    node_type_counts = _graph_node_type_counts(node_rows)
+    projection = (
+        file_graph.get("projection", {})
+        if isinstance(file_graph, dict)
+        and isinstance(file_graph.get("projection", {}), dict)
+        else {}
+    )
+    groups = [
+        row
+        for row in (
+            projection.get("groups", [])
+            if isinstance(projection.get("groups", []), list)
+            else []
+        )
+        if isinstance(row, dict)
+    ]
+    bundle_ledgers: list[dict[str, Any]] = []
+    bundle_member_edges_total = 0
+    reconstructable_bundle_count = 0
+    surface_visible_count = 0
+    for group in groups:
+        member_edge_count = max(0, _safe_int(group.get("member_edge_count", 0), 0))
+        member_edge_ids = group.get("member_edge_ids", [])
+        has_member_ids = isinstance(member_edge_ids, list) and bool(member_edge_ids)
+        if has_member_ids:
+            reconstructable_bundle_count += 1
+        if bool(group.get("surface_visible", False)):
+            surface_visible_count += 1
+        bundle_member_edges_total += member_edge_count
+        bundle_ledgers.append(
+            {
+                "bundle_id": str(group.get("id", "")),
+                "kind": str(group.get("kind", "")),
+                "field": str(group.get("field", "")),
+                "target": str(group.get("target", "")),
+                "member_edge_count": int(member_edge_count),
+                "member_source_count": max(
+                    0, _safe_int(group.get("member_source_count", 0), 0)
+                ),
+                "member_target_count": max(
+                    0, _safe_int(group.get("member_target_count", 0), 0)
+                ),
+                "member_edge_digest": str(group.get("member_edge_digest", "")),
+                "surface_visible": bool(group.get("surface_visible", False)),
+            }
+        )
+
+    return {
+        "record": SIMULATION_VIEW_GRAPH_RECORD,
+        "schema_version": SIMULATION_VIEW_GRAPH_SCHEMA_VERSION,
+        "generated_at": now_iso,
+        "node_count": int(len(node_rows)),
+        "edge_count": int(len(edge_rows)),
+        "node_type_counts": node_type_counts,
+        "projection": {
+            "mode": str(projection.get("mode", "none") or "none"),
+            "active": bool(projection.get("active", False)),
+            "reason": str(projection.get("reason", "") or ""),
+            "bundle_ledger_count": int(len(bundle_ledgers)),
+            "bundle_member_edge_count_total": int(bundle_member_edges_total),
+            "reconstructable_bundle_count": int(reconstructable_bundle_count),
+            "surface_visible_bundle_count": int(surface_visible_count),
+            "bundle_ledgers": bundle_ledgers,
+            "ledger_ref": "file_graph.projection.groups",
+        },
+        "projection_pi": {
+            "kind": "edge-bundle" if bundle_ledgers else "identity",
+            "bundle_count": int(len(bundle_ledgers)),
+            "bundle_member_edge_count_total": int(bundle_member_edges_total),
+            "reconstructable_bundle_count": int(reconstructable_bundle_count),
+        },
+    }
 
 
 def _default_growth_guard(
@@ -2148,6 +2359,9 @@ def _apply_daimoi_dynamics_to_pain_field(
         max(0.02, min(0.4, _safe_float(physics.get("dt", DAIMO_DT_SECONDS)))),
         max(0.0, min(0.99, _safe_float(physics.get("damping", DAIMO_DAMPING)))),
     )
+    edge_band = 0.12
+    edge_pressure = 0.08
+    edge_bounce = 0.74
     updated_rows, active_ids, now_mono = [], set(), time.monotonic()
 
     with _DAIMO_DYNAMICS_LOCK:
@@ -2174,11 +2388,34 @@ def _apply_daimoi_dynamics_to_pain_field(
                 force_by_entity[eid][0] + (bx - px) * 0.18,
                 force_by_entity[eid][1] + (by - py) * 0.18,
             )
+
+            if px < edge_band:
+                fx += ((edge_band - px) / edge_band) * edge_pressure
+            elif px > (1.0 - edge_band):
+                fx -= ((px - (1.0 - edge_band)) / edge_band) * edge_pressure
+            if py < edge_band:
+                fy += ((edge_band - py) / edge_band) * edge_pressure
+            elif py > (1.0 - edge_band):
+                fy -= ((py - (1.0 - edge_band)) / edge_band) * edge_pressure
+
             nvx, nvy = (
                 (pvx * damping) + ((dt / mass) * fx),
                 (pvy * damping) + ((dt / mass) * fy),
             )
-            nx, ny = _clamp01(px + (dt * nvx)), _clamp01(py + (dt * nvy))
+            nx, ny = px + (dt * nvx), py + (dt * nvy)
+            if nx < 0.0:
+                nx = -nx
+                nvx = abs(nvx) * edge_bounce
+            elif nx > 1.0:
+                nx = 2.0 - nx
+                nvx = -abs(nvx) * edge_bounce
+            if ny < 0.0:
+                ny = -ny
+                nvy = abs(nvy) * edge_bounce
+            elif ny > 1.0:
+                ny = 2.0 - ny
+                nvy = -abs(nvy) * edge_bounce
+            nx, ny = _clamp01(nx), _clamp01(ny)
             cache[eid] = {"x": nx, "y": ny, "vx": nvx, "vy": nvy, "ts": now_mono}
             updated_rows.append(
                 {
@@ -2205,6 +2442,8 @@ def _apply_daimoi_dynamics_to_pain_field(
             "active": bool(force_by_entity),
             "dt": round(dt, 6),
             "damping": round(damping, 6),
+            "edge_band": round(edge_band, 4),
+            "edge_pressure": round(edge_pressure, 6),
             "entity_count": len(updated_rows),
             "forced_entities": len(force_by_entity),
         },
@@ -4065,8 +4304,17 @@ def build_mix_stream(
 ) -> tuple[bytes, dict[str, Any]]:
     fingerprint = _mix_fingerprint(catalog)
     with _MIX_CACHE_LOCK:
-        if _MIX_CACHE["fingerprint"] == fingerprint and _MIX_CACHE["wav"]:
-            return _MIX_CACHE["wav"], _MIX_CACHE["meta"]
+        cached_fingerprint = str(_MIX_CACHE.get("fingerprint", ""))
+        cached_wav = _MIX_CACHE.get("wav", b"")
+        cached_meta = _MIX_CACHE.get("meta", {})
+        if (
+            cached_fingerprint == fingerprint
+            and isinstance(cached_wav, (bytes, bytearray))
+            and bool(cached_wav)
+        ):
+            return bytes(cached_wav), (
+                dict(cached_meta) if isinstance(cached_meta, dict) else {}
+            )
 
     sources = _collect_mix_sources(catalog, vault_root)
     wav, meta = _mix_wav_sources(sources)
@@ -4075,7 +4323,7 @@ def build_mix_stream(
     with _MIX_CACHE_LOCK:
         _MIX_CACHE["fingerprint"] = fingerprint
         _MIX_CACHE["wav"] = wav
-        _MIX_CACHE["meta"] = meta
+        _MIX_CACHE["meta"] = dict(meta)
     return wav, meta
 
 
@@ -4766,6 +5014,628 @@ def _build_unified_nexus_graph(
     return unified
 
 
+# ============================================================================
+# CANONICAL UNIFIED MODEL BUILDERS (v2)
+# ============================================================================
+#
+# These builders produce the canonical unified types:
+# - NexusNode / NexusEdge / NexusGraph
+# - Field / FieldRegistry
+# - Presence (unified)
+# - Daimon (unified)
+#
+# See specs/drafts/part64-deep-research-09-unified-nexus-graph.md
+# See specs/drafts/part64-deep-research-10-shared-fields-daimoi-dynamics.md
+# ============================================================================
+
+
+# Role mapping from legacy node_type to canonical NexusRole
+_NEXUS_ROLE_MAP: dict[str, str] = {
+    "field": "field",
+    "file": "file",
+    "tag": "tag",
+    "crawler": "crawler",
+    "presence": "presence",
+    "concept": "concept",
+    "organizer": "presence",
+    "resource": "resource",
+    "anchor": "anchor",
+    "logical": "logical",
+    "fact": "logical",
+    "rule": "logical",
+    "derivation": "logical",
+    "contradiction": "logical",
+    "gate": "logical",
+    "event": "event",
+    "test": "test_failure",
+    "test_failure": "test_failure",
+}
+
+
+def _build_canonical_nexus_node(
+    legacy_node: dict[str, Any],
+    *,
+    default_role: str = "file",
+    origin_graph: str = "unknown",
+) -> dict[str, Any]:
+    """
+    Convert a legacy graph node to canonical NexusNode format.
+
+    Canonical NexusNode schema:
+    - id: string
+    - role: NexusRole (file, field, tag, crawler, resource, concept, anchor, logical, presence, event, etc.)
+    - label: string
+    - label_ja?: string
+    - embedding?: { vector?: number[], centroid?: {x,y,z} }
+    - x, y, z?: number
+    - hue: number
+    - capacity?: { cap, load, pressure }
+    - demand?: { types: Record<string,number>, intensity }
+    - provenance?: { source_uri, file_id, path, origin_graph, created_at, hash }
+    - extension?: Record<string, unknown>
+    - confidence?: number
+    - status?: string
+    - importance?: number
+    """
+    if not isinstance(legacy_node, dict):
+        return {}
+
+    node_id = str(legacy_node.get("id") or legacy_node.get("node_id") or "").strip()
+    if not node_id:
+        return {}
+
+    # Map legacy node_type to canonical role
+    legacy_type = (
+        str(legacy_node.get("node_type", "") or legacy_node.get("kind", "") or "")
+        .strip()
+        .lower()
+    )
+    role = _NEXUS_ROLE_MAP.get(legacy_type, default_role)
+
+    # Special handling for presence kinds
+    presence_kind = str(legacy_node.get("presence_kind", "") or "").strip().lower()
+    if presence_kind == "concept":
+        role = "concept"
+    elif presence_kind == "organizer":
+        role = "presence"
+
+    # Build provenance
+    provenance: dict[str, Any] = {
+        "origin_graph": origin_graph,
+    }
+    source_rel_path = str(
+        legacy_node.get("source_rel_path") or legacy_node.get("archived_rel_path") or ""
+    ).strip()
+    if source_rel_path:
+        provenance["path"] = source_rel_path
+        provenance["source_uri"] = f"library:/{source_rel_path}"
+    if legacy_node.get("file_id"):
+        provenance["file_id"] = str(legacy_node.get("file_id"))
+    if legacy_node.get("url"):
+        provenance["source_uri"] = str(legacy_node.get("url"))
+
+    # Build canonical node
+    canonical: dict[str, Any] = {
+        "id": node_id,
+        "role": role,
+        "label": str(legacy_node.get("label") or legacy_node.get("name") or node_id),
+        "x": round(_clamp01(_safe_float(legacy_node.get("x", 0.5), 0.5)), 4),
+        "y": round(_clamp01(_safe_float(legacy_node.get("y", 0.5), 0.5)), 4),
+        "hue": int(_safe_float(legacy_node.get("hue", 198), 198.0)),
+        "provenance": provenance,
+    }
+
+    # Optional fields
+    if legacy_node.get("label_ja"):
+        canonical["label_ja"] = str(legacy_node.get("label_ja"))
+
+    if legacy_node.get("importance") is not None:
+        canonical["importance"] = round(
+            _clamp01(_safe_float(legacy_node.get("importance", 0.5), 0.5)), 4
+        )
+
+    if legacy_node.get("confidence") is not None:
+        canonical["confidence"] = round(
+            _clamp01(_safe_float(legacy_node.get("confidence", 1.0), 1.0)), 4
+        )
+
+    if legacy_node.get("status"):
+        canonical["status"] = str(legacy_node.get("status"))
+
+    # Copy relevant extension fields based on role
+    extension: dict[str, Any] = {}
+    if role == "file":
+        for key in (
+            "source_rel_path",
+            "archived_rel_path",
+            "archive_rel_path",
+            "tags",
+            "summary",
+            "text_excerpt",
+        ):
+            if legacy_node.get(key):
+                extension[key] = legacy_node[key]
+    elif role == "crawler":
+        for key in (
+            "url",
+            "domain",
+            "title",
+            "content_type",
+            "crawler_kind",
+            "compliance",
+            "dominant_field",
+        ):
+            if legacy_node.get(key):
+                extension[key] = legacy_node[key]
+    elif role == "field":
+        for key in ("field", "dominant_presence"):
+            if legacy_node.get(key):
+                extension[key] = legacy_node[key]
+    elif role == "tag":
+        for key in ("tag", "member_count"):
+            if legacy_node.get(key):
+                extension[key] = legacy_node[key]
+
+    if extension:
+        canonical["extension"] = extension
+
+    return canonical
+
+
+def _build_canonical_nexus_edge(
+    legacy_edge: dict[str, Any],
+    *,
+    node_id_set: set[str],
+) -> dict[str, Any] | None:
+    """
+    Convert a legacy graph edge to canonical NexusEdge format.
+
+    Canonical NexusEdge schema:
+    - id: string
+    - source: string (node id)
+    - target: string (node id)
+    - kind: NexusEdgeKind
+    - weight: number
+    - cost?: number
+    - affinity?: number
+    - saturation?: number
+    - health?: number
+    - field?: string
+    """
+    if not isinstance(legacy_edge, dict):
+        return None
+
+    source_id = str(legacy_edge.get("source", "")).strip()
+    target_id = str(legacy_edge.get("target", "")).strip()
+    if not source_id or not target_id:
+        return None
+    if source_id not in node_id_set or target_id not in node_id_set:
+        return None
+
+    edge_id = str(legacy_edge.get("id", "")).strip()
+    if not edge_id:
+        edge_id = f"nexus-edge:{hashlib.sha256(f'{source_id}|{target_id}'.encode('utf-8')).hexdigest()[:16]}"
+
+    kind = str(legacy_edge.get("kind", "relates")).strip().lower() or "relates"
+    weight = round(_clamp01(_safe_float(legacy_edge.get("weight", 0.5), 0.5)), 4)
+
+    canonical: dict[str, Any] = {
+        "id": edge_id,
+        "source": source_id,
+        "target": target_id,
+        "kind": kind,
+        "weight": weight,
+    }
+
+    if legacy_edge.get("field"):
+        canonical["field"] = str(legacy_edge.get("field"))
+
+    # Edge dynamics (if available)
+    if legacy_edge.get("cost") is not None:
+        canonical["cost"] = _safe_float(legacy_edge.get("cost"), 0.5)
+    if legacy_edge.get("affinity") is not None:
+        canonical["affinity"] = round(
+            _clamp01(_safe_float(legacy_edge.get("affinity", 0.5), 0.5)), 4
+        )
+    if legacy_edge.get("saturation") is not None:
+        canonical["saturation"] = round(
+            _clamp01(_safe_float(legacy_edge.get("saturation", 0.0), 0.0)), 4
+        )
+    if legacy_edge.get("health") is not None:
+        canonical["health"] = round(
+            _clamp01(_safe_float(legacy_edge.get("health", 1.0), 1.0)), 4
+        )
+
+    return canonical
+
+
+def _build_canonical_nexus_graph(
+    file_graph: dict[str, Any] | None,
+    crawler_graph: dict[str, Any] | None,
+    logical_graph: dict[str, Any] | None,
+    *,
+    include_crawler: bool = True,
+    include_logical: bool = True,
+) -> dict[str, Any]:
+    """
+    Build the canonical unified NexusGraph from all legacy graph sources.
+
+    This is the single source of truth for graph data. All other graph
+    payloads (file_graph, crawler_graph, logical_graph) become projections
+    of this canonical graph.
+    """
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+    node_id_set: set[str] = set()
+    edge_key_set: set[tuple[str, str, str]] = set()
+
+    # Joins indices
+    by_role: dict[str, list[str]] = {}
+    by_path: dict[str, str] = {}
+    by_source_uri: dict[str, str] = {}
+    by_file_id: dict[str, str] = {}
+
+    def _add_node(node: dict[str, Any], origin_graph: str) -> None:
+        if not isinstance(node, dict):
+            return
+        canonical = _build_canonical_nexus_node(node, origin_graph=origin_graph)
+        node_id = canonical.get("id", "")
+        if not node_id or node_id in node_id_set:
+            return
+        nodes.append(canonical)
+        node_id_set.add(node_id)
+
+        # Update indices
+        role = canonical.get("role", "unknown")
+        if role not in by_role:
+            by_role[role] = []
+        by_role[role].append(node_id)
+
+        prov = canonical.get("provenance", {})
+        if prov.get("path"):
+            by_path[prov["path"]] = node_id
+        if prov.get("source_uri"):
+            by_source_uri[prov["source_uri"]] = node_id
+        if prov.get("file_id"):
+            by_file_id[prov["file_id"]] = node_id
+
+    def _add_edge(edge: dict[str, Any]) -> None:
+        canonical = _build_canonical_nexus_edge(edge, node_id_set=node_id_set)
+        if not canonical:
+            return
+        source_id = canonical["source"]
+        target_id = canonical["target"]
+        kind = canonical["kind"]
+        edge_key = (source_id, target_id, kind)
+        if edge_key in edge_key_set:
+            return
+        edges.append(canonical)
+        edge_key_set.add(edge_key)
+
+    # Process file_graph
+    if isinstance(file_graph, dict):
+        for node in file_graph.get("field_nodes", []):
+            _add_node(node, "file_graph")
+        for node in file_graph.get("tag_nodes", []):
+            _add_node(node, "file_graph")
+        for node in file_graph.get("file_nodes", []):
+            _add_node(node, "file_graph")
+        for node in file_graph.get("nodes", []):
+            _add_node(node, "file_graph")
+        for edge in file_graph.get("edges", []):
+            _add_edge(edge)
+
+    # Process crawler_graph
+    if include_crawler and isinstance(crawler_graph, dict):
+        for node in crawler_graph.get("field_nodes", []):
+            _add_node(node, "crawler_graph")
+        for node in crawler_graph.get("crawler_nodes", []):
+            _add_node(node, "crawler_graph")
+        for edge in crawler_graph.get("edges", []):
+            _add_edge(edge)
+
+    # Process logical_graph (Logos projection)
+    if include_logical and isinstance(logical_graph, dict):
+        for node in logical_graph.get("nodes", []):
+            _add_node(node, "logical_graph")
+        for edge in logical_graph.get("edges", []):
+            _add_edge(edge)
+
+    # Build stats
+    role_counts: dict[str, int] = {}
+    for role, ids in by_role.items():
+        role_counts[role] = len(ids)
+
+    edge_kind_counts: dict[str, int] = {}
+    for edge in edges:
+        kind = edge.get("kind", "unknown")
+        edge_kind_counts[kind] = edge_kind_counts.get(kind, 0) + 1
+
+    # Mean connectivity
+    connectivity_sum = sum(
+        sum(1 for e in edges if e["source"] == node_id or e["target"] == node_id)
+        for node_id in node_id_set
+    )
+    mean_connectivity = (connectivity_sum / len(node_id_set)) if node_id_set else 0.0
+
+    return {
+        "record": "ημ.nexus-graph.v1",
+        "schema_version": "nexus.graph.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "nodes": nodes,
+        "edges": edges,
+        "joins": {
+            "by_role": by_role,
+            "by_path": by_path,
+            "by_source_uri": by_source_uri,
+            "by_file_id": by_file_id,
+        },
+        "stats": {
+            "node_count": len(nodes),
+            "edge_count": len(edges),
+            "role_counts": role_counts,
+            "edge_kind_counts": edge_kind_counts,
+            "mean_connectivity": round(mean_connectivity, 4),
+        },
+    }
+
+
+def _build_field_registry(
+    catalog: dict[str, Any],
+    graph_runtime: dict[str, Any] | None,
+    *,
+    kernel_width: float = 0.3,
+    decay_rate: float = 0.1,
+    resolution: int = 32,
+) -> dict[str, Any]:
+    """
+    Build the shared field registry from catalog and graph runtime data.
+
+    The field registry contains a bounded set of shared fields:
+    - demand: Where in semantic space is there active demand
+    - flow: Aggregate movement patterns
+    - entropy: Where things are uncertain/unresolved
+    - graph: The compiled graph's influence on particle motion
+
+    All presences contribute to these shared fields, not to individual fields.
+    """
+    from .constants import FIELD_KINDS, MAX_FIELD_COUNT
+
+    fields: dict[str, dict[str, Any]] = {}
+
+    # Extract gravity data for demand field
+    gravity = (
+        graph_runtime.get("gravity", []) if isinstance(graph_runtime, dict) else []
+    )
+    node_count = len(gravity) if isinstance(gravity, list) else 0
+
+    # Build demand field samples from gravity
+    demand_samples: list[dict[str, Any]] = []
+    demand_max = 0.0
+    demand_sum = 0.0
+    demand_peak_loc: dict[str, float] | None = None
+
+    if gravity and isinstance(gravity, list):
+        # Sample at grid resolution
+        for i in range(min(resolution, node_count)):
+            g_val = _safe_float(gravity[i], 0.0) if i < len(gravity) else 0.0
+            x = (i % resolution) / resolution
+            y = (i // resolution) / resolution
+            if g_val > 0.001:
+                demand_samples.append(
+                    {"x": round(x, 4), "y": round(y, 4), "value": round(g_val, 6)}
+                )
+                demand_sum += g_val
+                if g_val > demand_max:
+                    demand_max = g_val
+                    demand_peak_loc = {"x": x, "y": y}
+
+    fields["demand"] = {
+        "kind": "demand",
+        "record": "ημ.shared-field.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "samples": demand_samples[:256],  # Cap samples
+        "stats": {
+            "mean": round(demand_sum / max(1, len(demand_samples)), 6),
+            "max": round(demand_max, 6),
+            "min": 0.0,
+            "integral": round(demand_sum, 6),
+            "peak_location": demand_peak_loc,
+        },
+        "top_contributors": [],  # TODO: Add attribution
+        "params": {
+            "kernel_width": kernel_width,
+            "decay_rate": decay_rate,
+            "resolution": resolution,
+        },
+    }
+
+    # Build flow field (placeholder - would track daimon movement)
+    fields["flow"] = {
+        "kind": "flow",
+        "record": "ημ.shared-field.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "samples": [],
+        "stats": {"mean": 0.0, "max": 0.0, "min": 0.0, "integral": 0.0},
+        "top_contributors": [],
+        "params": {
+            "kernel_width": kernel_width,
+            "decay_rate": decay_rate,
+            "resolution": resolution,
+        },
+    }
+
+    # Build entropy field (placeholder - would track type distribution entropy)
+    fields["entropy"] = {
+        "kind": "entropy",
+        "record": "ημ.shared-field.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "samples": [],
+        "stats": {"mean": 0.0, "max": 0.0, "min": 0.0, "integral": 0.0},
+        "top_contributors": [],
+        "params": {
+            "kernel_width": kernel_width,
+            "decay_rate": decay_rate,
+            "resolution": resolution,
+        },
+    }
+
+    # Build graph field from graph runtime node prices
+    graph_samples: list[dict[str, Any]] = []
+    node_prices = (
+        graph_runtime.get("node_prices", []) if isinstance(graph_runtime, dict) else []
+    )
+    graph_sum = 0.0
+    graph_max = 0.0
+
+    if node_prices and isinstance(node_prices, list):
+        for i, price in enumerate(node_prices[: resolution * resolution]):
+            p_val = _safe_float(price, 0.0)
+            if p_val > 0.001:
+                x = (i % resolution) / resolution
+                y = (i // resolution) / resolution
+                graph_samples.append(
+                    {"x": round(x, 4), "y": round(y, 4), "value": round(p_val, 6)}
+                )
+                graph_sum += p_val
+                graph_max = max(graph_max, p_val)
+
+    fields["graph"] = {
+        "kind": "graph",
+        "record": "ημ.shared-field.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "samples": graph_samples[:256],
+        "stats": {
+            "mean": round(graph_sum / max(1, len(graph_samples)), 6),
+            "max": round(graph_max, 6),
+            "min": 0.0,
+            "integral": round(graph_sum, 6),
+        },
+        "top_contributors": [],
+        "params": {
+            "kernel_width": kernel_width,
+            "decay_rate": decay_rate,
+            "resolution": resolution,
+        },
+    }
+
+    return {
+        "record": "ημ.field-registry.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "fields": {k: fields.get(k, {}) for k in FIELD_KINDS},
+        "weights": {
+            "demand": 0.4,
+            "flow": 0.2,
+            "entropy": 0.15,
+            "graph": 0.25,
+        },
+        "field_count": len(FIELD_KINDS),
+        "bounded": len(FIELD_KINDS) <= MAX_FIELD_COUNT,
+    }
+
+
+def _project_legacy_file_graph_from_nexus(
+    nexus_graph: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Project the legacy file_graph payload from the canonical nexus_graph.
+    This provides backward compatibility during migration.
+    """
+    if not isinstance(nexus_graph, dict):
+        return {
+            "record": "ημ.file-graph.v1",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "nodes": [],
+            "field_nodes": [],
+            "tag_nodes": [],
+            "file_nodes": [],
+            "edges": [],
+            "stats": {},
+        }
+
+    nodes = nexus_graph.get("nodes", [])
+    edges = nexus_graph.get("edges", [])
+
+    # Partition nodes by role
+    field_nodes = [n for n in nodes if n.get("role") == "field"]
+    tag_nodes = [n for n in nodes if n.get("role") == "tag"]
+    file_nodes = [n for n in nodes if n.get("role") in ("file", "resource")]
+
+    return {
+        "record": "ημ.file-graph.v1",
+        "generated_at": nexus_graph.get(
+            "generated_at", datetime.now(timezone.utc).isoformat()
+        ),
+        "nodes": nodes,
+        "field_nodes": field_nodes,
+        "tag_nodes": tag_nodes,
+        "file_nodes": file_nodes,
+        "edges": edges,
+        "stats": nexus_graph.get("stats", {}),
+    }
+
+
+def _project_legacy_logical_graph_from_nexus(
+    nexus_graph: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Project the legacy logical_graph payload from the canonical nexus_graph.
+    The logical graph is just the nodes with role in logical roles.
+    """
+    if not isinstance(nexus_graph, dict):
+        return {
+            "record": "ημ.logical-graph.v1",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "nodes": [],
+            "edges": [],
+            "joins": {},
+            "stats": {},
+        }
+
+    logical_roles = {
+        "logical",
+        "fact",
+        "rule",
+        "derivation",
+        "contradiction",
+        "gate",
+        "event",
+        "tag",
+        "file",
+    }
+    nodes = nexus_graph.get("nodes", [])
+    edges = nexus_graph.get("edges", [])
+
+    logical_nodes = [n for n in nodes if n.get("role") in logical_roles]
+    logical_node_ids = {n.get("id") for n in logical_nodes}
+
+    # Filter edges to only those between logical nodes
+    logical_edges = [
+        e
+        for e in edges
+        if e.get("source") in logical_node_ids and e.get("target") in logical_node_ids
+    ]
+
+    return {
+        "record": "ημ.logical-graph.v1",
+        "generated_at": nexus_graph.get(
+            "generated_at", datetime.now(timezone.utc).isoformat()
+        ),
+        "nodes": logical_nodes,
+        "edges": logical_edges,
+        "joins": nexus_graph.get("joins", {}),
+        "stats": {
+            "file_nodes": len([n for n in logical_nodes if n.get("role") == "file"]),
+            "tag_nodes": len([n for n in logical_nodes if n.get("role") == "tag"]),
+            "fact_nodes": len(
+                [n for n in logical_nodes if n.get("role") in ("fact", "logical")]
+            ),
+            "event_nodes": len([n for n in logical_nodes if n.get("role") == "event"]),
+            "edge_count": len(logical_edges),
+        },
+    }
+
+
 def _clean_tokens(text: str) -> list[str]:
     return [token for token in re.findall(r"[A-Za-z0-9_-]+", text.lower()) if token]
 
@@ -5330,6 +6200,25 @@ def _apply_file_graph_document_similarity_layout(
                 ) + (particle_index * 0.41)
                 particle_forces[particle_index][0] += math.cos(drift_phase) * 0.00021
                 particle_forces[particle_index][1] += math.sin(drift_phase) * 0.00017
+
+                particle_x = _safe_float(particle.get("x", 0.5), 0.5)
+                particle_y = _safe_float(particle.get("y", 0.5), 0.5)
+                simplex_amp = 0.00011 + (
+                    abs(_safe_float(particle.get("drift", 0.0), 0.0)) * 0.00017
+                )
+                simplex_phase = now_seconds * 0.31
+                simplex_x = _simplex_noise_2d(
+                    (particle_x * 4.6) + (particle_index * 0.19) + simplex_phase,
+                    (particle_y * 4.6) + (simplex_phase * 0.71),
+                    seed=particle_index + 17,
+                )
+                simplex_y = _simplex_noise_2d(
+                    (particle_x * 4.6) + 17.0 + (simplex_phase * 0.59),
+                    (particle_y * 4.6) + 11.0 + simplex_phase,
+                    seed=particle_index + 29,
+                )
+                particle_forces[particle_index][0] += simplex_x * simplex_amp
+                particle_forces[particle_index][1] += simplex_y * simplex_amp
 
                 vx = (
                     _safe_float(particle.get("vx", 0.0), 0.0)
@@ -5915,6 +6804,26 @@ def _build_backend_field_particles(
                 )
                 fx += math.cos(jitter_angle) * jitter_power
                 fy += math.sin(jitter_angle) * jitter_power
+
+                simplex_phase = now * (0.28 + (compute_pressure * 0.24))
+                simplex_amp = (
+                    0.00005
+                    + ((1.0 - resource_pressure) * 0.00007)
+                    + (local_density_ratio * 0.00004)
+                )
+                simplex_seed = (local_index + 1) * 73 + len(presence_id)
+                simplex_x = _simplex_noise_2d(
+                    (px * 4.8) + simplex_phase + (local_index * 0.23),
+                    (py * 4.8) + (simplex_phase * 0.69),
+                    seed=simplex_seed,
+                )
+                simplex_y = _simplex_noise_2d(
+                    (px * 4.8) + 13.0 + (simplex_phase * 0.57),
+                    (py * 4.8) + 29.0 + simplex_phase,
+                    seed=simplex_seed + 41,
+                )
+                fx += simplex_x * simplex_amp
+                fy += simplex_y * simplex_amp
 
                 damping = max(0.74, 0.91 - (resource_pressure * 0.13))
                 vx = (pvx * damping) + fx
@@ -7200,6 +8109,8 @@ def build_simulation_state(
     emitted_embedding_particles: list[dict[str, float]] = []
     field_particle_points_raw: list[dict[str, float | str]] = []
     emitted_field_particles: list[dict[str, float | str]] = []
+    truth_graph_contract = _build_truth_graph_contract(None)
+    view_graph_contract = _build_view_graph_contract(None)
     items = catalog.get("items", [])
     file_graph = catalog.get("file_graph") if isinstance(catalog, dict) else None
     if isinstance(file_graph, dict):
@@ -7207,6 +8118,9 @@ def build_simulation_state(
             file_graph,
             now=now,
         )
+    truth_graph_contract = _build_truth_graph_contract(
+        file_graph if isinstance(file_graph, dict) else None
+    )
     crawler_graph = catalog.get("crawler_graph") if isinstance(catalog, dict) else None
     file_graph, growth_guard = _apply_daimoi_growth_guard_to_file_graph(
         file_graph=file_graph if isinstance(file_graph, dict) else None,
@@ -7248,6 +8162,9 @@ def build_simulation_state(
         unified_nexus_output_graph
         if isinstance(unified_nexus_output_graph, dict)
         else (file_graph if isinstance(file_graph, dict) else None)
+    )
+    view_graph_contract = _build_view_graph_contract(
+        output_file_graph if isinstance(output_file_graph, dict) else None
     )
     truth_state = catalog.get("truth_state") if isinstance(catalog, dict) else None
     logical_graph = catalog.get("logical_graph") if isinstance(catalog, dict) else None
@@ -7937,6 +8854,8 @@ def build_simulation_state(
         for key in (
             "record",
             "schema_version",
+            "packet_record",
+            "packet_schema_version",
             "is_nexus",
             "owner_presence_id",
             "target_presence_id",
@@ -7987,6 +8906,9 @@ def build_simulation_state(
                 normalized_row[key] = particle.get(key)
         for key in (
             "job_probabilities",
+            "packet_components",
+            "resource_signature",
+            "absorb_sampler",
             "action_probabilities",
             "behavior_actions",
             "embedding_seed_preview",
@@ -8027,7 +8949,18 @@ def build_simulation_state(
         )
 
     emitted_field_particles = normalized_field_particles
-    nooi_field = _build_nooi_field_cells(emitted_field_particles)
+
+    _NOOI_FIELD.decay(DAIMO_DT_SECONDS)
+    for particle in emitted_field_particles:
+        if not isinstance(particle, dict):
+            continue
+        _NOOI_FIELD.deposit(
+            _safe_float(particle.get("x", 0.5), 0.5),
+            _safe_float(particle.get("y", 0.5), 0.5),
+            _safe_float(particle.get("vx", 0.0), 0.0),
+            _safe_float(particle.get("vy", 0.0), 0.0),
+        )
+    nooi_field = _NOOI_FIELD.get_grid_snapshot()
 
     distributed_runtime = sync_presence_runtime_state(
         field_particles=emitted_field_particles,
@@ -8147,6 +9080,8 @@ def build_simulation_state(
                 "knowledge_entries": 0,
             },
         },
+        "truth_graph": truth_graph_contract,
+        "view_graph": view_graph_contract,
         "crawler_graph": crawler_graph
         if isinstance(crawler_graph, dict)
         else {
@@ -8183,6 +9118,33 @@ def build_simulation_state(
         "presence_dynamics": presence_dynamics,
         "myth": myth_summary or {},
         "world": world_summary or {},
+        # =====================================================================
+        # CANONICAL UNIFIED MODEL (v2) - single source of truth
+        # =====================================================================
+        # The nexus_graph is the unified graph - all other graph payloads are
+        # projections of this. The field_registry contains the bounded shared
+        # fields that all presences contribute to.
+        # See specs/drafts/part64-deep-research-09-unified-nexus-graph.md
+        # See specs/drafts/part64-deep-research-10-shared-fields-daimoi-dynamics.md
+        # =====================================================================
+        "nexus_graph": _build_canonical_nexus_graph(
+            file_graph=output_file_graph,
+            crawler_graph=crawler_graph,
+            logical_graph=logical_graph,
+            include_crawler=True,
+            include_logical=True,
+        ),
+        "field_registry": _build_field_registry(
+            catalog=catalog,
+            graph_runtime=(
+                daimoi_probabilistic.get("graph_runtime")
+                if isinstance(daimoi_probabilistic, dict)
+                else None
+            ),
+            kernel_width=0.3,
+            decay_rate=0.1,
+            resolution=32,
+        ),
     }
 
 
