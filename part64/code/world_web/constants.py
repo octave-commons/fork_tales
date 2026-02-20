@@ -155,6 +155,75 @@ GIBS_LAYERS_LOG_REL = ".opencode/runtime/gibs_layers.v1.jsonl"
 EONET_EVENTS_LOG_REL = ".opencode/runtime/eonet_events.v1.jsonl"
 EMSC_STREAM_LOG_REL = ".opencode/runtime/emsc_stream.v1.jsonl"
 
+# ============================================================================
+# CANONICAL UNIFIED MODEL RECORD TYPES (v2)
+# ============================================================================
+#
+# The unified model has exactly four primitive types:
+# - Presence: AI physics-based agent with spec embedding, need, priority, mass
+# - Nexus: Graph node/particle representing a resource with embedding, capacity, demand, role
+# - Daimoi: Free particle with carrier embedding, seed embedding, type distribution, owner
+# - Field: Shared global scalar field (demand, flow, entropy, graph)
+#
+# See specs/drafts/part64-deep-research-09-unified-nexus-graph.md
+# See specs/drafts/part64-deep-research-10-shared-fields-daimoi-dynamics.md
+# See specs/drafts/part64-deep-research-11-model-audit-alien-concepts.md
+
+# Canonical unified graph (replaces file_graph, crawler_graph, logical_graph)
+NEXUS_GRAPH_RECORD = "ημ.nexus-graph.v1"
+NEXUS_GRAPH_SCHEMA_VERSION = "nexus.graph.v1"
+
+# Canonical daimon (replaces multiple particle types)
+DAIMON_RECORD = "ημ.daimon.v1"
+DAIMON_SCHEMA_VERSION = "daimon.v1"
+DAIMOI_PACKET_RECORD = "ημ.daimoi-packet.v1"
+
+# Canonical presence (unified agent type)
+PRESENCE_RECORD = "ημ.presence.v1"
+PRESENCE_SCHEMA_VERSION = "presence.v1"
+USER_PRESENCE_ID = "presence.user.operator"
+USER_PRESENCE_LABEL_EN = "User Presence"
+USER_PRESENCE_LABEL_JA = "操作者プレゼンス"
+USER_PRESENCE_DEFAULT_X = max(
+    0.0,
+    min(1.0, float(os.getenv("USER_PRESENCE_DEFAULT_X", "0.5") or "0.5")),
+)
+USER_PRESENCE_DEFAULT_Y = max(
+    0.0,
+    min(1.0, float(os.getenv("USER_PRESENCE_DEFAULT_Y", "0.72") or "0.72")),
+)
+USER_PRESENCE_DRIFT_ALPHA = max(
+    0.01,
+    min(0.35, float(os.getenv("USER_PRESENCE_DRIFT_ALPHA", "0.06") or "0.06")),
+)
+USER_PRESENCE_EVENT_TTL_SECONDS = max(
+    2.0,
+    float(os.getenv("USER_PRESENCE_EVENT_TTL_SECONDS", "18.0") or "18.0"),
+)
+USER_PRESENCE_MAX_EVENTS = max(
+    8,
+    int(os.getenv("USER_PRESENCE_MAX_EVENTS", "96") or "96"),
+)
+
+# Shared fields (bounded global registry)
+SHARED_FIELD_RECORD = "ημ.shared-field.v1"
+FIELD_REGISTRY_RECORD = "ημ.field-registry.v1"
+FIELD_REGISTRY_SCHEMA_VERSION = "field.registry.v1"
+
+# Braid diagnostics (field-derived)
+BRAID_DIAGNOSTICS_RECORD = "ημ.braid-diagnostics.v1"
+
+# Ledger events
+LEDGER_EVENT_RECORD = "ημ.ledger-event.v1"
+
+# Field types (bounded set)
+FIELD_KINDS = ("demand", "flow", "entropy", "graph")
+MAX_FIELD_COUNT = len(FIELD_KINDS)  # Bounded!
+
+# ============================================================================
+# LEGACY RECORD TYPES (to be deprecated, migrated to unified model)
+# ============================================================================
+
 # Record Types
 ETA_MU_KNOWLEDGE_RECORD = "ημ.knowledge.v1"
 ETA_MU_ARCHIVE_MANIFEST_RECORD = "ημ.archive-manifest.v1"
@@ -2570,6 +2639,21 @@ _DAIMO_DYNAMICS_CACHE: dict[str, Any] = {
     "entities": {},
     "last_gc_monotonic": 0.0,
 }
+_USER_PRESENCE_INPUT_LOCK = threading.Lock()
+_USER_PRESENCE_INPUT_CACHE: dict[str, Any] = {
+    "target_x": USER_PRESENCE_DEFAULT_X,
+    "target_y": USER_PRESENCE_DEFAULT_Y,
+    "anchor_x": USER_PRESENCE_DEFAULT_X,
+    "anchor_y": USER_PRESENCE_DEFAULT_Y,
+    "latest_message": "",
+    "latest_target": "",
+    "last_input_unix": 0.0,
+    "last_pointer_unix": 0.0,
+    "last_input_monotonic": 0.0,
+    "last_pointer_monotonic": 0.0,
+    "seq": 0,
+    "events": [],
+}
 _RESOURCE_MONITOR_LOCK = threading.Lock()
 _RESOURCE_MONITOR_CACHE: dict[str, Any] = {
     "checked_monotonic": 0.0,
@@ -2587,37 +2671,9 @@ _MYCELIAL_ECHO_CACHE: dict[str, Any] = {
     "checked_monotonic": 0.0,
     "docs": [],
 }
-
-# Locks and Caches
-_DAIMO_DYNAMICS_LOCK = threading.Lock()
-_DAIMO_DYNAMICS_CACHE: dict[str, Any] = {}
-_MIX_CACHE_LOCK = threading.Lock()
-_MIX_CACHE: dict[str, Any] = {}
-_WEAVER_GRAPH_CACHE_LOCK = threading.Lock()
-_WEAVER_GRAPH_CACHE: dict[str, Any] = {}
-_EMBEDDINGS_DB_LOCK = threading.Lock()
-_EMBEDDINGS_DB_CACHE: dict[str, Any] = {}
-_FILE_GRAPH_MOVES_LOCK = threading.Lock()
-_FILE_GRAPH_MOVES_CACHE: dict[str, Any] = {}
-_MYCELIAL_ECHO_CACHE_LOCK = threading.Lock()
-_MYCELIAL_ECHO_CACHE: dict[str, Any] = {}
-_ETA_MU_KNOWLEDGE_LOCK = threading.Lock()
-_ETA_MU_KNOWLEDGE_CACHE: dict[str, Any] = {}
-_ETA_MU_DOCMETA_LOCK = threading.Lock()
-_ETA_MU_DOCMETA_CACHE: dict[str, Any] = {}
-_ETA_MU_REGISTRY_LOCK = threading.Lock()
-_ETA_MU_REGISTRY_CACHE: dict[str, Any] = {}
-_STUDY_SNAPSHOT_LOCK = threading.Lock()
-_STUDY_SNAPSHOT_CACHE: dict[str, Any] = {}
-_PRESENCE_ACCOUNTS_LOCK = threading.Lock()
-_PRESENCE_ACCOUNTS_CACHE: dict[str, Any] = {}
 _SIMULATION_METADATA_LOCK = threading.Lock()
-_SIMULATION_METADATA_CACHE: dict[str, Any] = {}
-_IMAGE_COMMENTS_LOCK = threading.Lock()
-_IMAGE_COMMENTS_CACHE: dict[str, Any] = {}
-_WHISPER_MODEL_LOCK = threading.Lock()
-_WHISPER_MODEL: dict[str, Any] = {}
-_TENSORFLOW_RUNTIME_LOCK = threading.Lock()
-_TENSORFLOW_RUNTIME: dict[str, Any] = {}
-_OPENVINO_EMBED_LOCK = threading.Lock()
-_OPENVINO_EMBED_RUNTIME: dict[str, Any] = {}
+_SIMULATION_METADATA_CACHE: dict[str, Any] = {
+    "path": "",
+    "mtime_ns": 0,
+    "entries": [],
+}

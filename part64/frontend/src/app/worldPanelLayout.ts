@@ -102,11 +102,11 @@ export const PANEL_ANCHOR_PRESETS: Record<string, PanelAnchorPreset> = {
     pinnedByDefault: true,
     anchorId: "stability",
   },
-  "nexus.ui.chat.symetry": {
+  "nexus.ui.chat.symmetry": {
     kind: "node",
     worldSize: "m",
     pinnedByDefault: true,
-    anchorId: "symetry",
+    anchorId: "symmetry",
   },
   "nexus.ui.web_graph_weaver": {
     kind: "cluster",
@@ -140,6 +140,12 @@ export const PANEL_ANCHOR_PRESETS: Record<string, PanelAnchorPreset> = {
     worldSize: "l",
     pinnedByDefault: true,
     anchorId: "fork_tax_canticle",
+  },
+  "nexus.ui.daimoi_presence": {
+    kind: "node",
+    worldSize: "l",
+    pinnedByDefault: true,
+    anchorId: "particle_field",
   },
   "nexus.ui.omni_archive": {
     kind: "node",

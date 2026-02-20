@@ -3001,6 +3001,44 @@ def _eonet_event_id(raw: dict[str, Any], payload_text: str) -> str:
     return "eonet:" + hashlib.sha1(seed.encode("utf-8")).hexdigest()[:20]
 
 
+def _eonet_categories(raw: dict[str, Any]) -> list[str]:
+    categories_value = raw.get("categories")
+    if not isinstance(categories_value, list):
+        return []
+
+    categories = [
+        str(item.get("title", "")).strip().lower()
+        for item in categories_value
+        if isinstance(item, dict) and str(item.get("title", "")).strip()
+    ]
+    return list(dict.fromkeys(categories))
+
+
+def _eonet_latest_geometry_type(geometries: list[Any]) -> str:
+    for item in reversed(geometries):
+        if not isinstance(item, dict):
+            continue
+        latest_geometry_type = str(item.get("type", "")).strip().lower()
+        if latest_geometry_type:
+            return latest_geometry_type
+    return ""
+
+
+def _eonet_event_refs(raw: dict[str, Any], sources: list[Any]) -> list[str]:
+    refs: list[str] = []
+    for candidate in [
+        str(raw.get("link", "")).strip(),
+        *[
+            str(source.get("url", "")).strip()
+            for source in sources
+            if isinstance(source, dict)
+        ],
+    ]:
+        if candidate and candidate not in refs:
+            refs.append(candidate)
+    return refs
+
+
 def _eonet_event_row(raw: dict[str, Any], *, received_at: str) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
@@ -3008,18 +3046,7 @@ def _eonet_event_row(raw: dict[str, Any], *, received_at: str) -> dict[str, Any]
         "EONET_EVENTS_DETAIL_CHAR_LIMIT", EONET_EVENTS_DETAIL_CHAR_LIMIT
     )
     title = str(raw.get("title", "")).strip() or "EONET event"
-    categories_value = raw.get("categories")
-    categories_raw: list[Any] = []
-    if isinstance(categories_value, list):
-        categories_raw = categories_value
-    categories: list[str] = []
-    for item in categories_raw:
-        if not isinstance(item, dict):
-            continue
-        value = str(item.get("title", "")).strip().lower()
-        if value:
-            categories.append(value)
-    categories = list(dict.fromkeys(categories))
+    categories = _eonet_categories(raw)
     primary_category = categories[0] if categories else "event"
     kind_slug = _world_log_kind_slug(primary_category, "event")
     closed_at = str(raw.get("closed", "")).strip()
@@ -3030,14 +3057,7 @@ def _eonet_event_row(raw: dict[str, Any], *, received_at: str) -> dict[str, Any]
     if isinstance(geometry_value, list):
         geometries = geometry_value
     geometry_count = len([item for item in geometries if isinstance(item, dict)])
-    latest_geometry_type = ""
-    if geometries:
-        for item in reversed(geometries):
-            if not isinstance(item, dict):
-                continue
-            latest_geometry_type = str(item.get("type", "")).strip().lower()
-            if latest_geometry_type:
-                break
+    latest_geometry_type = _eonet_latest_geometry_type(geometries)
 
     detail_parts = [
         "status=" + status,
@@ -3052,18 +3072,7 @@ def _eonet_event_row(raw: dict[str, Any], *, received_at: str) -> dict[str, Any]
 
     sources_value = raw.get("sources")
     sources = sources_value if isinstance(sources_value, list) else []
-
-    refs: list[str] = []
-    for candidate in [
-        str(raw.get("link", "")).strip(),
-        *[
-            str(source.get("url", "")).strip()
-            for source in sources
-            if isinstance(source, dict)
-        ],
-    ]:
-        if candidate and candidate not in refs:
-            refs.append(candidate)
+    refs = _eonet_event_refs(raw, sources)
 
     payload_text = json.dumps(raw, ensure_ascii=False, sort_keys=True)
     event_id = _eonet_event_id(raw, payload_text)

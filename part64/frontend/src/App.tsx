@@ -13,9 +13,14 @@ import {
 import { type PanInfo } from "framer-motion";
 import { useAutopilotController } from "./hooks/useAutopilotController";
 import { useWorldState } from "./hooks/useWorldState";
-import { OVERLAY_VIEW_OPTIONS, SimulationCanvas, type OverlayViewId } from "./components/Simulation/Canvas";
+import {
+  OVERLAY_VIEW_OPTIONS,
+  SimulationCanvas,
+  type NexusInteractionEvent,
+  type OverlayViewId,
+} from "./components/Simulation/Canvas";
 import { CoreBackdrop } from "./components/App/CoreBackdrop";
-import { CoreControlPanel } from "./components/App/CoreControlPanel";
+import { CoreControlPanel, type MouseDaimonTuning } from "./components/App/CoreControlPanel";
 import { CoreLayerManagerOverlay } from "./components/App/CoreLayerManagerOverlay";
 import { WorldPanelsViewport } from "./components/App/WorldPanelsViewport";
 import { MusePresencePanel } from "./components/Panels/MusePresencePanel";
@@ -138,6 +143,11 @@ const StabilityObservatoryPanel = lazy(() =>
     default: module.StabilityObservatoryPanel,
   })),
 );
+const DaimoiPresencePanel = lazy(() =>
+  import("./components/Panels/DaimoiPresencePanel").then((module) => ({
+    default: module.DaimoiPresencePanel,
+  })),
+);
 const WorldLogPanel = lazy(() =>
   import("./components/Panels/WorldLogPanel").then((module) => ({
     default: module.WorldLogPanel,
@@ -155,6 +165,16 @@ interface UiToast {
   id: number;
   title: string;
   body: string;
+}
+
+interface UserPresenceInputPayload {
+  kind: string;
+  target: string;
+  message?: string;
+  xRatio?: number;
+  yRatio?: number;
+  embedDaimoi?: boolean;
+  meta?: Record<string, unknown>;
 }
 
 type ParticleDisposition = "neutral" | "role-bound";
@@ -192,7 +212,7 @@ const PANEL_TOOL_HINTS: Record<string, string[]> = {
   "nexus.ui.chat.witness_thread": ["ledger", "lineage", "particles"],
   "nexus.ui.chat.chaos": ["chat", "nearby", "pin"],
   "nexus.ui.chat.stability": ["chat", "nearby", "pin"],
-  "nexus.ui.chat.symetry": ["chat", "nearby", "pin"],
+  "nexus.ui.chat.symmetry": ["chat", "nearby", "pin"],
   "nexus.ui.web_graph_weaver": ["crawl", "queue", "graph"],
   "nexus.ui.inspiration_atlas": ["search", "curate", "seed"],
   "nexus.ui.entity_vitals": ["vitals", "telemetry", "watch"],
@@ -200,6 +220,7 @@ const PANEL_TOOL_HINTS: Record<string, string[]> = {
   "nexus.ui.autopilot_ledger": ["autopilot", "risk", "gates"],
   "nexus.ui.world_log": ["receipts", "events", "review"],
   "nexus.ui.stability_observatory": ["study", "drift", "council"],
+  "nexus.ui.daimoi_presence": ["daimoi", "presence", "focus"],
   "nexus.ui.omni_archive": ["catalog", "memories", "artifacts"],
   "nexus.ui.myth_commons": ["interact", "pray", "speak"],
   "nexus.ui.dedicated_views": ["overlay", "focus", "monitor"],
@@ -214,9 +235,26 @@ const GLASS_VIEWPORT_PANEL_ID = "nexus.ui.glass_viewport";
 const INTERFACE_OPACITY_MIN = 0.38;
 const INTERFACE_OPACITY_MAX = 1;
 const FIXED_MUSE_PRESENCES = [
-  { id: "chaos", label: "Chaos" },
-  { id: "stability", label: "Stability" },
-  { id: "symetry", label: "Symetry" },
+  {
+    id: "nexus.ui.chat.witness_thread",
+    presenceId: "witness_thread",
+    label: "Witness Thread",
+  },
+  {
+    id: "nexus.ui.chat.chaos",
+    presenceId: "chaos",
+    label: "Chaos",
+  },
+  {
+    id: "nexus.ui.chat.stability",
+    presenceId: "stability",
+    label: "Stability",
+  },
+  {
+    id: "nexus.ui.chat.symmetry",
+    presenceId: "symmetry",
+    label: "Symmetry",
+  },
 ] as const;
 
 const APP_WORKSPACE_NORMALIZE_OPTIONS = {
@@ -224,6 +262,10 @@ const APP_WORKSPACE_NORMALIZE_OPTIONS = {
   maxSearchQueryLength: 180,
   maxPinnedNexusSummaries: 24,
 } as const;
+
+const USER_PRESENCE_BATCH_IDLE_FLUSH_MS = 2400;
+const USER_PRESENCE_BATCH_MAX_WINDOW_MS = 60_000;
+const USER_PRESENCE_BATCH_MAX_EVENTS = 36;
 
 function isGlassPrimaryPanelId(panelId: string): boolean {
   return panelId === GLASS_VIEWPORT_PANEL_ID || panelId === "nexus.ui.dedicated_views";
@@ -242,6 +284,20 @@ function isTextEntryTarget(target: EventTarget | null): boolean {
   }
   const tagName = target.tagName.toLowerCase();
   return tagName === "input" || tagName === "textarea" || tagName === "select";
+}
+
+function isCorePointerBlockedTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) {
+    return false;
+  }
+  if (isTextEntryTarget(target)) {
+    return true;
+  }
+  return Boolean(
+    target.closest(
+      "button, a, [role='button'], [data-core-pointer='block'], [data-panel-interactive='true']",
+    ),
+  );
 }
 
 function shouldRouteWheelToCore(target: EventTarget | null): boolean {
@@ -275,11 +331,6 @@ function stableUnitHash(seed: string): number {
     hash = Math.imul(hash, 16777619);
   }
   return (hash >>> 0) / 4294967295;
-}
-
-function museWorkspacePanelId(presenceId: string): string {
-  const normalized = normalizeMusePresenceId(presenceId || "witness_thread") || "witness_thread";
-  return `nexus.ui.chat.${normalized}`;
 }
 
 function toMuseSlug(raw: string): string {
@@ -508,6 +559,20 @@ export default function App() {
   const [coreSimulationTuning, setCoreSimulationTuning] = useState<CoreSimulationTuning>(DEFAULT_CORE_SIMULATION_TUNING);
   const deferredCoreSimulationTuning = useDeferredValue(coreSimulationTuning);
   const [coreVisualTuning, setCoreVisualTuning] = useState<CoreVisualTuning>(DEFAULT_CORE_VISUAL_TUNING);
+  const [mouseDaimonTuning, setMouseDaimonTuning] = useState<MouseDaimonTuning>({
+    enabled: true,
+    message: "witness",
+    mode: "push",
+    radius: 0.18,
+    strength: 0.42,
+  });
+  const userPresenceHoverThrottleRef = useRef<Record<string, number>>({});
+  const userPresenceGenericEmitMsRef = useRef(0);
+  const userPresenceInputBatchRef = useRef<Record<string, unknown>[]>([]);
+  const userPresenceInputBatchStartedMsRef = useRef(0);
+  const userPresenceInputBatchLastMsRef = useRef(0);
+  const userPresenceInputBatchIdleTimerRef = useRef<number | null>(null);
+  const userPresenceInputBatchWindowTimerRef = useRef<number | null>(null);
   const [coreLayerVisibility, setCoreLayerVisibility] = useState<Record<CoreLayerId, boolean>>(DEFAULT_CORE_LAYER_VISIBILITY);
   const [coreLayerManagerOpen, setCoreLayerManagerOpen] = useState(true);
   const [interfaceOpacity, setInterfaceOpacity] = useState(() => {
@@ -888,6 +953,41 @@ export default function App() {
       .filter((item, index, all) => item.length > 0 && all.indexOf(item) === index)
       .slice(0, 16);
 
+    const buildLibraryUrl = (relativePath: string): string | undefined => {
+      const cleanPath = String(relativePath || "").trim().replace(/^\/+/, "");
+      if (!cleanPath) {
+        return undefined;
+      }
+      const encodedPath = cleanPath
+        .split("/")
+        .map((segment) => encodeURIComponent(segment))
+        .join("/");
+      return `/library/${encodedPath}`;
+    };
+
+    const resolveNodeUrl = (row: FileGraphNode | undefined): string | undefined => {
+      const nodeUrl = String(row?.url ?? "").trim();
+      if (nodeUrl) {
+        return nodeUrl;
+      }
+
+      const archiveUrl = String(row?.archive_url ?? "").trim();
+      if (archiveUrl) {
+        return archiveUrl;
+      }
+
+      const archiveRelPath = String(
+        row?.archive_rel_path ?? row?.archived_rel_path ?? "",
+      ).trim();
+      const archiveRelUrl = buildLibraryUrl(archiveRelPath);
+      if (archiveRelUrl) {
+        return archiveRelUrl;
+      }
+
+      const sourceRelPath = String(row?.source_rel_path ?? "").trim();
+      return buildLibraryUrl(sourceRelPath);
+    };
+
     const pinnedRows = pinnedIds.map((nodeId) => {
       const row = nodeById.get(nodeId);
       const baseSeed = stableUnitHash(`${normalizedMuse}|${nodeId}`);
@@ -896,7 +996,6 @@ export default function App() {
       const label = String(row?.source_rel_path ?? row?.label ?? row?.name ?? nodeId).trim() || nodeId;
       const text = String(row?.summary ?? row?.text_excerpt ?? label).trim() || label;
       const sourceRelPath = String(row?.source_rel_path ?? "").trim();
-      const nodeUrl = String(row?.url ?? "").trim();
       return {
         id: nodeId,
         kind: String(row?.kind ?? "resource"),
@@ -907,7 +1006,7 @@ export default function App() {
         visibility: "private",
         tags: [normalizedMuse, "workspace-pin"],
         source_rel_path: sourceRelPath || undefined,
-        url: nodeUrl || (sourceRelPath ? `/library/${sourceRelPath.replace(/^\/+/, "")}` : undefined),
+        url: resolveNodeUrl(row),
       };
     });
 
@@ -928,7 +1027,6 @@ export default function App() {
       .slice(0, 8)
       .map((row) => {
         const sourceRelPath = String(row.source_rel_path ?? "").trim();
-        const nodeUrl = String(row.url ?? "").trim();
         return {
           id: String(row.id ?? row.node_id ?? "").trim(),
           kind: String(row.kind ?? "resource"),
@@ -939,13 +1037,13 @@ export default function App() {
           visibility: "public",
           tags: [normalizedMuse, String(row.dominant_field ?? "field")],
           source_rel_path: sourceRelPath || undefined,
-          url: nodeUrl || (sourceRelPath ? `/library/${sourceRelPath.replace(/^\/+/, "")}` : undefined),
+          url: resolveNodeUrl(row),
         };
       })
       .filter((row) => row.id.length > 0);
 
     return [...pinnedRows, ...nearbyRows, ...buildDeviceSurroundingNodes(simulation)].slice(0, 36);
-  }, [catalog?.file_graph?.file_nodes, museWorkspaceBindings, simulation, simulation?.file_graph?.file_nodes]);
+  }, [catalog?.file_graph?.file_nodes, museWorkspaceBindings, simulation]);
 
   const emitWitnessChatReply = useCallback((
     payload: {
@@ -1478,6 +1576,230 @@ export default function App() {
     setCoreSimulationTuning(DEFAULT_CORE_SIMULATION_TUNING);
   }, []);
 
+  const updateMouseDaimonTuning = useCallback((partial: Partial<MouseDaimonTuning>) => {
+    setMouseDaimonTuning((prev) => ({ ...prev, ...partial }));
+  }, []);
+
+  const clearUserPresenceInputBatchTimers = useCallback(() => {
+    if (userPresenceInputBatchIdleTimerRef.current !== null) {
+      window.clearTimeout(userPresenceInputBatchIdleTimerRef.current);
+      userPresenceInputBatchIdleTimerRef.current = null;
+    }
+    if (userPresenceInputBatchWindowTimerRef.current !== null) {
+      window.clearTimeout(userPresenceInputBatchWindowTimerRef.current);
+      userPresenceInputBatchWindowTimerRef.current = null;
+    }
+  }, []);
+
+  const flushUserPresenceInputBatch = useCallback((reason: string) => {
+    if (userPresenceInputBatchRef.current.length <= 0) {
+      clearUserPresenceInputBatchTimers();
+      return;
+    }
+
+    const events = userPresenceInputBatchRef.current.slice(0, USER_PRESENCE_BATCH_MAX_EVENTS);
+    userPresenceInputBatchRef.current = [];
+    userPresenceInputBatchStartedMsRef.current = 0;
+    userPresenceInputBatchLastMsRef.current = 0;
+    clearUserPresenceInputBatchTimers();
+
+    const baseUrl = runtimeBaseUrl();
+    void fetch(`${baseUrl}/api/presence/user/input`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        events,
+        flush_reason: reason,
+        flushed_at_ms: Date.now(),
+      }),
+      keepalive: true,
+    }).catch(() => undefined);
+  }, [clearUserPresenceInputBatchTimers]);
+
+  const scheduleUserPresenceInputBatchFlush = useCallback(() => {
+    if (userPresenceInputBatchRef.current.length <= 0) {
+      clearUserPresenceInputBatchTimers();
+      return;
+    }
+
+    const nowMs = Date.now();
+    const startedMs = userPresenceInputBatchStartedMsRef.current || nowMs;
+    const lastMs = userPresenceInputBatchLastMsRef.current || nowMs;
+    const idleDelayMs = Math.max(0, USER_PRESENCE_BATCH_IDLE_FLUSH_MS - (nowMs - lastMs));
+    const maxWindowDelayMs = Math.max(0, USER_PRESENCE_BATCH_MAX_WINDOW_MS - (nowMs - startedMs));
+
+    clearUserPresenceInputBatchTimers();
+    userPresenceInputBatchIdleTimerRef.current = window.setTimeout(() => {
+      flushUserPresenceInputBatch("idle_window");
+    }, idleDelayMs);
+    userPresenceInputBatchWindowTimerRef.current = window.setTimeout(() => {
+      flushUserPresenceInputBatch("max_window");
+    }, maxWindowDelayMs);
+  }, [clearUserPresenceInputBatchTimers, flushUserPresenceInputBatch]);
+
+  const emitUserPresenceInput = useCallback((payload: UserPresenceInputPayload) => {
+    const kind = String(payload.kind || "input").trim().toLowerCase() || "input";
+    const target = String(payload.target || "simulation").trim() || "simulation";
+    const nowMs = Date.now();
+    const eventRow: Record<string, unknown> = {
+      kind,
+      target,
+      message: String(payload.message || "").trim(),
+      embed_daimoi: Boolean(payload.embedDaimoi),
+      meta: payload.meta && typeof payload.meta === "object" ? payload.meta : {},
+      ts_client_ms: nowMs,
+    };
+    if (typeof payload.xRatio === "number" && Number.isFinite(payload.xRatio)) {
+      eventRow.x_ratio = Math.max(0, Math.min(1, payload.xRatio));
+    }
+    if (typeof payload.yRatio === "number" && Number.isFinite(payload.yRatio)) {
+      eventRow.y_ratio = Math.max(0, Math.min(1, payload.yRatio));
+    }
+
+    if (userPresenceInputBatchRef.current.length <= 0) {
+      userPresenceInputBatchStartedMsRef.current = nowMs;
+    }
+    userPresenceInputBatchRef.current.push(eventRow);
+    userPresenceInputBatchLastMsRef.current = nowMs;
+
+    if (userPresenceInputBatchRef.current.length >= USER_PRESENCE_BATCH_MAX_EVENTS) {
+      flushUserPresenceInputBatch("max_events");
+      return;
+    }
+    scheduleUserPresenceInputBatchFlush();
+  }, [flushUserPresenceInputBatch, scheduleUserPresenceInputBatchFlush]);
+
+  const handleUserPresenceInput = useCallback((payload: UserPresenceInputPayload) => {
+    emitUserPresenceInput(payload);
+  }, [emitUserPresenceInput]);
+
+  useEffect(() => {
+    const onPageHide = () => {
+      flushUserPresenceInputBatch("pagehide");
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        flushUserPresenceInputBatch("hidden");
+      }
+    };
+
+    window.addEventListener("pagehide", onPageHide);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      flushUserPresenceInputBatch("unmount");
+      clearUserPresenceInputBatchTimers();
+    };
+  }, [clearUserPresenceInputBatchTimers, flushUserPresenceInputBatch]);
+
+  useEffect(() => {
+    const describeInteractiveTarget = (element: Element): string => {
+      const target = element as HTMLElement;
+      const aria = (target.getAttribute("aria-label") || "").trim();
+      const title = (target.getAttribute("title") || "").trim();
+      const id = target.id.trim();
+      const dataPanel = (target.getAttribute("data-panel-id") || "").trim();
+      const text = (target.textContent || "").trim().replace(/\s+/g, " ").slice(0, 64);
+      const tag = target.tagName.toLowerCase();
+      const identity = aria || title || text || dataPanel || id || tag;
+      return `${tag}:${identity}`;
+    };
+
+    const onPointerOver = (event: Event) => {
+      const element = (event.target as Element | null)?.closest(
+        "button, [role='button'], input, select, textarea, a",
+      );
+      if (!element) {
+        return;
+      }
+      const target = describeInteractiveTarget(element);
+      const nowMs = Date.now();
+      const lastMs = userPresenceHoverThrottleRef.current[target] ?? 0;
+      if ((nowMs - lastMs) < 500) {
+        return;
+      }
+      userPresenceHoverThrottleRef.current[target] = nowMs;
+      emitUserPresenceInput({
+        kind: "hover",
+        target,
+        message: `mouse hover over ${target}`,
+        embedDaimoi: true,
+        meta: {
+          source: "ui-control",
+        },
+      });
+    };
+
+    const onClick = (event: Event) => {
+      const element = (event.target as Element | null)?.closest(
+        "button, [role='button'], input, select, textarea, a",
+      );
+      if (!element) {
+        return;
+      }
+      const target = describeInteractiveTarget(element);
+      emitUserPresenceInput({
+        kind: "click",
+        target,
+        message: `click ${target}`,
+        embedDaimoi: true,
+        meta: {
+          source: "ui-control",
+        },
+      });
+    };
+
+    const onInput = (event: Event) => {
+      const element = (event.target as Element | null)?.closest("input, textarea, select");
+      if (!element) {
+        return;
+      }
+      const target = describeInteractiveTarget(element);
+      emitUserPresenceInput({
+        kind: "input",
+        target,
+        message: `input change on ${target}`,
+        embedDaimoi: true,
+        meta: {
+          source: "ui-control",
+        },
+      });
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      const nowMs = Date.now();
+      if ((nowMs - userPresenceGenericEmitMsRef.current) < 120) {
+        return;
+      }
+      userPresenceGenericEmitMsRef.current = nowMs;
+      const active = document.activeElement as HTMLElement | null;
+      const target = active ? describeInteractiveTarget(active) : "keyboard:window";
+      emitUserPresenceInput({
+        kind: "keydown",
+        target,
+        message: `key ${event.key} on ${target}`,
+        embedDaimoi: true,
+        meta: {
+          source: "keyboard",
+          key: event.key,
+        },
+      });
+    };
+
+    window.addEventListener("pointerover", onPointerOver, true);
+    window.addEventListener("click", onClick, true);
+    window.addEventListener("input", onInput, true);
+    window.addEventListener("keydown", onKeyDown, true);
+
+    return () => {
+      window.removeEventListener("pointerover", onPointerOver, true);
+      window.removeEventListener("click", onClick, true);
+      window.removeEventListener("input", onInput, true);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [emitUserPresenceInput]);
+
   const setCoreVisualDial = useCallback((dial: keyof CoreVisualTuning, value: number) => {
     setCoreVisualTuning((prev) => {
       if (dial === "brightness") {
@@ -1602,8 +1924,9 @@ export default function App() {
         if (current === 0) {
           return prev;
         }
-        const { [panelId]: _unused, ...rest } = prev;
-        return rest;
+        const nextState = { ...prev };
+        delete nextState[panelId];
+        return nextState;
       }
       return {
         ...prev,
@@ -1727,11 +2050,18 @@ export default function App() {
     [overlayApi],
   );
 
-  const flyCameraToAnchor = useCallback((anchor: WorldAnchorTarget) => {
+  const flyCameraToRatios = useCallback((
+    anchorX: number,
+    anchorY: number,
+    anchorKind: WorldAnchorTarget["kind"],
+    focusCenterX = 0.5,
+    focusCenterY = 0.5,
+  ) => {
     stopCameraFlight();
-    const overlayAnchor = resolveOverlayAnchorRatio(anchor);
-    const anchorX = overlayAnchor?.x ?? anchor.x;
-    const anchorY = overlayAnchor?.y ?? anchor.y;
+    const normalizedAnchorX = clamp(anchorX, 0, 1);
+    const normalizedAnchorY = clamp(anchorY, 0, 1);
+    const normalizedFocusX = clamp(focusCenterX, 0.04, 0.96);
+    const normalizedFocusY = clamp(focusCenterY, 0.04, 0.96);
     const start = {
       x: coreCameraPosition.x,
       y: coreCameraPosition.y,
@@ -1741,21 +2071,17 @@ export default function App() {
       zoom: coreCameraZoom,
     };
     const target = {
-      x: clamp((0.5 - anchorX) * 640, -CORE_CAMERA_X_LIMIT, CORE_CAMERA_X_LIMIT),
-      y: clamp((0.5 - anchorY) * 520, -CORE_CAMERA_Y_LIMIT, CORE_CAMERA_Y_LIMIT),
+      x: clamp((normalizedFocusX - normalizedAnchorX) * 640, -CORE_CAMERA_X_LIMIT, CORE_CAMERA_X_LIMIT),
+      y: clamp((normalizedFocusY - normalizedAnchorY) * 520, -CORE_CAMERA_Y_LIMIT, CORE_CAMERA_Y_LIMIT),
       z: clamp(
-        anchor.kind === "node" ? 180 : anchor.kind === "cluster" ? 40 : -120,
+        anchorKind === "node" ? 180 : anchorKind === "cluster" ? 40 : -120,
         CORE_CAMERA_Z_MIN,
         CORE_CAMERA_Z_MAX,
       ),
-      yaw: clamp((anchorX - 0.5) * 68, CORE_CAMERA_YAW_MIN, CORE_CAMERA_YAW_MAX),
-      pitch: clamp((0.5 - anchorY) * 52, CORE_CAMERA_PITCH_MIN, CORE_CAMERA_PITCH_MAX),
-      zoom: clamp(anchor.kind === "node" ? 1.18 : anchor.kind === "cluster" ? 1.06 : 0.94, CORE_CAMERA_ZOOM_MIN, CORE_CAMERA_ZOOM_MAX),
+      yaw: clamp((normalizedAnchorX - normalizedFocusX) * 68, CORE_CAMERA_YAW_MIN, CORE_CAMERA_YAW_MAX),
+      pitch: clamp((normalizedFocusY - normalizedAnchorY) * 52, CORE_CAMERA_PITCH_MIN, CORE_CAMERA_PITCH_MAX),
+      zoom: clamp(anchorKind === "node" ? 1.18 : anchorKind === "cluster" ? 1.06 : 0.94, CORE_CAMERA_ZOOM_MIN, CORE_CAMERA_ZOOM_MAX),
     };
-
-    if (overlayAnchor) {
-      overlayApi?.pulseAt?.(overlayAnchor.x, overlayAnchor.y, 1.12, anchor.id);
-    }
 
     const startTs = performance.now();
     const durationMs = 760;
@@ -1780,7 +2106,18 @@ export default function App() {
       cameraFlightRef.current = window.requestAnimationFrame(tick);
     };
     cameraFlightRef.current = window.requestAnimationFrame(tick);
-  }, [coreCameraPitch, coreCameraPosition.x, coreCameraPosition.y, coreCameraPosition.z, coreCameraYaw, coreCameraZoom, overlayApi, resolveOverlayAnchorRatio, stopCameraFlight]);
+  }, [coreCameraPitch, coreCameraPosition.x, coreCameraPosition.y, coreCameraPosition.z, coreCameraYaw, coreCameraZoom, stopCameraFlight]);
+
+  const flyCameraToAnchor = useCallback((anchor: WorldAnchorTarget) => {
+    const overlayAnchor = resolveOverlayAnchorRatio(anchor);
+    const anchorX = overlayAnchor?.x ?? anchor.x;
+    const anchorY = overlayAnchor?.y ?? anchor.y;
+
+    if (overlayAnchor) {
+      overlayApi?.pulseAt?.(overlayAnchor.x, overlayAnchor.y, 1.12, anchor.id);
+    }
+    flyCameraToRatios(anchorX, anchorY, anchor.kind);
+  }, [flyCameraToRatios, overlayApi, resolveOverlayAnchorRatio]);
 
   useEffect(() => {
     return () => {
@@ -1858,7 +2195,7 @@ export default function App() {
 
   const handleCorePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
-      if (isTextEntryTarget(event.target)) {
+      if (isCorePointerBlockedTarget(event.target)) {
         return;
       }
       event.preventDefault();
@@ -2918,20 +3255,21 @@ export default function App() {
       ),
     },
     ...FIXED_MUSE_PRESENCES.map((muse) => {
-      const panelId = museWorkspacePanelId(muse.id);
+      const panelId = muse.id;
+      const musePresenceId = muse.presenceId;
       const panelState = projectionStateByElement.get(panelId) ?? null;
       const panelSession =
         activeProjection?.chat_sessions?.find(
-          (session) => normalizeMusePresenceId(String(session.presence ?? "")) === normalizeMusePresenceId(muse.id),
+          (session) => normalizeMusePresenceId(String(session.presence ?? "")) === normalizeMusePresenceId(musePresenceId),
         )
         ?? null;
-      const boundCount = museWorkspaceBindings[normalizeMusePresenceId(muse.id)]?.length ?? 0;
+      const boundCount = museWorkspaceBindings[normalizeMusePresenceId(musePresenceId)]?.length ?? 0;
 
       return {
         id: panelId,
         fallbackSpan: 4,
         anchorKind: "node" as const,
-        anchorId: muse.id,
+        anchorId: musePresenceId,
         worldSize: "m" as const,
         render: () => (
           <div
@@ -2945,7 +3283,7 @@ export default function App() {
             }}
           >
             <MusePresencePanel
-              museId={muse.id}
+              museId={musePresenceId}
               onSend={handleMuseWorkspaceSend}
               onRecord={handleRecord}
               onTranscribe={handleTranscribe}
@@ -2956,13 +3294,15 @@ export default function App() {
               catalog={catalog}
               simulation={simulation}
               workspaceContext={
-                museWorkspaceContexts[normalizeMusePresenceId(muse.id)]
+                museWorkspaceContexts[normalizeMusePresenceId(musePresenceId)]
                 ?? null
               }
               onWorkspaceContextChange={handleMuseWorkspaceContextChange}
               onWorkspaceBindingsChange={handleMuseWorkspaceBindingsChange}
               chatLensState={panelState}
               activeChatSession={panelSession}
+              activeMusePresenceId={activeMusePresenceId}
+              onMusePresenceChange={setActiveMusePresenceId}
             />
             <p className="mt-2 text-[10px] text-[#8db3ca]">
               workspace binds <code>{boundCount}</code>
@@ -3119,6 +3459,31 @@ export default function App() {
       ),
     },
     {
+      id: "nexus.ui.daimoi_presence",
+      fallbackSpan: 6,
+      className: "card relative overflow-hidden",
+      render: () => (
+        <>
+          <div className="absolute top-0 left-0 w-1 h-full bg-[#89c6eb] opacity-70" />
+          <h2 className="text-2xl font-bold mb-2">Daimoi Presence Deck / 代網存在甲板</h2>
+          <p className="text-muted mb-4">
+            Probabilistic daimoi and presence distributions with direct camera focus controls.
+          </p>
+          {deferredPanelsReady ? (
+            <Suspense fallback={<DeferredPanelPlaceholder title="Daimoi Presence" />}>
+              <DaimoiPresencePanel
+                catalog={catalog}
+                simulation={simulation}
+                onFocusAnchor={flyCameraToAnchor}
+              />
+            </Suspense>
+          ) : (
+            <DeferredPanelPlaceholder title="Daimoi Presence" />
+          )}
+        </>
+      ),
+    },
+    {
       id: "nexus.ui.omni_archive",
       fallbackSpan: 8,
       className: "card relative overflow-hidden",
@@ -3172,12 +3537,14 @@ export default function App() {
       ),
     },
   ], [
+    activeMusePresenceId,
     activeProjection,
     autopilotEvents,
     catalog,
     deferredCoreSimulationTuning,
     dedicatedOverlayViews,
     deferredPanelsReady,
+    flyCameraToAnchor,
     handleMuseWorkspaceBindingsChange,
     handleMuseWorkspaceContextChange,
     handleMuseWorkspaceSend,
@@ -3778,8 +4145,8 @@ export default function App() {
       panelWorldY += manualBias.y + stateSpaceBias.y;
 
       const panelScreen = projectWorldPoint(panelWorldX, panelWorldY, anchorWorld.z);
-      let x = panelScreen.x - (size.width / 2);
-      let y = panelScreen.y - (size.height / 2);
+      const x = panelScreen.x - (size.width / 2);
+      const y = panelScreen.y - (size.height / 2);
 
       const glow = selectedPanelId === panelId
         ? 0.96
@@ -3952,6 +4319,32 @@ export default function App() {
     worldPanelLayout,
   ]);
 
+  const glassCenterRatio = useMemo(() => {
+    const stageTop = viewportHeight < 860 ? 104 : 118;
+    const stageBottom = Math.max(stageTop + 132, viewportHeight - 14);
+    const stageHeight = Math.max(120, stageBottom - stageTop);
+    const glassEntry = worldPanelLayout.find((entry) => entry.id === GLASS_VIEWPORT_PANEL_ID);
+    if (!glassEntry) {
+      return { x: 0.5, y: 0.5 };
+    }
+    return {
+      x: clamp((glassEntry.x + (glassEntry.width / 2)) / Math.max(1, viewportWidth), 0.08, 0.92),
+      y: clamp(((glassEntry.y + (glassEntry.height / 2)) - stageTop) / Math.max(1, stageHeight), 0.08, 0.92),
+    };
+  }, [viewportHeight, viewportWidth, worldPanelLayout]);
+
+  const handleNexusInteraction = useCallback((event: NexusInteractionEvent) => {
+    const anchorX = clamp(Number(event.xRatio ?? 0.5), 0, 1);
+    const anchorY = clamp(Number(event.yRatio ?? 0.5), 0, 1);
+    flyCameraToRatios(anchorX, anchorY, "node", glassCenterRatio.x, glassCenterRatio.y);
+    overlayApi?.pulseAt?.(
+      anchorX,
+      anchorY,
+      event.openWorldscreen ? 1.06 : 0.78,
+      event.nodeId || event.label || "nexus",
+    );
+  }, [flyCameraToRatios, glassCenterRatio.x, glassCenterRatio.y, overlayApi]);
+
   const galaxyLayerStyles = useMemo(() => {
     const driftX = deferredCoreRenderedCameraPosition.x;
     const driftY = deferredCoreRenderedCameraPosition.y;
@@ -3983,7 +4376,11 @@ export default function App() {
         coreLayerVisibility={coreLayerVisibility}
         museWorkspaceBindings={museWorkspaceBindings}
         galaxyLayerStyles={galaxyLayerStyles}
+        mouseDaimonTuning={mouseDaimonTuning}
+        onUserPresenceInput={handleUserPresenceInput}
         onOverlayInit={handleOverlayInit}
+        onNexusInteraction={handleNexusInteraction}
+        glassCenterRatio={glassCenterRatio}
         onPointerDown={handleCorePointerDown}
         onPointerMove={handleCorePointerMove}
         onPointerUp={handleCorePointerUp}
@@ -4013,7 +4410,7 @@ export default function App() {
           </div>
         </header>
 
-        <aside className="pointer-events-auto fixed inset-x-2 bottom-20 z-[74] max-h-[46vh] overflow-y-auto rounded-xl border border-[rgba(137,198,235,0.36)] bg-[linear-gradient(180deg,rgba(7,17,27,0.92),rgba(6,15,24,0.96))] p-3 shadow-[0_12px_30px_rgba(0,6,12,0.46)] lg:inset-x-auto lg:bottom-4 lg:right-2 lg:top-24 lg:w-[23rem] lg:max-h-[calc(100vh-8rem)]">
+        <aside className="fixed inset-x-2 bottom-20 z-[74] max-h-[46vh] overflow-y-auto rounded-xl border border-[rgba(137,198,235,0.36)] bg-[linear-gradient(180deg,rgba(7,17,27,0.92),rgba(6,15,24,0.96))] p-3 shadow-[0_12px_30px_rgba(2,8,14,0.34)] pointer-events-auto lg:inset-x-auto lg:bottom-4 lg:right-2 lg:top-24 lg:w-[23rem] lg:max-h-[calc(100vh-8rem)]">
           <div className="mb-2 flex items-center justify-between gap-2">
             <p className="text-[11px] uppercase tracking-[0.12em] text-[#a3d3ef]">Simulation Controls</p>
             <p className="text-[10px] text-[#beddf0]">ui opacity <code>{Math.round(interfaceOpacity * 100)}%</code></p>
@@ -4039,6 +4436,7 @@ export default function App() {
             activeChatLens={activeChatLens}
             latestAutopilotEvent={latestAutopilotEvent}
             projectionOptions={projectionOptions}
+            mouseDaimonTuning={mouseDaimonTuning}
             onToggleAutopilot={toggleAutopilot}
             onToggleCoreFlight={toggleCoreFlight}
             onToggleCoreOrbit={toggleCoreOrbit}
@@ -4056,6 +4454,7 @@ export default function App() {
             onResetCoreSimulationTuning={resetCoreSimulationTuning}
             onSetCoreSimulationDial={setCoreSimulationDial}
             onSetCoreOrbitSpeed={(value) => setCoreOrbitSpeed(clamp(value, CORE_ORBIT_SPEED_MIN, CORE_ORBIT_SPEED_MAX))}
+            onSetMouseDaimonTuning={updateMouseDaimonTuning}
           />
 
           <div className="mt-3">

@@ -68,6 +68,10 @@ from .constants import (
     PROJECTION_DEFAULT_PERSPECTIVE,
     SIM_TICK_SECONDS,
     TTS_BASE_URL,
+    USER_PRESENCE_ID,
+    USER_PRESENCE_MAX_EVENTS,
+    _USER_PRESENCE_INPUT_CACHE,
+    _USER_PRESENCE_INPUT_LOCK,
     VIDEO_SUFFIXES,
     WEAVER_AUTOSTART,
     WEAVER_HOST_ENV,
@@ -239,6 +243,26 @@ _SIMULATION_HTTP_MAX_CRAWLER_EDGES = max(
 _SIMULATION_HTTP_MAX_CRAWLER_FIELD_NODES = max(
     32,
     int(float(os.getenv("SIMULATION_HTTP_MAX_CRAWLER_FIELD_NODES", "96") or "96")),
+)
+_SIMULATION_HTTP_MAX_TEXT_EXCERPT_CHARS = max(
+    160,
+    int(float(os.getenv("SIMULATION_HTTP_MAX_TEXT_EXCERPT_CHARS", "640") or "640")),
+)
+_SIMULATION_HTTP_MAX_SUMMARY_CHARS = max(
+    120,
+    int(float(os.getenv("SIMULATION_HTTP_MAX_SUMMARY_CHARS", "420") or "420")),
+)
+_SIMULATION_HTTP_MAX_EMBED_LAYER_POINTS = max(
+    0,
+    int(float(os.getenv("SIMULATION_HTTP_MAX_EMBED_LAYER_POINTS", "8") or "8")),
+)
+_SIMULATION_HTTP_MAX_EMBED_IDS = max(
+    0,
+    int(float(os.getenv("SIMULATION_HTTP_MAX_EMBED_IDS", "16") or "16")),
+)
+_SIMULATION_HTTP_MAX_EMBEDDING_LINKS = max(
+    0,
+    int(float(os.getenv("SIMULATION_HTTP_MAX_EMBEDDING_LINKS", "28") or "28")),
 )
 _SIMULATION_HTTP_CACHE_LOCK = threading.Lock()
 _SIMULATION_HTTP_BUILD_LOCK = threading.Lock()
@@ -462,9 +486,37 @@ def _simulation_http_cache_key(
         )
         fingerprint = f"ts:{file_graph_generated_at}:{crawler_generated_at}"
 
-    del queue_snapshot
-    del influence_snapshot
-    return f"{perspective}|{fingerprint}|simulation"
+    queue_pending = int(_safe_float(queue_snapshot.get("pending_count", 0), 0.0))
+    queue_events = int(_safe_float(queue_snapshot.get("event_count", 0), 0.0))
+    clicks_recent = int(_safe_float(influence_snapshot.get("clicks_45s", 0), 0.0))
+    user_inputs_recent = int(
+        _safe_float(influence_snapshot.get("user_inputs_120s", 0), 0.0)
+    )
+    user_rows = (
+        influence_snapshot.get("recent_user_inputs", [])
+        if isinstance(influence_snapshot, dict)
+        else []
+    )
+    if isinstance(user_rows, list) and user_rows:
+        newest = user_rows[0] if isinstance(user_rows[0], dict) else {}
+        user_signal = "|".join(
+            [
+                str(newest.get("kind", "")),
+                str(newest.get("target", "")),
+                str(newest.get("message", ""))[:48],
+                str(newest.get("x_ratio", "")),
+                str(newest.get("y_ratio", "")),
+            ]
+        )
+    else:
+        user_signal = ""
+    user_signal_hash = hashlib.sha1(user_signal.encode("utf-8")).hexdigest()[:10]
+    return (
+        f"{perspective}|{fingerprint}|"
+        f"q:{max(0, queue_pending)}:{max(0, queue_events)}|"
+        f"i:{max(0, clicks_recent)}:{max(0, user_inputs_recent)}:{user_signal_hash}|"
+        "simulation"
+    )
 
 
 def _simulation_http_cache_store(cache_key: str, body: bytes) -> None:
@@ -624,6 +676,104 @@ def _simulation_http_slice_rows(value: Any, *, max_rows: int) -> list[Any]:
     return list(rows[:max_rows])
 
 
+def _simulation_http_compact_embed_layer_point(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+
+    compact = dict(value)
+    embed_ids = compact.get("embed_ids")
+    if isinstance(embed_ids, list):
+        compact["embed_ids"] = [
+            str(entry or "")
+            for entry in embed_ids[:_SIMULATION_HTTP_MAX_EMBED_IDS]
+            if str(entry or "").strip()
+        ]
+    return compact
+
+
+def _simulation_http_compact_embedding_link(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+
+    target = str(value.get("target", "") or "").strip()
+    kind = str(value.get("kind", "") or "").strip()
+    member_path = str(value.get("member_path", "") or "").strip()
+    weight = _safe_float(value.get("weight", 0.0), 0.0)
+
+    compact: dict[str, Any] = {}
+    if target:
+        compact["target"] = target
+    if kind:
+        compact["kind"] = kind
+    if member_path:
+        compact["member_path"] = member_path
+    if weight > 0.0:
+        compact["weight"] = round(weight, 6)
+    return compact if compact else None
+
+
+def _simulation_http_compact_file_node(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+
+    compact = dict(value)
+
+    excerpt = compact.get("text_excerpt")
+    if (
+        isinstance(excerpt, str)
+        and len(excerpt) > _SIMULATION_HTTP_MAX_TEXT_EXCERPT_CHARS
+    ):
+        compact["text_excerpt"] = excerpt[:_SIMULATION_HTTP_MAX_TEXT_EXCERPT_CHARS]
+
+    summary = compact.get("summary")
+    if isinstance(summary, str) and len(summary) > _SIMULATION_HTTP_MAX_SUMMARY_CHARS:
+        compact["summary"] = summary[:_SIMULATION_HTTP_MAX_SUMMARY_CHARS]
+
+    layer_points = compact.get("embed_layer_points")
+    if isinstance(layer_points, list):
+        compact_layers: list[dict[str, Any]] = []
+        for row in layer_points[:_SIMULATION_HTTP_MAX_EMBED_LAYER_POINTS]:
+            compact_row = _simulation_http_compact_embed_layer_point(row)
+            if compact_row is not None:
+                compact_layers.append(compact_row)
+        compact["embed_layer_points"] = compact_layers
+        compact["embed_layer_count"] = len(compact_layers)
+
+    embedding_links = compact.get("embedding_links")
+    if isinstance(embedding_links, list):
+        compact_links: list[dict[str, Any]] = []
+        for row in embedding_links[:_SIMULATION_HTTP_MAX_EMBEDDING_LINKS]:
+            compact_row = _simulation_http_compact_embedding_link(row)
+            if compact_row is not None:
+                compact_links.append(compact_row)
+        compact["embedding_links"] = compact_links
+
+    return compact
+
+
+def _simulation_http_compact_file_graph_node(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+
+    node_type = str(value.get("node_type", "") or "").strip().lower()
+    kind = str(value.get("kind", "") or "").strip().lower()
+    has_file_fields = any(
+        key in value
+        for key in (
+            "embed_layer_points",
+            "embedding_links",
+            "source_rel_path",
+            "archive_rel_path",
+            "archived_rel_path",
+            "text_excerpt",
+        )
+    )
+    if node_type == "file" or kind == "file" or has_file_fields:
+        return _simulation_http_compact_file_node(value)
+
+    return dict(value)
+
+
 def _simulation_http_trim_catalog(catalog: dict[str, Any]) -> dict[str, Any]:
     if not _SIMULATION_HTTP_TRIM_ENABLED:
         return catalog
@@ -639,10 +789,17 @@ def _simulation_http_trim_catalog(catalog: dict[str, Any]) -> dict[str, Any]:
     file_graph = catalog.get("file_graph") if isinstance(catalog, dict) else None
     if isinstance(file_graph, dict):
         compact_file_graph = dict(file_graph)
-        compact_file_graph["file_nodes"] = _simulation_http_slice_rows(
+        compact_file_nodes = _simulation_http_slice_rows(
             file_graph.get("file_nodes", []),
             max_rows=_SIMULATION_HTTP_MAX_FILE_NODES,
         )
+        compact_file_graph["file_nodes"] = [
+            compact_row
+            for compact_row in (
+                _simulation_http_compact_file_node(row) for row in compact_file_nodes
+            )
+            if compact_row is not None
+        ]
         compact_file_graph["field_nodes"] = _simulation_http_slice_rows(
             file_graph.get("field_nodes", []),
             max_rows=_SIMULATION_HTTP_MAX_FIELD_NODES,
@@ -651,10 +808,17 @@ def _simulation_http_trim_catalog(catalog: dict[str, Any]) -> dict[str, Any]:
             file_graph.get("tag_nodes", []),
             max_rows=_SIMULATION_HTTP_MAX_TAG_NODES,
         )
-        compact_file_graph["nodes"] = _simulation_http_slice_rows(
+        compact_nodes = _simulation_http_slice_rows(
             file_graph.get("nodes", []),
             max_rows=_SIMULATION_HTTP_MAX_RENDER_NODES,
         )
+        compact_file_graph["nodes"] = [
+            compact_row
+            for compact_row in (
+                _simulation_http_compact_file_graph_node(row) for row in compact_nodes
+            )
+            if compact_row is not None
+        ]
         compact_file_graph["edges"] = _simulation_http_slice_rows(
             file_graph.get("edges", []),
             max_rows=_SIMULATION_HTTP_MAX_FILE_EDGES,
@@ -707,6 +871,60 @@ def _simulation_http_trim_catalog(catalog: dict[str, Any]) -> dict[str, Any]:
         trimmed["crawler_graph"] = compact_crawler_graph
 
     return trimmed
+
+
+def _simulation_ws_trim_simulation_payload(
+    simulation: dict[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(simulation, dict):
+        return {}
+
+    trimmed = dict(simulation)
+    for key in (
+        "field_particles",
+        "nexus_graph",
+        "logical_graph",
+        "pain_field",
+        "file_graph",
+        "crawler_graph",
+    ):
+        trimmed.pop(key, None)
+    return trimmed
+
+
+def _simulation_http_compact_simulation_payload(
+    simulation: dict[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(simulation, dict):
+        return {}
+
+    compact = dict(simulation)
+    for key in (
+        "nexus_graph",
+        "logical_graph",
+        "pain_field",
+        "file_graph",
+        "crawler_graph",
+    ):
+        compact.pop(key, None)
+
+    dynamics = compact.get("presence_dynamics")
+    if isinstance(dynamics, dict) and isinstance(dynamics.get("field_particles"), list):
+        compact.pop("field_particles", None)
+    return compact
+
+
+def _simulation_http_compact_response_body(body: bytes) -> bytes:
+    if not body:
+        return body
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except Exception:
+        return body
+    if not isinstance(payload, dict):
+        return body
+    compact = _simulation_http_compact_simulation_payload(payload)
+    return _json_compact(compact).encode("utf-8")
 
 
 def _schedule_simulation_http_warmup(*, host: str, port: int) -> None:
@@ -1231,10 +1449,13 @@ def websocket_accept_value(client_key: str) -> str:
     return base64.b64encode(digest).decode("utf-8")
 
 
-def websocket_frame_text(message: str) -> bytes:
-    payload = message.encode("utf-8")
-    length = len(payload)
-    header = bytearray([0x81])
+_WS_CLIENT_FRAME_MAX_BYTES = 1_048_576
+
+
+def websocket_frame(opcode: int, payload: bytes = b"") -> bytes:
+    data = bytes(payload)
+    length = len(data)
+    header = bytearray([0x80 | (opcode & 0x0F)])
     if length <= 125:
         header.append(length)
     elif length < 65536:
@@ -1243,7 +1464,92 @@ def websocket_frame_text(message: str) -> bytes:
     else:
         header.append(127)
         header.extend(struct.pack("!Q", length))
-    return bytes(header) + payload
+    return bytes(header) + data
+
+
+def websocket_frame_text(message: str) -> bytes:
+    return websocket_frame(0x1, message.encode("utf-8"))
+
+
+def _recv_ws_exact(connection: socket.socket, size: int) -> bytes | None:
+    if size <= 0:
+        return b""
+
+    data = bytearray()
+    while len(data) < size:
+        try:
+            chunk = connection.recv(size - len(data))
+        except socket.timeout:
+            if not data:
+                raise
+            continue
+        if not chunk:
+            return None
+        data.extend(chunk)
+    return bytes(data)
+
+
+def _read_ws_client_frame(connection: socket.socket) -> tuple[int, bytes] | None:
+    header = _recv_ws_exact(connection, 2)
+    if header is None:
+        return None
+
+    first, second = header
+    opcode = first & 0x0F
+    masked = bool(second & 0x80)
+    payload_len = second & 0x7F
+
+    if payload_len == 126:
+        extended = _recv_ws_exact(connection, 2)
+        if extended is None:
+            return None
+        payload_len = struct.unpack("!H", extended)[0]
+    elif payload_len == 127:
+        extended = _recv_ws_exact(connection, 8)
+        if extended is None:
+            return None
+        payload_len = struct.unpack("!Q", extended)[0]
+
+    if not masked or payload_len > _WS_CLIENT_FRAME_MAX_BYTES:
+        return None
+
+    mask_key = _recv_ws_exact(connection, 4)
+    if mask_key is None:
+        return None
+
+    payload = _recv_ws_exact(connection, payload_len)
+    if payload is None:
+        return None
+
+    if payload_len:
+        payload = bytes(
+            byte ^ mask_key[index % 4] for index, byte in enumerate(payload)
+        )
+
+    return opcode, payload
+
+
+def _consume_ws_client_frame(connection: socket.socket) -> bool:
+    frame = _read_ws_client_frame(connection)
+    if frame is None:
+        return False
+
+    opcode, payload = frame
+    if opcode == 0x8:
+        try:
+            connection.sendall(websocket_frame(0x8, payload[:125]))
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+            pass
+        return False
+
+    if opcode == 0x9:
+        connection.sendall(websocket_frame(0xA, payload[:125]))
+        return True
+
+    if opcode in {0x0, 0x1, 0x2, 0xA}:
+        return True
+
+    return False
 
 
 def render_index(payload: dict[str, Any], catalog: dict[str, Any]) -> str:
@@ -1380,7 +1686,16 @@ class WorldHandler(BaseHTTPRequestHandler):
 
     def _send_ws_event(self, payload: dict[str, Any]) -> None:
         frame = websocket_frame_text(_json_compact(payload))
-        self.connection.sendall(frame)
+        timeout_before = self.connection.gettimeout()
+        timeout_overridden = False
+        if timeout_before is not None:
+            self.connection.settimeout(None)
+            timeout_overridden = True
+        try:
+            self.connection.sendall(frame)
+        finally:
+            if timeout_overridden:
+                self.connection.settimeout(timeout_before)
 
     def _read_json_body(self) -> dict[str, Any] | None:
         try:
@@ -1715,6 +2030,7 @@ class WorldHandler(BaseHTTPRequestHandler):
             self.send_header("Connection", "Upgrade")
             self.send_header("Sec-WebSocket-Accept", websocket_accept_value(ws_key))
             self.end_headers()
+            self.close_connection = True
         except (
             BrokenPipeError,
             ConnectionResetError,
@@ -1776,8 +2092,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                     last_docker_refresh = now_monotonic
 
                 try:
-                    chunk = self.connection.recv(2)
-                    if not chunk:
+                    if not _consume_ws_client_frame(self.connection):
                         break
                 except socket.timeout:
                     continue
@@ -1819,6 +2134,7 @@ class WorldHandler(BaseHTTPRequestHandler):
             self.send_header("Connection", "Upgrade")
             self.send_header("Sec-WebSocket-Accept", websocket_accept_value(ws_key))
             self.end_headers()
+            self.close_connection = True
         except (
             BrokenPipeError,
             ConnectionResetError,
@@ -1876,14 +2192,15 @@ class WorldHandler(BaseHTTPRequestHandler):
                 influence_snapshot,
                 perspective=perspective_key,
             )
+            simulation_payload = _simulation_ws_trim_simulation_payload(simulation)
             self._send_ws_event(
                 {
                     "type": "simulation",
-                    "simulation": simulation,
+                    "simulation": simulation_payload,
                     "projection": projection,
                 }
             )
-            last_simulation_for_delta = simulation
+            last_simulation_for_delta = simulation_payload
 
             docker_snapshot = collect_docker_simulation_snapshot()
             self._send_ws_event(
@@ -1994,16 +2311,19 @@ class WorldHandler(BaseHTTPRequestHandler):
                             influence_snapshot,
                             perspective=perspective_key,
                         )
+                        simulation_payload = _simulation_ws_trim_simulation_payload(
+                            simulation
+                        )
                         self._send_ws_event(
                             {
                                 "type": "simulation",
-                                "simulation": simulation,
+                                "simulation": simulation_payload,
                                 "projection": projection,
                             }
                         )
                         delta = build_simulation_delta(
                             last_simulation_for_delta,
-                            simulation,
+                            simulation_payload,
                         )
                         if bool(delta.get("has_changes", False)):
                             self._send_ws_event(
@@ -2012,7 +2332,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                                     "delta": delta,
                                 }
                             )
-                        last_simulation_for_delta = simulation
+                        last_simulation_for_delta = simulation_payload
 
                     previous_muse_seq = muse_event_seq
                     muse_events = self._muse_manager().list_events(
@@ -2060,8 +2380,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                     last_docker_refresh = now_monotonic
 
                 try:
-                    chunk = self.connection.recv(2)
-                    if not chunk:
+                    if not _consume_ws_client_frame(self.connection):
                         break
                 except socket.timeout:
                     continue
@@ -2360,7 +2679,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                 )
             )
             catalog, _, _, _, _ = self._runtime_catalog(perspective=perspective)
-            self._send_json(catalog)
+            self._send_json(_simulation_http_trim_catalog(catalog))
             return
 
         if parsed.path == "/api/docker/simulations":
@@ -2810,19 +3129,29 @@ class WorldHandler(BaseHTTPRequestHandler):
                     or PROJECTION_DEFAULT_PERSPECTIVE
                 )
             )
+            compact_response = _safe_bool_query(
+                str(params.get("compact", ["false"])[0] or "false"),
+                False,
+            )
+
+            def _send_simulation_response(
+                body: bytes,
+                *,
+                extra_headers: dict[str, str] | None = None,
+            ) -> None:
+                response_body = (
+                    _simulation_http_compact_response_body(body)
+                    if compact_response
+                    else body
+                )
+                self._send_bytes(
+                    response_body,
+                    "application/json; charset=utf-8",
+                    extra_headers=extra_headers,
+                )
+
             cache_key = ""
             try:
-                warm_cached_body = _simulation_http_cached_body(
-                    perspective=perspective,
-                    max_age_seconds=_SIMULATION_HTTP_CACHE_SECONDS,
-                )
-                if warm_cached_body is not None:
-                    self._send_bytes(
-                        warm_cached_body,
-                        "application/json; charset=utf-8",
-                    )
-                    return
-
                 if _simulation_http_is_cold_start():
                     cold_disk_body = _simulation_http_disk_cache_load(
                         self.part_root,
@@ -2837,9 +3166,8 @@ class WorldHandler(BaseHTTPRequestHandler):
                             f"{perspective}|disk-cold-start|simulation",
                             cold_disk_body,
                         )
-                        self._send_bytes(
+                        _send_simulation_response(
                             cold_disk_body,
-                            "application/json; charset=utf-8",
                             extra_headers={
                                 "X-Eta-Mu-Simulation-Fallback": "disk-cache-cold-start",
                             },
@@ -2851,6 +3179,9 @@ class WorldHandler(BaseHTTPRequestHandler):
                         perspective=perspective,
                         include_projection=False,
                     )
+                )
+                user_inputs_recent = int(
+                    _safe_float(influence_snapshot.get("user_inputs_120s", 0), 0.0)
                 )
                 cache_key = _simulation_http_cache_key(
                     perspective=perspective,
@@ -2865,30 +3196,29 @@ class WorldHandler(BaseHTTPRequestHandler):
                     require_exact_key=True,
                 )
                 if cached_body is not None:
-                    self._send_bytes(
+                    _send_simulation_response(
                         cached_body,
-                        "application/json; charset=utf-8",
                     )
                     return
 
-                disk_cached_body = _simulation_http_disk_cache_load(
-                    self.part_root,
-                    perspective=perspective,
-                    max_age_seconds=max(
-                        _SIMULATION_HTTP_STALE_FALLBACK_SECONDS,
-                        _SIMULATION_HTTP_DISK_CACHE_SECONDS,
-                    ),
-                )
-                if disk_cached_body is not None:
-                    _simulation_http_cache_store(cache_key, disk_cached_body)
-                    self._send_bytes(
-                        disk_cached_body,
-                        "application/json; charset=utf-8",
-                        extra_headers={
-                            "X-Eta-Mu-Simulation-Fallback": "disk-cache",
-                        },
+                if user_inputs_recent <= 0:
+                    disk_cached_body = _simulation_http_disk_cache_load(
+                        self.part_root,
+                        perspective=perspective,
+                        max_age_seconds=max(
+                            _SIMULATION_HTTP_STALE_FALLBACK_SECONDS,
+                            _SIMULATION_HTTP_DISK_CACHE_SECONDS,
+                        ),
                     )
-                    return
+                    if disk_cached_body is not None:
+                        _simulation_http_cache_store(cache_key, disk_cached_body)
+                        _send_simulation_response(
+                            disk_cached_body,
+                            extra_headers={
+                                "X-Eta-Mu-Simulation-Fallback": "disk-cache",
+                            },
+                        )
+                        return
 
                 backoff_remaining, backoff_error, backoff_streak = (
                     _simulation_http_failure_backoff_snapshot()
@@ -2910,9 +3240,8 @@ class WorldHandler(BaseHTTPRequestHandler):
                         if stale_body is not None:
                             _simulation_http_cache_store(cache_key, stale_body)
                     if stale_body is not None:
-                        self._send_bytes(
+                        _send_simulation_response(
                             stale_body,
-                            "application/json; charset=utf-8",
                             extra_headers={
                                 "X-Eta-Mu-Simulation-Fallback": "failure-backoff",
                                 "X-Eta-Mu-Simulation-Error": backoff_error
@@ -2935,9 +3264,8 @@ class WorldHandler(BaseHTTPRequestHandler):
                         max_wait_seconds=_SIMULATION_HTTP_BUILD_WAIT_SECONDS,
                     )
                     if inflight_body is not None:
-                        self._send_bytes(
+                        _send_simulation_response(
                             inflight_body,
-                            "application/json; charset=utf-8",
                             extra_headers={
                                 "X-Eta-Mu-Simulation-Fallback": "inflight-cache",
                             },
@@ -2949,9 +3277,8 @@ class WorldHandler(BaseHTTPRequestHandler):
                         max_age_seconds=_SIMULATION_HTTP_STALE_FALLBACK_SECONDS,
                     )
                     if stale_body is not None:
-                        self._send_bytes(
+                        _send_simulation_response(
                             stale_body,
-                            "application/json; charset=utf-8",
                             extra_headers={
                                 "X-Eta-Mu-Simulation-Fallback": "stale-cache",
                                 "X-Eta-Mu-Simulation-Error": "build_inflight",
@@ -2970,9 +3297,8 @@ class WorldHandler(BaseHTTPRequestHandler):
                         require_exact_key=True,
                     )
                     if cached_body is not None:
-                        self._send_bytes(
+                        _send_simulation_response(
                             cached_body,
-                            "application/json; charset=utf-8",
                             extra_headers={
                                 "X-Eta-Mu-Simulation-Fallback": "inflight-cache",
                             },
@@ -2994,9 +3320,8 @@ class WorldHandler(BaseHTTPRequestHandler):
                         body=response_body,
                     )
                     _simulation_http_failure_clear()
-                    self._send_bytes(
+                    _send_simulation_response(
                         response_body,
-                        "application/json; charset=utf-8",
                     )
                 finally:
                     if lock_acquired:
@@ -3008,9 +3333,8 @@ class WorldHandler(BaseHTTPRequestHandler):
                     max_age_seconds=_SIMULATION_HTTP_STALE_FALLBACK_SECONDS,
                 )
                 if stale_body is not None:
-                    self._send_bytes(
+                    _send_simulation_response(
                         stale_body,
-                        "application/json; charset=utf-8",
                         extra_headers={
                             "X-Eta-Mu-Simulation-Fallback": "stale-cache",
                             "X-Eta-Mu-Simulation-Error": exc.__class__.__name__,
@@ -3028,9 +3352,8 @@ class WorldHandler(BaseHTTPRequestHandler):
                 )
                 if disk_stale_body is not None:
                     _simulation_http_cache_store(cache_key, disk_stale_body)
-                    self._send_bytes(
+                    _send_simulation_response(
                         disk_stale_body,
-                        "application/json; charset=utf-8",
                         extra_headers={
                             "X-Eta-Mu-Simulation-Fallback": "disk-cache",
                             "X-Eta-Mu-Simulation-Error": exc.__class__.__name__,
@@ -3767,6 +4090,224 @@ class WorldHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK if bool(result.get("ok", False)) else HTTPStatus.NOT_FOUND
             )
             self._send_json(result, status=status)
+            return
+
+        if parsed.path == "/api/presence/user/input":
+            req_raw = self._read_json_body()
+            req = req_raw if isinstance(req_raw, dict) else {}
+            default_meta = (
+                req.get("meta") if isinstance(req.get("meta"), dict) else None
+            )
+
+            events_raw = req.get("events") if isinstance(req, dict) else None
+            candidate_rows: list[dict[str, Any]] = []
+            if isinstance(events_raw, list):
+                candidate_rows = [row for row in events_raw if isinstance(row, dict)]
+            elif isinstance(req_raw, list):
+                candidate_rows = [row for row in req_raw if isinstance(row, dict)]
+            elif isinstance(req, dict):
+                candidate_rows = [req]
+
+            if not candidate_rows:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error": "invalid_user_input_payload",
+                        "record": "eta-mu.user-input.error.v1",
+                    },
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+
+            rows_for_ingest = candidate_rows[-USER_PRESENCE_MAX_EVENTS:]
+            batch_now_unix = time.time()
+            batch_now_mono = time.monotonic()
+            processed_events: list[dict[str, Any]] = []
+            tracker_events: list[dict[str, Any]] = []
+
+            for index, row in enumerate(rows_for_ingest):
+                kind = (
+                    str(row.get("kind", row.get("type", "input")) or "input")
+                    .strip()
+                    .lower()
+                    or "input"
+                )
+                target = (
+                    str(row.get("target", "simulation") or "simulation").strip()
+                    or "simulation"
+                )
+                x_raw = row.get("x_ratio", row.get("x"))
+                y_raw = row.get("y_ratio", row.get("y"))
+                has_pointer = x_raw is not None and y_raw is not None
+                x_ratio = max(0.0, min(1.0, _safe_float(x_raw, 0.5)))
+                y_ratio = max(0.0, min(1.0, _safe_float(y_raw, 0.5)))
+                embed_daimoi = bool(
+                    row.get(
+                        "embed_daimoi",
+                        row.get(
+                            "embedDaimoi",
+                            kind
+                            in {
+                                "hover",
+                                "click",
+                                "keydown",
+                                "key",
+                                "input",
+                                "focus",
+                            },
+                        ),
+                    )
+                )
+                message = str(row.get("message", "") or "").strip()
+                if not message:
+                    if kind == "hover":
+                        message = f"mouse hover over {target}"
+                    elif kind == "mouse_move":
+                        message = "mouse move in simulation"
+                    elif kind in {"click", "tap"}:
+                        message = f"click {target}"
+                    elif kind in {"keydown", "key"}:
+                        message = f"keyboard input on {target}"
+                    else:
+                        message = f"{kind} on {target}"
+
+                event_unix = batch_now_unix + (index * 0.0001)
+                event_mono = batch_now_mono + (index * 0.0001)
+                event_iso = datetime.fromtimestamp(event_unix, timezone.utc).isoformat()
+                event_id = hashlib.sha1(
+                    (
+                        f"{event_iso}|{kind}|{target}|{message}|"
+                        f"{x_ratio:.5f}|{y_ratio:.5f}|{int(embed_daimoi)}|{index}"
+                    ).encode("utf-8")
+                ).hexdigest()[:14]
+                event_row: dict[str, Any] = {
+                    "id": f"user-input:{event_id}",
+                    "record": "ημ.user-input.v1",
+                    "presence_id": USER_PRESENCE_ID,
+                    "kind": kind,
+                    "target": target[:240],
+                    "message": message[:320],
+                    "embed_daimoi": bool(embed_daimoi),
+                    "ts": event_iso,
+                    "ts_monotonic": round(event_mono, 6),
+                }
+                if has_pointer:
+                    event_row["x_ratio"] = round(x_ratio, 6)
+                    event_row["y_ratio"] = round(y_ratio, 6)
+
+                meta = row.get("meta") if isinstance(row.get("meta"), dict) else None
+                if not isinstance(meta, dict):
+                    meta = default_meta if isinstance(default_meta, dict) else None
+
+                processed_events.append(event_row)
+                tracker_events.append(
+                    {
+                        "kind": kind,
+                        "target": target,
+                        "message": message,
+                        "has_pointer": has_pointer,
+                        "x_ratio": x_ratio,
+                        "y_ratio": y_ratio,
+                        "embed_daimoi": embed_daimoi,
+                        "meta": meta,
+                        "event_unix": event_unix,
+                        "event_mono": event_mono,
+                    }
+                )
+
+            event_count = 0
+            anchor_target = {"x": 0.5, "y": 0.72}
+            with _USER_PRESENCE_INPUT_LOCK:
+                cache = _USER_PRESENCE_INPUT_CACHE
+                rows = cache.get("events", [])
+                if not isinstance(rows, list):
+                    rows = []
+
+                seq = int(cache.get("seq", 0))
+                for event_row, tracker_row in zip(processed_events, tracker_events):
+                    has_pointer = bool(tracker_row.get("has_pointer", False))
+                    if has_pointer:
+                        cache["target_x"] = _safe_float(tracker_row.get("x_ratio"), 0.5)
+                        cache["target_y"] = _safe_float(tracker_row.get("y_ratio"), 0.5)
+                        cache["last_pointer_unix"] = _safe_float(
+                            tracker_row.get("event_unix"), batch_now_unix
+                        )
+                        cache["last_pointer_monotonic"] = _safe_float(
+                            tracker_row.get("event_mono"), batch_now_mono
+                        )
+
+                    cache["last_input_unix"] = _safe_float(
+                        tracker_row.get("event_unix"), batch_now_unix
+                    )
+                    cache["last_input_monotonic"] = _safe_float(
+                        tracker_row.get("event_mono"), batch_now_mono
+                    )
+                    cache["latest_message"] = str(event_row.get("message", "") or "")[
+                        :320
+                    ]
+                    cache["latest_target"] = str(event_row.get("target", "") or "")[
+                        :240
+                    ]
+                    seq += 1
+                    rows.append(event_row)
+
+                if len(rows) > USER_PRESENCE_MAX_EVENTS:
+                    rows = rows[-USER_PRESENCE_MAX_EVENTS:]
+                cache["events"] = rows
+                cache["seq"] = seq
+                event_count = len(rows)
+                anchor_target = {
+                    "x": max(0.0, min(1.0, _safe_float(cache.get("target_x"), 0.5))),
+                    "y": max(0.0, min(1.0, _safe_float(cache.get("target_y"), 0.72))),
+                }
+
+            for tracker_row in tracker_events:
+                kind = str(tracker_row.get("kind", "input") or "input")
+                target = str(tracker_row.get("target", "simulation") or "simulation")
+                message = str(tracker_row.get("message", "") or "")
+                has_pointer = bool(tracker_row.get("has_pointer", False))
+                _INFLUENCE_TRACKER.record_user_input(
+                    kind=kind,
+                    target=target,
+                    message=message,
+                    x_ratio=(
+                        _safe_float(tracker_row.get("x_ratio"), 0.5)
+                        if has_pointer
+                        else None
+                    ),
+                    y_ratio=(
+                        _safe_float(tracker_row.get("y_ratio"), 0.5)
+                        if has_pointer
+                        else None
+                    ),
+                    embed_daimoi=bool(tracker_row.get("embed_daimoi", False)),
+                    meta=(
+                        tracker_row.get("meta")
+                        if isinstance(tracker_row.get("meta"), dict)
+                        else None
+                    ),
+                )
+
+                if kind != "mouse_move":
+                    _INFLUENCE_TRACKER.record_witness(
+                        event_type=f"user_{kind}",
+                        target=target,
+                    )
+
+            response: dict[str, Any] = {
+                "ok": True,
+                "presence_id": USER_PRESENCE_ID,
+                "events": processed_events,
+                "processed": len(processed_events),
+                "event_count": event_count,
+                "anchor_target": anchor_target,
+            }
+            if processed_events:
+                response["event"] = processed_events[-1]
+            self._send_json(
+                response,
+                status=HTTPStatus.OK,
+            )
             return
 
         if parsed.path == "/api/input-stream":

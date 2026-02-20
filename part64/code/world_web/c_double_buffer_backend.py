@@ -951,6 +951,17 @@ def _presence_layout(
         if not presence_id or presence_id in impact_ids:
             continue
         impact_ids.append(presence_id)
+        current_x, current_y, current_hue = layout_map.get(
+            presence_id, (0.5, 0.5, None)
+        )
+        impact_x = _clamp01(_safe_float(row.get("x", current_x), current_x))
+        impact_y = _clamp01(_safe_float(row.get("y", current_y), current_y))
+        impact_hue = _safe_optional_float(row.get("hue"))
+        layout_map[presence_id] = (
+            impact_x,
+            impact_y,
+            impact_hue if impact_hue is not None else current_hue,
+        )
 
     selected_ids: list[str] = []
     for presence_id, _, _, _ in _DEFAULT_PRESENCE_LAYOUT:
@@ -1097,6 +1108,13 @@ def _load_native_lib() -> ctypes.CDLL:
             ]
             lib.cdb_engine_update_nooi.restype = ctypes.c_int
 
+        if hasattr(lib, "cdb_engine_update_embeddings"):
+            lib.cdb_engine_update_embeddings.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_float),
+            ]
+            lib.cdb_engine_update_embeddings.restype = ctypes.c_int
+
         if hasattr(lib, "cdb_growth_guard_scores"):
             lib.cdb_growth_guard_scores.argtypes = [
                 ctypes.POINTER(ctypes.c_float),
@@ -1160,6 +1178,10 @@ def _load_native_lib() -> ctypes.CDLL:
                 ctypes.POINTER(ctypes.c_float),
             ]
             lib.cdb_graph_runtime_maps.restype = ctypes.c_int
+
+        if hasattr(lib, "cdb_engine_set_flags"):
+            lib.cdb_engine_set_flags.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+            lib.cdb_engine_set_flags.restype = None
 
         if hasattr(lib, "cdb_graph_route_step"):
             lib.cdb_graph_route_step.argtypes = [
@@ -1334,6 +1356,27 @@ class _CDBEngine:
 
             c_array = (ctypes.c_float * expected_size)(*data)
             self._lib.cdb_engine_update_nooi(self._ptr, c_array)
+
+    def update_embeddings(self, data: list[float]) -> None:
+        if not data:
+            return
+        with self._lock:
+            if self._ptr is None:
+                return
+            expected_size = self._count * 24
+            if len(data) != expected_size:
+                if len(data) > expected_size:
+                    data = data[:expected_size]
+                else:
+                    data = data + [0.0] * (expected_size - len(data))
+            c_array = (ctypes.c_float * expected_size)(*data)
+            self._lib.cdb_engine_update_embeddings(self._ptr, c_array)
+
+    def set_flags(self, flags: int) -> None:
+        with self._lock:
+            if self._ptr is None:
+                return
+            self._lib.cdb_engine_set_flags(self._ptr, ctypes.c_uint32(flags))
 
 
 def _get_engine(*, count: int, seed: int) -> _CDBEngine:
@@ -2823,6 +2866,36 @@ def build_double_buffer_field_particles(
     # or rather update the engine.
     # Note: _get_engine returns a persistent singleton if parameters match.
     engine = _get_engine(count=target_count, seed=seed)
+
+    # Set simulation flags from env
+    # 1 = Spatial Collision (Particle-Particle)
+    # 2 = Mean Field (Field-Particle Interaction/Drift)
+    # 3 = Both
+    sim_flags_env = int(os.getenv("CDB_SIM_FLAGS", "0"))
+    set_flags = getattr(engine, "set_flags", None)
+    if callable(set_flags):
+        try:
+            set_flags(sim_flags_env)
+        except Exception:
+            pass
+
+    # Resolve embeddings for all particles
+    try:
+        from .daimoi_probabilistic import _embedding_from_text, _normalize_vector
+
+        # We need to maintain a persistent set of embeddings for the C particles
+        # For now, we derive them from owner + slot index to ensure they are stable.
+        flat_embeddings = []
+        for i in range(target_count):
+            owner_id = i % max(1, len(presence_ids))
+            presence_id = presence_ids[owner_id]
+            # stable-ish seed text for each slot
+            seed_text = f"CDB Slot {i} Owner {presence_id}"
+            emb = _embedding_from_text(seed_text)
+            flat_embeddings.extend(emb)
+        engine.update_embeddings(flat_embeddings)
+    except Exception:
+        pass
 
     try:
         from .simulation import _NOOI_FIELD

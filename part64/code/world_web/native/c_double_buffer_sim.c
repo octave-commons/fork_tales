@@ -25,6 +25,9 @@
 #define CDB_NOOI_LAYERS 8
 #define CDB_NOOI_SIZE (CDB_NOOI_COLS * CDB_NOOI_ROWS * CDB_NOOI_LAYERS * 2)
 
+#define CDB_SIM_FLAG_COLLISION 0x1u
+#define CDB_SIM_FLAG_MEAN_FIELD 0x2u
+
 typedef struct Vec2DoubleBuffer {
     float *x[2];
     float *y[2];
@@ -52,12 +55,10 @@ typedef struct CDBEngine {
     uint32_t *flags;
     float *mass;
     float *radius;
+    float *embeddings; // 24-dim per particle
 
     float *nooi_field;
-    _Atomic int nooi_index; // 0 or 1 for double buffering if needed, or just 1 buffer with lock? 
-                            // Python writes to a separate buffer then we swap?
-                            // For "Compact", let's use a single buffer with a read/write lock or atomic swap pointer.
-                            // Actually, let's use double buffering for safety.
+    _Atomic int nooi_index; 
     float *nooi_buffer[2];
     _Atomic int nooi_readable;
 
@@ -66,6 +67,15 @@ typedef struct CDBEngine {
     uint32_t integrate_sleep_us;
     uint32_t semantic_sleep_us;
 
+    float daimon_friction;
+    float nexus_friction;
+    float grav_const;
+    float grav_eps;
+
+    uint32_t sim_flags;
+    int32_t *grid_head;
+    int32_t *grid_next;
+
     pthread_t force_thread;
     pthread_t chaos_thread;
     pthread_t semantic_thread;
@@ -73,6 +83,12 @@ typedef struct CDBEngine {
 } CDBEngine;
 
 void cdb_engine_destroy(CDBEngine *engine);
+
+void cdb_engine_set_flags(CDBEngine *engine, uint32_t flags) {
+    if (engine != NULL) {
+        atomic_store_explicit((_Atomic uint32_t *)&engine->sim_flags, flags, memory_order_release);
+    }
+}
 
 int cdb_engine_update_nooi(CDBEngine *engine, const float *data);
 
@@ -937,6 +953,230 @@ int cdb_graph_route_step(
     return 0;
 }
 
+// ============================================================================
+// CSR (Compressed Sparse Row) Edge Storage for O(degree) Route Lookups
+// ============================================================================
+
+int cdb_build_csr_edges(
+    uint32_t node_count,
+    uint32_t edge_count,
+    const uint32_t *edge_src,
+    const uint32_t *edge_dst,
+    uint32_t *csr_node_offsets,
+    uint32_t *csr_edge_indices
+) {
+    if (node_count == 0u || edge_count == 0u) {
+        return -1;
+    }
+    if (edge_src == NULL || edge_dst == NULL || csr_node_offsets == NULL || csr_edge_indices == NULL) {
+        return -1;
+    }
+
+    // Count edges per node
+    uint32_t *degree = (uint32_t *)calloc((size_t)node_count, sizeof(uint32_t));
+    if (degree == NULL) {
+        return -1;
+    }
+
+    for (uint32_t e = 0u; e < edge_count; e += 1u) {
+        uint32_t src = edge_src[e];
+        if (src < node_count) {
+            degree[src] += 1u;
+        }
+    }
+
+    // Build offsets (prefix sum)
+    csr_node_offsets[0] = 0u;
+    for (uint32_t n = 0u; n < node_count; n += 1u) {
+        csr_node_offsets[n + 1u] = csr_node_offsets[n] + degree[n];
+    }
+
+    // Reset degree for use as insertion cursor
+    memset(degree, 0, (size_t)node_count * sizeof(uint32_t));
+
+    // Fill edge indices
+    for (uint32_t e = 0u; e < edge_count; e += 1u) {
+        uint32_t src = edge_src[e];
+        if (src < node_count) {
+            uint32_t pos = csr_node_offsets[src] + degree[src];
+            csr_edge_indices[pos] = e;
+            degree[src] += 1u;
+        }
+    }
+
+    free(degree);
+    return 0;
+}
+
+int cdb_graph_route_step_csr(
+    uint32_t node_count,
+    uint32_t edge_count,
+    const uint32_t *edge_src,
+    const uint32_t *edge_dst,
+    const float *edge_cost,
+    const float *node_gravity,
+    const uint32_t *csr_node_offsets,
+    const uint32_t *csr_edge_indices,
+    const uint32_t *particle_current_node,
+    uint32_t particle_count,
+    float eta,
+    float upsilon,
+    float temperature,
+    uint32_t step_seed,
+    uint32_t *out_next_node,
+    float *out_drift_score,
+    float *out_route_probability
+) {
+    if (
+        node_count == 0u
+        || particle_count == 0u
+        || particle_current_node == NULL
+        || out_next_node == NULL
+        || csr_node_offsets == NULL
+        || csr_edge_indices == NULL
+    ) {
+        return -1;
+    }
+
+    float eta_gain = (eta > 0.0f) ? eta : 1.0f;
+    float cost_gain = (upsilon > 0.0f) ? upsilon : 0.8f;
+    float temp = (temperature > 0.05f) ? temperature : 0.35f;
+
+    for (uint32_t particle = 0u; particle < particle_count; particle += 1u) {
+        uint32_t current = particle_current_node[particle];
+        if (current >= node_count) {
+            current = current % node_count;
+        }
+
+        float gravity_here = 0.0f;
+        if (node_gravity != NULL) {
+            gravity_here = fmaxf(0.0f, node_gravity[current]);
+        }
+
+        uint32_t best_node = current;
+        float best_score = -FLT_MAX;
+        float second_score = -FLT_MAX;
+        uint32_t candidate_count = 0u;
+
+        // CSR range for current node
+        uint32_t edge_start = csr_node_offsets[current];
+        uint32_t edge_end = csr_node_offsets[current + 1u];
+
+        for (uint32_t idx = edge_start; idx < edge_end; idx += 1u) {
+            uint32_t edge = csr_edge_indices[idx];
+            uint32_t dst = edge_dst[edge];
+            if (dst >= node_count) {
+                continue;
+            }
+
+            float score = cdb_route_edge_score(
+                edge,
+                dst,
+                edge_cost,
+                node_gravity,
+                gravity_here,
+                eta_gain,
+                cost_gain
+            );
+            candidate_count += 1u;
+
+            if (score > best_score) {
+                second_score = best_score;
+                best_score = score;
+                best_node = dst;
+            } else if (score > second_score) {
+                second_score = score;
+            }
+        }
+
+        uint32_t mix = step_seed
+            ^ ((particle + 1u) * 747796405u)
+            ^ ((current + 1u) * 2891336453u);
+        mix ^= mix >> 16;
+        mix *= 2246822519u;
+        mix ^= mix >> 13;
+        mix *= 3266489917u;
+        mix ^= mix >> 16;
+        float random_01 = (float)(mix & 0x00FFFFFFu) / 16777215.0f;
+
+        if (candidate_count == 0u) {
+            uint32_t fallback_node = current;
+            float fallback_prob = 0.12f;
+            if (step_seed != 0u && node_count > 1u && random_01 > 0.86f) {
+                uint32_t hop = 1u + (mix % (node_count - 1u));
+                fallback_node = (current + hop) % node_count;
+                fallback_prob = 0.24f;
+            }
+            out_next_node[particle] = fallback_node;
+            if (out_drift_score != NULL) {
+                out_drift_score[particle] = 0.0f;
+            }
+            if (out_route_probability != NULL) {
+                out_route_probability[particle] = fallback_prob;
+            }
+            continue;
+        }
+
+        if (second_score <= -FLT_MAX * 0.5f) {
+            second_score = best_score - 1.0f;
+        }
+        float margin = best_score - second_score;
+
+        float explore_chance = 0.0f;
+        if (best_score < -0.12f) {
+            explore_chance += 0.28f;
+        }
+        if (margin < 0.10f) {
+            explore_chance += 0.18f;
+        }
+        if (step_seed != 0u && candidate_count > 1u && random_01 < fminf(0.65f, explore_chance)) {
+            uint32_t target_rank = (mix >> 8) % candidate_count;
+            uint32_t seen_rank = 0u;
+            uint32_t explore_node = best_node;
+            float explore_score = best_score;
+
+            // CSR range exploration
+            for (uint32_t idx = edge_start; idx < edge_end; idx += 1u) {
+                uint32_t edge = csr_edge_indices[idx];
+                uint32_t dst = edge_dst[edge];
+                if (dst >= node_count) {
+                    continue;
+                }
+                float score = cdb_route_edge_score(
+                    edge,
+                    dst,
+                    edge_cost,
+                    node_gravity,
+                    gravity_here,
+                    eta_gain,
+                    cost_gain
+                );
+                if (seen_rank == target_rank) {
+                    explore_node = dst;
+                    explore_score = score;
+                    break;
+                }
+                seen_rank += 1u;
+            }
+            best_node = explore_node;
+            best_score = explore_score;
+        }
+
+        float route_probability = 1.0f / (1.0f + expf(-(margin / temp)));
+        route_probability = clamp01(route_probability);
+        float drift_score = tanhf(best_score * 0.45f);
+
+        out_next_node[particle] = best_node;
+        if (out_drift_score != NULL) {
+            out_drift_score[particle] = drift_score;
+        }
+        if (out_route_probability != NULL) {
+            out_route_probability[particle] = route_probability;
+        }
+    }
+    return 0;
+}
+
 static void sleep_microseconds(uint32_t microseconds) {
     if (microseconds == 0u) {
         return;
@@ -981,6 +1221,139 @@ static void vec2_buffer_destroy(Vec2DoubleBuffer *buffer) {
     }
 }
 
+static float dot_product_24(const float *a, const float *b) {
+    float dot = 0.0f;
+    for (int i = 0; i < 24; i++) {
+        dot += a[i] * b[i];
+    }
+    return dot;
+}
+
+static void mix_vectors_24(float *target, const float *source, float alpha) {
+    float inv = 1.0f - alpha;
+    for (int i = 0; i < 24; i++) {
+        target[i] = (target[i] * inv) + (source[i] * alpha);
+    }
+    // Normalize
+    float mag_sq = 0.0f;
+    for (int i = 0; i < 24; i++) {
+        mag_sq += target[i] * target[i];
+    }
+    if (mag_sq > 1e-9f) {
+        float scale = 1.0f / sqrtf(mag_sq);
+        for (int i = 0; i < 24; i++) {
+            target[i] *= scale;
+        }
+    }
+}
+
+static void resolve_collisions(CDBEngine *engine, const float *pos_x, const float *pos_y, float *acc_x, float *acc_y) {
+    uint32_t count = engine->particle_count;
+    int32_t *head = engine->grid_head;
+    int32_t *next = engine->grid_next;
+    
+    if (head == NULL || next == NULL) return;
+
+    // Reset grid
+    memset(head, -1, CDB_NOOI_COLS * CDB_NOOI_ROWS * sizeof(int32_t));
+
+    // Populate grid
+    for (uint32_t i = 0; i < count; i++) {
+        int cx = fast_floor_to_int(pos_x[i] * (float)CDB_NOOI_COLS);
+        int cy = fast_floor_to_int(pos_y[i] * (float)CDB_NOOI_ROWS);
+        if (cx >= 0 && cx < CDB_NOOI_COLS && cy >= 0 && cy < CDB_NOOI_ROWS) {
+            int cell_idx = (cy * CDB_NOOI_COLS) + cx;
+            next[i] = head[cell_idx];
+            head[cell_idx] = (int32_t)i;
+        } else {
+            next[i] = -1;
+        }
+    }
+
+    float impact_dist = 0.022f; // ~ DAIMOI_SURFACE_RADIUS * 2 (roughly, tuning for stability)
+    float impact_sq = impact_dist * impact_dist;
+
+    // Check collisions
+    for (uint32_t i = 0; i < count; i++) {
+        int cx = fast_floor_to_int(pos_x[i] * (float)CDB_NOOI_COLS);
+        int cy = fast_floor_to_int(pos_y[i] * (float)CDB_NOOI_ROWS);
+        
+        // Check 3x3 neighborhood
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                int nx = cx + dx;
+                int ny = cy + dy;
+                if (nx >= 0 && nx < CDB_NOOI_COLS && ny >= 0 && ny < CDB_NOOI_ROWS) {
+                    int cell_idx = (ny * CDB_NOOI_COLS) + nx;
+                    int32_t j = head[cell_idx];
+                    while (j != -1) {
+                        if ((uint32_t)j > i) { // Check pair once
+                            float px_i = pos_x[i];
+                            float py_i = pos_y[i];
+                            float px_j = pos_x[j];
+                            float py_j = pos_y[j];
+                            
+                            float dist_x = px_j - px_i;
+                            float dist_y = py_j - py_i;
+                            float d2 = (dist_x * dist_x) + (dist_y * dist_y);
+                            
+                            float r_sum = engine->radius[i] + engine->radius[j];
+                            float min_dist_sq = r_sum * r_sum;
+
+                            if (d2 < min_dist_sq && d2 > 1e-9f) {
+                                float dist = sqrtf(d2);
+                                float overlap = r_sum - dist;
+                                float nx_vec = dist_x / dist;
+                                float ny_vec = dist_y / dist;
+                                
+                                // Physics: Position correction force (spring-like)
+                                float k_spring = 80.0f; 
+                                float f_mag = k_spring * overlap;
+                                
+                                // Apply equal and opposite forces
+                                acc_x[i] -= nx_vec * f_mag;
+                                acc_y[i] -= ny_vec * f_mag;
+                                acc_x[j] += nx_vec * f_mag;
+                                acc_y[j] += ny_vec * f_mag;
+
+                                // Semantics: Exchange
+                                // If collision is strong enough or probabilistic
+                                float *ei = &engine->embeddings[i * 24];
+                                float *ej = &engine->embeddings[j * 24];
+                                float sim = dot_product_24(ei, ej); // -1 to 1
+                                
+                                // Spec: Exchange count k ~ E_i. 
+                                // We approximate by blending embeddings.
+                                // Alpha depends on similarity. Disimilar = Repel/Deflect, Similar = Bond/Mix?
+                                // Spec says "Recompute probabilities".
+                                // Python logic: 
+                                //   transfer_t = (sim + 1) * 0.5
+                                //   coupling = intensity * bias
+                                //   delta = lambda * coupling * transfer
+                                
+                                float intensity = clamp01(overlap * 40.0f); // Proxy for impulse
+                                float transfer = clamp01((sim + 1.0f) * 0.5f);
+                                float mix_rate = 0.15f * intensity * transfer;
+                                
+                                // Bi-directional mix
+                                // We need temp storage to avoid order bias in a single step, 
+                                // but for simplicity/speed in C, sequential update is acceptable approximation 
+                                // for this "Probabilistic" simulation.
+                                float temp_j[24];
+                                memcpy(temp_j, ej, 24 * sizeof(float));
+                                
+                                mix_vectors_24(ej, ei, mix_rate);
+                                mix_vectors_24(ei, temp_j, mix_rate);
+                            }
+                        }
+                        j = next[j];
+                    }
+                }
+            }
+        }
+    }
+}
+
 static void *force_system_worker(void *arg) {
     CDBEngine *engine = (CDBEngine *)arg;
     if (engine == NULL) {
@@ -989,34 +1362,30 @@ static void *force_system_worker(void *arg) {
 
     while (atomic_load_explicit(&engine->running, memory_order_acquire) != 0) {
         int pos_index = atomic_load_explicit(&engine->position.readable, memory_order_acquire);
-        int vel_index = atomic_load_explicit(&engine->velocity.readable, memory_order_acquire);
         int write_index =
             1 - atomic_load_explicit(&engine->acceleration.readable, memory_order_relaxed);
 
         const float *pos_x = engine->position.x[pos_index];
         const float *pos_y = engine->position.y[pos_index];
-        const float *vel_x = engine->velocity.x[vel_index];
-        const float *vel_y = engine->velocity.y[vel_index];
         float *acc_x = engine->acceleration.x[write_index];
         float *acc_y = engine->acceleration.y[write_index];
 
-        uint64_t frame = atomic_load_explicit(&engine->frame_id, memory_order_relaxed);
         uint32_t count = engine->particle_count;
+        float grav_const = engine->grav_const;
+        float grav_eps = engine->grav_eps;
+        uint32_t flags = atomic_load_explicit((_Atomic uint32_t *)&engine->sim_flags, memory_order_relaxed);
+
+        if ((flags & CDB_SIM_FLAG_COLLISION) != 0u) {
+            resolve_collisions(engine, pos_x, pos_y, acc_x, acc_y);
+        }
 
         for (uint32_t i = 0; i < count; i += 1) {
             float xi = pos_x[i];
             float yi = pos_y[i];
-            float vxi = vel_x[i];
-            float vyi = vel_y[i];
+            float fx = acc_x[i]; // Accumulate on top of collision forces
+            float fy = acc_y[i];
 
-            float fx = (0.5f - xi) * 0.12f;
-            float fy = (0.5f - yi) * 0.12f;
-            fx -= vxi * 0.06f;
-            fy -= vyi * 0.06f;
-
-            // Apply Nooi Field Acceleration
-            // a_field_i = sum(w_{i,l} * F_l[c(z_i)])
-            // Simplified: weight = 1.0 if layer == (owner % 8), else 0.0
+            // 1. Nooi Field Acceleration
             int nooi_idx = atomic_load_explicit(&engine->nooi_readable, memory_order_acquire);
             const float *nooi = engine->nooi_buffer[nooi_idx];
             if (nooi != NULL) {
@@ -1025,49 +1394,82 @@ static void *force_system_worker(void *arg) {
                 if (cx >= 0 && cx < CDB_NOOI_COLS && cy >= 0 && cy < CDB_NOOI_ROWS) {
                     uint32_t owner = engine->owner_id[i];
                     int layer = (int)(owner % CDB_NOOI_LAYERS);
-                    
-                    // Index: (layer * ROWS * COLS + row * COLS + col) * 2
-                    // Layers are outer dimension? NooiField.layers is list of grids.
-                    // Flattened: [Layer0_vx...][Layer0_vy...] ? No, NooiField stores [vx, vy, vx, vy...] per layer.
-                    // Layer layout: [L0_cell0_vx, L0_cell0_vy, ... L0_cellN_vy, L1_cell0_vx...]
-                    // Grid size = COLS * ROWS * 2
                     size_t layer_stride = (size_t)(CDB_NOOI_COLS * CDB_NOOI_ROWS * 2);
                     size_t cell_offset = (size_t)((cy * CDB_NOOI_COLS + cx) * 2);
                     size_t idx = (size_t)(layer * layer_stride) + cell_offset;
                     
-                    // Check bounds just in case
                     if (idx + 1 < (size_t)CDB_NOOI_SIZE) {
-                        float field_vx = nooi[idx];
-                        float field_vy = nooi[idx + 1];
-                        
-                        // Apply force
-                        // w_{i,l} is implicitly 1.0 for own layer, 0 for others here.
-                        // Can add cross-layer interaction later.
-                        fx += field_vx * 2.5f; // Scaling factor
-                        fy += field_vy * 2.5f;
+                        float f_scale = 6.5f;
+                        fx += nooi[idx] * f_scale; 
+                        fy += nooi[idx + 1] * f_scale;
+
+                        // Mean Field Semantic Drift
+                        if ((flags & CDB_SIM_FLAG_MEAN_FIELD) != 0u) {
+                            // If field is strong, align embedding slightly to owner?
+                            // Or just add noise based on field intensity?
+                            // "Exchange energy with Field"
+                            // We can't easily access field embedding, but we can assume field 
+                            // aligns with Owner intent.
+                            // So pull embedding towards "default" or just scramble it if field is turbulent.
+                            
+                            float field_mag = sqrtf(nooi[idx]*nooi[idx] + nooi[idx+1]*nooi[idx+1]);
+                            if (field_mag > 0.1f) {
+                                // Apply drift? 
+                                // For now, just a placeholder or simple effect:
+                                // Add field velocity to physical force (already done)
+                                // Maybe small embedding decay/noise?
+                            }
+                        }
                     }
                 }
             }
 
-            uint32_t owner = engine->owner_id[i];
-            uint32_t group = engine->group_id[i];
-            for (uint32_t sample = 1; sample <= 6; sample += 1) {
-                uint32_t j = (uint32_t)((i + (sample * 97u) + (owner * 13u) + (uint32_t)frame) % count);
-                if (j == i) {
-                    continue;
-                }
-                float dx = xi - pos_x[j];
-                float dy = yi - pos_y[j];
-                float dist_sq = (dx * dx) + (dy * dy) + 0.00009f;
-                float inv_dist = 1.0f / dist_sq;
-                float group_factor = (group == engine->group_id[j]) ? -0.28f : 1.0f;
-                fx += dx * inv_dist * 0.0026f * group_factor;
-                fy += dy * inv_dist * 0.0026f * group_factor;
+            // 2. Semantic Gravity toward all Nexus entities
+            const float *ei = &engine->embeddings[i * 24];
+            for (uint32_t n = 0; n < count; n++) {
+                if (n == i) continue;
+                if ((engine->flags[n] & CDB_FLAG_NEXUS) == 0) continue;
+
+                float dx = pos_x[n] - xi;
+                float dy = pos_y[n] - yi;
+                float dist_sq = (dx * dx) + (dy * dy);
+                
+                const float *en = &engine->embeddings[n * 24];
+                float kappa = dot_product_24(ei, en);
+                
+                // kappa > 0 means attraction, kappa < 0 means repulsion (if we allow it)
+                // spec says grav force is proportional to kappa.
+                float force = (grav_const * kappa) / (dist_sq + grav_eps);
+                fx += dx * force;
+                fy += dy * force;
             }
 
-            if ((engine->flags[i] & CDB_FLAG_NEXUS) != 0u) {
-                fx *= 0.24f;
-                fy *= 0.24f;
+            // 3. Elastic Edges (Bonding) for Nexus-Nexus links
+            // Spec: ke = k0 (1 - sim(ea, eb))^beta
+            if ((engine->flags[i] & CDB_FLAG_NEXUS) != 0) {
+                uint32_t group_i = engine->group_id[i];
+                for (uint32_t j = 0; j < count; j++) {
+                    if (j == i) continue;
+                    if ((engine->flags[j] & CDB_FLAG_NEXUS) == 0) continue;
+                    // Only nodes in same group have edges for now (mimicking graph edges)
+                    if (engine->group_id[j] != group_i) continue;
+
+                    float dx = pos_x[j] - xi;
+                    float dy = pos_y[j] - yi;
+                    float dist = sqrtf((dx * dx) + (dy * dy)) + 1e-9f;
+                    
+                    const float *ej = &engine->embeddings[j * 24];
+                    float sim = dot_product_24(ei, ej);
+                    
+                    float rest_length = 0.08f;
+                    float k0 = 0.05f;
+                    float beta = 1.2f;
+                    float ke = k0 * powf(clamp01(1.0f - sim), beta);
+                    
+                    float f_edge = ke * (dist - rest_length);
+                    fx += (dx / dist) * f_edge;
+                    fy += (dy / dist) * f_edge;
+                }
             }
 
             acc_x[i] = fx;
@@ -1106,7 +1508,7 @@ static void *chaos_system_worker(void *arg) {
         }
 
         for (uint32_t i = 0; i < count; i += 1) {
-            float amp = ((engine->flags[i] & CDB_FLAG_CHAOS) != 0u) ? 0.08f : 0.013f;
+            float amp = ((engine->flags[i] & CDB_FLAG_CHAOS) != 0u) ? 0.12f : 0.035f;
             float harmonic_seed = (float)((i * 37u) % 8192u) * 0.0008f;
             float harmonic_x = sinf(phase + harmonic_seed);
             float harmonic_y = cosf((phase * 0.91f) + harmonic_seed);
@@ -1240,9 +1642,15 @@ static void *integrate_system_worker(void *arg) {
 
         uint32_t count = engine->particle_count;
         const float dt = 0.016f;
+        float daimon_friction = engine->daimon_friction;
+        float nexus_friction = engine->nexus_friction;
+
         for (uint32_t i = 0; i < count; i += 1) {
-            float vx = vel_x[i] + ((acc_x[i] + noise_x[i]) * dt);
-            float vy = vel_y[i] + ((acc_y[i] + noise_y[i]) * dt);
+            float friction = ((engine->flags[i] & CDB_FLAG_NEXUS) != 0u) ? nexus_friction : daimon_friction;
+            
+            // Spec: v = (1 - gamma * dt)v + a * dt
+            float vx = (1.0f - friction * dt) * vel_x[i] + ((acc_x[i] + noise_x[i]) * dt);
+            float vy = (1.0f - friction * dt) * vel_y[i] + ((acc_y[i] + noise_y[i]) * dt);
 
             float edge_fx = 0.0f;
             float edge_fy = 0.0f;
@@ -1262,14 +1670,6 @@ static void *integrate_system_worker(void *arg) {
             }
             vx += edge_fx * dt;
             vy += edge_fy * dt;
-
-            float speed_sq = (vx * vx) + (vy * vy);
-            float speed_cap = ((engine->flags[i] & CDB_FLAG_NEXUS) != 0u) ? 0.022f : 0.06f;
-            if (speed_sq > (speed_cap * speed_cap)) {
-                float inv = speed_cap / sqrtf(speed_sq + 0.000001f);
-                vx *= inv;
-                vy *= inv;
-            }
 
             float x = pos_x[i] + (vx * dt);
             float y = pos_y[i] + (vy * dt);
@@ -1331,6 +1731,11 @@ CDBEngine *cdb_engine_create(uint32_t particle_count, uint32_t seed) {
     engine->integrate_sleep_us = env_u32("CDB_INTEGRATE_SLEEP_US", 1500u);
     engine->semantic_sleep_us = env_u32("CDB_SEMANTIC_SLEEP_US", 9000u);
 
+    engine->daimon_friction = 1.2f;
+    engine->nexus_friction = 4.5f;
+    engine->grav_const = 0.0025f;
+    engine->grav_eps = 0.0015f;
+
     uint32_t nexus_stride = env_u32("CDB_NEXUS_STRIDE", 11u);
     if (nexus_stride == 0u) {
         nexus_stride = 11u;
@@ -1380,12 +1785,19 @@ CDBEngine *cdb_engine_create(uint32_t particle_count, uint32_t seed) {
     engine->flags = (uint32_t *)calloc((size_t)particle_count, sizeof(uint32_t));
     engine->mass = (float *)calloc((size_t)particle_count, sizeof(float));
     engine->radius = (float *)calloc((size_t)particle_count, sizeof(float));
+    engine->embeddings = (float *)calloc((size_t)particle_count * 24, sizeof(float));
+    engine->grid_head = (int32_t *)calloc(CDB_NOOI_COLS * CDB_NOOI_ROWS, sizeof(int32_t));
+    engine->grid_next = (int32_t *)calloc((size_t)particle_count, sizeof(int32_t));
+
     if (
         engine->owner_id == NULL
         || engine->group_id == NULL
         || engine->flags == NULL
         || engine->mass == NULL
         || engine->radius == NULL
+        || engine->embeddings == NULL
+        || engine->grid_head == NULL
+        || engine->grid_next == NULL
     ) {
         cdb_engine_destroy(engine);
         return NULL;
@@ -1518,6 +1930,9 @@ void cdb_engine_destroy(CDBEngine *engine) {
     free(engine->flags);
     free(engine->mass);
     free(engine->radius);
+    free(engine->embeddings);
+    free(engine->grid_head);
+    free(engine->grid_next);
 
     free(engine);
 }
@@ -1537,6 +1952,15 @@ int cdb_engine_update_nooi(CDBEngine *engine, const float *data) {
     
     memcpy(buffer, data, CDB_NOOI_SIZE * sizeof(float));
     atomic_store_explicit(&engine->nooi_readable, write_idx, memory_order_release);
+    return 0;
+}
+
+int cdb_engine_update_embeddings(CDBEngine *engine, const float *data) {
+    if (engine == NULL || data == NULL) {
+        return -1;
+    }
+    // Expected size: particle_count * 24
+    memcpy(engine->embeddings, data, (size_t)engine->particle_count * 24 * sizeof(float));
     return 0;
 }
 

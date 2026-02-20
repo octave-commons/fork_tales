@@ -2876,6 +2876,31 @@ def resolve_library_path(vault_root: Path, request_path: str) -> Path | None:
         if candidate == root or root in candidate.parents:
             if candidate.exists() and candidate.is_file():
                 return candidate
+
+    normalized_relative = str(relative).strip().lstrip("/")
+    if normalized_relative:
+        entries = _load_eta_mu_knowledge_entries(vault_root)
+        archive_relative = ""
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            source_rel_path = str(entry.get("source_rel_path", "")).strip().lstrip("/")
+            if source_rel_path != normalized_relative:
+                continue
+            archive_relative = (
+                str(entry.get("archive_rel_path", entry.get("archived_rel_path", "")))
+                .strip()
+                .lstrip("/")
+            )
+            if archive_relative:
+                break
+
+        if archive_relative:
+            for root in roots:
+                archive_candidate = (root / archive_relative).resolve()
+                if archive_candidate == root or root in archive_candidate.parents:
+                    if archive_candidate.exists() and archive_candidate.is_file():
+                        return archive_candidate
     return None
 
 

@@ -43,8 +43,8 @@ BOOTSTRAP_MUSE_SPECS: tuple[dict[str, Any], ...] = (
         "anchor": {"x": 0.5, "y": 0.22, "zoom": 1.0, "kind": "bootstrap"},
     },
     {
-        "id": "symetry",
-        "label": "Symetry",
+        "id": "symmetry",
+        "label": "Symmetry",
         "anchor": {"x": 0.82, "y": 0.23, "zoom": 1.0, "kind": "bootstrap"},
     },
 )

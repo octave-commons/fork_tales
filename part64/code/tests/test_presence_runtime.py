@@ -588,6 +588,55 @@ def test_simulation_projection_collapses_hub_edges_and_preserves_membership() ->
     )
 
 
+def test_simulation_exposes_truth_and_view_graph_contracts() -> None:
+    graph = _synthetic_file_graph(file_count=180, edges_per_file=2)
+    _retarget_graph_to_mage_hub(graph)
+
+    simulation = build_simulation_state(
+        {
+            "items": [
+                {
+                    "rel_path": f"docs/projection_item_{index:04d}.md",
+                    "part": "part64",
+                    "kind": "text",
+                }
+                for index in range(24)
+            ],
+            "counts": {"audio": 0, "image": 0, "video": 0},
+            "file_graph": graph,
+        },
+        influence_snapshot={
+            "clicks_45s": 1,
+            "file_changes_120s": 3,
+            "recent_file_paths": ["docs/node_0001.md", "docs/node_0002.md"],
+        },
+        queue_snapshot={"pending_count": 0, "event_count": 0},
+    )
+
+    truth_graph = simulation.get("truth_graph", {})
+    assert truth_graph.get("record") == "eta-mu.truth-graph.v1"
+    assert truth_graph.get("schema_version") == "truth.graph.v1"
+    assert int(truth_graph.get("node_count", 0)) > 0
+    assert int(truth_graph.get("edge_count", 0)) > 0
+
+    view_graph = simulation.get("view_graph", {})
+    assert view_graph.get("record") == "eta-mu.view-graph.v1"
+    assert view_graph.get("schema_version") == "view.graph.v1"
+    assert int(view_graph.get("node_count", 0)) > 0
+    assert int(view_graph.get("edge_count", 0)) > 0
+
+    projection = view_graph.get("projection", {})
+    assert projection.get("mode") in {"hub-overflow", "none"}
+    pi_contract = view_graph.get("projection_pi", {})
+    assert pi_contract.get("kind") in {"identity", "edge-bundle"}
+    if bool(projection.get("active", False)):
+        assert int(projection.get("bundle_ledger_count", 0)) >= 1
+        assert int(projection.get("reconstructable_bundle_count", 0)) >= 1
+        ledgers = projection.get("bundle_ledgers", [])
+        assert isinstance(ledgers, list)
+        assert int(ledgers[0].get("member_edge_count", 0)) >= 1
+
+
 def test_simulation_projection_is_deterministic_for_same_input() -> None:
     graph = _synthetic_file_graph(file_count=180, edges_per_file=2)
     _retarget_graph_to_mage_hub(graph)

@@ -14,6 +14,16 @@ interface Props {
   simulation: SimulationState | null;
   catalog: Catalog | null;
   onOverlayInit?: (api: any) => void;
+  onNexusInteraction?: (event: NexusInteractionEvent) => void;
+  onUserPresenceInput?: (payload: {
+    kind: string;
+    target: string;
+    message?: string;
+    xRatio?: number;
+    yRatio?: number;
+    embedDaimoi?: boolean;
+    meta?: Record<string, unknown>;
+  }) => void;
   height?: number;
   defaultOverlayView?: OverlayViewId;
   overlayViewLocked?: boolean;
@@ -27,11 +37,30 @@ interface Props {
   layerDepth?: number;
   backgroundWash?: number;
   layerVisibility?: OverlayLayerVisibility;
+  glassCenterRatio?: { x: number; y: number };
   museWorkspaceBindings?: Record<string, string[]>;
   className?: string;
+  // Mouse daimon controls
+  mouseDaimonEnabled?: boolean;
+  mouseDaimonMessage?: string;
+  mouseDaimonMode?: "push" | "pull" | "orbit" | "calm";
+  mouseDaimonRadius?: number;
+  mouseDaimonStrength?: number;
+}
+
+export interface NexusInteractionEvent {
+  nodeId: string;
+  nodeKind: "file" | "crawler";
+  resourceKind: GraphNodeResourceKind;
+  label: string;
+  xRatio: number;
+  yRatio: number;
+  openWorldscreen: boolean;
 }
 
 interface GraphWorldscreenState {
+  nodeId: string;
+  commentRef: string;
   url: string;
   imageRef?: string;
   label: string;
@@ -68,6 +97,7 @@ type GraphNodeResourceKind =
   | "unknown";
 
 type GraphWorldscreenView = "website" | "editor" | "video" | "metadata";
+type GraphWorldscreenMode = "overview" | "conversation" | "stats";
 
 type GraphNodeShape = "circle" | "square" | "diamond" | "triangle" | "hexagon";
 
@@ -161,6 +191,12 @@ const COMPUTE_JOB_FILTER_OPTIONS: Array<{ id: ComputeJobFilter; label: string }>
   { id: "cpu", label: "cpu" },
 ];
 
+const HOLOGRAM_MODE_OPTIONS: Array<{ id: GraphWorldscreenMode; label: string }> = [
+  { id: "overview", label: "overview" },
+  { id: "conversation", label: "conversation" },
+  { id: "stats", label: "stats" },
+];
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object") {
     return null;
@@ -244,6 +280,159 @@ function worldscreenImageRef(worldscreen: GraphWorldscreenState): string {
   return String(worldscreen.url ?? "").trim();
 }
 
+function worldscreenCommentRef(worldscreen: GraphWorldscreenState): string {
+  const explicit = String(worldscreen.commentRef ?? "").trim();
+  if (explicit) {
+    return explicit;
+  }
+  const imageRef = worldscreenImageRef(worldscreen);
+  if (imageRef) {
+    return imageRef;
+  }
+  const nodeId = String(worldscreen.nodeId ?? "").trim();
+  if (nodeId) {
+    return nodeId;
+  }
+  return String(worldscreen.url ?? "").trim();
+}
+
+function nexusCommentRefForNode(
+  node: any,
+  nodeKind: "file" | "crawler",
+  worldscreenUrl: string,
+): string {
+  const candidates = [
+    node?.comment_ref,
+    node?.commentRef,
+    node?.source_rel_path,
+    node?.archive_rel_path,
+    node?.archived_rel_path,
+    node?.archive_member_path,
+    node?.source_url,
+    node?.url,
+    node?.domain,
+    node?.id,
+    worldscreenUrl,
+  ];
+
+  for (const candidate of candidates) {
+    const value = String(candidate ?? "").trim();
+    if (!value) {
+      continue;
+    }
+    if (nodeKind === "crawler" && value && !value.startsWith("crawler:")) {
+      return `crawler:${value}`;
+    }
+    if (nodeKind === "file" && value && !value.startsWith("file:")) {
+      return `file:${value}`;
+    }
+    return value;
+  }
+
+  const fallbackId = String(node?.id ?? "").trim();
+  if (fallbackId) {
+    return `${nodeKind}:${fallbackId}`;
+  }
+  return "";
+}
+
+function extractHttpUrls(text: string): string[] {
+  const matches = text.match(/https?:\/\/[^\s<>'")]+/gi) ?? [];
+  return matches.filter((value, index, rows) => rows.indexOf(value) === index);
+}
+
+function isHttpUrlText(text: string): boolean {
+  const value = text.trim();
+  return /^https?:\/\//i.test(value);
+}
+
+function imageCommentParentId(entry: ImageCommentEntry): string {
+  const metadata = asRecord(entry.metadata);
+  return String(metadata?.parent_comment_id ?? "").trim();
+}
+
+interface FlattenedCommentEntry {
+  entry: ImageCommentEntry;
+  depth: number;
+}
+
+function flattenImageCommentThread(entries: ImageCommentEntry[]): FlattenedCommentEntry[] {
+  type TreeNode = {
+    entry: ImageCommentEntry;
+    children: TreeNode[];
+  };
+
+  const rankById = new Map<string, number>();
+  const sorted = [...entries].sort((left, right) => {
+    const leftTs = Date.parse(left.created_at || left.time || "") || 0;
+    const rightTs = Date.parse(right.created_at || right.time || "") || 0;
+    if (leftTs !== rightTs) {
+      return leftTs - rightTs;
+    }
+    return left.id.localeCompare(right.id);
+  });
+  sorted.forEach((entry, index) => {
+    rankById.set(entry.id, index);
+  });
+
+  const nodeById = new Map<string, TreeNode>();
+  for (const entry of sorted) {
+    nodeById.set(entry.id, {
+      entry,
+      children: [],
+    });
+  }
+
+  const roots: TreeNode[] = [];
+  for (const entry of sorted) {
+    const node = nodeById.get(entry.id);
+    if (!node) {
+      continue;
+    }
+    const parentId = imageCommentParentId(entry);
+    if (!parentId || parentId === entry.id) {
+      roots.push(node);
+      continue;
+    }
+    const parentNode = nodeById.get(parentId);
+    if (!parentNode) {
+      roots.push(node);
+      continue;
+    }
+    parentNode.children.push(node);
+  }
+
+  const orderNodes = (rows: TreeNode[]) => {
+    rows.sort((left, right) => {
+      const leftRank = rankById.get(left.entry.id) ?? Number.MAX_SAFE_INTEGER;
+      const rightRank = rankById.get(right.entry.id) ?? Number.MAX_SAFE_INTEGER;
+      return leftRank - rightRank;
+    });
+    for (const row of rows) {
+      if (row.children.length > 1) {
+        orderNodes(row.children);
+      }
+    }
+  };
+
+  orderNodes(roots);
+
+  const flattened: FlattenedCommentEntry[] = [];
+  const walk = (rows: TreeNode[], depth: number) => {
+    for (const row of rows) {
+      flattened.push({
+        entry: row.entry,
+        depth,
+      });
+      if (row.children.length > 0) {
+        walk(row.children, depth + 1);
+      }
+    }
+  };
+  walk(roots, 0);
+  return flattened;
+}
+
 function errorMessage(error: unknown, fallback: string): string {
   if (error instanceof Error) {
     const message = error.message.trim();
@@ -300,23 +489,20 @@ async function fetchImagePayloadAsBase64(
   throw new Error("unable to read image bytes for commentary");
 }
 
-function presenceDisplayName(
-  accounts: PresenceAccountEntry[],
-  presenceId: string,
-): string {
-  const normalized = presenceId.trim();
-  if (!normalized) {
-    return "unknown";
-  }
-  const found = accounts.find((row) => row.presence_id === normalized);
-  if (found) {
-    return found.display_name || normalized;
-  }
-  return normalized;
+function normalizePresenceKey(raw: string): string {
+  return raw.trim().toLowerCase().replace(/[\s./:-]+/g, "_");
 }
 
-function normalizePresenceKey(raw: string): string {
-  return raw.trim().toLowerCase().replace(/[\s-]+/g, "_");
+function resolveParticlePresenceId(row: Partial<BackendFieldParticle> | null | undefined): string {
+  const direct = String((row as any)?.presence_id ?? "").trim();
+  if (direct) {
+    return direct;
+  }
+  const owner = String((row as any)?.owner_presence_id ?? "").trim();
+  if (owner) {
+    return owner;
+  }
+  return String((row as any)?.owner ?? "").trim();
 }
 
 function canonicalPresenceId(raw: string): string {
@@ -348,6 +534,236 @@ function presenceHueFromId(rawPresenceId: string): number {
   return Math.round(stablePresenceRatio(presenceId, 7) * 360) % 360;
 }
 
+type PresenceSigilKind =
+  | "bisected-circle"
+  | "triangle-dot"
+  | "crossed-ring"
+  | "tri-spiral"
+  | "broken-ring"
+  | "double-notch";
+
+type PresenceRingStyle = "solid" | "dashed" | "dotted" | "chain" | "double";
+
+interface PresenceIdentitySignature {
+  id: string;
+  sigil: PresenceSigilKind;
+  ringStyle: PresenceRingStyle;
+  fieldLayerSignature: number;
+  notchAngle: number;
+  rotation: number;
+}
+
+const PRESENCE_SIGIL_SEQUENCE: PresenceSigilKind[] = [
+  "bisected-circle",
+  "triangle-dot",
+  "crossed-ring",
+  "tri-spiral",
+  "broken-ring",
+  "double-notch",
+];
+
+const PRESENCE_RING_STYLE_SEQUENCE: PresenceRingStyle[] = [
+  "solid",
+  "dashed",
+  "dotted",
+  "chain",
+  "double",
+];
+
+function ringDashPatternForStyle(style: PresenceRingStyle): number[] {
+  if (style === "dashed") {
+    return [5.2, 3.6];
+  }
+  if (style === "dotted") {
+    return [1.4, 2.8];
+  }
+  if (style === "chain") {
+    return [8.5, 3.1, 2.2, 3.1];
+  }
+  return [];
+}
+
+function resolvePresenceIdentitySignature(rawPresenceId: string): PresenceIdentitySignature {
+  const canonical = canonicalPresenceId(rawPresenceId);
+  const baseId = canonical || normalizePresenceKey(rawPresenceId) || "presence";
+  const sigilIndex = Math.floor(stablePresenceRatio(baseId, 53) * PRESENCE_SIGIL_SEQUENCE.length)
+    % PRESENCE_SIGIL_SEQUENCE.length;
+  const ringIndex = Math.floor(stablePresenceRatio(baseId, 59) * PRESENCE_RING_STYLE_SEQUENCE.length)
+    % PRESENCE_RING_STYLE_SEQUENCE.length;
+  const fieldLayerSignature = Math.floor(stablePresenceRatio(baseId, 61) * 8) % 8;
+  const notchAngle = stablePresenceRatio(baseId, 67) * Math.PI * 2;
+  const quarterTurns = Math.floor(stablePresenceRatio(baseId, 71) * 4) % 4;
+  return {
+    id: baseId,
+    sigil: PRESENCE_SIGIL_SEQUENCE[sigilIndex],
+    ringStyle: PRESENCE_RING_STYLE_SEQUENCE[ringIndex],
+    fieldLayerSignature,
+    notchAngle,
+    rotation: quarterTurns * (Math.PI / 2),
+  };
+}
+
+function drawPresenceSigilCore(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  radius: number,
+  signature: PresenceIdentitySignature,
+  options?: {
+    strokeStyle?: string;
+    fillStyle?: string;
+    lineWidth?: number;
+    includeOuterRing?: boolean;
+    alpha?: number;
+    compact?: boolean;
+  },
+): void {
+  const sigilRadius = Math.max(1.15, radius);
+  const strokeStyle = options?.strokeStyle ?? "rgba(228, 242, 255, 0.92)";
+  const fillStyle = options?.fillStyle ?? "rgba(200, 220, 242, 0.14)";
+  const lineWidth = Math.max(0.55, options?.lineWidth ?? (sigilRadius * 0.12));
+  const includeOuterRing = options?.includeOuterRing ?? true;
+  const compact = options?.compact ?? false;
+  const alpha = Math.max(0, Math.min(1, options?.alpha ?? 1));
+  const ringRadius = sigilRadius * (compact ? 0.88 : 1);
+
+  ctx.save();
+  ctx.globalAlpha *= alpha;
+  ctx.strokeStyle = strokeStyle;
+  ctx.fillStyle = fillStyle;
+  ctx.lineWidth = lineWidth;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+
+  if (includeOuterRing) {
+    if (signature.sigil === "broken-ring") {
+      const gap = compact ? 0.72 : 0.56;
+      const start = signature.notchAngle + gap;
+      const end = signature.notchAngle + (Math.PI * 2) - gap;
+      ctx.beginPath();
+      ctx.arc(cx, cy, ringRadius, start, end);
+      ctx.stroke();
+    } else {
+      ctx.beginPath();
+      ctx.arc(cx, cy, ringRadius, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    if (signature.sigil === "double-notch") {
+      const inner = ringRadius * 0.72;
+      ctx.beginPath();
+      ctx.arc(cx, cy, inner, 0, Math.PI * 2);
+      ctx.stroke();
+      const nx = cx + Math.cos(signature.notchAngle) * ringRadius;
+      const ny = cy + Math.sin(signature.notchAngle) * ringRadius;
+      const tx = cx + Math.cos(signature.notchAngle) * inner;
+      const ty = cy + Math.sin(signature.notchAngle) * inner;
+      ctx.beginPath();
+      ctx.moveTo(tx, ty);
+      ctx.lineTo(nx, ny);
+      ctx.stroke();
+    }
+  }
+
+  const inner = ringRadius * 0.68;
+  if (signature.sigil === "bisected-circle") {
+    ctx.beginPath();
+    ctx.arc(cx, cy, inner, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - inner);
+    ctx.lineTo(cx, cy + inner);
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+
+  if (signature.sigil === "triangle-dot") {
+    const angle = signature.rotation - (Math.PI / 2);
+    ctx.beginPath();
+    for (let i = 0; i < 3; i += 1) {
+      const theta = angle + (i * Math.PI * 2) / 3;
+      const px = cx + Math.cos(theta) * inner;
+      const py = cy + Math.sin(theta) * inner;
+      if (i === 0) {
+        ctx.moveTo(px, py);
+      } else {
+        ctx.lineTo(px, py);
+      }
+    }
+    ctx.closePath();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(cx, cy, Math.max(0.8, inner * 0.22), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    return;
+  }
+
+  if (signature.sigil === "crossed-ring") {
+    const spoke = inner * 0.95;
+    ctx.beginPath();
+    ctx.arc(cx, cy, inner, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx - spoke, cy);
+    ctx.lineTo(cx + spoke, cy);
+    ctx.moveTo(cx, cy - spoke);
+    ctx.lineTo(cx, cy + spoke);
+    ctx.moveTo(cx - spoke * 0.72, cy - spoke * 0.72);
+    ctx.lineTo(cx + spoke * 0.72, cy + spoke * 0.72);
+    ctx.moveTo(cx + spoke * 0.72, cy - spoke * 0.72);
+    ctx.lineTo(cx - spoke * 0.72, cy + spoke * 0.72);
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+
+  if (signature.sigil === "tri-spiral") {
+    const armRadius = inner * 0.62;
+    for (let arm = 0; arm < 3; arm += 1) {
+      const angle = signature.rotation + arm * ((Math.PI * 2) / 3);
+      const ox = cx + Math.cos(angle) * inner * 0.14;
+      const oy = cy + Math.sin(angle) * inner * 0.14;
+      ctx.beginPath();
+      ctx.arc(
+        ox,
+        oy,
+        armRadius,
+        angle - 0.82,
+        angle + 0.56,
+      );
+      ctx.stroke();
+    }
+    ctx.restore();
+    return;
+  }
+
+  if (signature.sigil === "broken-ring") {
+    const gap = compact ? 0.72 : 0.56;
+    const start = signature.notchAngle + gap;
+    const end = signature.notchAngle + (Math.PI * 2) - gap;
+    ctx.beginPath();
+    ctx.arc(cx, cy, inner, start, end);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx - inner * 0.75, cy);
+    ctx.lineTo(cx + inner * 0.75, cy);
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+
+  const cross = inner * 0.82;
+  ctx.beginPath();
+  ctx.moveTo(cx - cross, cy);
+  ctx.lineTo(cx + cross, cy);
+  ctx.moveTo(cx, cy - cross);
+  ctx.lineTo(cx, cy + cross);
+  ctx.stroke();
+  ctx.restore();
+}
+
 function spreadPresenceAnchors(forms: Array<any>): Array<any> {
   if (forms.length <= 0) {
     return [];
@@ -361,8 +777,8 @@ function spreadPresenceAnchors(forms: Array<any>): Array<any> {
     const fallbackY = 0.5 + Math.sin(fallbackAngle) * fallbackRadius;
     const baseX = clamp01(Number(row?.x ?? fallbackX));
     const baseY = clamp01(Number(row?.y ?? fallbackY));
-    const expandedX = clamp01(0.5 + (baseX - 0.5) * 1.46);
-    const expandedY = clamp01(0.5 + (baseY - 0.5) * 1.46);
+    const expandedX = clamp01(0.5 + (baseX - 0.5) * 1.15);
+    const expandedY = clamp01(0.5 + (baseY - 0.5) * 1.15);
     return {
       ...row,
       id: presenceId || String(row?.id ?? `presence-${index}`),
@@ -839,6 +1255,85 @@ function resourceKindForNode(node: any): GraphNodeResourceKind {
     return classifyCrawlerResourceKind(node);
   }
   return classifyFileResourceKind(node);
+}
+
+type NexusVisualClass = "anchor" | "regular" | "relay" | "resource";
+
+function firstFiniteNumber(...candidates: unknown[]): number | null {
+  for (const candidate of candidates) {
+    const numeric = Number(candidate);
+    if (Number.isFinite(numeric)) {
+      return numeric;
+    }
+  }
+  return null;
+}
+
+function nexusWalletFillRatio(node: any): number {
+  const credits = firstFiniteNumber(
+    node?.wallet?.credits,
+    node?.wallet_credits,
+    node?.wallet_credit,
+  );
+  const spent = firstFiniteNumber(
+    node?.wallet?.spent_total,
+    node?.wallet_spent,
+    node?.wallet?.spent,
+  );
+  if (credits !== null && spent !== null && (credits + spent) > 0.0001) {
+    return clamp01(credits / (credits + spent));
+  }
+  if (credits !== null) {
+    return clamp01(credits / Math.max(1, credits));
+  }
+  return clamp01(Number(node?.importance ?? 0.35));
+}
+
+function nexusSaturationRatio(node: any): number {
+  const saturation = firstFiniteNumber(
+    node?.node_saturation,
+    node?.saturation,
+    node?.capacity?.pressure,
+  );
+  if (saturation !== null) {
+    return clamp01(saturation);
+  }
+  const cap = firstFiniteNumber(
+    node?.capacity?.cap,
+    node?.resource_cap,
+    node?.cap,
+  );
+  const load = firstFiniteNumber(
+    node?.capacity?.load,
+    node?.resource_load,
+    node?.load,
+  );
+  if (cap !== null && load !== null && cap > 0.0001) {
+    return clamp01(load / cap);
+  }
+  return clamp01(Number(node?.importance ?? 0.2));
+}
+
+function nexusVisualClassForNode(node: any): NexusVisualClass {
+  const id = String(node?.id ?? "").trim().toLowerCase();
+  const role = String(node?.role ?? node?.kind ?? "").trim().toLowerCase();
+  const relayFlag = Boolean(node?.relay) || Boolean(node?.is_relay) || role.includes("relay") || id.includes("relay");
+  if (relayFlag) {
+    return "relay";
+  }
+  const anchorFlag = role.includes("anchor") || id.includes("anchor_registry") || id.startsWith("anchor:");
+  if (anchorFlag) {
+    return "anchor";
+  }
+  const hasResourceSignals = (
+    role.includes("resource")
+    || firstFiniteNumber(node?.capacity?.cap, node?.resource_cap, node?.wallet?.credits) !== null
+    || String(node?.resource_type ?? "").trim().length > 0
+  );
+  if (hasResourceSignals) {
+    return "resource";
+  }
+  return "regular";
 }
 
 function resourceKindLabel(resourceKind: GraphNodeResourceKind): string {
@@ -1357,6 +1852,8 @@ function remoteFrameUrlForNode(
 function worldscreenMetadataRows(worldscreen: GraphWorldscreenState): Array<{ key: string; value: string }> {
   const rows: Array<{ key: string; value: string }> = [
     { key: "resource", value: resourceKindLabel(worldscreen.resourceKind) },
+    { key: "node-id", value: String(worldscreen.nodeId ?? "") },
+    { key: "comment-ref", value: String(worldscreen.commentRef ?? "") },
     { key: "image-ref", value: String(worldscreen.imageRef ?? "") },
     { key: "url", value: worldscreen.url },
     { key: "domain", value: String(worldscreen.domain ?? "") },
@@ -1379,6 +1876,7 @@ function worldscreenMetadataRows(worldscreen: GraphWorldscreenState): Array<{ ke
 function resolveWorldscreenPlacement(
   worldscreen: GraphWorldscreenState,
   container: HTMLDivElement | null,
+  glassCenterRatio: { x: number; y: number } = { x: 0.5, y: 0.5 },
 ): WorldscreenPlacement {
   const fallbackWidth = typeof window !== "undefined"
     ? Math.max(620, Math.floor(window.innerWidth * 0.92))
@@ -1393,22 +1891,21 @@ function resolveWorldscreenPlacement(
   const height = clampValue(Math.round(Math.min(containerHeight * 0.68, 540)), 220, Math.max(220, containerHeight - 18));
 
   const margin = 10;
-  const anchorRatioX = clamp01(
-    typeof worldscreen.anchorRatioX === "number" ? worldscreen.anchorRatioX : 0.84,
+  const centerRatioX = clamp01(
+    typeof glassCenterRatio?.x === "number"
+      ? glassCenterRatio.x
+      : (typeof worldscreen.anchorRatioX === "number" ? worldscreen.anchorRatioX : 0.5),
   );
-  const anchorRatioY = clamp01(
-    typeof worldscreen.anchorRatioY === "number" ? worldscreen.anchorRatioY : 0.82,
+  const centerRatioY = clamp01(
+    typeof glassCenterRatio?.y === "number"
+      ? glassCenterRatio.y
+      : (typeof worldscreen.anchorRatioY === "number" ? worldscreen.anchorRatioY : 0.5),
   );
-  const anchorX = anchorRatioX * containerWidth;
-  const anchorY = anchorRatioY * containerHeight;
-  const horizontalGap = clampValue(Math.round(width * 0.07), 20, 56);
-  const verticalGap = 18;
+  const centerX = centerRatioX * containerWidth;
+  const centerY = centerRatioY * containerHeight;
 
-  const preferRight = anchorX <= containerWidth * 0.5;
-  const preferBottom = anchorY <= containerHeight * 0.52;
-
-  let left = preferRight ? anchorX + horizontalGap : anchorX - width - horizontalGap;
-  let top = preferBottom ? anchorY + verticalGap : anchorY - height - verticalGap;
+  let left = centerX - (width / 2);
+  let top = centerY - (height / 2);
 
   left = clampValue(left, margin, Math.max(margin, containerWidth - width - margin));
   top = clampValue(top, margin, Math.max(margin, containerHeight - height - margin));
@@ -1430,7 +1927,7 @@ function resolveWorldscreenPlacement(
     top,
     width,
     height,
-    transformOrigin: `${ratioWithin(anchorX, left, width)} ${ratioWithin(anchorY, top, height)}`,
+    transformOrigin: `${ratioWithin(centerX, left, width)} ${ratioWithin(centerY, top, height)}`,
   };
 }
 
@@ -1548,6 +2045,18 @@ interface OverlayParticleFlags {
   graphNodeId: string;
 }
 
+interface OverlayGhostTrailPoint {
+  xNorm: number;
+  yNorm: number;
+  atSec: number;
+}
+
+interface OverlayGhostTrailState {
+  points: OverlayGhostTrailPoint[];
+  seenAtSec: number;
+  lastSampleAtSec: number;
+}
+
 function resolveOverlayParticleFlags(row: BackendFieldParticle): OverlayParticleFlags {
   const rowId = String((row as any)?.id ?? "");
   const rowRecord = String((row as any)?.record ?? "");
@@ -1586,6 +2095,8 @@ export function SimulationCanvas({
   simulation,
   catalog,
   onOverlayInit,
+  onNexusInteraction,
+  onUserPresenceInput,
   height = 300,
   defaultOverlayView = "omni",
   overlayViewLocked = false,
@@ -1599,8 +2110,14 @@ export function SimulationCanvas({
   layerDepth = 1,
   backgroundWash = 0.58,
   layerVisibility,
+  glassCenterRatio = { x: 0.5, y: 0.5 },
   museWorkspaceBindings = {},
   className = "",
+  mouseDaimonEnabled = true,
+  mouseDaimonMessage = "witness",
+  mouseDaimonMode = "push",
+  mouseDaimonRadius = 0.18,
+  mouseDaimonStrength = 0.42,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
@@ -1616,7 +2133,13 @@ export function SimulationCanvas({
   const motionSpeedRef = useRef(clampValue(motionSpeed, 0.25, 2.2));
   const mouseInfluenceRef = useRef(clampValue(mouseInfluence, 0, 2.5));
   const layerDepthRef = useRef(clampValue(layerDepth, 0.35, 2.2));
+  const onUserPresenceInputRef = useRef(onUserPresenceInput);
+  const userPresenceMouseEmitMsRef = useRef(0);
+  useEffect(() => {
+    onUserPresenceInputRef.current = onUserPresenceInput;
+  }, [onUserPresenceInput]);
   const [worldscreen, setWorldscreen] = useState<GraphWorldscreenState | null>(null);
+  const [worldscreenMode, setWorldscreenMode] = useState<GraphWorldscreenMode>("overview");
   const [editorPreview, setEditorPreview] = useState<EditorPreviewState>({
     status: "idle",
     content: "",
@@ -1631,12 +2154,29 @@ export function SimulationCanvas({
     "Describe the image evidence and one next action.",
   );
   const [imageCommentDraft, setImageCommentDraft] = useState("");
+  const [imageCommentParentId, setImageCommentParentId] = useState("");
   const [imageCommentsLoading, setImageCommentsLoading] = useState(false);
   const [imageCommentBusy, setImageCommentBusy] = useState(false);
   const [imageCommentError, setImageCommentError] = useState("");
   const [modelDockOpen, setModelDockOpen] = useState(false);
   const [computeJobFilter, setComputeJobFilter] = useState<ComputeJobFilter>("all");
   const [computePanelCollapsed, setComputePanelCollapsed] = useState(false);
+
+  // Mouse Daimon refs - synced from props (managed in CoreControlPanel)
+  const mouseDaimonEnabledRef = useRef(mouseDaimonEnabled);
+  const mouseDaimonMessageRef = useRef(mouseDaimonMessage);
+  const mouseDaimonModeRef = useRef(mouseDaimonMode);
+  const mouseDaimonRadiusRef = useRef(mouseDaimonRadius);
+  const mouseDaimonStrengthRef = useRef(mouseDaimonStrength);
+
+  useEffect(() => { mouseDaimonEnabledRef.current = mouseDaimonEnabled; }, [mouseDaimonEnabled]);
+  useEffect(() => { mouseDaimonMessageRef.current = mouseDaimonMessage; }, [mouseDaimonMessage]);
+  useEffect(() => { mouseDaimonModeRef.current = mouseDaimonMode; }, [mouseDaimonMode]);
+  useEffect(() => { mouseDaimonRadiusRef.current = mouseDaimonRadius; }, [mouseDaimonRadius]);
+  useEffect(() => { mouseDaimonStrengthRef.current = mouseDaimonStrength; }, [mouseDaimonStrength]);
+
+  const lastNexusPointerTapRef = useRef<{ key: string; atMs: number } | null>(null);
+
   const renderParticleField = false;
   const renderRichOverlayParticles = true;
 
@@ -1757,7 +2297,7 @@ export function SimulationCanvas({
           handle: chosen,
           avatar: "",
           bio: "",
-          tags: ["image-commentary"],
+          tags: ["nexus-commentary"],
         }),
       });
       const payload = asRecord(await response.json().catch(() => null));
@@ -1774,8 +2314,8 @@ export function SimulationCanvas({
     if (!worldscreen || worldscreen.resourceKind !== "image") {
       return;
     }
-    const imageRef = worldscreenImageRef(worldscreen);
-    if (!imageRef) {
+    const commentRef = worldscreenCommentRef(worldscreen);
+    if (!commentRef) {
       setImageCommentError("image reference unavailable for commentary");
       return;
     }
@@ -1790,7 +2330,7 @@ export function SimulationCanvas({
         credentials: "same-origin",
         body: JSON.stringify({
           image_base64: imagePayload.base64,
-          image_ref: imageRef,
+          image_ref: commentRef,
           mime: imagePayload.mime,
           presence_id: presenceId,
           prompt: imageCommentPrompt,
@@ -1805,7 +2345,7 @@ export function SimulationCanvas({
       if (commentary) {
         setImageCommentDraft(commentary);
       }
-      await loadImageComments(imageRef);
+      await loadImageComments(commentRef);
     } catch (error: unknown) {
       setImageCommentError(errorMessage(error, "unable to generate image commentary"));
     } finally {
@@ -1820,12 +2360,12 @@ export function SimulationCanvas({
   ]);
 
   const submitManualImageComment = useCallback(async () => {
-    if (!worldscreen || worldscreen.resourceKind !== "image") {
+    if (!worldscreen) {
       return;
     }
-    const imageRef = worldscreenImageRef(worldscreen);
-    if (!imageRef) {
-      setImageCommentError("image reference unavailable for comment posting");
+    const commentRef = worldscreenCommentRef(worldscreen);
+    if (!commentRef) {
+      setImageCommentError("nexus reference unavailable for comment posting");
       return;
     }
     const commentText = imageCommentDraft.trim();
@@ -1843,11 +2383,19 @@ export function SimulationCanvas({
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
         body: JSON.stringify({
-          image_ref: imageRef,
+          image_ref: commentRef,
           presence_id: presenceId,
           comment: commentText,
           metadata: {
             source: "manual",
+            nexus_ref: commentRef,
+            node_id: worldscreen.nodeId,
+            node_kind: worldscreen.nodeKind,
+            resource_kind: worldscreen.resourceKind,
+            target_url: worldscreen.url,
+            compacted_into_nexus: true,
+            true_graph_embed: true,
+            parent_comment_id: imageCommentParentId || undefined,
           },
         }),
       });
@@ -1856,7 +2404,8 @@ export function SimulationCanvas({
         throw new Error(String(payload?.error ?? `image comment create failed (${response.status})`));
       }
       setImageCommentDraft("");
-      await loadImageComments(imageRef);
+      setImageCommentParentId("");
+      await loadImageComments(commentRef);
     } catch (error: unknown) {
       setImageCommentError(errorMessage(error, "unable to save image comment"));
     } finally {
@@ -1865,10 +2414,27 @@ export function SimulationCanvas({
   }, [
     ensurePresenceAccount,
     imageCommentDraft,
+    imageCommentParentId,
     loadImageComments,
     presenceAccountId,
     worldscreen,
   ]);
+
+  const refreshNexusComments = useCallback((commentRef: string) => {
+    const target = commentRef.trim();
+    if (!target) {
+      return;
+    }
+    setImageCommentsLoading(true);
+    setImageCommentError("");
+    void loadImageComments(target)
+      .catch((error: unknown) => {
+        setImageCommentError(errorMessage(error, "unable to refresh image comments"));
+      })
+      .finally(() => {
+        setImageCommentsLoading(false);
+      });
+  }, [loadImageComments]);
 
   useEffect(() => {
     if (!overlayViewLocked) {
@@ -1916,6 +2482,7 @@ export function SimulationCanvas({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setWorldscreen(null);
+        setWorldscreenMode("overview");
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -1993,44 +2560,58 @@ export function SimulationCanvas({
   }, [worldscreen]);
 
   useEffect(() => {
-    if (!worldscreen || worldscreen.resourceKind !== "image") {
+    if (!worldscreen) {
       setImageComments([]);
       setImageCommentError("");
+      setImageCommentParentId("");
       setImageCommentsLoading(false);
       return;
     }
 
     const controller = new AbortController();
-    const imageRef = worldscreenImageRef(worldscreen);
+    const commentRef = worldscreenCommentRef(worldscreen);
+    if (!commentRef) {
+      setImageComments([]);
+      setImageCommentsLoading(false);
+      return () => {
+        controller.abort();
+      };
+    }
+
+    const preloadDelayMs = 120;
+    setImageCommentParentId("");
     setImageCommentsLoading(true);
     setImageCommentError("");
 
-    void Promise.all([
-      loadPresenceAccounts(controller.signal),
-      loadImageComments(imageRef, controller.signal),
-    ])
-      .then(([accounts]) => {
-        setPresenceAccountId((current) => {
-          const selected = current.trim();
-          if (selected) {
-            return selected;
+    const timeoutId = window.setTimeout(() => {
+      void Promise.all([
+        loadPresenceAccounts(controller.signal),
+        loadImageComments(commentRef, controller.signal),
+      ])
+        .then(([accounts]) => {
+          setPresenceAccountId((current) => {
+            const selected = current.trim();
+            if (selected) {
+              return selected;
+            }
+            return accounts[0]?.presence_id || "witness_thread";
+          });
+        })
+        .catch((error: unknown) => {
+          if (controller.signal.aborted) {
+            return;
           }
-          return accounts[0]?.presence_id || "witness_thread";
+          setImageCommentError(errorMessage(error, "unable to load image comments"));
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) {
+            setImageCommentsLoading(false);
+          }
         });
-      })
-      .catch((error: unknown) => {
-        if (controller.signal.aborted) {
-          return;
-        }
-        setImageCommentError(errorMessage(error, "unable to load image comments"));
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) {
-          setImageCommentsLoading(false);
-        }
-      });
+    }, preloadDelayMs);
 
     return () => {
+      window.clearTimeout(timeoutId);
       controller.abort();
     };
   }, [loadImageComments, loadPresenceAccounts, worldscreen]);
@@ -2714,6 +3295,13 @@ export function SimulationCanvas({
       vy: number;
       seenAtSec: number;
     }>();
+    const overlayGhostTrailByParticleId = new Map<string, OverlayGhostTrailState>();
+    const ghostTrailMaxPoints = 18;
+    const ghostTrailMaxAgeSec = 2.8;
+    const ghostTrailSampleIntervalSec = 1 / 24;
+    const ghostTrailMinStepNorm = 0.0018;
+    const ghostTrailMotionFloor = 0.00045;
+    const ghostTrailStaleAfterSec = 4.2;
     let overlayMotionLastFrameTs = 0;
     let overlayMotionDtSec = 1 / 60;
     let overlayMotionNowSec = 0;
@@ -2768,6 +3356,87 @@ export function SimulationCanvas({
         vy: state.vy,
         speed: Math.hypot(state.vx, state.vy),
       };
+    };
+
+    const drawDaimoiGhostTrail = (
+      particleId: string,
+      xNorm: number,
+      yNorm: number,
+      speed: number,
+      colorBase: string,
+      isTransferParticle: boolean,
+      w: number,
+      h: number,
+    ) => {
+      const key = particleId.trim();
+      if (!key) {
+        return;
+      }
+
+      let trail = overlayGhostTrailByParticleId.get(key);
+      if (!trail) {
+        trail = {
+          points: [{ xNorm, yNorm, atSec: overlayMotionNowSec }],
+          seenAtSec: overlayMotionNowSec,
+          lastSampleAtSec: overlayMotionNowSec,
+        };
+        overlayGhostTrailByParticleId.set(key, trail);
+      }
+      trail.seenAtSec = overlayMotionNowSec;
+
+      const points = trail.points;
+      while (points.length > 0 && (overlayMotionNowSec - points[0].atSec) > ghostTrailMaxAgeSec) {
+        points.shift();
+      }
+      if (points.length <= 0) {
+        points.push({ xNorm, yNorm, atSec: overlayMotionNowSec });
+        trail.lastSampleAtSec = overlayMotionNowSec;
+      }
+
+      if (speed >= ghostTrailMotionFloor) {
+        const latest = points[points.length - 1];
+        const moved = Math.hypot(xNorm - latest.xNorm, yNorm - latest.yNorm);
+        const elapsed = overlayMotionNowSec - trail.lastSampleAtSec;
+        if (moved >= ghostTrailMinStepNorm || elapsed >= ghostTrailSampleIntervalSec) {
+          points.push({ xNorm, yNorm, atSec: overlayMotionNowSec });
+          trail.lastSampleAtSec = overlayMotionNowSec;
+        } else {
+          latest.xNorm = xNorm;
+          latest.yNorm = yNorm;
+        }
+      }
+
+      if (points.length > ghostTrailMaxPoints) {
+        points.splice(0, points.length - ghostTrailMaxPoints);
+      }
+      if (points.length < 2) {
+        return;
+      }
+
+      ctx.save();
+      ctx.globalCompositeOperation = "screen";
+      ctx.lineCap = "round";
+      for (let index = 1; index < points.length; index += 1) {
+        const start = points[index - 1];
+        const end = points[index];
+        const ageSec = overlayMotionNowSec - end.atSec;
+        if (ageSec > ghostTrailMaxAgeSec) {
+          continue;
+        }
+        const ageFade = clamp01(1 - (ageSec / ghostTrailMaxAgeSec));
+        const progress = index / (points.length - 1);
+        const alpha = (isTransferParticle ? 0.22 : 0.18) * ageFade * (0.28 + progress * 0.88);
+        if (alpha <= 0.01) {
+          continue;
+        }
+        ctx.strokeStyle = `rgba(${colorBase}, ${alpha})`;
+        ctx.lineWidth = (isTransferParticle ? 1.04 : 0.84) * (0.42 + progress * 0.86);
+        ctx.beginPath();
+        ctx.moveTo(start.xNorm * w, start.yNorm * h);
+        ctx.lineTo(end.xNorm * w, end.yNorm * h);
+        ctx.stroke();
+      }
+      ctx.restore();
     };
 
     const resolveNamedForms = (): Array<any> => {
@@ -3133,6 +3802,527 @@ export function SimulationCanvas({
         ctx.fill();
     };
 
+    interface DaimonPacketVisual {
+        particleId: string;
+        x: number;
+        y: number;
+        vx: number;
+        vy: number;
+        speed: number;
+        particleRadius: number;
+        intentHue: number;
+        intentEnergy: number;
+        mantleInfluence: number;
+        instability: number;
+        intentUnits: number;
+        actionBlocked: boolean;
+        ownerSignature: PresenceIdentitySignature;
+        coreShape: "circle" | "diamond" | "square";
+    }
+
+    const resolveIntentHue = (row: BackendFieldParticle, fallbackHue: number): number => {
+        const focus = String((row as any)?.route_resource_focus ?? "").trim().toLowerCase();
+        if (focus) {
+            return resourceDaimoiHue(focus);
+        }
+        const resourceType = String((row as any)?.resource_type ?? "").trim().toLowerCase();
+        if (resourceType) {
+            return resourceDaimoiHue(resourceType);
+        }
+        const consumeType = String((row as any)?.resource_consume_type ?? "").trim().toLowerCase();
+        if (consumeType) {
+            return resourceDaimoiHue(consumeType);
+        }
+        const topJob = String((row as any)?.top_job ?? "").trim().toLowerCase();
+        if (topJob.includes("truth") || topJob.includes("proof")) {
+            return 56;
+        }
+        if (topJob.includes("anchor")) {
+            return 188;
+        }
+        if (topJob.includes("receipt") || topJob.includes("witness")) {
+            return 206;
+        }
+        return fallbackHue;
+    };
+
+    const drawPacketCoreShape = (
+        shape: "circle" | "diamond" | "square",
+        x: number,
+        y: number,
+        radius: number,
+    ) => {
+        if (shape === "circle") {
+            ctx.beginPath();
+            ctx.arc(x, y, radius, 0, Math.PI * 2);
+            return;
+        }
+        if (shape === "square") {
+            const side = radius * 1.6;
+            ctx.beginPath();
+            ctx.roundRect(x - side / 2, y - side / 2, side, side, Math.max(0.3, radius * 0.34));
+            return;
+        }
+        ctx.beginPath();
+        ctx.moveTo(x, y - radius);
+        ctx.lineTo(x + radius, y);
+        ctx.lineTo(x, y + radius);
+        ctx.lineTo(x - radius, y);
+        ctx.closePath();
+    };
+
+    const drawNexusPacketSymbol = (
+        x: number,
+        y: number,
+        radius: number,
+        colorBase: string,
+        relayMode: boolean,
+    ) => {
+        ctx.strokeStyle = `rgba(${colorBase}, ${relayMode ? 0.36 : 0.58})`;
+        ctx.lineWidth = relayMode ? 0.82 : 1.05;
+        if (relayMode) {
+            ctx.setLineDash([2.2, 3.1]);
+            ctx.lineDashOffset = -(overlayMotionNowSec * 28);
+        }
+        ctx.beginPath();
+        ctx.arc(x, y, radius * 1.42, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        ctx.fillStyle = `rgba(${colorBase}, 0.86)`;
+        drawPacketCoreShape("diamond", x, y, radius);
+        ctx.fill();
+
+        if (relayMode) {
+            const trail = radius * 1.6;
+            ctx.strokeStyle = `rgba(${colorBase}, 0.34)`;
+            ctx.lineWidth = 0.72;
+            ctx.beginPath();
+            ctx.moveTo(x - trail, y + trail * 0.2);
+            ctx.lineTo(x - trail * 0.28, y + trail * 0.62);
+            ctx.stroke();
+        }
+    };
+
+    const drawDaimonPacketSymbol = (
+        packet: DaimonPacketVisual,
+        w: number,
+        h: number,
+        t: number,
+    ) => {
+        const fallbackAngle = packet.ownerSignature.notchAngle + packet.ownerSignature.rotation;
+        const directionAngle = packet.speed > 0.0001
+            ? Math.atan2(packet.vy, packet.vx)
+            : fallbackAngle;
+        const dirX = Math.cos(directionAngle);
+        const dirY = Math.sin(directionAngle);
+        const normalX = -dirY;
+        const normalY = dirX;
+
+        const tailLength = clampValue(
+            2.4 + packet.intentUnits * 0.95 + packet.speed * Math.max(w, h) * 0.42,
+            2.8,
+            28,
+        );
+        const curvature = packet.instability
+            * (2.4 + packet.intentUnits * 0.35)
+            * (stablePresenceRatio(packet.particleId, 79) > 0.5 ? 1 : -1);
+        const tailStartX = packet.x - dirX * (packet.particleRadius * 0.34);
+        const tailStartY = packet.y - dirY * (packet.particleRadius * 0.34);
+        const tailEndX = packet.x - dirX * tailLength;
+        const tailEndY = packet.y - dirY * tailLength;
+        const controlX = (tailStartX + tailEndX) * 0.5 + normalX * curvature;
+        const controlY = (tailStartY + tailEndY) * 0.5 + normalY * curvature;
+        const tailAlpha = 0.18 + packet.intentEnergy * 0.48;
+        const tailWidth = 0.62 + packet.intentEnergy * 1.14 + packet.mantleInfluence * 0.9;
+
+        ctx.strokeStyle = `hsla(${packet.intentHue}, 88%, 74%, ${tailAlpha})`;
+        ctx.lineWidth = tailWidth;
+        ctx.beginPath();
+        ctx.moveTo(tailStartX, tailStartY);
+        ctx.quadraticCurveTo(controlX, controlY, tailEndX, tailEndY);
+        ctx.stroke();
+
+        for (let strand = -1; strand <= 1; strand += 1) {
+            const strandOffset = strand * (0.4 + packet.mantleInfluence * 0.9);
+            const sx = tailStartX + normalX * strandOffset;
+            const sy = tailStartY + normalY * strandOffset;
+            const ex = tailEndX + normalX * strandOffset;
+            const ey = tailEndY + normalY * strandOffset;
+            const cx = controlX + normalX * strandOffset * 0.4 + Math.sin(t * 2.1 + strand) * 0.6;
+            const cy = controlY + normalY * strandOffset * 0.4 + Math.cos(t * 1.8 + strand) * 0.6;
+            ctx.strokeStyle = `hsla(${packet.intentHue}, 84%, 80%, ${0.08 + packet.intentEnergy * 0.24})`;
+            ctx.lineWidth = Math.max(0.32, tailWidth * 0.38);
+            ctx.beginPath();
+            ctx.moveTo(sx, sy);
+            ctx.quadraticCurveTo(cx, cy, ex, ey);
+            ctx.stroke();
+        }
+
+        const haloRadius = packet.particleRadius * (1.32 + packet.mantleInfluence * 0.96);
+        ctx.strokeStyle = `hsla(${packet.intentHue}, 92%, 76%, ${0.22 + packet.intentEnergy * 0.46})`;
+        ctx.lineWidth = 0.44 + packet.mantleInfluence * 1.48;
+        ctx.beginPath();
+        ctx.arc(packet.x, packet.y, haloRadius, 0, Math.PI * 2);
+        ctx.stroke();
+
+        const glow = ctx.createRadialGradient(
+            packet.x,
+            packet.y,
+            Math.max(0.45, packet.particleRadius * 0.25),
+            packet.x,
+            packet.y,
+            packet.particleRadius * 2.1,
+        );
+        glow.addColorStop(0, `hsla(${packet.intentHue}, 96%, 88%, ${0.34 + packet.intentEnergy * 0.44})`);
+        glow.addColorStop(0.58, `hsla(${(packet.intentHue + 24) % 360}, 92%, 66%, ${0.16 + packet.intentEnergy * 0.26})`);
+        glow.addColorStop(1, "rgba(14, 22, 34, 0)");
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(packet.x, packet.y, packet.particleRadius * 2.1, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = `hsla(${packet.intentHue}, 96%, ${packet.actionBlocked ? 60 : 78}%, ${packet.actionBlocked ? 0.52 : 0.88})`;
+        drawPacketCoreShape(packet.coreShape, packet.x, packet.y, packet.particleRadius * 1.08);
+        ctx.fill();
+
+        ctx.strokeStyle = `hsla(${packet.intentHue}, 84%, ${packet.actionBlocked ? 54 : 66}%, ${packet.actionBlocked ? 0.64 : 0.86})`;
+        ctx.lineWidth = 0.52 + packet.intentEnergy * 0.7;
+        drawPacketCoreShape(packet.coreShape, packet.x, packet.y, packet.particleRadius * 1.08);
+        ctx.stroke();
+
+        drawPresenceSigilCore(
+            ctx,
+            packet.x,
+            packet.y,
+            Math.max(1.05, packet.particleRadius * 0.54),
+            packet.ownerSignature,
+            {
+                strokeStyle: "rgba(244, 250, 255, 0.94)",
+                fillStyle: "rgba(226, 238, 252, 0.08)",
+                lineWidth: Math.max(0.5, packet.particleRadius * 0.22),
+                includeOuterRing: false,
+                compact: true,
+            },
+        );
+
+        if (packet.actionBlocked) {
+            const markRadius = packet.particleRadius * 1.55;
+            ctx.strokeStyle = "rgba(255, 132, 122, 0.8)";
+            ctx.lineWidth = 0.7;
+            ctx.beginPath();
+            ctx.moveTo(packet.x - markRadius, packet.y - markRadius);
+            ctx.lineTo(packet.x + markRadius, packet.y + markRadius);
+            ctx.moveTo(packet.x + markRadius, packet.y - markRadius);
+            ctx.lineTo(packet.x - markRadius, packet.y + markRadius);
+            ctx.stroke();
+        }
+    };
+
+    const drawDaimonRows = (
+        t: number,
+        rows: BackendFieldParticle[],
+        w: number,
+        h: number,
+        globalAlpha: number,
+        radiusScale: number,
+        particlePrefix: string,
+    ) => {
+        if (rows.length <= 0) {
+            return;
+        }
+
+        const swarmMode = particlePrefix === "unbound" && rows.length > 140;
+        const swarmBuckets = new Map<string, {
+            ownerId: string;
+            ownerSignature: PresenceIdentitySignature;
+            directionBucket: number;
+            count: number;
+            blockedCount: number;
+            sumX: number;
+            sumY: number;
+            sumVx: number;
+            sumVy: number;
+            sumIntent: number;
+            sumMantle: number;
+            sumInstability: number;
+            sumHue: number;
+        }>();
+
+        ctx.save();
+        ctx.globalCompositeOperation = "lighter";
+        ctx.globalAlpha = globalAlpha;
+
+        for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+            const row = rows[rowIndex];
+            const particleFallbackId = `${particlePrefix}:${rowIndex}`;
+            const particleId = String(row?.id ?? "").trim() || particleFallbackId;
+            const {
+                isChaosParticle,
+                isStaticParticle,
+                isNexusParticle,
+                isSmartDaimoi,
+                isResourceEmitter,
+                isTransferParticle,
+                routeNodeId,
+                graphNodeId,
+            } = resolveOverlayParticleFlags(row);
+
+            const particleMotion = resolveParticleRenderMotion(
+                row,
+                particleId,
+                isNexusParticle || isStaticParticle,
+            );
+            const px = particleMotion.xNorm * w;
+            const py = particleMotion.yNorm * h;
+            const speed = particleMotion.speed;
+            const resourceConsumeAmount = Math.max(0, Number((row as any)?.resource_consume_amount ?? 0));
+            const actionBlocked = Boolean((row as any)?.resource_action_blocked);
+            const isEconomyParticle = isResourceEmitter || resourceConsumeAmount > 0;
+            const particleRadius = Math.max(
+                isNexusParticle
+                    ? 0.9
+                    : (isTransferParticle || isEconomyParticle || isSmartDaimoi ? 1.14 : 0.74),
+                clampValue(Number(row?.size ?? 1.0), 0.35, 2.2)
+                    * radiusScale
+                    * (isNexusParticle ? 0.88 : 1.16),
+            );
+
+            if (
+                isTransferParticle
+                && (routeNodeId.length > 0 || graphNodeId.length > 0)
+                && particleTelemetryHits.length < 420
+            ) {
+                particleTelemetryHits.push({
+                    x: clamp01(px / Math.max(1, w)),
+                    y: clamp01(py / Math.max(1, h)),
+                    radiusNorm: Math.max(0.004, (particleRadius * 2.2) / Math.max(w, h)),
+                    graphNodeId,
+                    routeNodeId,
+                });
+            }
+
+            const red = Math.round(clamp01(Number(row?.r ?? 0.5)) * 255);
+            const green = Math.round(clamp01(Number(row?.g ?? 0.5)) * 255);
+            const blue = Math.round(clamp01(Number(row?.b ?? 0.5)) * 255);
+            const colorBase = `${red},${green},${blue}`;
+
+            if (isChaosParticle) {
+                const wing = particleRadius * 1.36;
+                ctx.strokeStyle = `rgba(${colorBase}, 0.92)`;
+                ctx.lineWidth = 0.95;
+                ctx.beginPath();
+                ctx.moveTo(px - wing, py - wing);
+                ctx.lineTo(px + wing, py + wing);
+                ctx.moveTo(px + wing, py - wing);
+                ctx.lineTo(px - wing, py + wing);
+                ctx.stroke();
+                continue;
+            }
+
+            if (isNexusParticle || isStaticParticle) {
+                const relayMode = String((row as any)?.presence_role ?? "").trim().toLowerCase().includes("relay");
+                drawNexusPacketSymbol(px, py, particleRadius * 1.14, colorBase, relayMode);
+                continue;
+            }
+
+            if (!swarmMode && isSmartDaimoi) {
+                drawDaimoiGhostTrail(
+                    particleId,
+                    particleMotion.xNorm,
+                    particleMotion.yNorm,
+                    speed,
+                    colorBase,
+                    isTransferParticle,
+                    w,
+                    h,
+                );
+            }
+
+            const ownerPresenceId = canonicalPresenceId(
+                String((row as any)?.owner_presence_id ?? (row as any)?.presence_id ?? ""),
+            );
+            const ownerSignature = resolvePresenceIdentitySignature(ownerPresenceId || particleId);
+            const routeProbability = clamp01(Number((row as any)?.route_probability ?? (row as any)?.message_probability ?? 0.4));
+            const influencePower = clamp01(Number((row as any)?.influence_power ?? 0.24));
+            const intentEnergy = clamp01(0.16 + routeProbability * 0.45 + influencePower * 0.44);
+            const mantleInfluence = clamp01(
+                clamp01(Number((row as any)?.node_saturation ?? 0)) * 0.44
+                + clamp01(Math.abs(Number((row as any)?.local_price ?? 0))) * 0.32
+                + clamp01(Number((row as any)?.resource_availability ?? 0)) * 0.28,
+            );
+            const instability = clamp01(
+                Math.abs(clampValue(Number((row as any)?.drift_score ?? 0), -1, 1)) * 0.72
+                + clamp01(Number((row as any)?.package_entropy ?? 0)) * 0.56,
+            );
+            const intentUnits = Math.max(1, Math.round(clampValue(Number(row?.size ?? 1), 0.4, 2.8) * 2));
+            const fallbackHue = presenceHueFromId(ownerPresenceId || particleId);
+            const intentHue = resolveIntentHue(row, fallbackHue);
+            const coreShape: "circle" | "diamond" | "square" = isTransferParticle
+                ? "diamond"
+                : (isEconomyParticle ? "square" : "circle");
+
+            if (swarmMode) {
+                const directionAngle = speed > 0.0001
+                    ? Math.atan2(particleMotion.vy, particleMotion.vx)
+                    : ownerSignature.rotation;
+                const directionBucket = Math.floor(((directionAngle + Math.PI) / (Math.PI * 2)) * 12) % 12;
+                const cellX = Math.max(0, Math.min(7, Math.floor(particleMotion.xNorm * 8)));
+                const cellY = Math.max(0, Math.min(5, Math.floor(particleMotion.yNorm * 6)));
+                const ownerKey = normalizePresenceKey(ownerPresenceId || ownerSignature.id);
+                const key = `${ownerKey}|${directionBucket}|${cellX}|${cellY}`;
+                const bucket = swarmBuckets.get(key) ?? {
+                    ownerId: ownerPresenceId || ownerSignature.id,
+                    ownerSignature,
+                    directionBucket,
+                    count: 0,
+                    blockedCount: 0,
+                    sumX: 0,
+                    sumY: 0,
+                    sumVx: 0,
+                    sumVy: 0,
+                    sumIntent: 0,
+                    sumMantle: 0,
+                    sumInstability: 0,
+                    sumHue: 0,
+                };
+                bucket.count += 1;
+                bucket.blockedCount += actionBlocked ? 1 : 0;
+                bucket.sumX += px;
+                bucket.sumY += py;
+                bucket.sumVx += particleMotion.vx;
+                bucket.sumVy += particleMotion.vy;
+                bucket.sumIntent += intentEnergy;
+                bucket.sumMantle += mantleInfluence;
+                bucket.sumInstability += instability;
+                bucket.sumHue += intentHue;
+                swarmBuckets.set(key, bucket);
+                continue;
+            }
+
+            drawDaimonPacketSymbol(
+                {
+                    particleId,
+                    x: px,
+                    y: py,
+                    vx: particleMotion.vx,
+                    vy: particleMotion.vy,
+                    speed,
+                    particleRadius,
+                    intentHue,
+                    intentEnergy,
+                    mantleInfluence,
+                    instability,
+                    intentUnits,
+                    actionBlocked,
+                    ownerSignature,
+                    coreShape,
+                },
+                w,
+                h,
+                t,
+            );
+        }
+
+        if (swarmMode && swarmBuckets.size > 0) {
+            const bundles = Array.from(swarmBuckets.values())
+                .sort((left, right) => right.count - left.count)
+                .slice(0, 120);
+            for (let index = 0; index < bundles.length; index += 1) {
+                const bundle = bundles[index];
+                if (bundle.count <= 0) {
+                    continue;
+                }
+
+                const cx = bundle.sumX / bundle.count;
+                const cy = bundle.sumY / bundle.count;
+                const avgVx = bundle.sumVx / bundle.count;
+                const avgVy = bundle.sumVy / bundle.count;
+                const avgSpeed = Math.hypot(avgVx, avgVy);
+                const fallbackAngle = bundle.ownerSignature.rotation;
+                const moveAngle = avgSpeed > 0.0001 ? Math.atan2(avgVy, avgVx) : fallbackAngle;
+                const dirX = Math.cos(moveAngle);
+                const dirY = Math.sin(moveAngle);
+                const normalX = -dirY;
+                const normalY = dirX;
+
+                const countNorm = clamp01(bundle.count / 14);
+                const intent = clamp01(bundle.sumIntent / bundle.count);
+                const mantle = clamp01(bundle.sumMantle / bundle.count);
+                const instability = clamp01(bundle.sumInstability / bundle.count);
+                const hue = Math.round(bundle.sumHue / bundle.count) % 360;
+                const blockedRatio = bundle.blockedCount / bundle.count;
+                const ribbonWidth = 0.9 + countNorm * 3.6 + mantle * 1.2;
+                const ribbonLength = clampValue(
+                    10 + bundle.count * 1.9 + avgSpeed * Math.max(w, h) * 0.34,
+                    12,
+                    76,
+                );
+                const curve = instability
+                    * (8 + countNorm * 11)
+                    * ((bundle.directionBucket % 2 === 0) ? 1 : -1);
+                const startX = cx - dirX * ribbonLength * 0.56;
+                const startY = cy - dirY * ribbonLength * 0.56;
+                const endX = cx + dirX * ribbonLength * 0.44;
+                const endY = cy + dirY * ribbonLength * 0.44;
+                const controlX = (startX + endX) * 0.5 + normalX * curve;
+                const controlY = (startY + endY) * 0.5 + normalY * curve;
+
+                ctx.strokeStyle = `hsla(${hue}, 90%, 72%, ${0.2 + intent * 0.44})`;
+                ctx.lineWidth = ribbonWidth;
+                ctx.beginPath();
+                ctx.moveTo(startX, startY);
+                ctx.quadraticCurveTo(controlX, controlY, endX, endY);
+                ctx.stroke();
+
+                for (let strand = -1; strand <= 1; strand += 1) {
+                    const offset = strand * Math.max(0.42, ribbonWidth * 0.36);
+                    const sx = startX + normalX * offset;
+                    const sy = startY + normalY * offset;
+                    const ex = endX + normalX * offset;
+                    const ey = endY + normalY * offset;
+                    const cx2 = controlX + normalX * offset * 0.52 + Math.sin((t * 1.9) + index + strand) * 0.9;
+                    const cy2 = controlY + normalY * offset * 0.52 + Math.cos((t * 1.7) + index + strand) * 0.9;
+                    ctx.strokeStyle = `hsla(${hue}, 86%, 82%, ${0.08 + intent * 0.2})`;
+                    ctx.lineWidth = Math.max(0.34, ribbonWidth * 0.3);
+                    ctx.beginPath();
+                    ctx.moveTo(sx, sy);
+                    ctx.quadraticCurveTo(cx2, cy2, ex, ey);
+                    ctx.stroke();
+                }
+
+                drawPresenceSigilCore(
+                    ctx,
+                    endX,
+                    endY,
+                    Math.max(1.7, ribbonWidth * 0.56),
+                    bundle.ownerSignature,
+                    {
+                        strokeStyle: "rgba(242, 250, 255, 0.92)",
+                        fillStyle: "rgba(214, 232, 248, 0.06)",
+                        lineWidth: Math.max(0.55, ribbonWidth * 0.2),
+                        includeOuterRing: false,
+                        compact: true,
+                    },
+                );
+
+                if (blockedRatio > 0.32) {
+                    const markRadius = Math.max(2.2, ribbonWidth * 0.9);
+                    ctx.strokeStyle = `rgba(255, 136, 122, ${0.4 + blockedRatio * 0.5})`;
+                    ctx.lineWidth = 0.72;
+                    ctx.beginPath();
+                    ctx.moveTo(cx - markRadius, cy - markRadius);
+                    ctx.lineTo(cx + markRadius, cy + markRadius);
+                    ctx.moveTo(cx + markRadius, cy - markRadius);
+                    ctx.lineTo(cx - markRadius, cy + markRadius);
+                    ctx.stroke();
+                }
+            }
+        }
+
+        ctx.restore();
+    };
+
     const drawParticles = (
         t: number,
         field: any,
@@ -3148,195 +4338,18 @@ export function SimulationCanvas({
             fieldParticlesByPresence.get(fieldId)
             ?? fieldParticlesByPresence.get(fieldKey)
             ?? [];
-        if (rows.length <= 0) return;
-
-        ctx.save();
-        ctx.globalCompositeOperation = "lighter";
-        ctx.globalAlpha = isHighlighted ? 0.88 : 0.68;
-
-        const radiusScale = Math.max(0.1, radius / 62);
-        const wFloat = w;
-        const hFloat = h;
-
-        for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
-            const row = rows[rowIndex];
-            const {
-                isChaosParticle,
-                isStaticParticle,
-                isNexusParticle,
-                isSmartDaimoi,
-                isResourceEmitter,
-                isTransferParticle,
-                routeNodeId,
-                graphNodeId,
-            } = resolveOverlayParticleFlags(row);
-            const particleMotion = resolveParticleRenderMotion(
-                row,
-                `${fieldId || "presence"}:${rowIndex}`,
-                isNexusParticle || isStaticParticle,
-            );
-            const px = particleMotion.xNorm * wFloat;
-            const py = particleMotion.yNorm * hFloat;
-            const resourceConsumeType = String((row as any)?.resource_consume_type ?? "").trim();
-            const resourceConsumeAmount = Math.max(0, Number((row as any)?.resource_consume_amount ?? 0));
-            const actionBlocked = Boolean((row as any)?.resource_action_blocked);
-            const isEconomyParticle = isResourceEmitter || resourceConsumeAmount > 0;
-            const particleRadius = Math.max(
-                isNexusParticle
-                    ? 0.96
-                    : (isTransferParticle || isEconomyParticle || isSmartDaimoi ? 1.2 : 0.8),
-                clampValue(Number(row?.size ?? 1.0), 0.35, 1.8)
-                    * radiusScale
-                    * (isNexusParticle ? 0.9 : 1.18),
-            );
-            const routeProbability = clamp01(Number((row as any)?.route_probability ?? 1));
-            const vx = particleMotion.vx;
-            const vy = particleMotion.vy;
-            const velocityMagnitude = particleMotion.speed;
-            const particlePhase = (t * (1.15 + routeProbability * 0.45)) + rowIndex * 0.37;
-            const renderX = px;
-            const renderY = py;
-
-            if (
-                isTransferParticle
-                && (routeNodeId.length > 0 || graphNodeId.length > 0)
-                && routeProbability >= 0.1
-                && particleTelemetryHits.length < 420
-            ) {
-                particleTelemetryHits.push({
-                    x: clamp01(renderX / Math.max(1, wFloat)),
-                    y: clamp01(renderY / Math.max(1, hFloat)),
-                    radiusNorm: Math.max(0.004, (particleRadius * 2.2) / Math.max(wFloat, hFloat)),
-                    graphNodeId,
-                    routeNodeId,
-                });
-            }
-
-            const red = Math.round(clamp01(Number(row?.r ?? 0.5)) * 255);
-            const green = Math.round(clamp01(Number(row?.g ?? 0.5)) * 255);
-            const blue = Math.round(clamp01(Number(row?.b ?? 0.5)) * 255);
-            const colorBase = `${red},${green},${blue}`;
-            const resourceHue = resourceDaimoiHue(String((row as any)?.resource_type ?? ""));
-            const consumeHue = resourceDaimoiHue(resourceConsumeType);
-
-            if (velocityMagnitude > 0.002 && (isTransferParticle || isResourceEmitter || resourceConsumeAmount > 0 || isSmartDaimoi)) {
-                const velocityPixels = velocityMagnitude * Math.max(wFloat, hFloat);
-                const trailLength = clampValue(
-                    velocityPixels * (isNexusParticle ? 0.26 : 0.44),
-                    0.8,
-                    isNexusParticle ? 3.4 : 8.6,
-                );
-                const trailX = renderX + (vx / Math.max(velocityMagnitude, 0.0001)) * trailLength;
-                const trailY = renderY + (vy / Math.max(velocityMagnitude, 0.0001)) * trailLength;
-                const trailAlpha = isTransferParticle ? 0.38 : (isSmartDaimoi ? 0.34 : 0.26);
-                ctx.strokeStyle = `rgba(${colorBase}, ${trailAlpha})`;
-                ctx.lineWidth = isTransferParticle ? 0.7 : (isSmartDaimoi ? 0.62 : 0.54);
-                ctx.beginPath();
-                ctx.moveTo(renderX, renderY);
-                ctx.lineTo(trailX, trailY);
-                ctx.stroke();
-            }
-
-            if (isTransferParticle) {
-                ctx.strokeStyle = `rgba(126, 236, 255, ${0.22 + routeProbability * 0.28})`;
-                ctx.lineWidth = 0.55;
-                ctx.beginPath();
-                ctx.arc(renderX, renderY, particleRadius * 1.2, 0, Math.PI * 2);
-                ctx.stroke();
-            }
-
-            if (isResourceEmitter) {
-                ctx.strokeStyle = `hsla(${resourceHue}, 92%, 72%, 0.46)`;
-                ctx.lineWidth = 0.74;
-                ctx.beginPath();
-                ctx.arc(renderX, renderY, particleRadius * 1.65, 0, Math.PI * 2);
-                ctx.stroke();
-            }
-
-            if (resourceConsumeAmount > 0 && !isResourceEmitter) {
-                const consumeNorm = clamp01(resourceConsumeAmount * 240);
-                ctx.strokeStyle = `hsla(${consumeHue}, 90%, ${actionBlocked ? 58 : 74}%, ${0.2 + consumeNorm * 0.42})`;
-                ctx.lineWidth = 0.52 + consumeNorm * 0.65;
-                ctx.beginPath();
-                ctx.arc(renderX, renderY, particleRadius * (1.2 + consumeNorm * 0.9), 0, Math.PI * 2);
-                ctx.stroke();
-            }
-
-            if (isSmartDaimoi && !isChaosParticle) {
-                const deflectProb = clamp01(Number((row as any)?.action_probabilities?.deflect ?? 0.5));
-                const smartAlpha = actionBlocked ? 0.48 : (0.54 + deflectProb * 0.34);
-                const smartRing = particleRadius * (1.22 + deflectProb * 0.34);
-                ctx.strokeStyle = `rgba(${colorBase}, ${smartAlpha})`;
-                ctx.lineWidth = 0.72 + deflectProb * 0.28;
-                ctx.beginPath();
-                ctx.arc(renderX, renderY, smartRing, 0, Math.PI * 2);
-                ctx.stroke();
-
-                const wing = particleRadius * (0.98 + deflectProb * 0.54);
-                const dx = Math.cos(particlePhase) * wing;
-                const dy = Math.sin(particlePhase) * wing;
-                ctx.strokeStyle = `rgba(${colorBase}, ${actionBlocked ? 0.56 : 0.82})`;
-                ctx.lineWidth = 0.66;
-                ctx.beginPath();
-                ctx.moveTo(renderX - dx, renderY - dy);
-                ctx.lineTo(renderX + dx, renderY + dy);
-                ctx.moveTo(renderX - dy * 0.56, renderY + dx * 0.56);
-                ctx.lineTo(renderX + dy * 0.56, renderY - dx * 0.56);
-                ctx.stroke();
-            }
-
-            if (isChaosParticle) {
-                const wing = particleRadius * 1.3;
-                ctx.strokeStyle = `rgba(${colorBase},0.95)`;
-                ctx.lineWidth = 1.0;
-                ctx.beginPath();
-                ctx.moveTo(renderX - wing, renderY - wing);
-                ctx.lineTo(renderX + wing, renderY + wing);
-                ctx.moveTo(renderX + wing, renderY - wing);
-                ctx.lineTo(renderX - wing, renderY + wing);
-                ctx.stroke();
-                continue;
-            }
-
-            if (isNexusParticle || isStaticParticle) {
-                const glyphRadius = particleRadius * 1.15;
-                ctx.fillStyle = `rgba(${colorBase},0.9)`;
-                ctx.beginPath();
-                ctx.moveTo(renderX, renderY - glyphRadius);
-                ctx.lineTo(renderX + glyphRadius, renderY);
-                ctx.lineTo(renderX, renderY + glyphRadius);
-                ctx.lineTo(renderX - glyphRadius, renderY);
-                ctx.closePath();
-                ctx.fill();
-                ctx.strokeStyle = `rgba(${colorBase},0.74)`;
-                ctx.lineWidth = 0.56;
-                ctx.stroke();
-                continue;
-            }
-
-            if (actionBlocked) {
-                const blockedRadius = particleRadius * 1.35;
-                ctx.strokeStyle = "rgba(255, 124, 124, 0.78)";
-                ctx.lineWidth = 0.8;
-                ctx.beginPath();
-                ctx.moveTo(renderX - blockedRadius, renderY - blockedRadius);
-                ctx.lineTo(renderX + blockedRadius, renderY + blockedRadius);
-                ctx.moveTo(renderX + blockedRadius, renderY - blockedRadius);
-                ctx.lineTo(renderX - blockedRadius, renderY + blockedRadius);
-                ctx.stroke();
-            }
-
-            ctx.fillStyle = `rgba(${colorBase},${actionBlocked ? 0.42 : (isTransferParticle || isEconomyParticle ? 0.9 : (isSmartDaimoi ? 0.78 : 0.62))})`;
-            ctx.beginPath();
-            ctx.arc(renderX, renderY, particleRadius * 1.35, 0, Math.PI * 2);
-            ctx.fill();
-
-            ctx.fillStyle = `rgba(${colorBase},${actionBlocked ? 0.62 : (isEconomyParticle ? 0.98 : (isSmartDaimoi ? 0.96 : 0.9))})`;
-            ctx.beginPath();
-            ctx.arc(renderX, renderY, particleRadius * 0.74, 0, Math.PI * 2);
-            ctx.fill();
+        if (rows.length <= 0) {
+            return;
         }
-        ctx.restore();
+        drawDaimonRows(
+            t,
+            rows,
+            w,
+            h,
+            isHighlighted ? 0.9 : 0.68,
+            Math.max(0.1, radius / 62),
+            fieldId || "presence",
+        );
     };
 
     const drawUnboundParticles = (
@@ -3345,180 +4358,31 @@ export function SimulationCanvas({
         w: number,
         h: number,
     ) => {
-        if (rows.length <= 0) {
-            return;
-        }
-
-        const wFloat = w;
-        const hFloat = h;
-        ctx.save();
-        ctx.globalCompositeOperation = "lighter";
-        ctx.globalAlpha = 0.66;
-
-        for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
-            const row = rows[rowIndex];
-            const {
-                isChaosParticle,
-                isStaticParticle,
-                isNexusParticle,
-                isSmartDaimoi,
-                isResourceEmitter,
-                isTransferParticle,
-                routeNodeId,
-                graphNodeId,
-            } = resolveOverlayParticleFlags(row);
-            const particleMotion = resolveParticleRenderMotion(
-                row,
-                `unbound:${rowIndex}`,
-                isNexusParticle || isStaticParticle,
-            );
-            const px = particleMotion.xNorm * wFloat;
-            const py = particleMotion.yNorm * hFloat;
-            const resourceConsumeType = String((row as any)?.resource_consume_type ?? "").trim();
-            const resourceConsumeAmount = Math.max(0, Number((row as any)?.resource_consume_amount ?? 0));
-            const actionBlocked = Boolean((row as any)?.resource_action_blocked);
-            const isEconomyParticle = isResourceEmitter || resourceConsumeAmount > 0;
-
-            const particleRadius = Math.max(
-                isNexusParticle
-                    ? 0.84
-                    : (isTransferParticle || isEconomyParticle || isSmartDaimoi ? 1.0 : 0.66),
-                clampValue(Number(row?.size ?? 1.0), 0.35, 1.8)
-                    * 0.24
-                    * (isNexusParticle ? 0.88 : 1.14),
-            );
-
-            if (
-                isTransferParticle
-                && (routeNodeId.length > 0 || graphNodeId.length > 0)
-                && particleTelemetryHits.length < 420
-            ) {
-                particleTelemetryHits.push({
-                    x: clamp01(px / Math.max(1, wFloat)),
-                    y: clamp01(py / Math.max(1, hFloat)),
-                    radiusNorm: Math.max(0.004, (particleRadius * 2.1) / Math.max(wFloat, hFloat)),
-                    graphNodeId,
-                    routeNodeId,
-                });
-            }
-
-            const red = Math.round(clamp01(Number(row?.r ?? 0.5)) * 255);
-            const green = Math.round(clamp01(Number(row?.g ?? 0.5)) * 255);
-            const blue = Math.round(clamp01(Number(row?.b ?? 0.5)) * 255);
-            const colorBase = `${red},${green},${blue}`;
-            const consumeHue = resourceDaimoiHue(resourceConsumeType);
-
-            const vx = particleMotion.vx;
-            const vy = particleMotion.vy;
-            const speed = particleMotion.speed;
-            const particlePhase = (t * (1.1 + routeNodeId.length * 0.02)) + rowIndex * 0.29;
-            if (speed > 0.002 && (isTransferParticle || isResourceEmitter || resourceConsumeAmount > 0 || isSmartDaimoi)) {
-                const velocityPixels = speed * Math.max(wFloat, hFloat);
-                const trailLength = clampValue(
-                    velocityPixels * (isNexusParticle ? 0.24 : 0.4),
-                    0.7,
-                    isNexusParticle ? 3.0 : 7.2,
-                );
-                const trailX = px + (vx / Math.max(speed, 0.0001)) * trailLength;
-                const trailY = py + (vy / Math.max(speed, 0.0001)) * trailLength;
-                const trailAlpha = isTransferParticle ? 0.34 : (isSmartDaimoi ? 0.3 : 0.24);
-                ctx.strokeStyle = `rgba(${colorBase}, ${trailAlpha})`;
-                ctx.lineWidth = isTransferParticle ? 0.6 : (isSmartDaimoi ? 0.52 : 0.46);
-                ctx.beginPath();
-                ctx.moveTo(px, py);
-                ctx.lineTo(trailX, trailY);
-                ctx.stroke();
-            }
-
-            if (resourceConsumeAmount > 0 && !isResourceEmitter) {
-                const consumeNorm = clamp01(resourceConsumeAmount * 220);
-                ctx.strokeStyle = `hsla(${consumeHue}, 90%, ${actionBlocked ? 58 : 74}%, ${0.18 + consumeNorm * 0.34})`;
-                ctx.lineWidth = 0.46 + consumeNorm * 0.55;
-                ctx.beginPath();
-                ctx.arc(px, py, particleRadius * (1.1 + consumeNorm * 0.7), 0, Math.PI * 2);
-                ctx.stroke();
-            }
-
-            if (isSmartDaimoi && !isChaosParticle) {
-                const deflectProb = clamp01(Number((row as any)?.action_probabilities?.deflect ?? 0.5));
-                const smartRing = particleRadius * (1.16 + deflectProb * 0.3);
-                ctx.strokeStyle = `rgba(${colorBase}, ${actionBlocked ? 0.4 : (0.44 + deflectProb * 0.24)})`;
-                ctx.lineWidth = 0.58;
-                ctx.beginPath();
-                ctx.arc(px, py, smartRing, 0, Math.PI * 2);
-                ctx.stroke();
-
-                const wing = particleRadius * (0.9 + deflectProb * 0.5);
-                const dx = Math.cos(particlePhase) * wing;
-                const dy = Math.sin(particlePhase) * wing;
-                ctx.strokeStyle = `rgba(${colorBase}, ${actionBlocked ? 0.46 : 0.68})`;
-                ctx.lineWidth = 0.52;
-                ctx.beginPath();
-                ctx.moveTo(px - dx, py - dy);
-                ctx.lineTo(px + dx, py + dy);
-                ctx.stroke();
-            }
-
-            if (isChaosParticle) {
-                const wing = particleRadius * 1.24;
-                ctx.strokeStyle = `rgba(${colorBase},0.92)`;
-                ctx.lineWidth = 0.95;
-                ctx.beginPath();
-                ctx.moveTo(px - wing, py - wing);
-                ctx.lineTo(px + wing, py + wing);
-                ctx.moveTo(px + wing, py - wing);
-                ctx.lineTo(px - wing, py + wing);
-                ctx.stroke();
-                continue;
-            }
-
-            if (isNexusParticle || isStaticParticle) {
-                const glyphRadius = particleRadius * 1.08;
-                ctx.fillStyle = `rgba(${colorBase},0.9)`;
-                ctx.beginPath();
-                ctx.moveTo(px, py - glyphRadius);
-                ctx.lineTo(px + glyphRadius, py);
-                ctx.lineTo(px, py + glyphRadius);
-                ctx.lineTo(px - glyphRadius, py);
-                ctx.closePath();
-                ctx.fill();
-                ctx.strokeStyle = `rgba(${colorBase},0.66)`;
-                ctx.lineWidth = 0.46;
-                ctx.stroke();
-                continue;
-            }
-
-            if (actionBlocked) {
-                const blockedRadius = particleRadius * 1.2;
-                ctx.strokeStyle = "rgba(255, 124, 124, 0.68)";
-                ctx.lineWidth = 0.7;
-                ctx.beginPath();
-                ctx.moveTo(px - blockedRadius, py - blockedRadius);
-                ctx.lineTo(px + blockedRadius, py + blockedRadius);
-                ctx.moveTo(px + blockedRadius, py - blockedRadius);
-                ctx.lineTo(px - blockedRadius, py + blockedRadius);
-                ctx.stroke();
-            }
-
-            ctx.fillStyle = `rgba(${colorBase},${actionBlocked ? 0.4 : (isTransferParticle || isEconomyParticle ? 0.88 : (isSmartDaimoi ? 0.76 : 0.62))})`;
-            ctx.beginPath();
-            ctx.arc(px, py, particleRadius * 1.3, 0, Math.PI * 2);
-            ctx.fill();
-
-            ctx.fillStyle = `rgba(${colorBase},${actionBlocked ? 0.6 : (isEconomyParticle ? 0.98 : (isSmartDaimoi ? 0.94 : 0.9))})`;
-            ctx.beginPath();
-            ctx.arc(px, py, particleRadius * 0.72, 0, Math.PI * 2);
-            ctx.fill();
-        }
-
-        ctx.restore();
+        drawDaimonRows(
+            t,
+            rows,
+            w,
+            h,
+            0.62,
+            0.24,
+            "unbound",
+        );
     };
 
-    const drawPresenceStatus = (cx: number, cy: number, radius: number, hue: number, entityState: any) => {
+    const drawPresenceStatus = (
+        cx: number,
+        cy: number,
+        radius: number,
+        hue: number,
+        entityState: any,
+        presenceId: string,
+        isHighlighted: boolean,
+    ) => {
         const bpmRatio = clamp01((((entityState?.bpm || 78) - 60) / 80));
         const stabilityRatio = ratioFromMetric(entityState?.stability, 0.72);
         const resonanceRatio = ratioFromMetric(entityState?.resonance, 0.65);
         const ringRadius = radius * 1.08;
+        const signature = resolvePresenceIdentitySignature(presenceId);
 
         ctx.save();
         ctx.globalCompositeOperation = "source-over";
@@ -3527,6 +4391,54 @@ export function SimulationCanvas({
         ctx.beginPath();
         ctx.arc(cx, cy, ringRadius, 0, Math.PI * 2);
         ctx.stroke();
+
+        ctx.strokeStyle = isHighlighted ? "rgba(236, 247, 255, 0.9)" : "rgba(223, 238, 252, 0.72)";
+        ctx.lineWidth = isHighlighted ? 1.75 : 1.25;
+        const ringDash = ringDashPatternForStyle(signature.ringStyle);
+        if (ringDash.length > 0) {
+            ctx.setLineDash(ringDash);
+            ctx.lineDashOffset = -(signature.notchAngle * 6.4);
+        }
+        ctx.beginPath();
+        ctx.arc(cx, cy, ringRadius + 1.5, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        if (signature.ringStyle === "double") {
+            ctx.strokeStyle = "rgba(207, 228, 246, 0.68)";
+            ctx.lineWidth = 0.9;
+            ctx.beginPath();
+            ctx.arc(cx, cy, ringRadius + 4.4, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+
+        const layerAngle = -Math.PI / 2 + ((signature.fieldLayerSignature + 0.5) / 8) * Math.PI * 2;
+        const markerInner = ringRadius + 4.9;
+        const markerOuter = markerInner + 5.8;
+        const markerX0 = cx + Math.cos(layerAngle) * markerInner;
+        const markerY0 = cy + Math.sin(layerAngle) * markerInner;
+        const markerX1 = cx + Math.cos(layerAngle) * markerOuter;
+        const markerY1 = cy + Math.sin(layerAngle) * markerOuter;
+        ctx.strokeStyle = "rgba(240, 250, 255, 0.88)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(markerX0, markerY0);
+        ctx.lineTo(markerX1, markerY1);
+        ctx.stroke();
+
+        drawPresenceSigilCore(
+            ctx,
+            cx,
+            cy,
+            Math.max(5.2, radius * 0.42),
+            signature,
+            {
+                strokeStyle: "rgba(230, 243, 255, 0.9)",
+                fillStyle: "rgba(188, 214, 236, 0.14)",
+                lineWidth: isHighlighted ? 1.18 : 0.96,
+                includeOuterRing: true,
+            },
+        );
 
         const start = -Math.PI / 2;
         const rings = [
@@ -3548,6 +4460,7 @@ export function SimulationCanvas({
             bpm: Math.round(entityState?.bpm || 78),
             stabilityPct: Math.round(stabilityRatio * 100),
             resonancePct: Math.round(resonanceRatio * 100),
+            fieldLayer: signature.fieldLayerSignature + 1,
         };
     };
 
@@ -3942,6 +4855,7 @@ export function SimulationCanvas({
         if (renderEdges.length > 0) {
             ctx.save();
             ctx.globalCompositeOperation = "screen";
+            ctx.lineCap = "round";
             for (let i = 0; i < renderEdges.length; i++) {
                 const edge = renderEdges[i] as FileGraphRenderEdge;
                 const src = nodeById.get(edge.source);
@@ -3957,13 +4871,34 @@ export function SimulationCanvas({
                 const ty = tgtPos.y * h;
                 const weight = clamp01(Number(edge.weight ?? 0.2));
                 const hue = Number(src.hue ?? tgt.hue ?? 210);
-                ctx.strokeStyle = `hsla(${hue}, 92%, 68%, ${0.05 + weight * 0.26})`;
-                ctx.lineWidth = 0.4 + weight * 1.1;
+                const dx = tx - sx;
+                const dy = ty - sy;
+                const distance = Math.hypot(dx, dy);
+                const stretchNorm = clamp01(distance / Math.max(90, Math.min(w, h) * 0.52));
+                const elasticity = clamp01((weight * 0.56) + (stretchNorm * 0.44));
+                const normalX = distance > 0.0001 ? -dy / distance : 0;
+                const normalY = distance > 0.0001 ? dx / distance : 1;
+                const bendBase = (10 + stretchNorm * 24) * (i % 2 === 0 ? 1 : -1);
+                const bend = bendBase + Math.sin((t * 1.28) + (i * 0.2)) * (4 + elasticity * 8);
+                const controlX = (sx + tx) / 2 + normalX * bend;
+                const controlY = (sy + ty) / 2 + normalY * bend;
+
+                ctx.strokeStyle = `hsla(${hue}, 90%, 70%, ${0.08 + elasticity * 0.36})`;
+                ctx.lineWidth = 0.58 + elasticity * 2.35;
                 ctx.beginPath();
-                const bend = Math.sin((t * 1.2) + (i * 0.17)) * 8;
                 ctx.moveTo(sx, sy);
-                ctx.quadraticCurveTo((sx + tx) / 2 + bend, (sy + ty) / 2 - bend * 0.45, tx, ty);
+                ctx.quadraticCurveTo(controlX, controlY, tx, ty);
                 ctx.stroke();
+
+                ctx.strokeStyle = `hsla(${(hue + 18) % 360}, 88%, 80%, ${0.05 + elasticity * 0.26})`;
+                ctx.lineWidth = Math.max(0.28, 0.36 + elasticity * 0.92);
+                ctx.setLineDash([5 + elasticity * 8, 7 + (1 - elasticity) * 6]);
+                ctx.lineDashOffset = -((t * 20) + i * 3);
+                ctx.beginPath();
+                ctx.moveTo(sx, sy);
+                ctx.quadraticCurveTo(controlX, controlY, tx, ty);
+                ctx.stroke();
+                ctx.setLineDash([]);
             }
             ctx.restore();
         }
@@ -4173,7 +5108,15 @@ export function SimulationCanvas({
                     ? (crawlerKind === "domain" ? 172 : (crawlerKind === "content" ? 26 : Number(node.hue ?? 205)))
                     : Number(node.hue ?? 210);
                 const visual = resourceVisualSpec(resourceKind, fallbackHue);
+                const nexusClass = nexusVisualClassForNode(node);
                 let radius = (1.8 + importance * 3.2 + pulse * 0.9) * (resourceKind === "video" ? 1.08 : 1);
+                if (nexusClass === "anchor") {
+                    radius *= 1.24;
+                } else if (nexusClass === "relay") {
+                    radius *= 0.92;
+                } else if (nexusClass === "resource") {
+                    radius *= 1.08;
+                }
                 const isSelected = selectedGraphNodeId !== "" && selectedGraphNodeId === String(node.id ?? "");
                 if (isSelected) {
                     radius += 2;
@@ -4181,6 +5124,8 @@ export function SimulationCanvas({
                 const hue = visual.hue;
                 const lift = (1.9 + importance * 3.1) * visual.liftBoost;
                 const depthY = py + lift;
+                const walletFill = nexusWalletFillRatio(node);
+                const saturationFill = nexusSaturationRatio(node);
 
                 ctx.fillStyle = `hsla(${hue}, ${Math.round(visual.saturation * 0.9)}%, ${Math.round(visual.value * 0.44)}%, ${0.16 + (isSelected ? 0.1 : 0.02)})`;
                 fillResourceShape(ctx, visual.shape, px, depthY, radius * 1.05);
@@ -4192,13 +5137,14 @@ export function SimulationCanvas({
                 ctx.lineTo(px, py + radius * 0.35);
                 ctx.stroke();
 
-                const glow = ctx.createRadialGradient(px, py, 0, px, py, radius * 2.2);
+                const glowScale = nexusClass === "anchor" ? 2.8 : (nexusClass === "relay" ? 1.9 : 2.2);
+                const glow = ctx.createRadialGradient(px, py, 0, px, py, radius * glowScale);
                 glow.addColorStop(0, `hsla(${hue}, ${visual.saturation}%, ${visual.value}%, ${isSelected ? 0.88 : (0.48 * visual.glowBoost)})`);
                 glow.addColorStop(0.62, `hsla(${(hue + 24) % 360}, ${Math.max(52, visual.saturation - 10)}%, ${Math.max(44, visual.value - 34)}%, ${isSelected ? 0.42 : 0.22})`);
                 glow.addColorStop(1, "rgba(18, 26, 38, 0)");
                 ctx.fillStyle = glow;
                 ctx.beginPath();
-                ctx.arc(px, py, radius * 2.2, 0, Math.PI * 2);
+                ctx.arc(px, py, radius * glowScale, 0, Math.PI * 2);
                 ctx.fill();
 
                 ctx.fillStyle = `hsla(${hue}, ${Math.min(96, visual.saturation + 6)}%, ${Math.min(98, visual.value + 2)}%, ${isSelected ? 0.98 : 0.9})`;
@@ -4210,6 +5156,82 @@ export function SimulationCanvas({
 
                 ctx.fillStyle = "rgba(255, 255, 255, 0.82)";
                 fillResourceShape(ctx, visual.shape, px - radius * 0.26, py - radius * 0.28, Math.max(0.55, radius * 0.28));
+
+                if (nexusClass === "anchor") {
+                    const ringRadius = radius * 1.74;
+                    ctx.strokeStyle = `hsla(${hue}, 86%, 78%, ${isSelected ? 0.92 : 0.74})`;
+                    ctx.lineWidth = isSelected ? 1.34 : 1.04;
+                    ctx.beginPath();
+                    ctx.arc(px, py, ringRadius, 0, Math.PI * 2);
+                    ctx.stroke();
+
+                    ctx.strokeStyle = `hsla(${(hue + 36) % 360}, 82%, 70%, 0.82)`;
+                    ctx.lineWidth = Math.max(0.9, radius * 0.24);
+                    ctx.beginPath();
+                    ctx.arc(px, py, ringRadius - radius * 0.42, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * walletFill);
+                    ctx.stroke();
+
+                    const anchorPresenceId = canonicalPresenceId(
+                        String(node?.dominant_presence ?? node?.concept_presence_id ?? node?.presence_id ?? "anchor_registry"),
+                    ) || "anchor_registry";
+                    const anchorSignature = resolvePresenceIdentitySignature(anchorPresenceId);
+                    drawPresenceSigilCore(
+                        ctx,
+                        px,
+                        py,
+                        Math.max(2.1, radius * 0.62),
+                        anchorSignature,
+                        {
+                            strokeStyle: "rgba(238, 248, 255, 0.92)",
+                            fillStyle: "rgba(212, 231, 247, 0.08)",
+                            lineWidth: Math.max(0.68, radius * 0.15),
+                            includeOuterRing: false,
+                            compact: true,
+                        },
+                    );
+                } else if (nexusClass === "relay") {
+                    const relayRadius = radius * 1.55;
+                    ctx.strokeStyle = `hsla(${hue}, 82%, 78%, 0.42)`;
+                    ctx.lineWidth = 0.84;
+                    ctx.setLineDash([3.2, 4.2]);
+                    ctx.lineDashOffset = -((t * 24) + i * 3);
+                    ctx.beginPath();
+                    ctx.arc(px, py, relayRadius, 0, Math.PI * 2);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+
+                    ctx.strokeStyle = `hsla(${hue}, 80%, 74%, 0.24)`;
+                    ctx.lineWidth = 0.72;
+                    ctx.beginPath();
+                    ctx.moveTo(px - relayRadius * 1.1, py + relayRadius * 0.24);
+                    ctx.lineTo(px - relayRadius * 0.26, py + relayRadius * 0.66);
+                    ctx.stroke();
+                } else if (nexusClass === "resource") {
+                    const frameShape: GraphNodeShape = visual.shape === "circle"
+                        ? "hexagon"
+                        : (visual.shape === "diamond" ? "square" : visual.shape);
+                    const frameRadius = radius * 1.44;
+                    const capGlow = clamp01((saturationFill - 0.58) / 0.42);
+                    ctx.strokeStyle = `hsla(${hue}, 86%, ${62 + capGlow * 16}%, ${0.58 + capGlow * 0.24})`;
+                    ctx.lineWidth = 0.84 + capGlow * 1.1;
+                    strokeResourceShape(ctx, frameShape, px, py, frameRadius);
+
+                    if (capGlow > 0.02) {
+                        const capHalo = ctx.createRadialGradient(px, py, 0, px, py, frameRadius * 2.1);
+                        capHalo.addColorStop(0, `hsla(${hue}, 94%, 78%, ${0.2 + capGlow * 0.44})`);
+                        capHalo.addColorStop(1, "rgba(14, 20, 30, 0)");
+                        ctx.fillStyle = capHalo;
+                        ctx.beginPath();
+                        ctx.arc(px, py, frameRadius * 2.1, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                } else {
+                    ctx.strokeStyle = `hsla(${hue}, 86%, 76%, ${isSelected ? 0.78 : 0.4})`;
+                    ctx.lineWidth = 0.72;
+                    ctx.beginPath();
+                    ctx.arc(px, py, radius * 1.4, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
 
                 if (showProvenanceOrbitDetail || isSelected) {
                     const provenanceHue = fileNodeProvenanceHue(provenanceKind);
@@ -4705,6 +5727,162 @@ export function SimulationCanvas({
         ctx.restore();
     };
 
+    const drawMouseDaimon = (
+        t: number,
+        w: number,
+        h: number,
+        px: number,
+        py: number,
+        power: number,
+        inside: boolean,
+    ) => {
+        const enabled = mouseDaimonEnabledRef.current;
+        const message = mouseDaimonMessageRef.current;
+        const mode = mouseDaimonModeRef.current;
+        const radiusScale = mouseDaimonRadiusRef.current;
+        const strength = mouseDaimonStrengthRef.current;
+
+        if (!enabled || !inside || power < 0.02) {
+            return;
+        }
+
+        const x = px * w;
+        const y = py * h;
+        const radius = Math.max(12, radiusScale * Math.min(w, h) * 0.5);
+        const pulse = 0.5 + 0.5 * Math.sin(t * 3.2);
+
+        ctx.save();
+
+        // Mode-specific outer glow
+        const modeColors: Record<string, { inner: string; outer: string; core: string }> = {
+            push: { inner: "rgba(255, 180, 100, 0.72)", outer: "rgba(255, 120, 60, 0.28)", core: "#ffcc66" },
+            pull: { inner: "rgba(100, 200, 255, 0.72)", outer: "rgba(60, 140, 255, 0.28)", core: "#88ddff" },
+            orbit: { inner: "rgba(200, 150, 255, 0.72)", outer: "rgba(140, 100, 255, 0.28)", core: "#ccbbff" },
+            calm: { inner: "rgba(150, 255, 180, 0.72)", outer: "rgba(100, 220, 140, 0.28)", core: "#aaffcc" },
+        };
+        const colors = modeColors[mode] || modeColors.push;
+
+        // Influence zone gradient
+        const influenceRadius = radius * (1.8 + strength * 1.2);
+        const zoneGradient = ctx.createRadialGradient(x, y, 0, x, y, influenceRadius);
+        zoneGradient.addColorStop(0, colors.inner);
+        zoneGradient.addColorStop(0.4, colors.outer);
+        zoneGradient.addColorStop(1, "rgba(0, 0, 0, 0)");
+        ctx.globalCompositeOperation = "screen";
+        ctx.fillStyle = zoneGradient;
+        ctx.beginPath();
+        ctx.arc(x, y, influenceRadius, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Core particle body
+        ctx.globalCompositeOperation = "source-over";
+        const coreGradient = ctx.createRadialGradient(x, y, 0, x, y, radius * 0.6);
+        coreGradient.addColorStop(0, "rgba(255, 255, 255, 0.95)");
+        coreGradient.addColorStop(0.5, colors.inner);
+        coreGradient.addColorStop(1, "rgba(0, 0, 0, 0)");
+        ctx.fillStyle = coreGradient;
+        ctx.beginPath();
+        ctx.arc(x, y, radius * 0.6 * (1 + pulse * 0.15), 0, Math.PI * 2);
+        ctx.fill();
+
+        // Orbiting ring for orbit mode
+        if (mode === "orbit") {
+            ctx.strokeStyle = `rgba(200, 180, 255, ${0.4 + pulse * 0.3})`;
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([4, 6]);
+            ctx.lineDashOffset = -t * 28;
+            ctx.beginPath();
+            ctx.arc(x, y, radius * (1.2 + pulse * 0.2), 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
+        // Pulsing ring
+        ctx.strokeStyle = colors.core;
+        ctx.lineWidth = 1.2 + pulse * 0.6;
+        ctx.globalAlpha = 0.5 + pulse * 0.4;
+        ctx.beginPath();
+        ctx.arc(x, y, radius * (0.9 + pulse * 0.25), 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Mode indicator arrows
+        ctx.globalAlpha = 0.7 + pulse * 0.3;
+        ctx.strokeStyle = colors.core;
+        ctx.lineWidth = 1.5;
+        const arrowCount = mode === "calm" ? 4 : 6;
+        for (let i = 0; i < arrowCount; i++) {
+            const angle = (i / arrowCount) * Math.PI * 2 + t * (mode === "orbit" ? 1.2 : 0.3);
+            const r1 = radius * 1.1;
+            const r2 = radius * 1.4;
+            const ax1 = x + Math.cos(angle) * r1;
+            const ay1 = y + Math.sin(angle) * r1;
+            const ax2 = x + Math.cos(angle) * r2;
+            const ay2 = y + Math.sin(angle) * r2;
+
+            if (mode === "push") {
+                // Outward arrows
+                ctx.beginPath();
+                ctx.moveTo(ax1, ay1);
+                ctx.lineTo(ax2, ay2);
+                ctx.stroke();
+                const headAngle = angle;
+                const headLen = 4;
+                ctx.beginPath();
+                ctx.moveTo(ax2, ay2);
+                ctx.lineTo(ax2 - Math.cos(headAngle - 0.4) * headLen, ay2 - Math.sin(headAngle - 0.4) * headLen);
+                ctx.moveTo(ax2, ay2);
+                ctx.lineTo(ax2 - Math.cos(headAngle + 0.4) * headLen, ay2 - Math.sin(headAngle + 0.4) * headLen);
+                ctx.stroke();
+            } else if (mode === "pull") {
+                // Inward arrows
+                ctx.beginPath();
+                ctx.moveTo(ax2, ay2);
+                ctx.lineTo(ax1, ay1);
+                ctx.stroke();
+                const headAngle = angle + Math.PI;
+                const headLen = 4;
+                ctx.beginPath();
+                ctx.moveTo(ax1, ay1);
+                ctx.lineTo(ax1 - Math.cos(headAngle - 0.4) * headLen, ay1 - Math.sin(headAngle - 0.4) * headLen);
+                ctx.moveTo(ax1, ay1);
+                ctx.lineTo(ax1 - Math.cos(headAngle + 0.4) * headLen, ay1 - Math.sin(headAngle + 0.4) * headLen);
+                ctx.stroke();
+            } else if (mode === "orbit") {
+                // Tangent arrows (curved)
+                const curveR = radius * 1.25;
+                const curveStart = angle - 0.3;
+                const curveEnd = angle + 0.3;
+                ctx.beginPath();
+                ctx.arc(x, y, curveR, curveStart, curveEnd);
+                ctx.stroke();
+            } else {
+                // Calm: gentle dots
+                ctx.beginPath();
+                ctx.arc(ax2, ay2, 2 + pulse, 0, Math.PI * 2);
+                ctx.fillStyle = colors.core;
+                ctx.fill();
+            }
+        }
+
+        // Message label
+        ctx.globalAlpha = 1;
+        ctx.globalCompositeOperation = "source-over";
+        ctx.textAlign = "center";
+        ctx.font = "600 9px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+        ctx.shadowColor = "rgba(0, 0, 0, 0.6)";
+        ctx.shadowBlur = 4;
+        ctx.fillText(message, x, y + radius + 16);
+        ctx.shadowBlur = 0;
+
+        // Mode label
+        ctx.font = "500 7px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.fillStyle = colors.core;
+        ctx.fillText(`${mode} · r${(radiusScale * 100).toFixed(0)}% · s${(strength * 100).toFixed(0)}%`, x, y + radius + 28);
+
+        ctx.restore();
+    };
+
     const drawGraphDaimoiFlowOverlay = (
         t: number,
         w: number,
@@ -4747,7 +5925,7 @@ export function SimulationCanvas({
             if (!row || typeof row !== "object") {
                 continue;
             }
-            const sourcePresenceId = canonicalPresenceId(String((row as any)?.presence_id ?? ""));
+            const sourcePresenceId = canonicalPresenceId(resolveParticlePresenceId(row));
             if (!sourcePresenceId) {
                 continue;
             }
@@ -5020,6 +6198,7 @@ export function SimulationCanvas({
         w: number,
         h: number,
         state: SimulationState | null,
+        daimoiLayerActive: boolean,
     ) => {
         const nooiField = state?.presence_dynamics?.nooi_field;
         const cells = Array.isArray(nooiField?.cells) ? nooiField.cells : [];
@@ -5032,7 +6211,8 @@ export function SimulationCanvas({
         const cellW = w / cols;
         const cellH = h / rows;
         const vectorPeak = Math.max(0.0001, Number(nooiField?.vector_peak ?? 0.001));
-        const pulse = 0.88 + Math.sin(t * 1.7) * 0.12;
+        const pulse = 0.86 + Math.sin(t * 1.7) * 0.14;
+        const grainGain = daimoiLayerActive ? 1 : 0.64;
 
         ctx.save();
         ctx.globalCompositeOperation = "screen";
@@ -5051,45 +6231,51 @@ export function SimulationCanvas({
             const vectorMagnitude = Math.hypot(vx, vy);
             const vectorNorm = clamp01(vectorMagnitude / vectorPeak);
             const dominant = String(cell?.dominant_presence_id ?? "").trim();
-            const dominantHue = dominant.length > 0
-                ? (Array.from(dominant).reduce((sum, ch) => sum + ch.charCodeAt(0), 0) % 360)
-                : 198;
-
-            const rectW = cellW * 0.92;
-            const rectH = cellH * 0.92;
-            ctx.fillStyle = `hsla(${dominantHue}, 86%, 66%, ${(0.03 + intensity * 0.18 + occupancyRatio * 0.09) * pulse})`;
-            ctx.fillRect(cx - (rectW / 2), cy - (rectH / 2), rectW, rectH);
+            const dominantHue = dominant.length > 0 ? presenceHueFromId(dominant) : 198;
+            const heatRadius = Math.min(cellW, cellH) * (0.28 + influence * 1.46 + occupancyRatio * 0.52);
+            const heat = ctx.createRadialGradient(cx, cy, 0, cx, cy, heatRadius * 2.2);
+            heat.addColorStop(0, `hsla(${dominantHue}, 84%, 68%, ${(0.06 + intensity * 0.2 + occupancyRatio * 0.12) * pulse})`);
+            heat.addColorStop(0.58, `hsla(${(dominantHue + 26) % 360}, 76%, 56%, ${(0.03 + influence * 0.14) * pulse})`);
+            heat.addColorStop(1, "rgba(16, 22, 34, 0)");
+            ctx.fillStyle = heat;
+            ctx.beginPath();
+            ctx.ellipse(cx, cy, heatRadius * 2.2, heatRadius * 1.5, 0, 0, Math.PI * 2);
+            ctx.fill();
 
             if (vectorMagnitude > 1e-7) {
                 const dirX = vx / vectorMagnitude;
                 const dirY = vy / vectorMagnitude;
-                const arrowLength = Math.min(cellW, cellH) * (0.32 + (vectorNorm * 0.9) + influence * 0.38);
-                const arrowEndX = cx + (dirX * arrowLength);
-                const arrowEndY = cy + (dirY * arrowLength);
-                const arrowWidth = 0.55 + influence * 1.35 + vectorNorm * 0.9;
-                const headSize = 1.2 + vectorNorm * 2.3;
-
-                ctx.strokeStyle = `hsla(${dominantHue}, 92%, 76%, ${0.22 + influence * 0.54})`;
-                ctx.lineWidth = arrowWidth;
-                ctx.beginPath();
-                ctx.moveTo(cx, cy);
-                ctx.lineTo(arrowEndX, arrowEndY);
-                ctx.stroke();
-
-                const baseAngle = Math.atan2(dirY, dirX);
-                ctx.beginPath();
-                ctx.moveTo(arrowEndX, arrowEndY);
-                ctx.lineTo(
-                    arrowEndX - Math.cos(baseAngle - 0.5) * headSize,
-                    arrowEndY - Math.sin(baseAngle - 0.5) * headSize,
+                const normalX = -dirY;
+                const normalY = dirX;
+                const streakCount = Math.max(
+                    1,
+                    Math.round(
+                        (daimoiLayerActive ? 2 : 1)
+                        + (vectorNorm + influence + occupancyRatio) * (daimoiLayerActive ? 3 : 1.5),
+                    ),
                 );
-                ctx.lineTo(
-                    arrowEndX - Math.cos(baseAngle + 0.5) * headSize,
-                    arrowEndY - Math.sin(baseAngle + 0.5) * headSize,
-                );
-                ctx.closePath();
-                ctx.fillStyle = `hsla(${dominantHue}, 95%, 80%, ${0.28 + influence * 0.55})`;
-                ctx.fill();
+                const segmentLength = Math.min(cellW, cellH)
+                    * (0.2 + vectorNorm * 0.84 + influence * 0.42)
+                    * grainGain;
+                for (let streak = 0; streak < streakCount; streak += 1) {
+                    const lane = streakCount <= 1 ? 0 : (streak / (streakCount - 1)) - 0.5;
+                    const sideOffset = lane * Math.min(cellW, cellH) * (0.58 + influence * 0.66);
+                    const sway = Math.sin((t * 1.9) + index * 0.23 + streak * 0.71)
+                        * (0.4 + vectorNorm * 1.8);
+                    const originX = cx + normalX * sideOffset + dirX * sway;
+                    const originY = cy + normalY * sideOffset + dirY * sway;
+                    const startX = originX - dirX * segmentLength * 0.48;
+                    const startY = originY - dirY * segmentLength * 0.48;
+                    const endX = originX + dirX * segmentLength * 0.52;
+                    const endY = originY + dirY * segmentLength * 0.52;
+
+                    ctx.strokeStyle = `hsla(${dominantHue}, 88%, 78%, ${(0.06 + influence * 0.26 + vectorNorm * 0.18) * pulse})`;
+                    ctx.lineWidth = 0.32 + (influence * 1.05 + vectorNorm * 0.72) * grainGain;
+                    ctx.beginPath();
+                    ctx.moveTo(startX, startY);
+                    ctx.lineTo(endX, endY);
+                    ctx.stroke();
+                }
             }
         }
 
@@ -5098,7 +6284,7 @@ export function SimulationCanvas({
         ctx.font = "600 8px ui-monospace, SFMono-Regular, Menlo, monospace";
         ctx.fillStyle = "rgba(176, 229, 255, 0.95)";
         ctx.fillText(
-            `nooi cells ${cells.length} · influence ${Number(nooiField?.mean_influence ?? 0).toFixed(2)} · vpeak ${Number(nooiField?.vector_peak ?? 0).toFixed(3)}`,
+            `nooi wind ${cells.length} cells · influence ${Number(nooiField?.mean_influence ?? 0).toFixed(2)} · vpeak ${Number(nooiField?.vector_peak ?? 0).toFixed(3)} · daimoi ${daimoiLayerActive ? "linked" : "passive"}`,
             10,
             h - 10,
         );
@@ -5600,7 +6786,7 @@ export function SimulationCanvas({
                 for (const row of allFieldParticleRows) {
                     if (!row || typeof row !== "object") continue;
                     const particle = row as BackendFieldParticle;
-                    const presenceId = String(particle?.presence_id ?? "").trim();
+                    const presenceId = resolveParticlePresenceId(particle);
                     if (!presenceId) continue;
                     const canonicalId = canonicalPresenceId(presenceId);
                     const normalizedId = normalizePresenceKey(canonicalId || presenceId);
@@ -5631,6 +6817,13 @@ export function SimulationCanvas({
             for (const [particleId, motionState] of overlayMotionByParticleId.entries()) {
                 if ((overlayMotionNowSec - motionState.seenAtSec) > staleAfterSec) {
                     overlayMotionByParticleId.delete(particleId);
+                }
+            }
+        }
+        if (overlayGhostTrailByParticleId.size > 0) {
+            for (const [particleId, trailState] of overlayGhostTrailByParticleId.entries()) {
+                if ((overlayMotionNowSec - trailState.seenAtSec) > ghostTrailStaleAfterSec) {
+                    overlayGhostTrailByParticleId.delete(particleId);
                 }
             }
         }
@@ -5699,8 +6892,16 @@ export function SimulationCanvas({
             const entityState = currentSimulation?.entities?.find(e => e.id === f.id);
             const intensityRaw = entityState ? (entityState.bpm - 60) / 40 : globalIntensity;
             const intensity = Math.max(0, Math.min(1, intensityRaw));
-            const telemetry = drawPresenceStatus(cx, cy, radiusBase, f.hue, entityState);
             const isHighlighted = highlighted === i || pointerHighlighted === i;
+            const telemetry = drawPresenceStatus(
+                cx,
+                cy,
+                radiusBase,
+                f.hue,
+                entityState,
+                String(f.id ?? ""),
+                isHighlighted,
+            );
             drawNebula(t, f, cx, cy, radiusBase, f.hue, intensity, isHighlighted);
             if (renderRichOverlayParticles) {
                 drawParticles(t, f, radiusBase, isHighlighted, fieldParticlesByPresence, w, h);
@@ -5714,7 +6915,7 @@ export function SimulationCanvas({
             const enW = ctx.measureText(f.en).width;
             ctx.font = "500 10px sans-serif";
             const jaW = ctx.measureText(f.ja).width;
-            const metricLine = "BPM " + telemetry.bpm + "  STB " + telemetry.stabilityPct + "%  RES " + telemetry.resonancePct + "%";
+            const metricLine = "BPM " + telemetry.bpm + "  STB " + telemetry.stabilityPct + "%  RES " + telemetry.resonancePct + "%  LYR " + telemetry.fieldLayer;
             const metricW = ctx.measureText(metricLine).width;
             const boxW = Math.max(enW, jaW, metricW) + 18;
             const boxH = 44;
@@ -5748,7 +6949,13 @@ export function SimulationCanvas({
             if (showNooiFieldOverlay) {
                 ctx.save();
                 ctx.globalAlpha = 0.34;
-                drawNooiFieldOverlay(t, w, h, currentSimulation);
+                drawNooiFieldOverlay(
+                    t,
+                    w,
+                    h,
+                    currentSimulation,
+                    fieldParticleCount > 0 || showResourceDaimoiOverlay,
+                );
                 ctx.restore();
             }
 
@@ -5757,6 +6964,10 @@ export function SimulationCanvas({
             }
 
         }
+
+        // Draw mouse daimon last so it's on top
+        drawMouseDaimon(t, w, h, pointerField.x, pointerField.y, pointerPower, pointerField.inside);
+
         rafId = requestAnimationFrame(draw);
     };
     rafId = requestAnimationFrame(draw);
@@ -5825,15 +7036,33 @@ export function SimulationCanvas({
         },
     };
 
+    const shouldOpenWorldscreen = (nodeKind: "file" | "crawler", nodeId: string): boolean => {
+        const key = `${nodeKind}:${nodeId}`;
+        const now = performance.now();
+        const previousTap = lastNexusPointerTapRef.current;
+        const isDoubleTap = Boolean(
+            previousTap
+            && previousTap.key === key
+            && (now - previousTap.atMs) <= 360,
+        );
+        lastNexusPointerTapRef.current = {
+            key,
+            atMs: now,
+        };
+        return isDoubleTap;
+    };
+
     const activateGraphNode = (
         node: any,
         nodeKind: "file" | "crawler",
         xRatio: number,
         yRatio: number,
+        openWorldscreen: boolean,
         selectionSource: "graph" | "particle" = "graph",
     ) => {
         const resourceKind = resourceKindForNode(node);
-        selectedGraphNodeId = String(node?.id ?? "");
+        const graphNodeId = String(node?.id ?? "").trim();
+        selectedGraphNodeId = graphNodeId;
         selectedGraphNodeLabel = shortPathLabel(
             String(
                 node?.title
@@ -5861,8 +7090,25 @@ export function SimulationCanvas({
             const selectedLabel = selectionSource === "particle"
                 ? "route node"
                 : (nodeKind === "crawler" ? "crawler node" : "file node");
-            metaRef.current.textContent = `selected ${selectedLabel}: ${selectedGraphNodeLabel} [${resourceKindLabel(resourceKind)}]`;
+            metaRef.current.textContent = openWorldscreen
+                ? `opening hologram: ${selectedGraphNodeLabel}`
+                : `focused ${selectedLabel}: ${selectedGraphNodeLabel} [${resourceKindLabel(resourceKind)}] (double tap to open hologram)`;
         }
+
+        onNexusInteraction?.({
+            nodeId: graphNodeId || selectedGraphNodeLabel,
+            nodeKind,
+            resourceKind,
+            label: selectedGraphNodeLabel,
+            xRatio: clamp01(xRatio),
+            yRatio: clamp01(yRatio),
+            openWorldscreen,
+        });
+
+        if (!openWorldscreen) {
+            return;
+        }
+
         const openUrl = openUrlForGraphNode(
             node,
             nodeKind === "crawler" ? "crawler" : "file",
@@ -5880,6 +7126,7 @@ export function SimulationCanvas({
                 || node?.url
                 || worldscreenUrl,
             ).trim();
+            const commentRef = nexusCommentRefForNode(node, worldscreenNodeKind, worldscreenUrl) || imageRef;
             const graphGeneratedAt =
                 nodeKind === "crawler"
                     ? String(resolveCrawlerGraph(simulationRef.current)?.generated_at ?? "")
@@ -5890,7 +7137,10 @@ export function SimulationCanvas({
                 fetchedAt
                 || discoveredAt
                 || timestampLabel(node?.encountered_at ?? node?.encounteredAt ?? graphGeneratedAt);
+            setWorldscreenMode("overview");
             setWorldscreen({
+                nodeId: graphNodeId,
+                commentRef,
                 url: worldscreenUrl,
                 imageRef,
                 label: selectedGraphNodeLabel,
@@ -5944,7 +7194,31 @@ export function SimulationCanvas({
         if (graphHit) {
             event.preventDefault();
             event.stopPropagation();
-            activateGraphNode(graphHit.node, graphHit.nodeKind, graphHit.x, graphHit.y, "graph");
+            const graphNodeId = String(graphHit.node?.id ?? "").trim();
+            const openWorldscreen = shouldOpenWorldscreen(
+                graphHit.nodeKind,
+                graphNodeId || graphHit.nodeKind,
+            );
+            activateGraphNode(
+                graphHit.node,
+                graphHit.nodeKind,
+                graphHit.x,
+                graphHit.y,
+                openWorldscreen,
+                "graph",
+            );
+            onUserPresenceInputRef.current?.({
+                kind: "click",
+                target: graphNodeId || "graph_node",
+                message: `click graph node ${graphNodeId || "graph_node"}`,
+                xRatio,
+                yRatio,
+                embedDaimoi: true,
+                meta: {
+                    source: "simulation-canvas",
+                    nodeKind: graphHit.nodeKind,
+                },
+            });
             return;
         }
 
@@ -5959,13 +7233,31 @@ export function SimulationCanvas({
             if (resolvedNode) {
                 event.preventDefault();
                 event.stopPropagation();
+                const graphNodeId = String(resolvedNode.node?.id ?? "").trim();
+                const openWorldscreen = shouldOpenWorldscreen(
+                    resolvedNode.nodeKind,
+                    graphNodeId || resolvedNode.nodeKind,
+                );
                 activateGraphNode(
                     resolvedNode.node,
                     resolvedNode.nodeKind,
                     particleHit.x,
                     particleHit.y,
+                    openWorldscreen,
                     "particle",
                 );
+                onUserPresenceInputRef.current?.({
+                    kind: "click",
+                    target: graphNodeId || "particle_node",
+                    message: `click particle route ${graphNodeId || "particle_node"}`,
+                    xRatio,
+                    yRatio,
+                    embedDaimoi: true,
+                    meta: {
+                        source: "simulation-canvas",
+                        nodeKind: resolvedNode.nodeKind,
+                    },
+                });
                 return;
             }
         }
@@ -5981,6 +7273,17 @@ export function SimulationCanvas({
             highlighted = nearest.index;
         }
         api.pulseAt(xRatio, yRatio, 1.0, targetId);
+        onUserPresenceInputRef.current?.({
+            kind: "click",
+            target: targetId,
+            message: `click simulation field ${targetId}`,
+            xRatio,
+            yRatio,
+            embedDaimoi: true,
+            meta: {
+                source: "simulation-canvas",
+            },
+        });
     };
 
     const onPointerMove = (event: PointerEvent) => {
@@ -5994,6 +7297,21 @@ export function SimulationCanvas({
             power: Math.max(pointerField.power, 0.16 + mouseInfluenceRef.current * 0.24),
             inside: true,
         };
+        const nowMs = Date.now();
+        if ((nowMs - userPresenceMouseEmitMsRef.current) >= 96) {
+            userPresenceMouseEmitMsRef.current = nowMs;
+            onUserPresenceInputRef.current?.({
+                kind: "mouse_move",
+                target: "simulation_canvas",
+                message: "mouse move in simulation",
+                xRatio: pointerField.x,
+                yRatio: pointerField.y,
+                embedDaimoi: false,
+                meta: {
+                    source: "simulation-canvas",
+                },
+            });
+        }
     };
 
     const onPointerLeave = () => {
@@ -6017,7 +7335,16 @@ export function SimulationCanvas({
         }
         cancelAnimationFrame(rafId);
     };
-  }, [backgroundMode, backgroundWash, interactive, layerVisibility, onOverlayInit, overlayView, resolveFieldParticleRows]);
+  }, [
+    backgroundMode,
+    backgroundWash,
+    interactive,
+    layerVisibility,
+    onNexusInteraction,
+    onOverlayInit,
+    overlayView,
+    resolveFieldParticleRows,
+  ]);
 
   const activeOverlayView =
     OVERLAY_VIEW_OPTIONS.find((option) => option.id === overlayView) ?? OVERLAY_VIEW_OPTIONS[0];
@@ -6027,9 +7354,79 @@ export function SimulationCanvas({
     : `relative mt-3 border border-[rgba(36,31,26,0.16)] rounded-xl overflow-hidden bg-gradient-to-b from-[#0f1a1f] to-[#131b2a] ${className}`.trim();
   const canvasHeight: number | string = backgroundMode ? "100%" : height;
   const worldscreenPlacement = worldscreen
-    ? resolveWorldscreenPlacement(worldscreen, containerRef.current)
+    ? resolveWorldscreenPlacement(worldscreen, containerRef.current, glassCenterRatio)
     : null;
-  const activeImageCommentRef = worldscreen ? worldscreenImageRef(worldscreen) : "";
+  const activeImageCommentRef = worldscreen ? worldscreenCommentRef(worldscreen) : "";
+  const worldscreenMetadataDetails = useMemo(() => {
+    if (!worldscreen) {
+      return [] as Array<{
+        key: string;
+        value: string;
+        links: string[];
+        isSingleLink: boolean;
+      }>;
+    }
+    return worldscreenMetadataRows(worldscreen).map((row) => {
+      const links = extractHttpUrls(row.value);
+      const isSingleLink = links.length === 1
+        && links[0] === row.value.trim()
+        && isHttpUrlText(row.value);
+      return {
+        ...row,
+        links,
+        isSingleLink,
+      };
+    });
+  }, [worldscreen]);
+  const flattenCommentsEnabled = worldscreenMode !== "overview";
+  const flattenedImageComments = useMemo(
+    () => (flattenCommentsEnabled ? flattenImageCommentThread(imageComments) : []),
+    [flattenCommentsEnabled, imageComments],
+  );
+  const commentEntryById = useMemo(() => {
+    const map = new Map<string, ImageCommentEntry>();
+    for (const entry of imageComments) {
+      map.set(entry.id, entry);
+    }
+    return map;
+  }, [imageComments]);
+  const presenceDisplayNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const account of presenceAccounts) {
+      map.set(account.presence_id, account.display_name || account.presence_id);
+    }
+    return map;
+  }, [presenceAccounts]);
+  const resolvePresenceName = useCallback((presenceId: string): string => {
+    const normalized = presenceId.trim();
+    if (!normalized) {
+      return "unknown";
+    }
+    return presenceDisplayNameById.get(normalized) || normalized;
+  }, [presenceDisplayNameById]);
+  const imageCommentStats = useMemo(() => {
+    const participantIds = new Set<string>();
+    const rootCommentCount = flattenedImageComments.filter((row) => row.depth === 0).length;
+    let deepestDepth = 0;
+    let latestAt = "";
+    for (const row of flattenedImageComments) {
+      participantIds.add(row.entry.presence_id);
+      if (row.depth > deepestDepth) {
+        deepestDepth = row.depth;
+      }
+      const ts = String(row.entry.created_at || row.entry.time || "").trim();
+      if (ts && ts > latestAt) {
+        latestAt = ts;
+      }
+    }
+    return {
+      total: imageComments.length,
+      participants: participantIds.size,
+      rootCommentCount,
+      deepestDepth,
+      latestAt,
+    };
+  }, [flattenedImageComments, imageComments]);
   const activeFieldParticleRows = useMemo<BackendFieldParticle[]>(() => {
     return resolveFieldParticleRows(simulation);
   }, [resolveFieldParticleRows, simulation]);
@@ -6140,8 +7537,11 @@ export function SimulationCanvas({
               <p className="mt-1 text-[10px] text-[#d3ebff]">lane locked: {activeOverlayView.label}</p>
             )}
             <p className="mt-1 text-[10px] text-[#bcd8ef]">{activeOverlayView.description}</p>
+            <p className="mt-1 text-[10px] text-[#9fc7e3]">
+              swarm mode braids nearby packets by owner + direction.
+            </p>
             {interactive ? (
-              <p className="mt-1 text-[10px] text-[#c4d7f0]">tap node or CDB route trail for hologram pop-out / 節点・CDB航路でホログラム起動</p>
+              <p className="mt-1 text-[10px] text-[#c4d7f0]">single tap centers nexus in glass lane · double tap opens hologram / 単タップで中心化・ダブルで起動</p>
             ) : null}
           </div>
           <div className="mt-2 rounded-md border border-[rgba(126,214,247,0.34)] bg-[rgba(7,19,33,0.76)] px-2 py-2 shadow-[0_14px_30px_rgba(0,9,20,0.34)]">
@@ -6278,6 +7678,7 @@ export function SimulationCanvas({
               <p className="mt-1 text-[#9ecbe8]">
                 stream signals: transfer ({particleLegendStats.overlays.transfer}) · resource ({particleLegendStats.overlays.resource})
               </p>
+              <p className="text-[#9ecbe8]">ghost trails: smart daimoi keep short path memory for easier tracing.</p>
               <p className="mt-1 text-[#ffd7aa]">
                 economy: packets {resourceEconomyHud.packets} · actions {resourceEconomyHud.actionPackets} · blocked {resourceEconomyHud.blockedPackets}
               </p>
@@ -6310,6 +7711,7 @@ export function SimulationCanvas({
       {interactive && worldscreen ? (
         <div className="absolute inset-0 z-20 pointer-events-none">
           <section
+            data-core-pointer="block"
             className="pointer-events-auto absolute rounded-2xl border border-[rgba(126,218,255,0.58)] bg-[linear-gradient(164deg,rgba(6,16,30,0.88),rgba(10,30,48,0.82),rgba(7,18,34,0.9))] backdrop-blur-[5px] shadow-[0_30px_90px_rgba(0,18,42,0.56)] overflow-hidden"
             style={
               worldscreenPlacement
@@ -6320,6 +7722,8 @@ export function SimulationCanvas({
                     height: worldscreenPlacement.height,
                     transform: "perspective(1300px) rotateX(5deg)",
                     transformOrigin: worldscreenPlacement.transformOrigin,
+                    transition: "left 180ms ease-out, top 180ms ease-out, width 180ms ease-out, height 180ms ease-out, transform 220ms cubic-bezier(0.22,1,0.36,1)",
+                    willChange: "left, top, transform",
                   }
                 : undefined
             }
@@ -6336,6 +7740,22 @@ export function SimulationCanvas({
                 <p className="text-[10px] text-[#9bc3df]">{worldscreen.subtitle}</p>
               </div>
               <div className="flex items-center gap-2 pl-3">
+                <div className="flex items-center gap-1 rounded-md border border-[rgba(127,190,226,0.34)] bg-[rgba(10,28,45,0.48)] px-1 py-1">
+                  {HOLOGRAM_MODE_OPTIONS.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => setWorldscreenMode(option.id)}
+                      className={`rounded px-2 py-1 text-[10px] font-semibold transition-colors ${
+                        worldscreenMode === option.id
+                          ? "bg-[rgba(82,162,206,0.4)] text-[#ecf8ff]"
+                          : "text-[#b3d4ea] hover:bg-[rgba(47,98,136,0.32)]"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
                 <span className="text-[10px] px-2 py-1 rounded-md border border-[rgba(142,223,255,0.44)] text-[#d8f3ff] bg-[rgba(33,95,132,0.24)]">
                   {resourceKindLabel(worldscreen.resourceKind)}
                 </span>
@@ -6349,7 +7769,16 @@ export function SimulationCanvas({
                 </a>
                 <button
                   type="button"
-                  onClick={() => setWorldscreen(null)}
+                  onPointerDown={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                  }}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setWorldscreen(null);
+                    setWorldscreenMode("overview");
+                  }}
                   className="text-xs px-2.5 py-1 rounded-md border border-[rgba(245,200,171,0.45)] text-[#ffe6d2] hover:bg-[rgba(187,120,78,0.2)]"
                 >
                   close
@@ -6357,214 +7786,317 @@ export function SimulationCanvas({
               </div>
             </header>
             <div className="relative h-[calc(100%-3.5rem)] p-2 sm:p-3">
-              {worldscreen.view === "video" ? (
-                <div className="h-full rounded-xl border border-[rgba(143,214,255,0.38)] bg-[radial-gradient(circle_at_30%_18%,rgba(89,214,255,0.2),rgba(5,17,29,0.86)_62%)] p-2 shadow-[inset_0_0_28px_rgba(70,204,255,0.2)]">
-                  <video
-                    controls
-                    autoPlay
-                    src={worldscreen.url}
-                    className="h-full w-full rounded-lg object-contain bg-[rgba(6,14,22,0.9)]"
-                  >
-                    <track kind="captions" />
-                  </video>
-                </div>
-              ) : null}
-
-              {worldscreen.view === "editor" ? (
-                <div className="h-full rounded-xl border border-[rgba(143,214,255,0.38)] bg-[linear-gradient(180deg,rgba(5,16,30,0.92),rgba(5,15,26,0.88))] overflow-hidden">
-                  {editorPreview.status === "loading" ? (
-                    <div className="h-full grid place-items-center text-sm text-[#b8e0ff]">loading file preview...</div>
-                  ) : null}
-                  {editorPreview.status === "error" ? (
-                    <div className="h-full grid place-items-center text-sm text-[#ffd6bb]">{editorPreview.error}</div>
-                  ) : null}
-                  {editorPreview.status === "ready" ? (
-                    <pre className="h-full overflow-auto px-3 py-2 text-[11px] leading-5 font-mono text-[#d9eeff]">
-                      {editorPreview.content.split(/\r?\n/).slice(0, 220).map((line, index) => (
-                        <div key={`${index}-${line.length}`} className="flex items-start gap-3">
-                          <span className="w-8 shrink-0 text-right text-[#6797ba]">{index + 1}</span>
-                          <span className="whitespace-pre-wrap break-all text-[#dbebff]">{line || " "}</span>
-                        </div>
-                      ))}
-                      {editorPreview.truncated ? (
-                        <p className="pt-2 text-[#9fc3df]">...preview truncated for performance</p>
-                      ) : null}
-                    </pre>
-                  ) : null}
-                </div>
-              ) : null}
-
-              {worldscreen.view === "metadata" ? (
-                <div className="h-full rounded-xl border border-[rgba(143,214,255,0.38)] bg-[linear-gradient(180deg,rgba(5,16,30,0.92),rgba(5,15,26,0.88))] overflow-auto p-3 text-[#d9eeff]">
-                  <p className="text-[11px] uppercase tracking-[0.12em] text-[#9fd0ef]">
-                    Remote resource metadata from crawler encounter
-                  </p>
-                  <div className="mt-2 grid gap-1.5 text-[11px] leading-5">
-                    {worldscreenMetadataRows(worldscreen).map((row) => (
-                      <div key={`${row.key}:${row.value}`} className="grid grid-cols-[auto,1fr] gap-2">
-                        <span className="text-[#87afcc] uppercase tracking-[0.08em]">{row.key}</span>
-                        <span className="text-[#e2f3ff] break-all">{row.value}</span>
-                      </div>
-                    ))}
-                  </div>
-
-                  {worldscreen.remoteFrameUrl ? (
-                    <div className="mt-3 rounded-lg border border-[rgba(124,205,247,0.38)] bg-[rgba(6,17,29,0.7)] p-2">
-                      <p className="text-[10px] uppercase tracking-[0.1em] text-[#97caea] mb-2">
-                        crawler browser frame
+              {worldscreenMode === "overview" ? (
+                <div className="h-full rounded-xl border border-[rgba(143,214,255,0.38)] bg-[linear-gradient(180deg,rgba(5,16,30,0.92),rgba(5,15,26,0.88))] overflow-hidden p-3 text-[#d9eeff]">
+                  <div className="grid h-full gap-3 lg:grid-cols-[minmax(16rem,0.9fr)_minmax(0,1.1fr)]">
+                    <aside className="overflow-auto pr-1">
+                      <p className="text-[11px] uppercase tracking-[0.12em] text-[#9fd0ef]">
+                        Remote resource metadata from crawler encounter
                       </p>
-                      {worldscreen.resourceKind === "video" ? (
+                      <div className="mt-2 grid gap-1.5 text-[11px] leading-5">
+                        {worldscreenMetadataDetails.map((row) => (
+                          <div key={`${row.key}:${row.value}`} className="grid grid-cols-[auto,1fr] gap-2">
+                            <span className="text-[#87afcc] uppercase tracking-[0.08em]">{row.key}</span>
+                            <div className="text-[#e2f3ff] break-all">
+                              {row.isSingleLink ? (
+                                <a
+                                  href={row.value}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="underline decoration-[#78b6dd] underline-offset-2"
+                                >
+                                  {row.value}
+                                </a>
+                              ) : (
+                                <span>{row.value}</span>
+                              )}
+                              {!row.isSingleLink && row.links.length > 0 ? (
+                                <div className="mt-1 flex flex-wrap gap-1.5">
+                                  {row.links.map((link) => (
+                                    <a
+                                      key={`${row.key}:${link}`}
+                                      href={link}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="rounded border border-[rgba(113,181,220,0.35)] bg-[rgba(15,45,68,0.5)] px-1.5 py-0.5 text-[10px] text-[#d2edff]"
+                                    >
+                                      open link
+                                    </a>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-3 rounded border border-[rgba(112,174,207,0.32)] bg-[rgba(8,22,35,0.62)] p-2">
+                        <p className="text-[10px] uppercase tracking-[0.1em] text-[#95c4e1]">conversation quick stats</p>
+                        <p className="text-[11px] text-[#c9e7fb]">comments {imageCommentStats.total} · participants {imageCommentStats.participants}</p>
+                        <p className="text-[11px] text-[#c9e7fb]">threads {imageCommentStats.rootCommentCount} · depth {imageCommentStats.deepestDepth}</p>
+                      </div>
+                    </aside>
+
+                    <section className="overflow-auto rounded-lg border border-[rgba(124,205,247,0.3)] bg-[rgba(6,17,29,0.56)] p-2">
+                      {worldscreen.view === "video" ? (
                         <video
                           controls
-                          preload="metadata"
-                          src={worldscreen.remoteFrameUrl}
-                          className="w-full max-h-[52vh] rounded-md bg-[rgba(4,9,16,0.86)]"
+                          autoPlay
+                          src={worldscreen.url}
+                          className="w-full max-h-[56vh] rounded-md bg-[rgba(4,9,16,0.86)]"
                         >
                           <track kind="captions" />
                         </video>
-                      ) : (
-                        <img
-                          src={worldscreen.remoteFrameUrl}
-                          alt={`crawler frame for ${worldscreen.label}`}
-                          className="w-full max-h-[52vh] rounded-md object-contain bg-[rgba(4,9,16,0.86)]"
-                          loading="lazy"
-                        />
-                      )}
-                    </div>
-                  ) : (
-                    <p className="mt-3 text-[11px] text-[#9fc3df]">
-                      No crawler frame is cached for this remote resource yet.
-                    </p>
-                  )}
-
-                  {worldscreen.resourceKind === "image" ? (
-                    <div className="mt-3 rounded-lg border border-[rgba(130,205,245,0.32)] bg-[rgba(7,18,30,0.72)] p-2.5">
-                      <p className="text-[10px] uppercase tracking-[0.12em] text-[#a8d8f5]">
-                        presence image commentary
-                      </p>
-                      <p className="mt-1 text-[10px] text-[#9fc4df] break-all">
-                        image-ref: {activeImageCommentRef || "(unknown)"}
-                      </p>
-
-                      <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                        <label className="grid gap-1">
-                          <span className="text-[10px] uppercase tracking-[0.08em] text-[#89b1cc]">presence account</span>
-                          <input
-                            value={presenceAccountId}
-                            onChange={(event) => setPresenceAccountId(event.target.value)}
-                            list="presence-account-options"
-                            placeholder="witness_thread"
-                            className="rounded border border-[rgba(140,196,231,0.38)] bg-[rgba(11,24,38,0.82)] px-2 py-1 text-[12px] text-[#def1ff] outline-none focus:border-[rgba(165,220,255,0.68)]"
-                          />
-                        </label>
-                        <label className="grid gap-1">
-                          <span className="text-[10px] uppercase tracking-[0.08em] text-[#89b1cc]">analysis prompt</span>
-                          <input
-                            value={imageCommentPrompt}
-                            onChange={(event) => setImageCommentPrompt(event.target.value)}
-                            placeholder="Describe the image evidence and one next action."
-                            className="rounded border border-[rgba(140,196,231,0.38)] bg-[rgba(11,24,38,0.82)] px-2 py-1 text-[12px] text-[#def1ff] outline-none focus:border-[rgba(165,220,255,0.68)]"
-                          />
-                        </label>
-                      </div>
-                      <datalist id="presence-account-options">
-                        {presenceAccounts.map((account) => (
-                          <option key={account.presence_id} value={account.presence_id}>
-                            {account.display_name}
-                          </option>
-                        ))}
-                      </datalist>
-
-                      <label className="mt-2 grid gap-1">
-                        <span className="text-[10px] uppercase tracking-[0.08em] text-[#89b1cc]">comment draft</span>
-                        <textarea
-                          value={imageCommentDraft}
-                          onChange={(event) => setImageCommentDraft(event.target.value)}
-                          rows={3}
-                          placeholder="Commentary appears here; edit before posting if needed."
-                          className="rounded border border-[rgba(140,196,231,0.38)] bg-[rgba(11,24,38,0.82)] px-2 py-1 text-[12px] leading-5 text-[#def1ff] outline-none focus:border-[rgba(165,220,255,0.68)]"
-                        />
-                      </label>
-
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            void submitGeneratedImageCommentary();
-                          }}
-                          disabled={imageCommentBusy}
-                          className="rounded border border-[rgba(131,223,255,0.52)] bg-[rgba(40,113,148,0.34)] px-2.5 py-1 text-[11px] font-semibold text-[#e2f6ff] disabled:opacity-60"
-                        >
-                          {imageCommentBusy ? "analyzing..." : "analyze with qwen3-vl"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            void submitManualImageComment();
-                          }}
-                          disabled={imageCommentBusy || imageCommentDraft.trim().length === 0}
-                          className="rounded border border-[rgba(154,206,247,0.48)] bg-[rgba(49,96,137,0.28)] px-2.5 py-1 text-[11px] font-semibold text-[#dff2ff] disabled:opacity-60"
-                        >
-                          post comment
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (!activeImageCommentRef) {
-                              return;
-                            }
-                            setImageCommentsLoading(true);
-                            setImageCommentError("");
-                            void loadImageComments(activeImageCommentRef)
-                              .catch((error: unknown) => {
-                                setImageCommentError(errorMessage(error, "unable to refresh image comments"));
-                              })
-                              .finally(() => {
-                                setImageCommentsLoading(false);
-                              });
-                          }}
-                          disabled={imageCommentBusy || !activeImageCommentRef}
-                          className="rounded border border-[rgba(154,206,247,0.34)] bg-[rgba(20,60,94,0.24)] px-2.5 py-1 text-[11px] font-semibold text-[#cfe7fb] disabled:opacity-60"
-                        >
-                          refresh comments
-                        </button>
-                      </div>
-
-                      {imageCommentError ? (
-                        <p className="mt-2 text-[11px] text-[#ffd7be]">{imageCommentError}</p>
                       ) : null}
 
-                      <div className="mt-2 rounded border border-[rgba(120,182,220,0.3)] bg-[rgba(4,12,21,0.62)] p-2 max-h-44 overflow-auto">
-                        {imageCommentsLoading ? (
-                          <p className="text-[11px] text-[#9bc2dd]">loading image comments...</p>
-                        ) : null}
-                        {!imageCommentsLoading && imageComments.length === 0 ? (
-                          <p className="text-[11px] text-[#9bc2dd]">no comments yet for this image.</p>
-                        ) : null}
-                        {!imageCommentsLoading
-                          ? imageComments.map((entry) => (
-                              <article key={entry.id} className="pb-2 mb-2 border-b border-[rgba(108,164,199,0.24)] last:border-none last:pb-0 last:mb-0">
-                                <p className="text-[10px] uppercase tracking-[0.08em] text-[#88b3d0]">
-                                  {presenceDisplayName(presenceAccounts, entry.presence_id)}
-                                  <span className="ml-1 text-[#6f95b1]">{timestampLabel(entry.created_at || entry.time)}</span>
-                                </p>
-                                <p className="text-[12px] leading-5 text-[#def2ff] whitespace-pre-wrap break-words">{entry.comment}</p>
-                              </article>
-                            ))
-                          : null}
-                      </div>
-                    </div>
-                  ) : null}
+                      {worldscreen.view === "editor" ? (
+                        <div className="min-h-[20rem] overflow-hidden rounded-md border border-[rgba(143,214,255,0.22)]">
+                          {editorPreview.status === "loading" ? (
+                            <div className="h-full min-h-[20rem] grid place-items-center text-sm text-[#b8e0ff]">loading file preview...</div>
+                          ) : null}
+                          {editorPreview.status === "error" ? (
+                            <div className="h-full min-h-[20rem] grid place-items-center text-sm text-[#ffd6bb]">{editorPreview.error}</div>
+                          ) : null}
+                          {editorPreview.status === "ready" ? (
+                            <pre className="h-full max-h-[56vh] overflow-auto px-3 py-2 text-[11px] leading-5 font-mono text-[#d9eeff]">
+                              {editorPreview.content.split(/\r?\n/).slice(0, 220).map((line, index) => (
+                                <div key={`${index}-${line.length}`} className="flex items-start gap-3">
+                                  <span className="w-8 shrink-0 text-right text-[#6797ba]">{index + 1}</span>
+                                  <span className="whitespace-pre-wrap break-all text-[#dbebff]">{line || " "}</span>
+                                </div>
+                              ))}
+                              {editorPreview.truncated ? (
+                                <p className="pt-2 text-[#9fc3df]">...preview truncated for performance</p>
+                              ) : null}
+                            </pre>
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                      {worldscreen.view === "website" ? (
+                        <iframe
+                          title={`worldscreen-${worldscreen.label}`}
+                          src={worldscreen.url}
+                          className="w-full h-[56vh] rounded-md border border-[rgba(143,214,255,0.3)] bg-[#06101e]"
+                          referrerPolicy="no-referrer"
+                        />
+                      ) : null}
+
+                      {worldscreen.view === "metadata" ? (
+                        <>
+                          {worldscreen.resourceKind === "video" ? (
+                            <video
+                              controls
+                              preload="metadata"
+                              src={worldscreen.remoteFrameUrl || worldscreen.url}
+                              className="w-full max-h-[52vh] rounded-md bg-[rgba(4,9,16,0.86)]"
+                            >
+                              <track kind="captions" />
+                            </video>
+                          ) : worldscreen.resourceKind === "image" || worldscreen.remoteFrameUrl ? (
+                            <img
+                              src={worldscreen.remoteFrameUrl || worldscreen.url}
+                              alt={`crawler frame for ${worldscreen.label}`}
+                              className="w-full max-h-[52vh] rounded-md object-contain bg-[rgba(4,9,16,0.86)]"
+                              loading="lazy"
+                            />
+                          ) : (
+                            <p className="text-[11px] text-[#9fc3df]">
+                              No crawler frame is cached for this remote resource yet.
+                            </p>
+                          )}
+
+                          {(worldscreen.resourceKind === "website" || worldscreen.resourceKind === "link") ? (
+                            <div className="mt-2 flex flex-wrap gap-1.5">
+                              <a
+                                href={worldscreen.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="rounded border border-[rgba(113,181,220,0.35)] bg-[rgba(15,45,68,0.5)] px-2 py-0.5 text-[11px] text-[#d2edff]"
+                              >
+                                open website
+                              </a>
+                              {worldscreen.sourceUrl ? (
+                                <a
+                                  href={worldscreen.sourceUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="rounded border border-[rgba(113,181,220,0.35)] bg-[rgba(15,45,68,0.5)] px-2 py-0.5 text-[11px] text-[#d2edff]"
+                                >
+                                  open source link
+                                </a>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </>
+                      ) : null}
+                    </section>
+                  </div>
                 </div>
               ) : null}
 
-              {worldscreen.view === "website" ? (
-                <iframe
-                  title={`worldscreen-${worldscreen.label}`}
-                  src={worldscreen.url}
-                  className="w-full h-full rounded-xl border border-[rgba(143,214,255,0.3)] bg-[#06101e]"
-                  referrerPolicy="no-referrer"
-                />
+              {worldscreenMode === "conversation" ? (
+                <div className="h-full rounded-xl border border-[rgba(143,214,255,0.38)] bg-[linear-gradient(180deg,rgba(5,16,30,0.92),rgba(5,15,26,0.88))] overflow-hidden p-3 text-[#d9eeff]">
+                  <p className="text-[11px] uppercase tracking-[0.12em] text-[#9fd0ef]">true graph conversation</p>
+                  <p className="mt-1 text-[10px] text-[#9ec4dd] break-all">
+                    compact nexus ref: {activeImageCommentRef || "(unknown)"}
+                  </p>
+
+                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                    <div className="grid gap-1">
+                      <span className="text-[10px] uppercase tracking-[0.08em] text-[#89b1cc]">presence account</span>
+                      <input
+                        value={presenceAccountId}
+                        onChange={(event) => setPresenceAccountId(event.target.value)}
+                        list="presence-account-options"
+                        placeholder="witness_thread"
+                        className="rounded border border-[rgba(140,196,231,0.38)] bg-[rgba(11,24,38,0.82)] px-2 py-1 text-[12px] text-[#def1ff] outline-none focus:border-[rgba(165,220,255,0.68)]"
+                      />
+                    </div>
+                    {worldscreen.resourceKind === "image" ? (
+                      <div className="grid gap-1">
+                        <span className="text-[10px] uppercase tracking-[0.08em] text-[#89b1cc]">analysis prompt</span>
+                        <input
+                          value={imageCommentPrompt}
+                          onChange={(event) => setImageCommentPrompt(event.target.value)}
+                          placeholder="Describe the image evidence and one next action."
+                          className="rounded border border-[rgba(140,196,231,0.38)] bg-[rgba(11,24,38,0.82)] px-2 py-1 text-[12px] text-[#def1ff] outline-none focus:border-[rgba(165,220,255,0.68)]"
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                  <datalist id="presence-account-options">
+                    {presenceAccounts.map((account) => (
+                      <option key={account.presence_id} value={account.presence_id}>
+                        {account.display_name}
+                      </option>
+                    ))}
+                  </datalist>
+
+                  {imageCommentParentId ? (
+                    <p className="mt-2 text-[10px] text-[#a9d0ea]">
+                      replying to {resolvePresenceName(commentEntryById.get(imageCommentParentId)?.presence_id ?? "")}
+                      <button
+                        type="button"
+                        onClick={() => setImageCommentParentId("")}
+                        className="ml-2 rounded border border-[rgba(140,194,226,0.38)] bg-[rgba(17,44,66,0.44)] px-1.5 py-0.5 text-[10px] text-[#d8edff]"
+                      >
+                        clear
+                      </button>
+                    </p>
+                  ) : (
+                    <p className="mt-2 text-[10px] text-[#8fb6d1]">posting a new root comment</p>
+                  )}
+
+                  <div className="mt-2 grid gap-1">
+                    <span className="text-[10px] uppercase tracking-[0.08em] text-[#89b1cc]">comment draft</span>
+                    <textarea
+                      value={imageCommentDraft}
+                      onChange={(event) => setImageCommentDraft(event.target.value)}
+                      rows={3}
+                      placeholder="Commentary appears here; edit before posting if needed."
+                      className="rounded border border-[rgba(140,196,231,0.38)] bg-[rgba(11,24,38,0.82)] px-2 py-1 text-[12px] leading-5 text-[#def1ff] outline-none focus:border-[rgba(165,220,255,0.68)]"
+                    />
+                  </div>
+
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {worldscreen.resourceKind === "image" ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void submitGeneratedImageCommentary();
+                        }}
+                        disabled={imageCommentBusy}
+                        className="rounded border border-[rgba(131,223,255,0.52)] bg-[rgba(40,113,148,0.34)] px-2.5 py-1 text-[11px] font-semibold text-[#e2f6ff] disabled:opacity-60"
+                      >
+                        {imageCommentBusy ? "analyzing..." : "analyze with qwen3-vl"}
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void submitManualImageComment();
+                      }}
+                      disabled={imageCommentBusy || imageCommentDraft.trim().length === 0}
+                      className="rounded border border-[rgba(154,206,247,0.48)] bg-[rgba(49,96,137,0.28)] px-2.5 py-1 text-[11px] font-semibold text-[#dff2ff] disabled:opacity-60"
+                    >
+                      post comment
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        refreshNexusComments(activeImageCommentRef);
+                      }}
+                      disabled={imageCommentBusy || !activeImageCommentRef}
+                      className="rounded border border-[rgba(154,206,247,0.34)] bg-[rgba(20,60,94,0.24)] px-2.5 py-1 text-[11px] font-semibold text-[#cfe7fb] disabled:opacity-60"
+                    >
+                      refresh comments
+                    </button>
+                  </div>
+
+                  {imageCommentError ? (
+                    <p className="mt-2 text-[11px] text-[#ffd7be]">{imageCommentError}</p>
+                  ) : null}
+
+                  <div className="mt-2 rounded border border-[rgba(120,182,220,0.3)] bg-[rgba(4,12,21,0.62)] p-2 max-h-[calc(100%-17.2rem)] overflow-auto">
+                    {imageCommentsLoading ? (
+                      <p className="text-[11px] text-[#9bc2dd]">loading nexus comments...</p>
+                    ) : null}
+                    {!imageCommentsLoading && flattenedImageComments.length === 0 ? (
+                      <p className="text-[11px] text-[#9bc2dd]">no comments yet for this nexus.</p>
+                    ) : null}
+                    {!imageCommentsLoading
+                      ? flattenedImageComments.map(({ entry, depth }) => (
+                          <article
+                            key={entry.id}
+                            className="pb-2 mb-2 border-b border-[rgba(108,164,199,0.24)] last:border-none last:pb-0 last:mb-0"
+                            style={{ marginLeft: `${Math.min(depth * 18, 72)}px` }}
+                          >
+                            <p className="text-[10px] uppercase tracking-[0.08em] text-[#88b3d0]">
+                              {resolvePresenceName(entry.presence_id)}
+                              <span className="ml-1 text-[#6f95b1]">{timestampLabel(entry.created_at || entry.time)}</span>
+                            </p>
+                            <p className="text-[12px] leading-5 text-[#def2ff] whitespace-pre-wrap break-words">{entry.comment}</p>
+                            <button
+                              type="button"
+                              onClick={() => setImageCommentParentId(entry.id)}
+                              className="mt-1 rounded border border-[rgba(128,186,220,0.34)] bg-[rgba(13,39,58,0.54)] px-1.5 py-0.5 text-[10px] text-[#d3ebff]"
+                            >
+                              reply in-thread
+                            </button>
+                          </article>
+                        ))
+                      : null}
+                  </div>
+                </div>
+              ) : null}
+
+              {worldscreenMode === "stats" ? (
+                <div className="h-full rounded-xl border border-[rgba(143,214,255,0.38)] bg-[linear-gradient(180deg,rgba(5,16,30,0.92),rgba(5,15,26,0.88))] overflow-auto p-3 text-[#d9eeff]">
+                  <p className="text-[11px] uppercase tracking-[0.12em] text-[#9fd0ef]">nexus stats</p>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                    <div className="rounded border border-[rgba(112,174,207,0.32)] bg-[rgba(8,22,35,0.62)] p-2">
+                      <p className="text-[10px] uppercase tracking-[0.1em] text-[#95c4e1]">resource</p>
+                      <p className="text-[12px] text-[#e4f5ff]">{resourceKindLabel(worldscreen.resourceKind)} / {worldscreen.nodeKind}</p>
+                      <p className="mt-1 text-[11px] text-[#b8d8ec] break-all">node: {worldscreen.nodeId || "(unknown)"}</p>
+                      <p className="text-[11px] text-[#b8d8ec] break-all">ref: {activeImageCommentRef || "(unknown)"}</p>
+                    </div>
+
+                    <div className="rounded border border-[rgba(112,174,207,0.32)] bg-[rgba(8,22,35,0.62)] p-2">
+                      <p className="text-[10px] uppercase tracking-[0.1em] text-[#95c4e1]">conversation</p>
+                      <p className="text-[12px] text-[#e4f5ff]">comments: {imageCommentStats.total}</p>
+                      <p className="text-[11px] text-[#b8d8ec]">participants: {imageCommentStats.participants}</p>
+                      <p className="text-[11px] text-[#b8d8ec]">threads: {imageCommentStats.rootCommentCount}</p>
+                      <p className="text-[11px] text-[#b8d8ec]">max depth: {imageCommentStats.deepestDepth}</p>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 rounded border border-[rgba(112,174,207,0.3)] bg-[rgba(8,22,35,0.52)] p-2 text-[11px] text-[#cde7fb]">
+                    <p>discovered: {worldscreen.discoveredAt || "n/a"}</p>
+                    <p>fetched: {worldscreen.fetchedAt || "n/a"}</p>
+                    <p>encountered: {worldscreen.encounteredAt || "n/a"}</p>
+                    <p>latest comment: {imageCommentStats.latestAt ? timestampLabel(imageCommentStats.latestAt) : "n/a"}</p>
+                  </div>
+                </div>
               ) : null}
             </div>
           </section>

@@ -33,7 +33,8 @@ services:
       WEAVER_LLM_BASE_URL: "http://host.docker.internal:11435"
       WEAVER_LLM_MODEL: "qwen3-vl:2b-instruct"
       WEAVER_LLM_TIMEOUT_MS: "30000"
-      EMBEDDINGS_BACKEND: "ollama"
+      EMBEDDINGS_BACKEND: "openvino"
+      TORCH_EMBED_MODEL: "nomic-ai/nomic-embed-text-v1.5"
       TEXT_GENERATION_BACKEND: "tensorflow"
       TF_EMBED_HASH_BINS: "768"
       DOCKER_SIMULATION_LABEL_KEY: "io.fork_tales.simulation"
@@ -42,6 +43,7 @@ services:
       DOCKER_SIMULATION_NETWORK_HINT: "eta-mu-sim-net"
       DOCKER_SIMULATION_WS_REFRESH_SECONDS: "2.5"
       DOCKER_SIMULATION_WS_HEARTBEAT_SECONDS: "18"
+      DOCKER_SIMULATION_RESOURCE_WORKERS: "10"
     labels:
       io.fork_tales.simulation: "true"
       io.fork_tales.simulation.role: "world-runtime"

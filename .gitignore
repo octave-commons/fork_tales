@@ -56,3 +56,14 @@ part64/world_state/tts_cache/
 # Frontend build outputs
 part64/frontend/dist/
 part64/frontend/dist-ssr/
+
+# Local benchmark/runtime artifacts
+part64/.cache-npu/
+part64/bench_embed_native
+part64/bench_embed_native_dbg
+part64/bench_embed_native_ov
+part64/onnxruntime-linux-*.tgz
+part64/onnxruntime-linux-*/
+part64/runs/
+part64/frontend/coverage/
+session-ses_*.md

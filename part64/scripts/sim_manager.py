@@ -172,6 +172,11 @@ class SimulationManager:
                 "CHROMA_HOST=chroma",
                 "CHROMA_PORT=8000",
                 "OLLAMA_BASE_URL=http://host.docker.internal:11435",
+                "OPENVINO_EMBED_ENDPOINT=http://host.docker.internal:18000/v1/embeddings",
+                "OPENVINO_EMBED_MODEL=nomic-embed-text",
+                "OPENVINO_EMBED_DEVICE=NPU",
+                "OPENVINO_EMBED_TIMEOUT_SEC=10",
+                "EMBEDDINGS_BACKEND=openvino",
             ],
             "Cmd": [
                 "pm2-runtime",

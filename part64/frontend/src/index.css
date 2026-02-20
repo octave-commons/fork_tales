@@ -487,7 +487,7 @@ body {
 
 .world-council-root {
   position: relative;
-  pointer-events: none;
+  pointer-events: auto;
   display: grid;
   gap: 0.45rem;
   margin: 0;
@@ -843,6 +843,54 @@ body {
   background: rgba(59, 24, 26, 0.76);
 }
 
+.world-focus-dial-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.34rem;
+  padding: 0.34rem 0.5rem 0;
+}
+
+.world-focus-dial {
+  display: grid;
+  justify-items: center;
+  gap: 0.14rem;
+  min-width: 3.4rem;
+}
+
+.world-focus-dial-face {
+  --dial-hue: 198;
+  --dial-value: 50%;
+  width: 2.3rem;
+  height: 2.3rem;
+  border-radius: 999px;
+  border: 1px solid rgba(123, 184, 220, 0.38);
+  box-shadow:
+    inset 0 0 0 1px rgba(172, 222, 246, 0.12),
+    0 0 12px rgba(10, 34, 50, 0.28);
+  background:
+    radial-gradient(circle at center, rgba(7, 18, 30, 0.96) 56%, transparent 57%),
+    conic-gradient(
+      hsla(var(--dial-hue), 85%, 69%, 0.94) 0 var(--dial-value),
+      rgba(25, 47, 64, 0.82) var(--dial-value) 100%
+    );
+  display: grid;
+  place-items: center;
+}
+
+.world-focus-dial-core {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: rgba(228, 245, 255, 0.97);
+}
+
+.world-focus-dial-label {
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(159, 205, 234, 0.9);
+}
+
 .world-focus-reason {
   margin: 0.38rem 0.5rem 0;
   font-size: 11px;
@@ -894,6 +942,7 @@ body {
 
 .world-focus-pane-glass .world-focus-pane-header,
 .world-focus-pane-glass .world-focus-meta-row,
+.world-focus-pane-glass .world-focus-dial-row,
 .world-focus-pane-glass .world-focus-reason,
 .world-focus-pane-glass .world-focus-actions,
 .world-focus-pane-glass .world-glass-grid,
@@ -1495,7 +1544,7 @@ body {
   text-transform: uppercase;
 }
 
-.world-orbital-dock {
+.world-unity-mobile-dock {
   position: fixed;
   left: 50%;
   bottom: 0.62rem;
@@ -1511,7 +1560,7 @@ body {
   pointer-events: auto;
 }
 
-.world-orbital-dock-item {
+.world-unity-mobile-dock-item {
   appearance: none;
   cursor: pointer;
   border: 1px solid rgba(128, 189, 225, 0.42);
@@ -1525,28 +1574,28 @@ body {
   box-shadow: 0 8px 18px rgba(0, 8, 16, 0.42);
 }
 
-.world-orbital-dock-item-selected {
+.world-unity-mobile-dock-item-selected {
   border-color: rgba(170, 229, 255, 0.84);
   box-shadow: 0 10px 22px rgba(0, 8, 16, 0.5), 0 0 0 1px rgba(146, 209, 246, 0.2);
 }
 
-.world-orbital-dock-item-closed {
+.world-unity-mobile-dock-item-closed {
   opacity: 0.72;
   border-style: dashed;
 }
 
-.world-orbital-dock-item-min {
+.world-unity-mobile-dock-item-min {
   border-style: dashed;
 }
 
-.world-orbital-dock-rank {
+.world-unity-mobile-dock-rank {
   font-size: 9px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: rgba(166, 207, 235, 0.9);
 }
 
-.world-orbital-dock-core {
+.world-unity-mobile-dock-core {
   width: 1.16rem;
   height: 1.16rem;
   border-radius: 999px;
@@ -1561,7 +1610,7 @@ body {
     radial-gradient(circle at 30% 28%, rgba(246, 252, 255, 0.96), rgba(109, 214, 255, 0.88) 72%, rgba(62, 139, 191, 0.9));
 }
 
-.world-orbital-dock-label {
+.world-unity-mobile-dock-label {
   max-width: 10rem;
   white-space: nowrap;
   overflow: hidden;
@@ -1630,7 +1679,7 @@ body {
     max-height: 11rem;
   }
 
-  .world-orbital-dock {
+  .world-unity-mobile-dock {
     justify-content: flex-start;
   }
 
@@ -1645,7 +1694,7 @@ body {
 }
 
 @media (max-width: 920px) {
-  .world-orbital-dock-item {
+  .world-unity-mobile-dock-item {
     width: 2rem;
     height: 2rem;
     border-radius: 999px;
@@ -1653,11 +1702,11 @@ body {
     justify-content: center;
   }
 
-  .world-orbital-dock-label {
+  .world-unity-mobile-dock-label {
     display: none;
   }
 
-  .world-orbital-dock-core {
+  .world-unity-mobile-dock-core {
     width: 1.2rem;
     height: 1.2rem;
   }

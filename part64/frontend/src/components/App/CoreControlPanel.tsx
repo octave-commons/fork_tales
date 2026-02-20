@@ -30,6 +30,16 @@ import {
   type CoreVisualTuning,
 } from "../../app/coreSimulationConfig";
 
+export type MouseDaimonMode = "push" | "pull" | "orbit" | "calm";
+
+export interface MouseDaimonTuning {
+  enabled: boolean;
+  message: string;
+  mode: MouseDaimonMode;
+  radius: number;
+  strength: number;
+}
+
 interface ProjectionOption {
   id: string;
   name: string;
@@ -56,6 +66,7 @@ interface Props {
   activeChatLens: { presence: string; status: string } | null;
   latestAutopilotEvent: { actionId: string; result: string } | null;
   projectionOptions: ProjectionOption[];
+  mouseDaimonTuning: MouseDaimonTuning;
   onToggleAutopilot: () => void;
   onToggleCoreFlight: () => void;
   onToggleCoreOrbit: () => void;
@@ -73,6 +84,7 @@ interface Props {
   onResetCoreSimulationTuning: () => void;
   onSetCoreSimulationDial: (dial: keyof CoreSimulationTuning, value: number) => void;
   onSetCoreOrbitSpeed: (value: number) => void;
+  onSetMouseDaimonTuning: (tuning: Partial<MouseDaimonTuning>) => void;
 }
 
 const INTERFACE_OPACITY_MIN = 0.38;
@@ -98,6 +110,7 @@ export function CoreControlPanel({
   activeChatLens,
   latestAutopilotEvent,
   projectionOptions,
+  mouseDaimonTuning,
   onToggleAutopilot,
   onToggleCoreFlight,
   onToggleCoreOrbit,
@@ -115,6 +128,7 @@ export function CoreControlPanel({
   onResetCoreSimulationTuning,
   onSetCoreSimulationDial,
   onSetCoreOrbitSpeed,
+  onSetMouseDaimonTuning,
 }: Props) {
   const [showVisualDials, setShowVisualDials] = useState(true);
   const [showSimulationControls, setShowSimulationControls] = useState(true);
@@ -487,6 +501,83 @@ export function CoreControlPanel({
               </div>
             </div>
           ) : null}
+
+          <div className={`${showSimulationControls ? "mt-3" : ""} rounded-md border border-[rgba(255,160,80,0.28)] bg-[rgba(40,28,16,0.12)] px-2 py-2`}>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[10px] uppercase tracking-[0.12em] text-[#ffc878]">mouse daimon</p>
+              <button
+                type="button"
+                onClick={() => onSetMouseDaimonTuning({ enabled: !mouseDaimonTuning.enabled })}
+                className={`rounded border px-2 py-0.5 text-[10px] font-semibold transition-colors ${
+                  mouseDaimonTuning.enabled
+                    ? "border-[rgba(255,180,100,0.5)] bg-[rgba(255,160,80,0.24)] text-[#ffd4a0]"
+                    : "border-[rgba(140,120,100,0.36)] bg-[rgba(60,50,40,0.24)] text-[#c8b090]"
+                }`}
+                >
+                  {mouseDaimonTuning.enabled ? "enabled" : "disabled"}
+                </button>
+              </div>
+
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                <label className="grid gap-1">
+                  <span className="text-[10px] text-[#e8c8a0]">message</span>
+                  <input
+                    type="text"
+                    value={mouseDaimonTuning.message}
+                    onChange={(e) => onSetMouseDaimonTuning({ message: e.target.value })}
+                    maxLength={24}
+                    className="rounded border border-[rgba(255,180,100,0.3)] bg-[rgba(40,30,20,0.5)] px-2 py-1 text-[11px] text-[#ffe4c4] placeholder-[rgba(200,160,120,0.5)] focus:border-[rgba(255,200,120,0.5)] focus:outline-none"
+                    placeholder="witness"
+                  />
+                </label>
+
+                <div className="grid gap-1">
+                  <span className="text-[10px] text-[#e8c8a0]">mode</span>
+                  <div className="flex flex-wrap gap-1">
+                    {(["push", "pull", "orbit", "calm"] as const).map((mode) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => onSetMouseDaimonTuning({ mode })}
+                        className={`rounded px-2 py-0.5 text-[9px] font-semibold transition-colors ${
+                          mouseDaimonTuning.mode === mode
+                            ? "bg-[rgba(255,160,80,0.4)] text-[#fff4e0]"
+                            : "text-[#d4b890] hover:bg-[rgba(255,140,60,0.2)]"
+                        }`}
+                      >
+                        {mode}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <label className="grid gap-1">
+                  <span className="text-[10px] text-[#e8c8a0]">radius <code>{Math.round(mouseDaimonTuning.radius * 100)}%</code></span>
+                  <input
+                    type="range"
+                    min={0.06}
+                    max={0.42}
+                    step={0.02}
+                    value={mouseDaimonTuning.radius}
+                    onChange={(e) => onSetMouseDaimonTuning({ radius: Number(e.target.value) })}
+                    className="h-1 w-full accent-[#ffaa55]"
+                  />
+                </label>
+
+                <label className="grid gap-1">
+                  <span className="text-[10px] text-[#e8c8a0]">strength <code>{Math.round(mouseDaimonTuning.strength * 100)}%</code></span>
+                  <input
+                    type="range"
+                    min={0.1}
+                    max={0.9}
+                    step={0.05}
+                    value={mouseDaimonTuning.strength}
+                    onChange={(e) => onSetMouseDaimonTuning({ strength: Number(e.target.value) })}
+                    className="h-1 w-full accent-[#ffaa55]"
+                  />
+                </label>
+              </div>
+            </div>
         </div>
       ) : null}
     </div>

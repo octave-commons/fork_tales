@@ -148,7 +148,7 @@ def test_simulation_http_cached_body_respects_age_limit() -> None:
             world_server._SIMULATION_HTTP_CACHE.update(previous)
 
 
-def test_simulation_http_cache_key_buckets_runtime_noise() -> None:
+def test_simulation_http_cache_key_tracks_queue_pressure_but_ignores_noise() -> None:
     catalog = {
         "file_graph": {"generated_at": "fg"},
         "crawler_graph": {"generated_at": "cg"},
@@ -165,7 +165,15 @@ def test_simulation_http_cache_key_buckets_runtime_noise() -> None:
         queue_snapshot={"pending_count": 7, "event_count": 39},
         influence_snapshot={"queue_ratio": 0.103, "compute_jobs_180s": 11},
     )
-    assert key_a == key_b
+    assert key_a != key_b
+
+    key_c = world_server._simulation_http_cache_key(
+        perspective="hybrid",
+        catalog=catalog,
+        queue_snapshot={"pending_count": 7, "event_count": 33},
+        influence_snapshot={"queue_ratio": 0.193, "compute_jobs_180s": 44},
+    )
+    assert key_a == key_c
 
 
 def test_simulation_http_wait_for_exact_cache_returns_inflight_hit() -> None:

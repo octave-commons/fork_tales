@@ -330,7 +330,9 @@ def _percentile(values: list[float], p: float) -> float:
     return values[lower] + ((values[upper] - values[lower]) * weight)
 
 
-def _summarize(runtime: str, samples: list[RunSample], tasks: list[TaskSpec]) -> None:
+def _summarize(
+    runtime: str, samples: list[RunSample], tasks: list[TaskSpec]
+) -> dict[str, Any]:
     durations = sorted(sample.latency_ms for sample in samples)
     ok_count = sum(1 for sample in samples if sample.ok)
     requested_count = sum(1 for sample in samples if sample.requested)
@@ -352,20 +354,56 @@ def _summarize(runtime: str, samples: list[RunSample], tasks: list[TaskSpec]) ->
     mean_latency = statistics.fmean(durations) if durations else 0.0
     p95_latency = _percentile(durations, 0.95)
     collision_mean = statistics.fmean(collision_rows) if collision_rows else 0.0
+    request_rate = requested_count / max(1, len(samples))
+    blocked_rate = blocked_count / max(1, len(samples))
+
+    task_rows: list[dict[str, Any]] = []
+    for task in tasks:
+        per_task = [sample for sample in samples if sample.task_id == task.task_id]
+        if not per_task:
+            continue
+        task_requested = sum(1 for sample in per_task if sample.requested)
+        task_rows.append(
+            {
+                "task_id": task.task_id,
+                "samples": len(per_task),
+                "requested": task_requested,
+                "request_rate": task_requested / max(1, len(per_task)),
+                "prompt": task.prompt,
+            }
+        )
 
     print(
         f"{runtime}: n={len(samples)} ok={ok_count} requested={requested_count} blocked={blocked_count} "
         f"mean={mean_latency:.2f}ms p95={p95_latency:.2f}ms collisions_mean={collision_mean:.2f} "
         f"audio={requested_audio} image={requested_image} unique_targets={len(unique_targets)}"
     )
-    for task in tasks:
-        task_rows = [sample for sample in samples if sample.task_id == task.task_id]
-        if not task_rows:
+    for task_row in task_rows:
+        if int(task_row.get("samples", 0)) <= 0:
             continue
-        task_requested = sum(1 for sample in task_rows if sample.requested)
         print(
-            f"  - {task.task_id}: requested={task_requested}/{len(task_rows)} prompt='{task.prompt[:56]}'"
+            "  - "
+            f"{task_row['task_id']}: requested={int(task_row['requested'])}/{int(task_row['samples'])} "
+            f"prompt='{str(task_row['prompt'])[:56]}'"
         )
+
+    return {
+        "runtime": runtime,
+        "samples": len(samples),
+        "ok_count": ok_count,
+        "requested_count": requested_count,
+        "blocked_count": blocked_count,
+        "request_rate": request_rate,
+        "blocked_rate": blocked_rate,
+        "mean_latency_ms": mean_latency,
+        "p95_latency_ms": p95_latency,
+        "collision_mean": collision_mean,
+        "requested_audio": requested_audio,
+        "requested_image": requested_image,
+        "unique_target_count": len(unique_targets),
+        "unique_target_ids": unique_targets,
+        "tasks": task_rows,
+    }
 
 
 def main() -> int:

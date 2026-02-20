@@ -153,6 +153,13 @@ from .simulation import (
     _materialize_heat_values,
     _stable_entity_id,
     _normalize_path_for_file_id,
+    # Canonical unified model builders
+    _build_canonical_nexus_node,
+    _build_canonical_nexus_edge,
+    _build_canonical_nexus_graph,
+    _build_field_registry,
+    _project_legacy_file_graph_from_nexus,
+    _project_legacy_logical_graph_from_nexus,
 )
 from .presence_runtime import (
     InMemoryPresenceStorage,

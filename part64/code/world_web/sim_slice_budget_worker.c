@@ -1,3 +1,8 @@
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
+#include <errno.h>
 #include <stddef.h>
 
 #if __has_include(<hiredis/hiredis.h>)
@@ -30,7 +35,24 @@ void freeReplyObject(void *reply);
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
+
+static void sleep_microseconds(unsigned int microseconds) {
+    if (microseconds == 0u) {
+        return;
+    }
+
+    struct timespec req;
+    req.tv_sec = (time_t)(microseconds / 1000000u);
+    req.tv_nsec = (long)((microseconds % 1000000u) * 1000u);
+
+    while (nanosleep(&req, &req) != 0) {
+        if (errno != EINTR) {
+            break;
+        }
+    }
+}
 
 static int safe_int(const char *text, int fallback) {
     if (text == NULL || text[0] == '\0') {
@@ -159,7 +181,7 @@ int main(void) {
         if (ctx == NULL) {
             ctx = connect_redis(host, port, password);
             if (ctx == NULL) {
-                usleep(350000);
+                sleep_microseconds(350000u);
                 continue;
             }
         }
@@ -174,7 +196,7 @@ int main(void) {
             fprintf(stderr, "redis xread failed, reconnecting\n");
             redisFree(ctx);
             ctx = NULL;
-            usleep(200000);
+            sleep_microseconds(200000u);
             continue;
         }
         if (reply->type == REDIS_REPLY_NIL) {

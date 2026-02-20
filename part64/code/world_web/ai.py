@@ -285,7 +285,7 @@ def _ollama_embed_remote(text: str, model: str | None = None) -> list[float] | N
 
 def _embedding_backend() -> str:
     backend = str(os.getenv("EMBEDDINGS_BACKEND", "ollama") or "ollama").strip().lower()
-    if backend in {"openvino", "ollama", "tensorflow", "auto"}:
+    if backend in {"openvino", "ollama", "tensorflow", "auto", "torch"}:
         return backend
     return "ollama"
 
@@ -1281,8 +1281,7 @@ def _presence_prompt(
         f"- {item.get('presence_id', 'unknown')}: {item.get('output', '')}"
         for item in prior_turns
     )
-    if not prior_lines:
-        prior_lines = "(none)"
+    prior_lines = prior_lines or "(none)"
 
     return (
         "You are one presence in the eta-mu world daemon.\n"
@@ -1295,6 +1294,69 @@ def _presence_prompt(
         f"Prior presence turns:\n{prior_lines}\n"
         "Response:"
     )
+
+
+def _presence_generate_utterance(
+    *,
+    mode: str,
+    entity: dict[str, Any],
+    presence_id: str,
+    allowed_tools: list[str],
+    history_text: str,
+    prior_turns: list[dict[str, Any]],
+    context_block: str,
+    base_text: str,
+    generate_text_fn: Any,
+):
+    if mode != "ollama":
+        return base_text, "canonical", "ok", None, None
+
+    prompt = _presence_prompt(
+        entity,
+        allowed_tools,
+        history_text,
+        prior_turns,
+        context_block,
+    )
+    generated, model_name = generate_text_fn(prompt)
+    if generated:
+        return generated, "ollama", "ok", model_name, None
+
+    return (
+        base_text,
+        "canonical",
+        "fallback",
+        None,
+        {
+            "presence_id": presence_id,
+            "error_code": "ollama_unavailable",
+            "fallback_used": True,
+        },
+    )
+
+
+def _presence_apply_tools(
+    *,
+    composed: str,
+    user_text: str,
+    allowed_tools: list[str],
+) -> tuple[str, list[dict[str, str]]]:
+    tool_outputs: list[dict[str, str]] = []
+    next_text = composed
+
+    for tool_name in allowed_tools[:2]:
+        updated = _apply_presence_tool(tool_name, next_text, user_text)
+        if updated == next_text:
+            continue
+        tool_outputs.append(
+            {
+                "name": tool_name,
+                "output": updated,
+            }
+        )
+        next_text = updated
+
+    return next_text, tool_outputs
 
 
 def _compose_presence_response(
@@ -1335,46 +1397,29 @@ def _compose_presence_response(
             CHAT_TOOLS_BY_TYPE.get(str(entity.get("type", "")), ["quote_user"])
         )
         base_text = _canonical_presence_line(entity, user_text, idx)
-        status = "ok"
-        chosen_mode = "canonical"
-        model_name: str | None = None
-
-        if mode == "ollama":
-            prompt = _presence_prompt(
-                entity,
-                allowed_tools,
-                history_text,
-                turns,
-                context_block,
+        composed_seed, chosen_mode, status, model_name, failure = (
+            _presence_generate_utterance(
+                mode=mode,
+                entity=entity,
+                presence_id=presence_id,
+                allowed_tools=allowed_tools,
+                history_text=history_text,
+                prior_turns=turns,
+                context_block=context_block,
+                base_text=base_text,
+                generate_text_fn=generate_text_fn,
             )
-            generated, model_name = generate_text_fn(prompt)
-            if generated:
-                base_text = generated
-                chosen_mode = "ollama"
-                if model_name:
-                    models.append(model_name)
-            else:
-                status = "fallback"
-                failures.append(
-                    {
-                        "presence_id": presence_id,
-                        "error_code": "ollama_unavailable",
-                        "fallback_used": True,
-                    }
-                )
+        )
+        if model_name is not None:
+            models.append(model_name)
+        if failure is not None:
+            failures.append(failure)
 
-        tool_outputs = []
-        composed = base_text.strip()
-        for tool_name in allowed_tools[:2]:
-            updated = _apply_presence_tool(tool_name, composed, user_text)
-            if updated != composed:
-                tool_outputs.append(
-                    {
-                        "name": tool_name,
-                        "output": updated,
-                    }
-                )
-                composed = updated
+        composed, tool_outputs = _presence_apply_tools(
+            composed=composed_seed.strip(),
+            user_text=user_text,
+            allowed_tools=allowed_tools,
+        )
 
         turn = {
             "presence_id": presence_id,
@@ -1390,9 +1435,7 @@ def _compose_presence_response(
         turns.append(turn)
         final_lines.append(composed)
 
-    if not final_lines:
-        fallback = _chat_fallback_reply(user_text)
-        final_lines = [fallback]
+    final_lines = final_lines or [_chat_fallback_reply(user_text)]
 
     combined_reply = "\n".join(final_lines)
     overlay_tags = _extract_overlay_tags(combined_reply)
@@ -2276,6 +2319,8 @@ def _openvino_embed(
 def _embed_text(text: str, **kwargs) -> list[float] | None:
     b = _embedding_backend()
     model = kwargs.get("model")
+    if b == "torch":
+        return _torch_embed(text, model=model)
     if b == "ollama":
         return _ollama_embed(text, model=model)
     if b == "openvino":
@@ -2380,6 +2425,93 @@ def _is_probably_text_bytes(sample: bytes) -> bool:
         return True
     except UnicodeDecodeError:
         return control_ratio < 0.01
+
+
+_TORCH_MODEL_CACHE: dict[str, Any] = {}
+_TORCH_LOCK = threading.Lock()
+
+
+def _torch_embed(text: str, model: str | None = None) -> list[float] | None:
+    """
+    Run embedding directly in-process on CPU/GPU via sentence-transformers/PyTorch.
+    This avoids HTTP overhead and leverages local hardware directly.
+    """
+    prompt = str(text or "").strip()
+    if not prompt:
+        return None
+
+    model_name = str(
+        model or os.getenv("TORCH_EMBED_MODEL", "nomic-ai/nomic-embed-text-v1.5")
+    ).strip()
+
+    device = "cpu"
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            device = "cuda"
+    except ImportError:
+        pass
+
+    cache_key = f"{model_name}|{device}"
+
+    st_model = _TORCH_MODEL_CACHE.get(cache_key)
+    if st_model is None:
+        with _TORCH_LOCK:
+            st_model = _TORCH_MODEL_CACHE.get(cache_key)
+            if st_model is None:
+                try:
+                    from sentence_transformers import SentenceTransformer
+
+                    st_model = SentenceTransformer(
+                        model_name, trust_remote_code=True, device=device
+                    )
+                    _TORCH_MODEL_CACHE[cache_key] = st_model
+                except Exception as e:
+                    # print(f"[Torch Backend Error] Load failed: {e}")
+                    _record_compute_job(
+                        kind="embedding",
+                        op="embed.torch.load_error",
+                        backend="torch",
+                        model=model_name,
+                        status="error",
+                        latency_ms=0.0,
+                        error=str(e)[:120],
+                    )
+                    return None
+
+    started = time.perf_counter()
+    try:
+        # Run inference
+        # If model supports MRL (Matryoshka), we can just take the full vector here
+        # and let the caller slice it if needed.
+        # Nomic v1.5 returns 768 dim by default.
+        embedding = st_model.encode(prompt, convert_to_numpy=True)
+        vector = _normalize_embedding_vector(embedding.tolist())
+
+        _record_compute_job(
+            kind="embedding",
+            op="embed.torch",
+            backend="torch",
+            model=model_name,
+            status="ok",
+            latency_ms=(time.perf_counter() - started) * 1000.0,
+            target_presence_id="file_organizer",  # Default
+            device=device,
+        )
+        return vector
+    except Exception as e:
+        # print(f"[Torch Backend Error] Inference failed: {e}")
+        _record_compute_job(
+            kind="embedding",
+            op="embed.torch.infer_error",
+            backend="torch",
+            model=model_name,
+            status="error",
+            latency_ms=(time.perf_counter() - started) * 1000.0,
+            error=str(e)[:120],
+        )
+        return None
 
 
 def _eta_mu_canonicalize_text(raw: bytes) -> str:

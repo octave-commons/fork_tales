@@ -1,0 +1,31 @@
+FROM openvino/ubuntu22_runtime:latest
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PIP_NO_CACHE_DIR=1
+ENV HF_HOME=/cache/huggingface
+ENV TRANSFORMERS_CACHE=/cache/huggingface/transformers
+ENV HF_DATASETS_CACHE=/cache/huggingface/datasets
+
+WORKDIR /workspace
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3 \
+        python3-pip \
+        ffmpeg \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m pip install --upgrade pip \
+    && python3 -m pip install \
+        "optimum-intel[openvino]>=1.22.0" \
+        "transformers>=4.46.0" \
+        "datasets[audio]>=3.1.0" \
+        "jiwer>=3.0.5" \
+        "soundfile>=0.12.1"
+
+COPY scripts/bench_whisper_models.py /workspace/scripts/bench_whisper_models.py
+
+ENTRYPOINT ["python3", "/workspace/scripts/bench_whisper_models.py"]

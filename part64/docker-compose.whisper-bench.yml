@@ -1,0 +1,30 @@
+services:
+  whisper-bench:
+    build:
+      context: .
+      dockerfile: Dockerfile.whisper-bench
+    privileged: true
+    environment:
+      HF_HOME: /cache/huggingface
+      TRANSFORMERS_CACHE: /cache/huggingface/transformers
+      HF_DATASETS_CACHE: /cache/huggingface/datasets
+      HF_TOKEN: "${HF_TOKEN:-}"
+      WHISPER_BENCH_MODELS: "${WHISPER_BENCH_MODELS:-tiny,base,small}"
+      WHISPER_BENCH_DEVICES: "${WHISPER_BENCH_DEVICES:-NPU,GPU,CPU}"
+      WHISPER_BENCH_DATASET: "${WHISPER_BENCH_DATASET:-hf-internal-testing/librispeech_asr_dummy}"
+      WHISPER_BENCH_DATASET_CONFIG: "${WHISPER_BENCH_DATASET_CONFIG:-clean}"
+      WHISPER_BENCH_SPLIT: "${WHISPER_BENCH_SPLIT:-validation}"
+      WHISPER_BENCH_MAX_SAMPLES: "${WHISPER_BENCH_MAX_SAMPLES:-32}"
+      WHISPER_BENCH_SAMPLING_RATE: "${WHISPER_BENCH_SAMPLING_RATE:-16000}"
+      WHISPER_BENCH_LANGUAGE: "${WHISPER_BENCH_LANGUAGE:-en}"
+      WHISPER_BENCH_OUTPUT: "${WHISPER_BENCH_OUTPUT:-/results/whisper-benchmark.latest.json}"
+      WHISPER_BENCH_FAIL_ON_MISSING_DEVICE: "${WHISPER_BENCH_FAIL_ON_MISSING_DEVICE:-0}"
+      WHISPER_BENCH_FAIL_ON_ERROR: "${WHISPER_BENCH_FAIL_ON_ERROR:-0}"
+    volumes:
+      - whisper_bench_cache:/cache
+      - ./runs/whisper-bench:/results
+    shm_size: "8gb"
+    restart: "no"
+
+volumes:
+  whisper_bench_cache:

@@ -28,6 +28,17 @@ Run in Docker (preferred; world + IO + web graph weaver + Chroma):
 - Weaver status (via gateway): `http://127.0.0.1:8787/weaver/api/weaver/status`
 - Optional TTS proxy target: set `TTS_BASE_URL` (default `http://127.0.0.1:8788` inside container)
 
+Long-running embedding benchmark container (websocket live stream + simple UI):
+- Start: `docker compose -f docker-compose.embed-bench.yml up --build`
+- UI: `http://127.0.0.1:18890/`
+- WebSocket stream: `ws://127.0.0.1:18890/ws`
+- API state: `http://127.0.0.1:18890/api/state`
+- Tune backend/model with env vars:
+  - `EMBED_BENCH_BACKEND` (`openvino` default)
+  - `EMBED_BENCH_MODEL` (`nomic-embed-text` default)
+  - `OPENVINO_EMBED_ENDPOINT` (default `http://host.docker.internal:18000/v1/embeddings`)
+  - `OLLAMA_BASE_URL` (default `http://host.docker.internal:11435`)
+
 **For detailed operational instructions, see [SIMULATION_WORKFLOW.md](SIMULATION_WORKFLOW.md).**
 
 Docker simulation discovery contract for experiment stacks:

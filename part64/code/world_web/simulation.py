@@ -30,8 +30,18 @@ from .constants import (
     DAIMO_DT_SECONDS,
     DAIMO_MAX_TRACKED_ENTITIES,
     ENTITY_MANIFEST,
+    USER_PRESENCE_ID,
+    USER_PRESENCE_LABEL_EN,
+    USER_PRESENCE_LABEL_JA,
+    USER_PRESENCE_DEFAULT_X,
+    USER_PRESENCE_DEFAULT_Y,
+    USER_PRESENCE_DRIFT_ALPHA,
+    USER_PRESENCE_EVENT_TTL_SECONDS,
+    USER_PRESENCE_MAX_EVENTS,
     _DAIMO_DYNAMICS_LOCK,
     _DAIMO_DYNAMICS_CACHE,
+    _USER_PRESENCE_INPUT_LOCK,
+    _USER_PRESENCE_INPUT_CACHE,
     _MIX_CACHE_LOCK,
     _MIX_CACHE,
     CANONICAL_NAMED_FIELD_IDS,
@@ -4743,8 +4753,19 @@ def _file_graph_layout_cache_key(file_graph: dict[str, Any]) -> str:
             usage_path = _file_node_usage_path(node)
             dominant_field = str(node.get("dominant_field", "")).strip()
             kind = str(node.get("kind", "")).strip().lower()
+            summary_text = _bounded_text(
+                node.get("summary", ""),
+                limit=SIMULATION_FILE_GRAPH_SUMMARY_CHARS,
+            )
+            excerpt_text = _bounded_text(
+                node.get("text_excerpt", ""),
+                limit=SIMULATION_FILE_GRAPH_EXCERPT_CHARS,
+            )
+            text_signature = hashlib.sha1(
+                f"{summary_text}|{excerpt_text}".encode("utf-8")
+            ).hexdigest()[:12]
             digest.update(
-                f"{node_id}|{usage_path}|{dominant_field}|{kind}|{layer_count}|{has_collection}|{link_count}|{importance}".encode(
+                f"{node_id}|{usage_path}|{dominant_field}|{kind}|{layer_count}|{has_collection}|{link_count}|{importance}|{text_signature}".encode(
                     "utf-8"
                 )
             )
@@ -6026,9 +6047,22 @@ def _apply_file_graph_document_similarity_layout(
         now_seconds = _safe_float(now, time.time()) if now is not None else time.time()
         particle_count = max(6, min(42, int(round(len(embedded_entries) * 1.8))))
         particles: list[dict[str, Any]] = []
+        source_weights = [
+            max(0.08, _safe_float(entry.get("text_density", 0.45), 0.45))
+            for entry in embedded_entries
+        ]
+        source_weight_total = sum(source_weights)
 
         for index in range(particle_count):
             source = embedded_entries[index % len(embedded_entries)]
+            if source_weight_total > 1e-8 and len(embedded_entries) > 1:
+                ratio_slot = (float(index) + 0.5) / float(max(1, particle_count))
+                cumulative = 0.0
+                for entry, weight in zip(embedded_entries, source_weights):
+                    cumulative += weight / source_weight_total
+                    if ratio_slot <= cumulative:
+                        source = entry
+                        break
             seed = f"{source['id']}|particle|{index}"
             phase = (_stable_ratio(seed, 17) * math.tau) + (
                 now_seconds * (0.28 + (_stable_ratio(seed, 23) * 0.52))
@@ -6297,6 +6331,34 @@ def _apply_file_graph_document_similarity_layout(
                 )
                 offsets[entry_index][1] += max(
                     -max_influence, min(max_influence, influence_y)
+                )
+
+        density_center_weight_total = sum(source_weights)
+        if density_center_weight_total > 1e-8:
+            density_center_x = (
+                sum(
+                    _safe_float(entry.get("x", 0.5), 0.5) * weight
+                    for entry, weight in zip(embedded_entries, source_weights)
+                )
+                / density_center_weight_total
+            )
+            density_center_y = (
+                sum(
+                    _safe_float(entry.get("y", 0.5), 0.5) * weight
+                    for entry, weight in zip(embedded_entries, source_weights)
+                )
+                / density_center_weight_total
+            )
+            density_spread = max(source_weights) - min(source_weights)
+            center_pull = min(0.18, 0.06 + (density_spread * 0.09))
+            for particle in particles:
+                particle_x = _safe_float(particle.get("x", 0.5), 0.5)
+                particle_y = _safe_float(particle.get("y", 0.5), 0.5)
+                particle["x"] = _clamp01(
+                    particle_x + ((density_center_x - particle_x) * center_pull)
+                )
+                particle["y"] = _clamp01(
+                    particle_y + ((density_center_y - particle_y) * center_pull)
                 )
 
         for particle in particles[:48]:
@@ -8072,6 +8134,288 @@ def _apply_resource_daimoi_action_consumption(
     return summary
 
 
+def _snapshot_user_presence_runtime_state(
+    now_monotonic: float,
+    influence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    now_unix = time.time()
+    ttl_seconds = max(2.0, _safe_float(USER_PRESENCE_EVENT_TTL_SECONDS, 18.0), 18.0)
+    influence_rows_raw = (
+        influence.get("recent_user_inputs", []) if isinstance(influence, dict) else []
+    )
+    normalized_influence_rows: list[dict[str, Any]] = []
+    if isinstance(influence_rows_raw, list):
+        for index, row in enumerate(influence_rows_raw[:USER_PRESENCE_MAX_EVENTS]):
+            if not isinstance(row, dict):
+                continue
+            fallback_age = min(ttl_seconds * 3.0, float(index) * 0.28)
+            age_seconds = max(
+                0.0,
+                _safe_float(row.get("age_seconds", fallback_age), fallback_age),
+            )
+            ts_monotonic = now_monotonic - age_seconds
+            event_id = str(row.get("id", f"influence:{index:02d}"))
+            normalized_influence_rows.append(
+                {
+                    "id": event_id,
+                    "kind": str(row.get("kind", "input") or "input"),
+                    "target": str(row.get("target", "simulation") or "simulation"),
+                    "message": str(row.get("message", "") or ""),
+                    "embed_daimoi": bool(row.get("embed_daimoi", False)),
+                    "x_ratio": row.get("x_ratio"),
+                    "y_ratio": row.get("y_ratio"),
+                    "ts_monotonic": ts_monotonic,
+                    "age_seconds": round(age_seconds, 6),
+                }
+            )
+
+    with _USER_PRESENCE_INPUT_LOCK:
+        cache = _USER_PRESENCE_INPUT_CACHE
+        target_x = _clamp01(
+            _safe_float(
+                cache.get("target_x", USER_PRESENCE_DEFAULT_X), USER_PRESENCE_DEFAULT_X
+            )
+        )
+        target_y = _clamp01(
+            _safe_float(
+                cache.get("target_y", USER_PRESENCE_DEFAULT_Y), USER_PRESENCE_DEFAULT_Y
+            )
+        )
+        anchor_x = _clamp01(
+            _safe_float(
+                cache.get("anchor_x", USER_PRESENCE_DEFAULT_X), USER_PRESENCE_DEFAULT_X
+            )
+        )
+        anchor_y = _clamp01(
+            _safe_float(
+                cache.get("anchor_y", USER_PRESENCE_DEFAULT_Y), USER_PRESENCE_DEFAULT_Y
+            )
+        )
+        last_pointer_monotonic = _safe_float(
+            cache.get("last_pointer_monotonic", 0.0), 0.0
+        )
+        last_pointer_unix = _safe_float(cache.get("last_pointer_unix", 0.0), 0.0)
+        last_input_monotonic = _safe_float(cache.get("last_input_monotonic", 0.0), 0.0)
+        last_input_unix = _safe_float(cache.get("last_input_unix", 0.0), 0.0)
+        latest_message = str(cache.get("latest_message", "") or "").strip()
+        latest_target = str(cache.get("latest_target", "") or "").strip()
+        seq = int(_safe_float(cache.get("seq", 0), 0.0))
+
+        pointer_age_seconds = max(0.0, now_monotonic - last_pointer_monotonic)
+        if last_pointer_monotonic <= 0.0 and last_pointer_unix > 0.0:
+            pointer_age_seconds = max(0.0, now_unix - last_pointer_unix)
+        if pointer_age_seconds > ttl_seconds:
+            fallback_row = next(
+                (
+                    row
+                    for row in normalized_influence_rows
+                    if row.get("x_ratio") is not None and row.get("y_ratio") is not None
+                ),
+                None,
+            )
+            if isinstance(fallback_row, dict):
+                target_x = _clamp01(
+                    _safe_float(
+                        fallback_row.get("x_ratio", USER_PRESENCE_DEFAULT_X),
+                        USER_PRESENCE_DEFAULT_X,
+                    )
+                )
+                target_y = _clamp01(
+                    _safe_float(
+                        fallback_row.get("y_ratio", USER_PRESENCE_DEFAULT_Y),
+                        USER_PRESENCE_DEFAULT_Y,
+                    )
+                )
+            else:
+                target_x = USER_PRESENCE_DEFAULT_X
+                target_y = USER_PRESENCE_DEFAULT_Y
+
+        drift_alpha = _clamp01(_safe_float(USER_PRESENCE_DRIFT_ALPHA, 0.06))
+        anchor_x = _clamp01(anchor_x + ((target_x - anchor_x) * drift_alpha))
+        anchor_y = _clamp01(anchor_y + ((target_y - anchor_y) * drift_alpha))
+        cache["anchor_x"] = anchor_x
+        cache["anchor_y"] = anchor_y
+
+        events_raw = cache.get("events", [])
+        if not isinstance(events_raw, list):
+            events_raw = []
+
+        bounded_events: list[dict[str, Any]] = []
+        for row in events_raw[-USER_PRESENCE_MAX_EVENTS:]:
+            if not isinstance(row, dict):
+                continue
+            event_ts_mono = _safe_float(
+                row.get("ts_monotonic", now_monotonic), now_monotonic
+            )
+            age_seconds = max(0.0, now_monotonic - event_ts_mono)
+            if age_seconds > (ttl_seconds * 4.0):
+                continue
+            bounded_events.append(
+                {
+                    **row,
+                    "age_seconds": round(age_seconds, 6),
+                }
+            )
+
+        if not bounded_events and normalized_influence_rows:
+            bounded_events = list(normalized_influence_rows)
+        elif normalized_influence_rows:
+            seen_ids = {
+                str(row.get("id", "")).strip()
+                for row in bounded_events
+                if isinstance(row, dict)
+            }
+            for row in normalized_influence_rows:
+                row_id = str(row.get("id", "")).strip()
+                if row_id and row_id in seen_ids:
+                    continue
+                bounded_events.append(dict(row))
+                if row_id:
+                    seen_ids.add(row_id)
+            bounded_events = bounded_events[-USER_PRESENCE_MAX_EVENTS:]
+
+        if not latest_message and bounded_events:
+            latest_message = str(bounded_events[-1].get("message", "") or "").strip()
+        if not latest_target and bounded_events:
+            latest_target = str(bounded_events[-1].get("target", "") or "").strip()
+
+        if last_input_monotonic <= 0.0 and bounded_events:
+            newest_age = min(
+                (
+                    _safe_float(row.get("age_seconds", ttl_seconds), ttl_seconds)
+                    for row in bounded_events
+                ),
+                default=ttl_seconds,
+            )
+            last_input_monotonic = now_monotonic - max(0.0, newest_age)
+        elif last_input_monotonic <= 0.0 and last_input_unix > 0.0:
+            last_input_monotonic = now_monotonic - max(0.0, now_unix - last_input_unix)
+
+        cache["events"] = bounded_events[-USER_PRESENCE_MAX_EVENTS:]
+
+    return {
+        "id": USER_PRESENCE_ID,
+        "label": USER_PRESENCE_LABEL_EN,
+        "label_ja": USER_PRESENCE_LABEL_JA,
+        "target_x": round(target_x, 6),
+        "target_y": round(target_y, 6),
+        "anchor_x": round(anchor_x, 6),
+        "anchor_y": round(anchor_y, 6),
+        "latest_message": latest_message,
+        "latest_target": latest_target,
+        "sequence": seq,
+        "events": bounded_events[-24:],
+        "pointer_age_seconds": round(pointer_age_seconds, 6),
+        "input_age_seconds": round(max(0.0, now_monotonic - last_input_monotonic), 6),
+        "active": bool((now_monotonic - last_input_monotonic) <= (ttl_seconds * 2.0)),
+    }
+
+
+def _build_user_presence_embedded_daimoi_rows(
+    user_presence_state: dict[str, Any],
+    *,
+    now: float,
+) -> list[dict[str, Any]]:
+    if not isinstance(user_presence_state, dict):
+        return []
+    events = user_presence_state.get("events", [])
+    if not isinstance(events, list) or not events:
+        return []
+
+    anchor_x = _clamp01(_safe_float(user_presence_state.get("anchor_x", 0.5), 0.5))
+    anchor_y = _clamp01(_safe_float(user_presence_state.get("anchor_y", 0.72), 0.72))
+    ttl_seconds = max(2.0, _safe_float(USER_PRESENCE_EVENT_TTL_SECONDS, 18.0), 18.0)
+    rows: list[dict[str, Any]] = []
+
+    for index, event in enumerate(reversed(events[-24:])):
+        if not isinstance(event, dict):
+            continue
+        if not bool(event.get("embed_daimoi", False)):
+            continue
+        age_seconds = max(0.0, _safe_float(event.get("age_seconds", 0.0), 0.0))
+        life = _clamp01(1.0 - (age_seconds / ttl_seconds))
+        if life <= 0.0:
+            continue
+
+        base_x = _clamp01(_safe_float(event.get("x_ratio", anchor_x), anchor_x))
+        base_y = _clamp01(_safe_float(event.get("y_ratio", anchor_y), anchor_y))
+        phase = (now * 1.24) + (index * 1.41)
+        orbit = 0.008 + ((index % 5) * 0.003) + ((1.0 - life) * 0.012)
+        x = _clamp01(((base_x * 0.58) + (anchor_x * 0.42)) + (math.cos(phase) * orbit))
+        y = _clamp01(
+            ((base_y * 0.58) + (anchor_y * 0.42))
+            + (math.sin(phase * 0.91) * orbit * 0.84)
+        )
+        vx = -math.sin(phase) * orbit * 0.34
+        vy = math.cos(phase * 0.91) * orbit * 0.28
+
+        event_id = str(
+            event.get("id", f"user-input:{index:02d}") or f"user-input:{index:02d}"
+        ).strip()
+        message = str(event.get("message", "") or "").strip()
+        kind = str(event.get("kind", "input") or "input").strip().lower() or "input"
+        target = (
+            str(event.get("target", "simulation") or "simulation").strip()
+            or "simulation"
+        )
+        influence_power = _clamp01(0.34 + (life * 0.58))
+        route_probability = _clamp01(0.26 + (life * 0.54))
+
+        rows.append(
+            {
+                "id": f"{event_id}:daimoi",
+                "record": "ημ.user-input-daimoi.v1",
+                "schema_version": "user.input.daimoi.v1",
+                "packet_record": "ημ.user-input-packet.v1",
+                "packet_schema_version": "user.input.packet.v1",
+                "presence_id": USER_PRESENCE_ID,
+                "owner_presence_id": USER_PRESENCE_ID,
+                "presence_role": "user-presence",
+                "particle_mode": "role-bound",
+                "x": round(x, 6),
+                "y": round(y, 6),
+                "vx": round(vx, 6),
+                "vy": round(vy, 6),
+                "size": round(1.0 + (life * 1.1), 6),
+                "mass": round(0.6 + (life * 1.2), 6),
+                "radius": round(0.26 + (life * 0.28), 6),
+                "r": round(_clamp01(0.86 - (life * 0.08)), 5),
+                "g": round(_clamp01(0.58 + (life * 0.22)), 5),
+                "b": round(_clamp01(0.28 + (life * 0.12)), 5),
+                "message_probability": round(_clamp01(life), 6),
+                "route_probability": round(route_probability, 6),
+                "influence_power": round(influence_power, 6),
+                "top_job": "emit_user_input_message",
+                "resource_daimoi": True,
+                "resource_emit_amount": round(0.08 + (life * 0.22), 6),
+                "resource_emit_type": "attention",
+                "resource_emit_reason": kind,
+                "resource_action_blocked": False,
+                "packet_components": [
+                    {
+                        "component_id": f"{event_id}:message",
+                        "component_type": "user-input",
+                        "kind": kind,
+                        "target": target,
+                        "text": message[:180],
+                        "weight": round(_clamp01(0.42 + (life * 0.5)), 6),
+                    }
+                ],
+                "action_probabilities": {
+                    "emit_user_input_message": round(_clamp01(0.64 + (life * 0.24)), 6),
+                    "broadcast_ui_attention": round(_clamp01(0.36 + (life * 0.22)), 6),
+                },
+                "resource_signature": {
+                    "attention": round(_clamp01(0.56 + (life * 0.34)), 6),
+                    "memory": round(_clamp01(0.24 + (life * 0.16)), 6),
+                    "compute": round(_clamp01(0.14 + (life * 0.12)), 6),
+                },
+            }
+        )
+
+    return rows[:24]
+
+
 def build_simulation_state(
     catalog: dict[str, Any],
     myth_summary: dict[str, Any] | None = None,
@@ -8701,6 +9045,78 @@ def build_simulation_state(
                 }
             )
 
+    user_presence_state = _snapshot_user_presence_runtime_state(
+        time.monotonic(),
+        influence,
+    )
+    user_recent_events = user_presence_state.get("events", [])
+    if not isinstance(user_recent_events, list):
+        user_recent_events = []
+    user_recent_events = [row for row in user_recent_events if isinstance(row, dict)][
+        -8:
+    ]
+
+    presence_impacts = [
+        row
+        for row in presence_impacts
+        if isinstance(row, dict) and str(row.get("id", "")).strip() != USER_PRESENCE_ID
+    ]
+    user_wallet = manager.get_state(USER_PRESENCE_ID).get("resource_wallet", {})
+    if not isinstance(user_wallet, dict):
+        user_wallet = {}
+
+    user_presence_impact: dict[str, Any] = {
+        "id": USER_PRESENCE_ID,
+        "en": USER_PRESENCE_LABEL_EN,
+        "ja": USER_PRESENCE_LABEL_JA,
+        "presence_type": "operator",
+        "x": _clamp01(
+            _safe_float(
+                user_presence_state.get("anchor_x", USER_PRESENCE_DEFAULT_X),
+                USER_PRESENCE_DEFAULT_X,
+            )
+        ),
+        "y": _clamp01(
+            _safe_float(
+                user_presence_state.get("anchor_y", USER_PRESENCE_DEFAULT_Y),
+                USER_PRESENCE_DEFAULT_Y,
+            )
+        ),
+        "hue": 28.0,
+        "affected_by": {
+            "files": round(_clamp01(file_ratio * 0.22), 4),
+            "clicks": round(_clamp01(click_ratio * 0.96), 4),
+            "resource": round(_clamp01(resource_ratio * 0.2), 4),
+        },
+        "affects": {
+            "world": round(_clamp01(0.24 + (click_ratio * 0.56)), 4),
+            "ledger": round(_clamp01(0.18 + (queue_ratio * 0.42)), 4),
+        },
+        "notes_en": "Operator input emits user daimoi packets and steers the user nexus anchor.",
+        "notes_ja": "操作者入力はユーザーダイモイを放出し、ユーザーネクサス錨点をゆっくり誘導する。",
+        "active_nexus_id": "nexus.user.cursor",
+        "pinned_node_ids": [
+            str(user_presence_state.get("latest_target", "simulation") or "simulation")[
+                :120
+            ]
+        ],
+        "user_message": str(user_presence_state.get("latest_message", "") or "")[:240],
+        "recent_inputs": [
+            {
+                "id": str(row.get("id", ""))[:80],
+                "kind": str(row.get("kind", "input"))[:40],
+                "target": str(row.get("target", ""))[:180],
+                "message": str(row.get("message", ""))[:240],
+                "age_seconds": round(_safe_float(row.get("age_seconds", 0.0), 0.0), 4),
+                "embed_daimoi": bool(row.get("embed_daimoi", False)),
+            }
+            for row in user_recent_events
+        ],
+    }
+    if user_wallet:
+        user_presence_impact["resource_wallet"] = user_wallet
+    presence_impacts.append(user_presence_impact)
+
     witness_thread_state = {
         "id": str(witness_meta.get("id", "witness_thread")),
         "en": str(witness_meta.get("en", "Witness Thread")),
@@ -8920,6 +9336,13 @@ def build_simulation_state(
                 normalized_row[key] = value
         normalized_field_particles.append(normalized_row)
 
+    user_embedded_daimoi = _build_user_presence_embedded_daimoi_rows(
+        user_presence_state,
+        now=now,
+    )
+    if user_embedded_daimoi:
+        normalized_field_particles.extend(user_embedded_daimoi)
+
     resource_daimoi = _apply_resource_daimoi_emissions(
         field_particles=normalized_field_particles,
         presence_impacts=presence_impacts,
@@ -8989,6 +9412,22 @@ def build_simulation_state(
         "field_particles": emitted_field_particles,
         "resource_daimoi": resource_daimoi,
         "resource_consumption": resource_consumption,
+        "user_presence": user_presence_state,
+        "user_embedded_daimoi_count": len(user_embedded_daimoi),
+        "user_input_messages": [
+            {
+                "id": str(row.get("id", ""))[:80],
+                "kind": str(row.get("kind", "input"))[:40],
+                "target": str(row.get("target", ""))[:180],
+                "message": str(row.get("message", ""))[:260],
+                "age_seconds": round(_safe_float(row.get("age_seconds", 0.0), 0.0), 4),
+            }
+            for row in (
+                user_presence_state.get("events", [])
+                if isinstance(user_presence_state.get("events", []), list)
+                else []
+            )[-12:]
+        ],
         "nooi_field": nooi_field,
         "river_flow": {
             "unit": "m3/s",

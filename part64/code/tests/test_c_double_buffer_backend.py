@@ -8,6 +8,14 @@ from code.world_web import c_double_buffer_backend
 class _FakeEngine:
     def __init__(self) -> None:
         self.calls: list[tuple[int, int]] = []
+        self.nooi_updates: list[list[float]] = []
+        self.embedding_updates: list[list[float]] = []
+
+    def update_nooi(self, data: list[float]) -> None:
+        self.nooi_updates.append(data)
+
+    def update_embeddings(self, data: list[float]) -> None:
+        self.embedding_updates.append(data)
 
     def snapshot(
         self,
@@ -116,6 +124,65 @@ def test_c_double_buffer_builder_uses_default_presence_ids(monkeypatch: Any) -> 
     assert str(rows[0].get("presence_id", "")).strip()
 
 
+def test_mask_nodes_for_anchor_prefers_nearest_nodes() -> None:
+    mask = c_double_buffer_backend._mask_nodes_for_anchor(
+        node_ids=["node:a", "node:b", "node:c"],
+        node_positions=[(0.1, 0.1), (0.5, 0.5), (0.9, 0.9)],
+        anchor_x=0.08,
+        anchor_y=0.12,
+        k=2,
+    )
+
+    assert len(mask) == 2
+    assert mask[0]["node_id"] == "node:a"
+    assert float(mask[0]["weight"]) > float(mask[1]["weight"])
+    weight_sum = sum(float(row.get("weight", 0.0)) for row in mask)
+    assert abs(weight_sum - 1.0) <= 1e-6
+
+
+def test_presence_resource_need_model_uses_ema_and_logistic_thresholds() -> None:
+    impact = {
+        "id": "health_sentinel_cpu",
+        "affected_by": {"resource": 0.9, "files": 0.4, "clicks": 0.2},
+        "affects": {"world": 0.7},
+        "resource_wallet": {"cpu": 2.0, "ram": 4.0, "disk": 3.0, "network": 1.5},
+    }
+
+    first = c_double_buffer_backend._presence_resource_need_model(
+        presence_id="health_sentinel_cpu",
+        impact=impact,
+        queue_ratio=0.35,
+        base_need=0.6,
+    )
+
+    assert first.get("alpha") == c_double_buffer_backend._RESOURCE_NEED_EMA_ALPHA
+    assert first.get("priority", 0.0) > 0.0
+    assert isinstance(first.get("needs"), dict)
+    assert isinstance(first.get("util_ema"), dict)
+    assert isinstance(first.get("util_raw"), dict)
+    assert isinstance(first.get("thresholds"), dict)
+    assert impact.get("_resource_util_ema") == first.get("util_ema")
+
+    impact["resource_wallet"] = {
+        "cpu": 20.0,
+        "ram": 18.0,
+        "disk": 15.0,
+        "network": 14.0,
+    }
+    second = c_double_buffer_backend._presence_resource_need_model(
+        presence_id="health_sentinel_cpu",
+        impact=impact,
+        queue_ratio=0.35,
+        base_need=0.6,
+    )
+
+    first_cpu_ema = float((first.get("util_ema", {}) or {}).get("cpu", 0.0))
+    second_cpu_ema = float((second.get("util_ema", {}) or {}).get("cpu", 0.0))
+    second_cpu_raw = float((second.get("util_raw", {}) or {}).get("cpu", 0.0))
+    assert second_cpu_raw < first_cpu_ema
+    assert second_cpu_raw <= second_cpu_ema <= first_cpu_ema
+
+
 def test_c_double_buffer_builder_honors_manifest_anchor_layout(
     monkeypatch: Any,
 ) -> None:
@@ -159,6 +226,34 @@ def test_c_double_buffer_builder_applies_graph_runtime_metrics(
             "source_node_index_by_presence": {
                 "witness_thread": 0,
                 "anchor_registry": 1,
+            },
+            "source_profiles": [
+                {
+                    "presence_id": "witness_thread",
+                    "source_node_id": "node:a",
+                    "mask": {
+                        "mode": "nearest-k",
+                        "k": 2,
+                        "nodes": [
+                            {"node_id": "node:a", "weight": 0.7, "distance": 0.0},
+                            {"node_id": "node:b", "weight": 0.3, "distance": 0.4},
+                        ],
+                    },
+                    "influence": {
+                        "mode": "anchor-mask",
+                        "strength": 0.66,
+                        "anchor": {"x": 0.3, "y": 0.3},
+                    },
+                    "need_scalar": 0.52,
+                    "need_by_resource": {"cpu": 0.7, "ram": 0.3},
+                    "mass": 1.4,
+                }
+            ],
+            "presence_source_count": 1,
+            "presence_model": {
+                "mask": "nearest-k.v1",
+                "need": "heuristic-resource-need.v1",
+                "mass": "signal-wallet.v1",
             },
             "min_distance": [0.12, 0.84],
             "gravity": [1.4, 0.3],
@@ -270,6 +365,11 @@ def test_c_double_buffer_builder_applies_graph_runtime_metrics(
     assert graph_runtime.get("global_saturation") == 0.53
     assert graph_runtime.get("resource_types") == ["cpu", "ram"]
     assert graph_runtime.get("resource_gravity_peaks", {}).get("cpu") == 1.2
+    assert graph_runtime.get("presence_source_count") == 1
+    assert graph_runtime.get("presence_model", {}).get("mask") == "nearest-k.v1"
+    source_profiles = graph_runtime.get("source_profiles", [])
+    assert isinstance(source_profiles, list)
+    assert source_profiles[0].get("presence_id") == "witness_thread"
     assert summary.get("graph_systems") == [
         "edge-cost",
         "edge-upkeep-health",

@@ -1,0 +1,23 @@
+services:
+  embed-bench:
+    build:
+      context: .
+      dockerfile: Dockerfile.embed-bench
+    environment:
+      EMBED_BENCH_BACKEND: "${EMBED_BENCH_BACKEND:-openvino}"
+      EMBED_BENCH_MODEL: "${EMBED_BENCH_MODEL:-nomic-embed-text}"
+      EMBED_BENCH_INTERVAL_MS: "${EMBED_BENCH_INTERVAL_MS:-120}"
+      EMBED_BENCH_TARGET_DIM: "${EMBED_BENCH_TARGET_DIM:-128}"
+      EMBED_BENCH_WINDOW_SIZE: "${EMBED_BENCH_WINDOW_SIZE:-512}"
+      EMBED_BENCH_MAX_CHARS: "${EMBED_BENCH_MAX_CHARS:-1600}"
+      OPENVINO_EMBED_ENDPOINT: "${OPENVINO_EMBED_ENDPOINT:-http://host.docker.internal:18000/v1/embeddings}"
+      OPENVINO_EMBED_MODEL: "${OPENVINO_EMBED_MODEL:-nomic-embed-text}"
+      OPENVINO_EMBED_DEVICE: "${OPENVINO_EMBED_DEVICE:-NPU}"
+      OPENVINO_EMBED_TIMEOUT_SEC: "${OPENVINO_EMBED_TIMEOUT_SEC:-10}"
+      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://host.docker.internal:11435}"
+      OLLAMA_EMBED_MODEL: "${OLLAMA_EMBED_MODEL:-nomic-embed-text}"
+    ports:
+      - "${EMBED_BENCH_PORT:-18890}:8890"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

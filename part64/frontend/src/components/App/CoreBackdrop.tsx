@@ -3,13 +3,18 @@ import type {
   PointerEvent as ReactPointerEvent,
   WheelEvent as ReactWheelEvent,
 } from "react";
-import { SimulationCanvas, type OverlayViewId } from "../Simulation/Canvas";
+import {
+  SimulationCanvas,
+  type NexusInteractionEvent,
+  type OverlayViewId,
+} from "../Simulation/Canvas";
 import type { Catalog, SimulationState } from "../../types";
 import type {
   CoreLayerId,
   CoreSimulationTuning,
   CoreVisualTuning,
 } from "../../app/coreSimulationConfig";
+import type { MouseDaimonTuning } from "./CoreControlPanel";
 
 interface GalaxyLayerStyles {
   far: CSSProperties;
@@ -29,7 +34,19 @@ interface Props {
   coreLayerVisibility: Record<CoreLayerId, boolean>;
   museWorkspaceBindings: Record<string, string[]>;
   galaxyLayerStyles: GalaxyLayerStyles;
+  mouseDaimonTuning: MouseDaimonTuning;
+  onUserPresenceInput: (payload: {
+    kind: string;
+    target: string;
+    message?: string;
+    xRatio?: number;
+    yRatio?: number;
+    embedDaimoi?: boolean;
+    meta?: Record<string, unknown>;
+  }) => void;
   onOverlayInit: (api: unknown) => void;
+  onNexusInteraction: (event: NexusInteractionEvent) => void;
+  glassCenterRatio: { x: number; y: number };
   onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onPointerMove: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onPointerUp: (event: ReactPointerEvent<HTMLDivElement>) => void;
@@ -48,7 +65,11 @@ export function CoreBackdrop({
   coreLayerVisibility,
   museWorkspaceBindings,
   galaxyLayerStyles,
+  mouseDaimonTuning,
+  onUserPresenceInput,
   onOverlayInit,
+  onNexusInteraction,
+  glassCenterRatio,
   onPointerDown,
   onPointerMove,
   onPointerUp,
@@ -71,12 +92,15 @@ export function CoreBackdrop({
           simulation={simulation}
           catalog={catalog}
           onOverlayInit={onOverlayInit}
+          onNexusInteraction={onNexusInteraction}
+          onUserPresenceInput={onUserPresenceInput}
           height={viewportHeight}
           defaultOverlayView={coreOverlayView}
           overlayViewLocked
           compactHud
           interactive
           backgroundMode
+          glassCenterRatio={glassCenterRatio}
           particleDensity={coreSimulationTuning.particleDensity}
           particleScale={coreSimulationTuning.particleScale}
           motionSpeed={coreSimulationTuning.motionSpeed}
@@ -85,6 +109,11 @@ export function CoreBackdrop({
           backgroundWash={coreVisualTuning.backgroundWash}
           layerVisibility={coreLayerVisibility}
           museWorkspaceBindings={museWorkspaceBindings}
+          mouseDaimonEnabled={mouseDaimonTuning.enabled}
+          mouseDaimonMessage={mouseDaimonTuning.message}
+          mouseDaimonMode={mouseDaimonTuning.mode}
+          mouseDaimonRadius={mouseDaimonTuning.radius}
+          mouseDaimonStrength={mouseDaimonTuning.strength}
           className="simulation-core-canvas"
         />
       </div>

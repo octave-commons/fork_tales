@@ -271,13 +271,13 @@ def _build_noise_nodes(
         "mage_of_receipts",
         "chaos",
         "stability",
-        "symetry",
+        "symmetry",
     ]
     nexus_ids = [
         "nexus.ui.chat.witness_thread",
         "nexus.ui.chat.chaos",
         "nexus.ui.chat.stability",
-        "nexus.ui.chat.symetry",
+        "nexus.ui.chat.symmetry",
         "nexus.ui.projection_ledger",
         "nexus.ui.world_log",
         "nexus.ui.omni_archive",

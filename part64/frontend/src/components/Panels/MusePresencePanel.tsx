@@ -23,6 +23,8 @@ interface Props {
   onWorkspaceBindingsChange?: (musePresenceId: string, pinnedFileNodeIds: string[]) => void;
   chatLensState?: UIProjectionElementState | null;
   activeChatSession?: UIProjectionChatSession | null;
+  activeMusePresenceId?: string;
+  onMusePresenceChange?: (presenceId: string) => void;
 }
 
 export function MusePresencePanel({
@@ -41,6 +43,8 @@ export function MusePresencePanel({
   onWorkspaceBindingsChange,
   chatLensState,
   activeChatSession,
+  activeMusePresenceId,
+  onMusePresenceChange,
 }: Props) {
   return (
     <ChatPanel
@@ -59,6 +63,8 @@ export function MusePresencePanel({
       onWorkspaceBindingsChange={onWorkspaceBindingsChange}
       chatLensState={chatLensState}
       activeChatSession={activeChatSession}
+      activeMusePresenceId={activeMusePresenceId}
+      onMusePresenceChange={onMusePresenceChange}
       minimalMuseView
     />
   );

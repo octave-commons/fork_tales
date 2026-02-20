@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import struct
 import subprocess
 import sys
 import tempfile
@@ -10,7 +11,7 @@ import wave
 import zipfile
 from array import array
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import code.world_web as world_web_module
 
@@ -123,6 +124,37 @@ def test_library_resolution_uses_eta_mu_substrate_root() -> None:
         )
         assert resolved is not None
         assert resolved == artifact.resolve()
+
+
+def test_library_resolution_falls_back_to_archived_eta_mu_source_path() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        vault = root / "vault"
+        vault.mkdir(parents=True)
+
+        archive_rel = ".opencode/knowledge/archive/2026/02/16/demo.png"
+        archive_path = (root / archive_rel).resolve()
+        archive_path.parent.mkdir(parents=True)
+        archive_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        index_path = root / ".opencode" / "runtime" / "eta_mu_knowledge.v1.jsonl"
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        index_row = {
+            "record": "ημ.knowledge.v1",
+            "id": "knowledge.demo",
+            "source_rel_path": ".ημ/ChatGPT Image Feb 15, 2026, 01_50_05 PM.png",
+            "archive_rel_path": archive_rel,
+            "ingested_at": "2026-02-16T01:51:13.553990+00:00",
+        }
+        index_path.write_text(json.dumps(index_row) + "\n", encoding="utf-8")
+
+        resolved = resolve_library_path(
+            vault,
+            "/library/.%CE%B7%CE%BC/ChatGPT%20Image%20Feb%2015%2C%202026%2C%2001_50_05%20PM.png",
+        )
+
+        assert resolved is not None
+        assert resolved == archive_path
 
 
 def test_pm2_parse_args_defaults() -> None:
@@ -288,22 +320,34 @@ def test_hologram_canvas_remote_resource_metadata_contract() -> None:
         'type GraphWorldscreenView = "website" | "editor" | "video" | "metadata";'
         in canvas_source
     )
+    assert (
+        'type GraphWorldscreenMode = "overview" | "conversation" | "stats";'
+        in canvas_source
+    )
     assert "anchorRatioX?: number;" in canvas_source
     assert "anchorRatioY?: number;" in canvas_source
     assert "function resolveWorldscreenPlacement(" in canvas_source
-    assert "anchorRatioX: clamp01(graphHit.x)," in canvas_source
-    assert "anchorRatioY: clamp01(graphHit.y)," in canvas_source
+    assert "anchorRatioX: clamp01(xRatio)," in canvas_source
+    assert "anchorRatioY: clamp01(yRatio)," in canvas_source
     assert "const worldscreenPlacement = worldscreen" in canvas_source
     assert "transformOrigin: worldscreenPlacement.transformOrigin," in canvas_source
     assert 'worldscreen.view === "metadata"' in canvas_source
+    assert 'worldscreenMode === "overview"' in canvas_source
+    assert 'worldscreenMode === "conversation"' in canvas_source
+    assert 'worldscreenMode === "stats"' in canvas_source
     assert "isRemoteHttpUrl(worldscreenUrl)" in canvas_source
+    assert "shouldOpenWorldscreen" in canvas_source
     assert "event.stopPropagation();" in canvas_source
     assert "Math.max(0.012, hit.radiusNorm * 1.8)" in canvas_source
-    assert "presence image commentary" in canvas_source
+    assert "single tap centers nexus in glass lane" in canvas_source
     assert 'resourceKind === "image"' in canvas_source
+    assert "onNexusInteraction?.({" in canvas_source
     assert "/api/image/commentary" in canvas_source
     assert "/api/image/comments" in canvas_source
     assert "/api/presence/accounts/upsert" in canvas_source
+    assert "parent_comment_id" in canvas_source
+    assert "true_graph_embed" in canvas_source
+    assert "compacted_into_nexus" in canvas_source
 
     assert "html,\nbody,\n#root {" in css_source
     assert "overscroll-behavior: none;" in css_source
@@ -3454,6 +3498,80 @@ def test_websocket_helpers() -> None:
     assert frame[1] == len('{"ok":true}')
 
 
+class _MockWebSocketTransport:
+    def __init__(self, payload: bytes) -> None:
+        self._buffer = payload
+        self.sent: list[bytes] = []
+
+    def recv(self, size: int) -> bytes:
+        if not self._buffer:
+            return b""
+        chunk = self._buffer[:size]
+        self._buffer = self._buffer[size:]
+        return chunk
+
+    def sendall(self, payload: bytes) -> None:
+        self.sent.append(payload)
+
+
+def _masked_ws_frame(opcode: int, payload: bytes) -> bytes:
+    mask = bytes([0x23, 0x45, 0x67, 0x89])
+    masked_payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+    return bytes([0x80 | (opcode & 0x0F), 0x80 | len(payload)]) + mask + masked_payload
+
+
+def test_consume_ws_client_frame_replies_to_ping() -> None:
+    from code.world_web import server as server_module
+
+    transport = _MockWebSocketTransport(_masked_ws_frame(0x9, b"ping"))
+    keep_open = server_module._consume_ws_client_frame(cast(Any, transport))
+
+    assert keep_open is True
+    assert transport.sent == [b"\x8a\x04ping"]
+
+
+def test_consume_ws_client_frame_handles_close() -> None:
+    from code.world_web import server as server_module
+
+    payload = struct.pack("!H", 1000)
+    transport = _MockWebSocketTransport(_masked_ws_frame(0x8, payload))
+    keep_open = server_module._consume_ws_client_frame(cast(Any, transport))
+
+    assert keep_open is False
+    assert transport.sent == [b"\x88\x02" + payload]
+
+
+def test_compact_simulation_payload_keeps_presence_particles_and_drops_heavy_graphs() -> (
+    None
+):
+    from code.world_web import server as server_module
+
+    payload = {
+        "timestamp": "2026-02-20T22:20:00Z",
+        "field_particles": [{"id": "root-dm-1"}],
+        "presence_dynamics": {
+            "field_particles": [{"id": "dyn-dm-1", "presence_id": "witness_thread"}],
+        },
+        "nexus_graph": {"nodes": [1]},
+        "logical_graph": {"nodes": [1]},
+        "pain_field": {"nodes": [1]},
+        "file_graph": {"file_nodes": [1]},
+        "crawler_graph": {"crawler_nodes": [1]},
+    }
+
+    compact = server_module._simulation_http_compact_simulation_payload(payload)
+
+    assert "nexus_graph" not in compact
+    assert "logical_graph" not in compact
+    assert "pain_field" not in compact
+    assert "file_graph" not in compact
+    assert "crawler_graph" not in compact
+    assert "field_particles" not in compact
+    assert compact.get("presence_dynamics", {}).get("field_particles", []) == [
+        {"id": "dyn-dm-1", "presence_id": "witness_thread"}
+    ]
+
+
 def test_simulation_state_includes_world_summary_slot() -> None:
     simulation = build_simulation_state({"items": [], "counts": {}})
     assert isinstance(simulation.get("world"), dict)
@@ -5288,6 +5406,251 @@ def test_pain_field_ingests_test_covers_span_relations() -> None:
     locate_rows = heat_values.get("locate", [])
     assert isinstance(locate_rows, list)
     assert any(str(row.get("kind", "")) == "址" for row in locate_rows)
+
+
+def test_simulation_state_includes_canonical_nexus_graph_and_field_registry() -> None:
+    """Test that simulation state includes the unified canonical model types.
+
+    See specs/drafts/part64-deep-research-09-unified-nexus-graph.md
+    See specs/drafts/part64-deep-research-10-shared-fields-daimoi-dynamics.md
+    """
+    source_path = "docs/canonical_test.md"
+    file_id = world_web_module._file_id_for_path(source_path)
+    catalog = {
+        "items": [],
+        "counts": {},
+        "file_graph": {
+            "record": "ημ.file-graph.v1",
+            "generated_at": "2026-02-20T00:00:00+00:00",
+            "nodes": [],
+            "field_nodes": [
+                {
+                    "id": "field:logos",
+                    "node_id": "field:logos",
+                    "node_type": "field",
+                    "field": "logos",
+                    "label": "Logos",
+                    "x": 0.5,
+                    "y": 0.5,
+                    "hue": 200,
+                }
+            ],
+            "tag_nodes": [
+                {
+                    "id": "tag:test",
+                    "node_id": "tag:test",
+                    "node_type": "tag",
+                    "tag": "test",
+                    "label": "Test",
+                    "x": 0.4,
+                    "y": 0.6,
+                    "hue": 180,
+                }
+            ],
+            "file_nodes": [
+                {
+                    "id": "file:canonical_test",
+                    "node_id": "file:canonical_test",
+                    "node_type": "file",
+                    "name": "canonical_test.md",
+                    "label": "Canonical Test",
+                    "x": 0.31,
+                    "y": 0.42,
+                    "hue": 212,
+                    "importance": 0.7,
+                    "source_rel_path": source_path,
+                }
+            ],
+            "edges": [
+                {
+                    "id": "edge:test:file:field",
+                    "source": "file:canonical_test",
+                    "target": "field:logos",
+                    "kind": "belongs_to",
+                    "weight": 0.8,
+                }
+            ],
+            "stats": {
+                "field_count": 1,
+                "file_count": 1,
+                "edge_count": 1,
+            },
+        },
+        "crawler_graph": {
+            "record": "ημ.crawler-graph.v1",
+            "generated_at": "2026-02-20T00:00:00+00:00",
+            "crawler_nodes": [
+                {
+                    "id": "crawler:example",
+                    "node_type": "crawler",
+                    "crawler_kind": "url",
+                    "label": "Example",
+                    "url": "https://example.com",
+                    "x": 0.7,
+                    "y": 0.3,
+                    "hue": 150,
+                }
+            ],
+            "edges": [],
+            "stats": {},
+        },
+        "truth_state": {
+            "record": "ημ.truth-state.v1",
+            "generated_at": "2026-02-20T00:00:00+00:00",
+            "claim": {
+                "id": "claim.canonical",
+                "text": "Canonical model is unified",
+                "status": "proved",
+                "kappa": 0.9,
+            },
+            "claims": [],
+        },
+    }
+
+    simulation = build_simulation_state(catalog)
+
+    # Check canonical nexus_graph
+    nexus_graph = simulation.get("nexus_graph", {})
+    assert nexus_graph.get("record") == "ημ.nexus-graph.v1"
+    assert nexus_graph.get("schema_version") == "nexus.graph.v1"
+
+    # Check nodes
+    nodes = nexus_graph.get("nodes", [])
+    assert isinstance(nodes, list)
+    assert len(nodes) >= 3  # At least field, tag, file
+
+    # Check node roles
+    roles = {n.get("role") for n in nodes}
+    assert "field" in roles
+    assert "file" in roles
+    assert "tag" in roles
+
+    # Check node structure
+    file_node = next((n for n in nodes if n.get("role") == "file"), None)
+    assert file_node is not None
+    assert file_node.get("id") == "file:canonical_test"
+    assert file_node.get("label") == "Canonical Test"
+    assert file_node.get("provenance", {}).get("path") == source_path
+
+    # Check edges
+    edges = nexus_graph.get("edges", [])
+    assert isinstance(edges, list)
+    assert len(edges) >= 1
+
+    # Check joins
+    joins = nexus_graph.get("joins", {})
+    assert isinstance(joins.get("by_role", {}), dict)
+    assert isinstance(joins.get("by_path", {}), dict)
+    assert source_path in joins.get("by_path", {})
+
+    # Check stats
+    stats = nexus_graph.get("stats", {})
+    assert stats.get("node_count") >= 3
+    assert stats.get("edge_count") >= 1
+    assert isinstance(stats.get("role_counts", {}), dict)
+    assert stats.get("role_counts", {}).get("file", 0) >= 1
+
+    # Check canonical field_registry
+    field_registry = simulation.get("field_registry", {})
+    assert field_registry.get("record") == "ημ.field-registry.v1"
+    assert field_registry.get("bounded") is True
+    assert field_registry.get("field_count") == 4  # demand, flow, entropy, graph
+
+    # Check fields exist
+    fields = field_registry.get("fields", {})
+    assert "demand" in fields
+    assert "flow" in fields
+    assert "entropy" in fields
+    assert "graph" in fields
+
+    # Check field structure
+    for field_name, field in fields.items():
+        assert field.get("kind") == field_name
+        assert field.get("record") == "ημ.shared-field.v1"
+        assert isinstance(field.get("samples", []), list)
+        assert isinstance(field.get("stats", {}), dict)
+
+    # Check weights
+    weights = field_registry.get("weights", {})
+    assert weights.get("demand", 0) > 0
+    assert weights.get("flow", 0) >= 0
+    assert weights.get("entropy", 0) >= 0
+    assert weights.get("graph", 0) > 0
+
+    # Verify backward compatibility: legacy graph payloads still exist
+    assert "file_graph" in simulation
+    assert "crawler_graph" in simulation
+    assert "logical_graph" in simulation
+    assert simulation["file_graph"].get("record") == "ημ.file-graph.v1"
+
+
+def test_canonical_nexus_node_builder_maps_legacy_types() -> None:
+    """Test that _build_canonical_nexus_node correctly maps legacy node types."""
+    # Test file node
+    file_legacy = {
+        "id": "test-file",
+        "node_type": "file",
+        "label": "Test File",
+        "x": 0.5,
+        "y": 0.3,
+        "hue": 200,
+        "source_rel_path": "test.md",
+    }
+    file_canonical = world_web_module._build_canonical_nexus_node(
+        file_legacy, origin_graph="test"
+    )
+    assert file_canonical.get("role") == "file"
+    assert file_canonical.get("label") == "Test File"
+    assert file_canonical.get("provenance", {}).get("path") == "test.md"
+
+    # Test crawler node
+    crawler_legacy = {
+        "id": "test-crawler",
+        "node_type": "crawler",
+        "crawler_kind": "url",
+        "label": "Test URL",
+        "x": 0.7,
+        "y": 0.4,
+        "hue": 150,
+        "url": "https://example.com",
+    }
+    crawler_canonical = world_web_module._build_canonical_nexus_node(
+        crawler_legacy, origin_graph="crawler_graph"
+    )
+    assert crawler_canonical.get("role") == "crawler"
+    assert crawler_canonical.get("extension", {}).get("url") == "https://example.com"
+
+    # Test field node
+    field_legacy = {
+        "id": "field:test",
+        "node_type": "field",
+        "field": "test",
+        "label": "Test Field",
+        "x": 0.2,
+        "y": 0.8,
+        "hue": 180,
+    }
+    field_canonical = world_web_module._build_canonical_nexus_node(
+        field_legacy, origin_graph="file_graph"
+    )
+    assert field_canonical.get("role") == "field"
+
+
+def test_canonical_field_registry_is_bounded() -> None:
+    """Test that field registry has bounded field count (no per-presence fields)."""
+    from code.world_web.constants import FIELD_KINDS, MAX_FIELD_COUNT
+
+    # Field count must be bounded
+    assert len(FIELD_KINDS) == 4
+    assert MAX_FIELD_COUNT == 4
+    assert set(FIELD_KINDS) == {"demand", "flow", "entropy", "graph"}
+
+    # Build field registry and verify bounded
+    field_registry = world_web_module._build_field_registry({}, None)
+
+    assert field_registry.get("bounded") is True
+    assert field_registry.get("field_count") == 4
+    assert len(field_registry.get("fields", {})) == 4
 
 
 def test_load_test_signal_artifacts_prefers_lcov_and_failing_test_list() -> None:

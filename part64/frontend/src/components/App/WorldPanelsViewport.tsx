@@ -1355,6 +1355,51 @@ function WorldPanelsViewportInner({
     const complianceReason = operationalMeta?.reason ?? "no detail";
     const detailsOpen = detailsPanelId === panelId;
     const compactGlass = glassOverlayMode && !detailsOpen;
+    const scoreDialRatio = clampRatio(0.5 + (Math.tanh(panel.councilScore * 0.45) * 0.5), 0, 1);
+    const particleDialRatio = clampRatio(
+      Math.log1p(Math.max(0, panel.particleCount)) / Math.log(241),
+      0,
+      1,
+    );
+    const boostDialRatio = clampRatio((panel.councilBoost + 4) / 8, 0, 1);
+    const metaDials: Array<{
+      id: string;
+      label: string;
+      valueLabel: string;
+      ratio: number;
+      hue: number;
+    }> = [
+      {
+        id: "confidence",
+        label: "confidence",
+        valueLabel: `${Math.round(anchorConfidence * 100)}%`,
+        ratio: clampRatio(anchorConfidence, 0, 1),
+        hue: 196,
+      },
+      {
+        id: "score",
+        label: "score",
+        valueLabel: panel.councilScore.toFixed(2),
+        ratio: scoreDialRatio,
+        hue: 158,
+      },
+      {
+        id: "particles",
+        label: "particles",
+        valueLabel: `${panel.particleCount}`,
+        ratio: particleDialRatio,
+        hue: 34,
+      },
+    ];
+    if (detailsOpen) {
+      metaDials.push({
+        id: "boost",
+        label: "boost",
+        valueLabel: panel.councilBoost >= 0 ? `+${panel.councilBoost}` : `${panel.councilBoost}`,
+        ratio: boostDialRatio,
+        hue: 208,
+      });
+    }
 
     return (
       <article
@@ -1424,6 +1469,26 @@ function WorldPanelsViewportInner({
             {detailsOpen ? <span className="world-focus-meta-chip">mode {paneMode}</span> : null}
             {detailsOpen && isPinned ? <span className="world-focus-meta-chip">pinned</span> : null}
             {detailsOpen && isTertiaryPinned ? <span className="world-focus-meta-chip">tertiary</span> : null}
+          </div>
+        ) : null}
+
+        {!compactGlass ? (
+          <div className="world-focus-dial-row">
+            {metaDials.map((dial) => (
+              <div key={`${panelId}:${dial.id}`} className="world-focus-dial">
+                <span
+                  className="world-focus-dial-face"
+                  style={{
+                    "--dial-hue": `${Math.round(dial.hue)}`,
+                    "--dial-value": `${Math.round(clampRatio(dial.ratio, 0, 1) * 100)}%`,
+                  } as CSSProperties}
+                  aria-hidden="true"
+                >
+                  <span className="world-focus-dial-core">{dial.valueLabel}</span>
+                </span>
+                <span className="world-focus-dial-label">{dial.label}</span>
+              </div>
+            ))}
           </div>
         ) : null}
 
@@ -2143,7 +2208,7 @@ function WorldPanelsViewportInner({
       </div>
 
       {iconPanels.length > 0 && viewportWidth < 1100 ? (
-        <footer className="world-orbital-dock">
+        <footer className="world-unity-mobile-dock">
           {iconPanels.slice(0, 12).map((panel) => {
             const anchor = anchorByPanelId.get(panel.id) ?? null;
             const selected = selectedPanelId === panel.id || primaryPanelId === panel.id;
@@ -2151,7 +2216,7 @@ function WorldPanelsViewportInner({
               <button
                 key={`quick-dock-${panel.id}`}
                 type="button"
-                className={`world-orbital-dock-item ${selected ? "world-orbital-dock-item-selected" : ""}`}
+                className={`world-unity-mobile-dock-item ${selected ? "world-unity-mobile-dock-item-selected" : ""}`}
                 onClick={() => {
                   onActivatePanel(panel.id);
                   onSelectPanel(panel.id);
@@ -2162,8 +2227,8 @@ function WorldPanelsViewportInner({
                 }}
                 title={`${panel.presenceLabel} · click focus · double click glass + promote`}
               >
-                <span className="world-orbital-dock-core">{panelGlyph(panel.presenceId, panel.id)}</span>
-                <span className="world-orbital-dock-label">{panel.presenceLabel}</span>
+                <span className="world-unity-mobile-dock-core">{panelGlyph(panel.presenceId, panel.id)}</span>
+                <span className="world-unity-mobile-dock-label">{panel.presenceLabel}</span>
               </button>
             );
           })}

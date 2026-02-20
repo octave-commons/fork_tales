@@ -7,6 +7,7 @@ import pytest
 import code.world_web.simulation as simulation_module
 
 from code.world_web import build_simulation_state
+from code.world_web import daimoi_probabilistic as daimoi_module
 from code.world_web.daimoi_probabilistic import (
     build_probabilistic_daimoi_particles,
     reset_probabilistic_daimoi_state_for_tests,
@@ -83,6 +84,159 @@ def test_probabilistic_builder_emits_job_distribution_and_actions() -> None:
     assert set(row.get("behavior_actions", [])) == {"deflect", "diffuse"}
     assert isinstance(row.get("vx"), float)
     assert isinstance(row.get("vy"), float)
+    packet_components = row.get("packet_components", [])
+    assert isinstance(packet_components, list)
+    assert packet_components
+    assert "p_i" in packet_components[0]
+    assert "req" in packet_components[0]
+    resource_signature = row.get("resource_signature", {})
+    assert isinstance(resource_signature, dict)
+    assert set(resource_signature.keys()) == set(daimoi_module.DAIMOI_RESOURCE_KEYS)
+    absorb_sampler = row.get("absorb_sampler", {})
+    assert isinstance(absorb_sampler, dict)
+    assert absorb_sampler.get("method") == "gumbel-max"
+
+    packet_contract = model_summary.get("packet_contract", {})
+    assert packet_contract.get("schema_version") == "daimoi.packet-components.v1"
+    absorb_contract = model_summary.get("absorb_sampler", {})
+    assert absorb_contract.get("schema_version") == "daimoi.absorb-sampler.v1"
+    assert absorb_contract.get("method") == "gumbel-max"
+
+
+def test_absorb_sampler_emits_component_logits_and_gumbel_scores() -> None:
+    components = daimoi_module._packet_components_from_job_probabilities(
+        {
+            "deliver_message": 0.58,
+            "invoke_truth_gate": 0.22,
+            "invoke_graph_crawl": 0.2,
+        }
+    )
+
+    sample = daimoi_module._sample_absorb_component(
+        components=components,
+        lens_embedding=daimoi_module._embedding_from_text("truth witness gate"),
+        need_by_resource={
+            "cpu": 0.8,
+            "gpu": 0.25,
+            "npu": 0.18,
+            "ram": 0.54,
+            "disk": 0.44,
+            "network": 0.73,
+        },
+        context={
+            "pressure": 0.37,
+            "congestion": 0.28,
+            "wallet_pressure": 0.48,
+            "message_entropy": 0.41,
+            "queue": 0.22,
+            "contact": 0.66,
+        },
+        seed="unit-absorb-sampler",
+    )
+
+    assert sample.get("record") == "eta-mu.daimoi-absorb-sampler.v1"
+    assert sample.get("schema_version") == "daimoi.absorb-sampler.v1"
+    assert sample.get("method") == "gumbel-max"
+    assert 0.0 <= float(sample.get("beta", 0.0))
+    assert float(sample.get("temperature", 0.0)) > 0.0
+
+    component_rows = sample.get("components", [])
+    assert isinstance(component_rows, list)
+    assert component_rows
+    prob_total = sum(float(row.get("probability", 0.0)) for row in component_rows)
+    assert math.isclose(prob_total, 1.0, rel_tol=0.0, abs_tol=1e-6)
+    selected_id = str(sample.get("selected_component_id", ""))
+    assert selected_id in {str(row.get("component_id", "")) for row in component_rows}
+    first = component_rows[0]
+    assert "q_i" in first
+    assert "s_i" in first
+    assert "logit" in first
+    assert "gumbel_score" in first
+
+
+def test_world_edge_pressure_pushes_probabilistic_daimoi_inward() -> None:
+    left_push = daimoi_module._world_edge_inward_pressure(
+        0.01,
+        edge_band=daimoi_module.DAIMOI_WORLD_EDGE_BAND,
+        pressure=daimoi_module.DAIMOI_WORLD_EDGE_PRESSURE,
+    )
+    center_push = daimoi_module._world_edge_inward_pressure(
+        0.5,
+        edge_band=daimoi_module.DAIMOI_WORLD_EDGE_BAND,
+        pressure=daimoi_module.DAIMOI_WORLD_EDGE_PRESSURE,
+    )
+    right_push = daimoi_module._world_edge_inward_pressure(
+        0.99,
+        edge_band=daimoi_module.DAIMOI_WORLD_EDGE_BAND,
+        pressure=daimoi_module.DAIMOI_WORLD_EDGE_PRESSURE,
+    )
+
+    assert left_push > 0.0
+    assert center_push == pytest.approx(0.0, abs=1e-12)
+    assert right_push < 0.0
+
+
+def test_world_edge_reflection_deflects_probabilistic_daimoi_from_walls() -> None:
+    left_pos, left_v = daimoi_module._reflect_world_axis(
+        -0.014,
+        -0.02,
+        bounce=daimoi_module.DAIMOI_WORLD_EDGE_BOUNCE,
+    )
+    right_pos, right_v = daimoi_module._reflect_world_axis(
+        1.014,
+        0.02,
+        bounce=daimoi_module.DAIMOI_WORLD_EDGE_BOUNCE,
+    )
+
+    assert 0.0 <= left_pos <= 1.0
+    assert 0.0 <= right_pos <= 1.0
+    assert left_v > 0.0
+    assert right_v < 0.0
+
+
+def test_pain_field_daimoi_motion_deflects_off_world_edges() -> None:
+    with simulation_module._DAIMO_DYNAMICS_LOCK:
+        simulation_module._DAIMO_DYNAMICS_CACHE["entities"] = {}
+
+    pain_field = {
+        "node_heat": [
+            {
+                "node_id": "edge-daimo",
+                "x": 0.002,
+                "y": 0.004,
+                "heat": 0.25,
+            }
+        ]
+    }
+    daimoi_state = {
+        "relations": {
+            "霊/push": [
+                {
+                    "entity_id": "edge-daimo",
+                    "fx": -6.0,
+                    "fy": -6.0,
+                }
+            ]
+        },
+        "physics": {
+            "dt": 0.2,
+            "damping": 0.88,
+        },
+    }
+
+    updated = simulation_module._apply_daimoi_dynamics_to_pain_field(
+        pain_field,
+        daimoi_state,
+    )
+    rows = updated.get("node_heat", [])
+    assert rows
+    row = rows[0]
+    assert float(row.get("x", 0.0)) > 0.0
+    assert float(row.get("y", 0.0)) > 0.0
+    assert float(row.get("vx", 0.0)) > 0.0
+    assert float(row.get("vy", 0.0)) > 0.0
+    motion = updated.get("motion", {})
+    assert float(motion.get("edge_pressure", 0.0)) > 0.0
 
 
 def test_simulation_payload_exposes_probabilistic_daimoi_summary() -> None:
@@ -131,9 +285,17 @@ def test_simulation_payload_exposes_probabilistic_daimoi_summary() -> None:
     assert rows
     first = rows[0]
     assert "job_probabilities" in first
+    assert "packet_components" in first
+    assert "resource_signature" in first
+    assert "absorb_sampler" in first
     assert "action_probabilities" in first
     assert "vx" in first
     assert "vy" in first
+
+    packet_contract = summary.get("packet_contract", {})
+    assert packet_contract.get("record") == "eta-mu.daimoi-packet-components.v1"
+    absorb_sampler = summary.get("absorb_sampler", {})
+    assert absorb_sampler.get("record") == "eta-mu.daimoi-absorb-sampler.v1"
 
 
 def test_probabilistic_builder_emits_passive_nexus_rows() -> None:

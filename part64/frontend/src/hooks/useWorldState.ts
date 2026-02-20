@@ -203,15 +203,19 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
     const fetchInitial = async () => {
       try {
         const perspectiveQs = `perspective=${encodeURIComponent(perspective)}`;
-        const res = await fetch(runtimeApiUrl(`/api/catalog?${perspectiveQs}`), {
-          signal: controller.signal,
-        });
-        if (res.ok) {
-          const catalog = await res.json();
+        const fetchCatalog = async () => {
+          const catalogRes = await fetch(runtimeApiUrl(`/api/catalog?${perspectiveQs}`), {
+            signal: controller.signal,
+          });
+          if (!catalogRes.ok) {
+            return;
+          }
+          const catalog = await catalogRes.json();
           enqueueStatePatch({
             catalog,
             ...(catalog?.ui_projection ? { projection: catalog.ui_projection } : {}),
           });
+
           if (!catalog?.ui_projection) {
             projectionFetchTimeoutRef.current = window.setTimeout(async () => {
               try {
@@ -230,7 +234,24 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
               }
             }, 120);
           }
-        }
+        };
+
+        const fetchSimulation = async () => {
+          const simulationRes = await fetch(runtimeApiUrl(`/api/simulation?${perspectiveQs}&compact=1`), {
+            signal: controller.signal,
+          });
+          if (!simulationRes.ok) {
+            return;
+          }
+          const simulation = await simulationRes.json();
+          enqueueStatePatch({
+            simulation,
+            ...(simulation?.projection ? { projection: simulation.projection } : {}),
+          });
+        };
+
+        void fetchCatalog();
+        void fetchSimulation();
       } catch (e) {
         if (!(e instanceof DOMException && e.name === 'AbortError')) {
           console.warn('Initial fetch failed', e);

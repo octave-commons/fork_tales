@@ -1,3 +1,396 @@
+// ============================================================================
+// CANONICAL UNIFIED MODEL TYPES (v2)
+// ============================================================================
+//
+// The unified model has exactly four primitive types:
+// - Presence: AI physics-based agent with spec embedding, need, priority, mass
+// - Nexus: Graph node/particle representing a resource with embedding, capacity, demand, role
+// - Daimoi: Free particle with carrier embedding, seed embedding, type distribution, owner
+// - Field: Shared global scalar field (demand, flow, entropy, graph)
+//
+// Everything else is a projection, view, or instance of these four.
+// See specs/drafts/part64-deep-research-09-unified-nexus-graph.md
+// See specs/drafts/part64-deep-research-10-shared-fields-daimoi-dynamics.md
+// See specs/drafts/part64-deep-research-11-model-audit-alien-concepts.md
+// ============================================================================
+
+// -------------- Nexus (Canonical Graph Node) -----------------
+
+export type NexusRole =
+  | "file"
+  | "field"
+  | "tag"
+  | "crawler"
+  | "resource"
+  | "concept"
+  | "anchor"
+  | "logical"
+  | "presence"
+  | "person"
+  | "event"
+  | "claim"
+  | "proof"
+  | "test_failure"
+  | "world_entity"
+  | string;
+
+export interface NexusEmbedding {
+  vector?: number[];
+  centroid?: { x: number; y: number; z?: number };
+}
+
+export interface NexusCapacity {
+  cap: number;          // Maximum capacity
+  load: number;         // Current load
+  pressure: number;     // Derived pressure (0-1)
+}
+
+export interface NexusDemand {
+  types: Record<string, number>;  // Type -> weight (simplex, sums to 1)
+  intensity: number;              // Overall demand intensity (0-1)
+}
+
+export interface NexusProvenance {
+  source_uri?: string;
+  file_id?: string;
+  path?: string;
+  origin_graph?: string;  // Which graph originally owned this node
+  created_at?: string;
+  hash?: string;
+}
+
+export interface NexusNode {
+  id: string;
+  role: NexusRole;
+  label: string;
+  label_ja?: string;
+
+  // Embedding/position
+  embedding?: NexusEmbedding;
+  x: number;
+  y: number;
+  z?: number;
+  hue: number;
+
+  // Capacity/demand (for resource-type nodes)
+  capacity?: NexusCapacity;
+  demand?: NexusDemand;
+
+  // Provenance
+  provenance?: NexusProvenance;
+
+  // Role-specific extensions (typed as unknown, cast as needed)
+  extension?: Record<string, unknown>;
+
+  // Confidence/status
+  confidence?: number;
+  status?: string;
+  importance?: number;
+}
+
+export type NexusEdgeKind =
+  | "hyperlink"
+  | "labeled_as"
+  | "relates_tag"
+  | "proves"
+  | "derived_from"
+  | "contradicts"
+  | "verified_by"
+  | "contains"
+  | "references"
+  | "depends_on"
+  | "routes_to"
+  | string;
+
+export interface NexusEdge {
+  id: string;
+  source: string;
+  target: string;
+  kind: NexusEdgeKind;
+  weight: number;
+
+  // Edge dynamics
+  cost?: number;           // Traversal cost
+  affinity?: number;       // Semantic affinity (0-1)
+  saturation?: number;     // Current saturation (0-1)
+  health?: number;         // Edge health (0-1)
+
+  // Field binding (which field this edge belongs to)
+  field?: string;
+}
+
+export interface NexusGraphJoins {
+  by_role: Record<string, string[]>;      // role -> node ids
+  by_path: Record<string, string>;        // path -> node id
+  by_source_uri: Record<string, string>;  // source_uri -> node id
+  by_file_id: Record<string, string>;     // file_id -> node id
+}
+
+export interface NexusGraphStats {
+  node_count: number;
+  edge_count: number;
+  role_counts: Record<string, number>;
+  edge_kind_counts: Record<string, number>;
+  mean_connectivity: number;
+}
+
+export interface NexusGraph {
+  record: "ημ.nexus-graph.v1";
+  schema_version: string;
+  generated_at: string;
+
+  nodes: NexusNode[];
+  edges: NexusEdge[];
+
+  // Indices for fast lookup
+  joins: NexusGraphJoins;
+  stats: NexusGraphStats;
+
+  // Projection metadata (for view/truth graph contracts)
+  projection?: {
+    mode: string;
+    coarsening_ratio?: number;
+    member_ledger_ref?: string;
+  };
+}
+
+// -------------- Presence (Canonical Agent) -----------------
+
+export interface PresenceNeed {
+  resources: Record<string, number>;  // resource -> need intensity (0-1)
+  util_ema: Record<string, number>;   // EMA utilization per resource
+  thresholds: Record<string, number>; // Care thresholds per resource
+}
+
+export interface PresenceMask {
+  nodes: Array<{ node_id: string; weight: number }>;  // Mask over nexus nodes
+  pins: string[];  // Explicitly pinned node ids
+}
+
+export interface PresenceWallet {
+  credits: number;
+  budget_by_resource: Record<string, number>;
+  spent_total: number;
+}
+
+export interface PresenceLearning {
+  traces: Array<{
+    scope: string;
+    reward: number;
+    ts: string;
+  }>;
+  baselines: Record<string, number>;
+  adapters: Record<string, number>;
+}
+
+export interface Presence {
+  id: string;
+  kind: string;  // e.g., "muse", "logos", "organizer", "concept", "resource"
+
+  // Core fields
+  spec_embedding: number[];      // Purpose/lens embedding
+  need: PresenceNeed;
+  priority: number;
+  mass: number;
+
+  // Mask over graph
+  mask: PresenceMask;
+
+  // Wallet for resource spending
+  wallet: PresenceWallet;
+
+  // Learning state
+  learning?: PresenceLearning;
+
+  // Extension for kind-specific data
+  extension?: Record<string, unknown>;
+}
+
+// -------------- Daimoi (Canonical Particle) -----------------
+
+export interface DaimoiTypeDistribution {
+  types: Record<string, number>;  // type -> probability (simplex)
+  entropy: number;
+}
+
+export interface DaimoiLocation {
+  mode: "graph" | "continuous";
+  node_id?: string;      // If mode === "graph"
+  position?: { x: number; y: number; z?: number };  // If mode === "continuous"
+}
+
+export interface Daimoi {
+  id: string;
+  record: "ημ.daimon.v1";
+
+  // Embeddings
+  carrier_embedding: number[];   // Current position in semantic space
+  seed_embedding: number[];      // Initial bias from owner's purpose
+
+  // Type distribution
+  type_dist: DaimoiTypeDistribution;
+
+  // Size/payload
+  size: number;  // tokens/bytes/payload mass
+
+  // Ownership (explicit, never inferred)
+  owner_id: string;  // Presence id
+  task_id?: string;  // Optional task/contract pointer
+
+  // Location
+  location: DaimoiLocation;
+
+  // Movement dynamics
+  velocity?: { x: number; y: number; z?: number };
+  last_move_ts?: string;
+
+  // Assignment scores (top-k candidate nexus nodes)
+  top_k_targets?: Array<{
+    node_id: string;
+    score: number;
+  }>;
+
+  // Consolidation metadata
+  amplitude?: number;
+  frequency?: number;
+}
+
+export interface DaimoiPacket {
+  record: "ημ.daimoi-packet.v1";
+  generated_at: string;
+
+  components: Array<{
+    id: string;
+    type: string;
+    embedding: number[];
+    size: number;
+    resource_signature: Record<string, number>;
+  }>;
+
+  probs: number[];  // Probability over components (sums to 1)
+  energy: number;
+  amplitude: number;
+  frequency: number;
+
+  origin: string;  // Presence id that emitted this
+  mask_snapshot?: PresenceMask;
+}
+
+// -------------- Fields (Shared Global Registry) -----------------
+
+export type SharedFieldKind = "demand" | "flow" | "entropy" | "graph";
+
+export interface SharedFieldSample {
+  x: number;
+  y: number;
+  z?: number;
+  value: number;
+  gradient?: { x: number; y: number; z?: number };
+}
+
+export interface SharedFieldContributor {
+  source_id: string;    // Presence id or nexus node id
+  source_kind: "presence" | "nexus" | "event";
+  contribution: number;
+}
+
+export interface SharedField {
+  kind: SharedFieldKind;
+  record: "ημ.shared-field.v1";
+  generated_at: string;
+
+  // Field samples (sparse grid or sample points)
+  samples: SharedFieldSample[];
+
+  // Global stats
+  stats: {
+    mean: number;
+    max: number;
+    min: number;
+    integral: number;
+    peak_location?: { x: number; y: number };
+  };
+
+  // Top contributors (for attribution)
+  top_contributors: SharedFieldContributor[];
+
+  // Field parameters
+  params: {
+    kernel_width: number;   // α in K(x, e_p)
+    decay_rate: number;
+    resolution: number;
+  };
+}
+
+export interface FieldRegistry {
+  record: "ημ.field-registry.v1";
+  generated_at: string;
+
+  fields: Record<SharedFieldKind, SharedField>;
+
+  // Combined potential weights
+  weights: {
+    demand: number;
+    flow: number;
+    entropy: number;
+    graph: number;
+  };
+
+  // Field count invariant (must be bounded)
+  field_count: number;
+  bounded: boolean;
+}
+
+// -------------- Ledger Events -----------------
+
+export interface LedgerEvent {
+  ts: string;
+  seq: number;
+  actor: string;        // Presence id
+  action:
+    | "emit"
+    | "transport"
+    | "collision"
+    | "assignment"
+    | "handoff"
+    | "spawn"
+    | "prune"
+    | "anchor"
+    | "vote"
+    | "decide";
+  inputs: Record<string, unknown>;
+  outputs: Record<string, unknown>;
+  hash: string;
+}
+
+// -------------- Braid Diagnostics (Field-Derived) -----------------
+
+export interface BraidThread {
+  name: string;
+  values: Array<{ ts: string; value: number }>;
+
+  // Attribution (decomposable into contributors)
+  attribution: {
+    by_presence: Record<string, number>;
+    by_nexus: Record<string, number>;
+    by_event: Record<string, number>;
+  };
+}
+
+export interface BraidDiagnostics {
+  record: "ημ.braid-diagnostics.v1";
+  generated_at: string;
+
+  threads: BraidThread[];
+
+  // Field snapshot reference
+  field_registry_ref?: string;
+}
+
+// ============================================================================
+// LEGACY TYPES (to be deprecated, migrated to unified model)
+// ============================================================================
+
 export interface WorldPayload {
   part: number;
   seed_label: string;
@@ -238,6 +631,8 @@ export interface FileGraphNode {
   importance?: number;
   source_rel_path?: string;
   archived_rel_path?: string;
+  archive_rel_path?: string;
+  archive_url?: string;
   url?: string;
   domain?: string;
   title?: string;

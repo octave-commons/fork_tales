@@ -774,6 +774,7 @@ class RuntimeInfluenceTracker:
     LOG_WINDOW_SECONDS = 180.0
     RESOURCE_WINDOW_SECONDS = 180.0
     COMPUTE_WINDOW_SECONDS = 180.0
+    USER_INPUT_WINDOW_SECONDS = 120.0
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -782,6 +783,7 @@ class RuntimeInfluenceTracker:
         self._log_events: list[dict[str, Any]] = []
         self._resource_events: list[dict[str, Any]] = []
         self._compute_events: list[dict[str, Any]] = []
+        self._user_input_events: list[dict[str, Any]] = []
         self._fork_tax_debt = 0.0
         self._fork_tax_paid = 0.0
 
@@ -810,6 +812,11 @@ class RuntimeInfluenceTracker:
             row
             for row in self._compute_events
             if (now - float(row.get("ts", 0.0))) <= self.COMPUTE_WINDOW_SECONDS
+        ]
+        self._user_input_events = [
+            row
+            for row in self._user_input_events
+            if (now - float(row.get("ts", 0.0))) <= self.USER_INPUT_WINDOW_SECONDS
         ]
 
     def record_witness(self, *, event_type: str, target: str) -> None:
@@ -894,6 +901,41 @@ class RuntimeInfluenceTracker:
                     "message": clean_message[:240],
                 }
             )
+            self._prune(now)
+
+    def record_user_input(
+        self,
+        *,
+        kind: str,
+        target: str,
+        message: str,
+        x_ratio: float | None = None,
+        y_ratio: float | None = None,
+        embed_daimoi: bool = False,
+        meta: dict[str, Any] | None = None,
+    ) -> None:
+        clean_kind = str(kind or "input").strip().lower() or "input"
+        clean_target = str(target or "simulation").strip() or "simulation"
+        clean_message = str(message or "").strip()
+        payload: dict[str, Any] = {
+            "kind": clean_kind,
+            "target": clean_target[:240],
+            "message": clean_message[:320],
+            "embed_daimoi": bool(embed_daimoi),
+        }
+        if x_ratio is not None:
+            payload["x_ratio"] = round(_clamp01(_safe_float(x_ratio, 0.5)), 6)
+        if y_ratio is not None:
+            payload["y_ratio"] = round(_clamp01(_safe_float(y_ratio, 0.5)), 6)
+        if isinstance(meta, dict) and meta:
+            payload["meta"] = {
+                str(key): value for key, value in list(meta.items())[:12]
+            }
+
+        now = time.time()
+        payload["ts"] = now
+        with self._lock:
+            self._user_input_events.append(payload)
             self._prune(now)
 
     def record_compute_job(
@@ -998,6 +1040,7 @@ class RuntimeInfluenceTracker:
             log_rows = list(self._log_events)
             resource_rows = list(self._resource_events)
             compute_rows = list(self._compute_events)
+            user_input_rows = list(self._user_input_events)
             fork_tax_debt = float(self._fork_tax_debt)
             fork_tax_paid = float(self._fork_tax_paid)
 
@@ -1049,6 +1092,11 @@ class RuntimeInfluenceTracker:
 
         recent_logs = sorted(
             log_rows,
+            key=lambda item: float(item.get("ts", 0.0)),
+            reverse=True,
+        )
+        recent_user_inputs = sorted(
+            user_input_rows,
             key=lambda item: float(item.get("ts", 0.0)),
             reverse=True,
         )
@@ -1116,8 +1164,20 @@ class RuntimeInfluenceTracker:
             "file_changes_120s": file_changes_recent,
             "log_events_180s": len(log_rows),
             "resource_events_180s": len(resource_rows),
+            "user_inputs_120s": len(user_input_rows),
             "recent_click_targets": recent_targets,
             "recent_file_paths": recent_file_paths,
+            "recent_user_inputs": [
+                {
+                    "kind": str(row.get("kind", "input")),
+                    "target": str(row.get("target", "")),
+                    "message": str(row.get("message", "")),
+                    "x_ratio": row.get("x_ratio"),
+                    "y_ratio": row.get("y_ratio"),
+                    "embed_daimoi": bool(row.get("embed_daimoi", False)),
+                }
+                for row in recent_user_inputs[:24]
+            ],
             "recent_logs": [
                 {
                     "level": str(row.get("level", "info")),

@@ -4,7 +4,10 @@ import colorsys
 import hashlib
 import math
 import re
+import socket
+import threading
 import time
+from urllib.parse import urlparse
 from functools import lru_cache
 from typing import Any
 
@@ -56,7 +59,148 @@ DAIMOI_JOB_KEYS_SORTED = tuple(sorted(DAIMOI_JOB_KEYS))
 DAIMOI_JOB_KEYS_SET = set(DAIMOI_JOB_KEYS)
 DAIMOI_NODE_INFLUENCE_RADIUS = 0.32
 DAIMOI_NODE_INFLUENCE_RADIUS_EPS = 1e-8
+DAIMOI_WORLD_EDGE_BAND = 0.12
+DAIMOI_WORLD_EDGE_PRESSURE = 0.0015
+DAIMOI_WORLD_EDGE_BOUNCE = 0.78
 NEXUS_PASSIVE_ACTION_PROBS = {"deflect": 0.92, "diffuse": 0.08}
+
+DAIMOI_PACKET_COMPONENT_RECORD = "eta-mu.daimoi-packet-components.v1"
+DAIMOI_PACKET_COMPONENT_SCHEMA = "daimoi.packet-components.v1"
+DAIMOI_ABSORB_SAMPLER_RECORD = "eta-mu.daimoi-absorb-sampler.v1"
+DAIMOI_ABSORB_SAMPLER_SCHEMA = "daimoi.absorb-sampler.v1"
+DAIMOI_ABSORB_SAMPLER_METHOD = "gumbel-max"
+DAIMOI_RESOURCE_KEYS = ("cpu", "gpu", "npu", "ram", "disk", "network")
+_SEMANTIC_EMBED_GUARD_LOCK = threading.Lock()
+_SEMANTIC_EMBED_OFFLINE_UNTIL = 0.0
+_SEMANTIC_EMBED_FAIL_STREAK = 0
+_SEMANTIC_EMBED_OLLAMA_PROBE_UNTIL = 0.0
+_SEMANTIC_EMBED_OLLAMA_PROBE_OK = False
+
+_DAIMOI_RESOURCE_ALIASES: dict[str, str] = {
+    "cpu": "cpu",
+    "gpu": "gpu",
+    "gpu0": "gpu",
+    "gpu1": "gpu",
+    "gpu2": "gpu",
+    "npu": "npu",
+    "npu0": "npu",
+    "ram": "ram",
+    "mem": "ram",
+    "memory": "ram",
+    "disk": "disk",
+    "storage": "disk",
+    "network": "network",
+    "net": "network",
+}
+_DAIMOI_WALLET_FLOOR: dict[str, float] = {
+    "cpu": 6.0,
+    "gpu": 5.0,
+    "npu": 4.0,
+    "ram": 8.0,
+    "disk": 7.0,
+    "network": 7.0,
+}
+_DAIMOI_COMPONENT_RESOURCE_REQ: dict[str, dict[str, float]] = {
+    "deliver_message": {
+        "cpu": 0.22,
+        "gpu": 0.05,
+        "npu": 0.02,
+        "ram": 0.28,
+        "disk": 0.16,
+        "network": 0.86,
+    },
+    "invoke_receipt_audit": {
+        "cpu": 0.48,
+        "gpu": 0.08,
+        "npu": 0.04,
+        "ram": 0.41,
+        "disk": 0.58,
+        "network": 0.22,
+    },
+    "invoke_truth_gate": {
+        "cpu": 0.55,
+        "gpu": 0.09,
+        "npu": 0.08,
+        "ram": 0.46,
+        "disk": 0.28,
+        "network": 0.3,
+    },
+    "invoke_anchor_register": {
+        "cpu": 0.44,
+        "gpu": 0.06,
+        "npu": 0.03,
+        "ram": 0.36,
+        "disk": 0.3,
+        "network": 0.52,
+    },
+    "invoke_file_organize": {
+        "cpu": 0.37,
+        "gpu": 0.06,
+        "npu": 0.03,
+        "ram": 0.34,
+        "disk": 0.83,
+        "network": 0.2,
+    },
+    "invoke_graph_crawl": {
+        "cpu": 0.5,
+        "gpu": 0.07,
+        "npu": 0.04,
+        "ram": 0.4,
+        "disk": 0.33,
+        "network": 0.64,
+    },
+    "invoke_resource_probe": {
+        "cpu": 0.54,
+        "gpu": 0.26,
+        "npu": 0.22,
+        "ram": 0.38,
+        "disk": 0.3,
+        "network": 0.24,
+    },
+    "invoke_diffuse_field": {
+        "cpu": 0.31,
+        "gpu": 0.18,
+        "npu": 0.15,
+        "ram": 0.26,
+        "disk": 0.2,
+        "network": 0.34,
+    },
+    "emit_resource_packet": {
+        "cpu": 0.66,
+        "gpu": 0.38,
+        "npu": 0.34,
+        "ram": 0.46,
+        "disk": 0.4,
+        "network": 0.44,
+    },
+    "absorb_resource": {
+        "cpu": 0.42,
+        "gpu": 0.31,
+        "npu": 0.27,
+        "ram": 0.54,
+        "disk": 0.43,
+        "network": 0.39,
+    },
+}
+_DAIMOI_COMPONENT_COST: dict[str, float] = {
+    "deliver_message": 0.18,
+    "invoke_receipt_audit": 0.52,
+    "invoke_truth_gate": 0.58,
+    "invoke_anchor_register": 0.34,
+    "invoke_file_organize": 0.47,
+    "invoke_graph_crawl": 0.44,
+    "invoke_resource_probe": 0.42,
+    "invoke_diffuse_field": 0.26,
+    "emit_resource_packet": 0.36,
+    "absorb_resource": 0.31,
+}
+_ABSORB_BETA_WEIGHTS = (0.62, 0.42, 0.36, 0.28, 0.22, 0.18)
+_ABSORB_TEMP_WEIGHTS = (0.44, 0.34, 0.24, 0.48, 0.29, -0.2)
+_ABSORB_BETA_MAX = 2.7
+_ABSORB_TEMP_MIN = 0.18
+_ABSORB_TEMP_MAX = 1.25
+_ABSORB_ZETA = 0.68
+_ABSORB_LAMBDA_COST = 0.31
 
 _ROLE_PRIOR_WEIGHTS: dict[str, dict[str, float]] = {
     "crawl-routing": {
@@ -343,6 +487,39 @@ def _clamp01_finite(value: Any, default: float = 0.0) -> float:
     return _clamp01(_finite_float(value, default))
 
 
+def _world_edge_inward_pressure(
+    position: float, *, edge_band: float, pressure: float
+) -> float:
+    pos = _clamp01(_finite_float(position, 0.5))
+    band = max(1e-6, _finite_float(edge_band, DAIMOI_WORLD_EDGE_BAND))
+    force = _finite_float(pressure, DAIMOI_WORLD_EDGE_PRESSURE)
+    if pos < band:
+        return ((band - pos) / band) * force
+    far_side = 1.0 - band
+    if pos > far_side:
+        return -((pos - far_side) / band) * force
+    return 0.0
+
+
+def _reflect_world_axis(
+    position: float, velocity: float, *, bounce: float
+) -> tuple[float, float]:
+    pos = _finite_float(position, 0.5)
+    vel = _finite_float(velocity, 0.0)
+    restitution = max(0.0, min(0.99, _finite_float(bounce, DAIMOI_WORLD_EDGE_BOUNCE)))
+    for _ in range(2):
+        if pos < 0.0:
+            pos = -pos
+            vel = abs(vel) * restitution
+            continue
+        if pos > 1.0:
+            pos = 2.0 - pos
+            vel = -abs(vel) * restitution
+            continue
+        break
+    return _clamp01(pos), vel
+
+
 def _safe_cosine(left: list[float], right: list[float]) -> float:
     size = min(len(left), len(right))
     if size <= 0:
@@ -509,7 +686,117 @@ def _tokenize(text: str) -> list[str]:
 
 def _embedding_from_text(text: str, *, dims: int = DAIMOI_EMBED_DIMS) -> list[float]:
     normalized_dims = max(1, int(dims))
+
+    # Attempt semantic embedding via AI runtime if available (e.g. Nomic on NPU)
+    try:
+        # Use cached wrapper to avoid hitting inference on every tick
+        vector_tuple = _semantic_embedding_cached(str(text))
+        if vector_tuple:
+            vector = list(vector_tuple)
+            # Matryoshka Representation Learning (MRL) support:
+            # If the model supports MRL (like nomic-embed-text-v1.5), the first N dimensions
+            # contain the most coarse-grained semantic information.
+            # We prefer slicing over random projection or folding for these models.
+            if len(vector) >= normalized_dims:
+                # Slice to desired dimensionality
+                return _normalize_vector(vector[:normalized_dims], dims=normalized_dims)
+
+            # If vector is smaller than target (unlikely for 24 dims), pad or fold.
+            # Here we just pad/normalize.
+            padded = vector + [0.0] * (normalized_dims - len(vector))
+            return _normalize_vector(padded, dims=normalized_dims)
+    except Exception:
+        # Fallback to deterministic hash on error or if AI runtime unavailable
+        pass
+
     return list(_embedding_from_text_cached(str(text), normalized_dims))
+
+
+def _semantic_embed_ollama_reachable() -> bool:
+    global _SEMANTIC_EMBED_OLLAMA_PROBE_UNTIL
+    global _SEMANTIC_EMBED_OLLAMA_PROBE_OK
+
+    now_monotonic = time.monotonic()
+    with _SEMANTIC_EMBED_GUARD_LOCK:
+        if now_monotonic < _SEMANTIC_EMBED_OLLAMA_PROBE_UNTIL:
+            return bool(_SEMANTIC_EMBED_OLLAMA_PROBE_OK)
+
+    reachable = False
+    try:
+        from .ai import _ollama_endpoint
+
+        _, endpoint, _, _ = _ollama_endpoint()
+        parsed = urlparse(str(endpoint or "").strip())
+        host = str(parsed.hostname or "127.0.0.1").strip() or "127.0.0.1"
+        port = int(
+            parsed.port or (443 if str(parsed.scheme).lower() == "https" else 80)
+        )
+        with socket.create_connection((host, port), timeout=0.12):
+            reachable = True
+    except Exception:
+        reachable = False
+
+    with _SEMANTIC_EMBED_GUARD_LOCK:
+        _SEMANTIC_EMBED_OLLAMA_PROBE_OK = bool(reachable)
+        _SEMANTIC_EMBED_OLLAMA_PROBE_UNTIL = now_monotonic + (
+            12.0 if reachable else 4.0
+        )
+    return bool(reachable)
+
+
+@lru_cache(maxsize=4096)
+def _semantic_embedding_cached(text: str) -> tuple[float, ...] | None:
+    global _SEMANTIC_EMBED_OFFLINE_UNTIL
+    global _SEMANTIC_EMBED_FAIL_STREAK
+
+    now_monotonic = time.monotonic()
+    with _SEMANTIC_EMBED_GUARD_LOCK:
+        if now_monotonic < _SEMANTIC_EMBED_OFFLINE_UNTIL:
+            return None
+
+    try:
+        from .ai import _embed_text, _embedding_backend
+
+        backend = str(_embedding_backend()).strip().lower()
+        if backend == "ollama" and not _semantic_embed_ollama_reachable():
+            with _SEMANTIC_EMBED_GUARD_LOCK:
+                _SEMANTIC_EMBED_FAIL_STREAK = min(64, _SEMANTIC_EMBED_FAIL_STREAK + 1)
+                cooldown_seconds = min(90.0, 2.0 * float(_SEMANTIC_EMBED_FAIL_STREAK))
+                _SEMANTIC_EMBED_OFFLINE_UNTIL = time.monotonic() + cooldown_seconds
+            return None
+
+        vec: Any = None
+        if backend == "ollama":
+            result: dict[str, Any] = {"vec": None, "error": None}
+
+            def _run_embed() -> None:
+                try:
+                    result["vec"] = _embed_text(text)
+                except Exception as exc:  # pragma: no cover - defensive
+                    result["error"] = exc
+
+            worker = threading.Thread(target=_run_embed, daemon=True)
+            worker.start()
+            worker.join(timeout=0.35)
+            if worker.is_alive():
+                raise TimeoutError("semantic_embed_ollama_timeout")
+            vec = result.get("vec")
+        else:
+            # _embed_text handles backend selection (NPU/OpenVINO/Ollama/Tensorflow)
+            vec = _embed_text(text)
+        if vec:
+            with _SEMANTIC_EMBED_GUARD_LOCK:
+                _SEMANTIC_EMBED_FAIL_STREAK = 0
+                _SEMANTIC_EMBED_OFFLINE_UNTIL = 0.0
+            return tuple(vec)
+    except (ImportError, Exception):
+        pass
+
+    with _SEMANTIC_EMBED_GUARD_LOCK:
+        _SEMANTIC_EMBED_FAIL_STREAK = min(64, _SEMANTIC_EMBED_FAIL_STREAK + 1)
+        cooldown_seconds = min(90.0, 2.0 * float(_SEMANTIC_EMBED_FAIL_STREAK))
+        _SEMANTIC_EMBED_OFFLINE_UNTIL = time.monotonic() + cooldown_seconds
+    return None
 
 
 @lru_cache(maxsize=8192)
@@ -679,6 +966,366 @@ def _dirichlet_entropy(probabilities: dict[str, float]) -> float:
     return entropy
 
 
+def _softplus(value: float) -> float:
+    clamped = _finite_float(value, 0.0)
+    if clamped >= 20.0:
+        return clamped
+    if clamped <= -20.0:
+        return math.exp(clamped)
+    return math.log1p(math.exp(clamped))
+
+
+def _resource_wallet_by_type(wallet: dict[str, Any] | None) -> dict[str, float]:
+    values = {resource: 0.0 for resource in DAIMOI_RESOURCE_KEYS}
+    if not isinstance(wallet, dict):
+        return values
+    for key, raw in wallet.items():
+        token = str(key or "").strip().lower()
+        if not token:
+            continue
+        resource = _DAIMOI_RESOURCE_ALIASES.get(token)
+        if not resource:
+            continue
+        values[resource] = values[resource] + max(0.0, _finite_float(raw, 0.0))
+    return values
+
+
+def _presence_need_by_resource(
+    impact: dict[str, Any] | None,
+    *,
+    queue_ratio: float,
+) -> dict[str, float]:
+    impact_row = impact if isinstance(impact, dict) else {}
+    affected_by = impact_row.get("affected_by", {})
+    if not isinstance(affected_by, dict):
+        affected_by = {}
+    resource_signal = _clamp01_finite(affected_by.get("resource", 0.0), 0.0)
+    queue_signal = _clamp01_finite(queue_ratio, 0.0)
+    wallet = _resource_wallet_by_type(impact_row.get("resource_wallet", {}))
+
+    needs: dict[str, float] = {}
+    for resource in DAIMOI_RESOURCE_KEYS:
+        floor = max(
+            0.1,
+            _finite_float(
+                _DAIMOI_WALLET_FLOOR.get(resource, 6.0),
+                6.0,
+            ),
+        )
+        balance = max(0.0, _finite_float(wallet.get(resource, 0.0), 0.0))
+        deficit = _clamp01_finite(1.0 - (balance / floor), 0.0)
+        queue_push = queue_signal * (0.18 if resource in {"network", "disk"} else 0.08)
+        needs[resource] = _clamp01_finite(
+            (deficit * 0.64) + (resource_signal * 0.26) + queue_push,
+            0.0,
+        )
+    return needs
+
+
+@lru_cache(maxsize=256)
+def _component_embedding_cached(job_key: str) -> tuple[float, ...]:
+    return tuple(_embedding_from_text(job_key.replace("_", " ")))
+
+
+def _component_embedding(job_key: str) -> list[float]:
+    return list(_component_embedding_cached(str(job_key or "")))
+
+
+def _component_resource_req(job_key: str) -> dict[str, float]:
+    token = str(job_key or "").strip()
+    base = _DAIMOI_COMPONENT_RESOURCE_REQ.get(token, {})
+    req = {
+        resource: _clamp01_finite(base.get(resource, 0.0), 0.0)
+        for resource in DAIMOI_RESOURCE_KEYS
+    }
+    lowered = token.lower()
+    for resource in DAIMOI_RESOURCE_KEYS:
+        if resource in lowered:
+            req[resource] = max(req[resource], 0.58)
+    return req
+
+
+def _component_cost(job_key: str) -> float:
+    return max(
+        0.0, _finite_float(_DAIMOI_COMPONENT_COST.get(str(job_key or ""), 0.3), 0.3)
+    )
+
+
+def _packet_components_from_job_probabilities(
+    probabilities: dict[str, float],
+) -> list[dict[str, Any]]:
+    if not isinstance(probabilities, dict):
+        return []
+    sanitized: dict[str, float] = {}
+    total = 0.0
+    for key, raw in probabilities.items():
+        token = str(key or "").strip()
+        if not token:
+            continue
+        value = max(0.0, _finite_float(raw, 0.0))
+        if value <= 1e-12:
+            continue
+        sanitized[token] = value
+        total += value
+    if total <= 1e-12:
+        return []
+
+    components: list[dict[str, Any]] = []
+    for component_id in sorted(sanitized.keys()):
+        p_i = max(1e-12, sanitized[component_id] / total)
+        req = _component_resource_req(component_id)
+        components.append(
+            {
+                "component_id": component_id,
+                "p_i": p_i,
+                "req": req,
+                "cost_i": _component_cost(component_id),
+                "embedding": _component_embedding(component_id),
+            }
+        )
+    components.sort(
+        key=lambda row: (
+            -_finite_float(row.get("p_i", 0.0), 0.0),
+            str(row.get("component_id", "")),
+        )
+    )
+    return components
+
+
+def _packet_resource_signature(components: list[dict[str, Any]]) -> dict[str, float]:
+    rho = {resource: 0.0 for resource in DAIMOI_RESOURCE_KEYS}
+    for row in components:
+        if not isinstance(row, dict):
+            continue
+        p_i = _clamp01_finite(row.get("p_i", 0.0), 0.0)
+        req = row.get("req", {})
+        req_map = req if isinstance(req, dict) else {}
+        for resource in DAIMOI_RESOURCE_KEYS:
+            rho[resource] = rho[resource] + (
+                p_i * _clamp01_finite(req_map.get(resource, 0.0), 0.0)
+            )
+    return {resource: _clamp01_finite(value, 0.0) for resource, value in rho.items()}
+
+
+def _packet_component_contract_for_state(
+    state: dict[str, Any],
+    *,
+    top_k: int = 4,
+) -> dict[str, Any]:
+    job_probs = _job_probabilities(state)
+    components = _packet_components_from_job_probabilities(job_probs)
+    resource_signature = _packet_resource_signature(components)
+    if top_k > 0:
+        visible_rows = components[: int(top_k)]
+    else:
+        visible_rows = components
+    visible = [
+        {
+            "component_id": str(row.get("component_id", "")),
+            "p_i": round(_clamp01_finite(row.get("p_i", 0.0), 0.0), 6),
+            "req": {
+                resource: round(_clamp01_finite(req_value, 0.0), 6)
+                for resource, req_value in (
+                    row.get("req", {}) if isinstance(row.get("req", {}), dict) else {}
+                ).items()
+                if str(resource).strip()
+            },
+            "cost_i": round(max(0.0, _finite_float(row.get("cost_i", 0.0), 0.0)), 6),
+        }
+        for row in visible_rows
+        if isinstance(row, dict)
+    ]
+    return {
+        "record": DAIMOI_PACKET_COMPONENT_RECORD,
+        "schema_version": DAIMOI_PACKET_COMPONENT_SCHEMA,
+        "component_count": int(len(components)),
+        "components": visible,
+        "resource_signature": {
+            resource: round(_clamp01_finite(value, 0.0), 6)
+            for resource, value in resource_signature.items()
+        },
+    }
+
+
+def _softmax_probabilities(values: list[float]) -> list[float]:
+    if not values:
+        return []
+    finite_values = [_finite_float(value, 0.0) for value in values]
+    max_value = max(finite_values)
+    exps = [math.exp(value - max_value) for value in finite_values]
+    total = sum(exps)
+    if total <= 1e-12:
+        uniform = 1.0 / float(len(values))
+        return [uniform for _ in values]
+    return [value / total for value in exps]
+
+
+def _sample_absorb_component(
+    *,
+    components: list[dict[str, Any]],
+    lens_embedding: list[float],
+    need_by_resource: dict[str, float],
+    context: dict[str, Any],
+    seed: str,
+) -> dict[str, Any]:
+    feature_vector = [
+        _clamp01_finite(context.get("pressure", 0.0), 0.0),
+        _clamp01_finite(context.get("congestion", 0.0), 0.0),
+        _clamp01_finite(context.get("wallet_pressure", 0.0), 0.0),
+        _clamp01_finite(context.get("message_entropy", 0.0), 0.0),
+        _clamp01_finite(context.get("queue", 0.0), 0.0),
+        _clamp01_finite(context.get("contact", 0.0), 0.0),
+    ]
+    beta_raw = sum(
+        weight * feature
+        for weight, feature in zip(_ABSORB_BETA_WEIGHTS, feature_vector)
+    )
+    temp_raw = sum(
+        weight * feature
+        for weight, feature in zip(_ABSORB_TEMP_WEIGHTS, feature_vector)
+    )
+    beta = min(_ABSORB_BETA_MAX, max(0.0, _softplus(beta_raw)))
+    temperature = min(
+        _ABSORB_TEMP_MAX,
+        max(_ABSORB_TEMP_MIN, _ABSORB_TEMP_MIN + _softplus(temp_raw)),
+    )
+
+    need = {
+        resource: _clamp01_finite(
+            (need_by_resource if isinstance(need_by_resource, dict) else {}).get(
+                resource,
+                0.0,
+            ),
+            0.0,
+        )
+        for resource in DAIMOI_RESOURCE_KEYS
+    }
+    lens_unit = _normalize_vector(_coerce_vector(lens_embedding))
+
+    scored_rows: list[dict[str, Any]] = []
+    scaled_logits: list[float] = []
+    for index, row in enumerate(components):
+        if not isinstance(row, dict):
+            continue
+        component_id = str(row.get("component_id", "")).strip()
+        if not component_id:
+            continue
+        p_i = max(1e-12, _finite_float(row.get("p_i", 0.0), 0.0))
+        req_raw = row.get("req", {})
+        req_map = req_raw if isinstance(req_raw, dict) else {}
+        req = {
+            resource: _clamp01_finite(req_map.get(resource, 0.0), 0.0)
+            for resource in DAIMOI_RESOURCE_KEYS
+        }
+        embedding = _coerce_vector(
+            row.get("embedding", _component_embedding(component_id))
+        )
+        s_i = _safe_cosine_unit(lens_unit, _normalize_vector(embedding))
+        q_i = sum(need[resource] * req[resource] for resource in DAIMOI_RESOURCE_KEYS)
+        cost_i = max(
+            0.0, _finite_float(row.get("cost_i", _component_cost(component_id)), 0.0)
+        )
+        logit = (
+            math.log(p_i)
+            + (beta * s_i)
+            + (_ABSORB_ZETA * q_i)
+            - (_ABSORB_LAMBDA_COST * cost_i)
+        )
+        scaled_logit = logit / max(_ABSORB_TEMP_MIN, temperature)
+        scaled_logits.append(scaled_logit)
+        scored_rows.append(
+            {
+                "index": int(index),
+                "component_id": component_id,
+                "p_i": p_i,
+                "req": req,
+                "s_i": s_i,
+                "q_i": q_i,
+                "cost_i": cost_i,
+                "logit": logit,
+                "scaled_logit": scaled_logit,
+            }
+        )
+
+    if not scored_rows:
+        return {
+            "record": DAIMOI_ABSORB_SAMPLER_RECORD,
+            "schema_version": DAIMOI_ABSORB_SAMPLER_SCHEMA,
+            "method": DAIMOI_ABSORB_SAMPLER_METHOD,
+            "beta": round(beta, 6),
+            "temperature": round(temperature, 6),
+            "zeta": _ABSORB_ZETA,
+            "lambda_cost": _ABSORB_LAMBDA_COST,
+            "feature_vector": [round(value, 6) for value in feature_vector],
+            "selected_component_id": "",
+            "selected_probability": 0.0,
+            "components": [],
+        }
+
+    probs = _softmax_probabilities(scaled_logits)
+    selected: dict[str, Any] | None = None
+    for index, row in enumerate(scored_rows):
+        prob = probs[index] if index < len(probs) else 0.0
+        row["probability"] = prob
+        uniform = _stable_ratio(
+            f"{seed}|absorb|{row['component_id']}|{index}",
+            index + 11,
+        )
+        uniform = min(1.0 - 1e-9, max(1e-9, _finite_float(uniform, 0.5)))
+        gumbel = -math.log(-math.log(uniform))
+        row["gumbel"] = gumbel
+        row["gumbel_score"] = _finite_float(row.get("scaled_logit", 0.0), 0.0) + gumbel
+        if selected is None or (
+            _finite_float(row.get("gumbel_score", 0.0), 0.0)
+            > _finite_float(selected.get("gumbel_score", 0.0), 0.0)
+        ):
+            selected = row
+
+    selected_row = selected if isinstance(selected, dict) else scored_rows[0]
+    selected_probability = _clamp01_finite(selected_row.get("probability", 0.0), 0.0)
+    return {
+        "record": DAIMOI_ABSORB_SAMPLER_RECORD,
+        "schema_version": DAIMOI_ABSORB_SAMPLER_SCHEMA,
+        "method": DAIMOI_ABSORB_SAMPLER_METHOD,
+        "beta": round(beta, 6),
+        "temperature": round(temperature, 6),
+        "zeta": _ABSORB_ZETA,
+        "lambda_cost": _ABSORB_LAMBDA_COST,
+        "feature_vector": [round(value, 6) for value in feature_vector],
+        "selected_component_id": str(selected_row.get("component_id", "")),
+        "selected_probability": round(selected_probability, 6),
+        "components": [
+            {
+                "component_id": str(row.get("component_id", "")),
+                "p_i": round(_clamp01_finite(row.get("p_i", 0.0), 0.0), 6),
+                "req": {
+                    resource: round(_clamp01_finite(value, 0.0), 6)
+                    for resource, value in (
+                        row.get("req", {})
+                        if isinstance(row.get("req", {}), dict)
+                        else {}
+                    ).items()
+                },
+                "s_i": round(_finite_float(row.get("s_i", 0.0), 0.0), 6),
+                "q_i": round(_clamp01_finite(row.get("q_i", 0.0), 0.0), 6),
+                "cost_i": round(
+                    max(0.0, _finite_float(row.get("cost_i", 0.0), 0.0)), 6
+                ),
+                "logit": round(_finite_float(row.get("logit", 0.0), 0.0), 6),
+                "probability": round(
+                    _clamp01_finite(row.get("probability", 0.0), 0.0), 6
+                ),
+                "gumbel": round(_finite_float(row.get("gumbel", 0.0), 0.0), 6),
+                "gumbel_score": round(
+                    _finite_float(row.get("gumbel_score", 0.0), 0.0),
+                    6,
+                ),
+            }
+            for row in scored_rows
+        ],
+    }
+
+
 def _dirichlet_transfer(
     source_alpha: dict[str, float],
     target_alpha: dict[str, float],
@@ -730,7 +1377,7 @@ def _seed_curr_matrix(left: dict[str, Any], right: dict[str, Any]) -> dict[str, 
 
 def _collision_semantic_update(
     left: dict[str, Any], right: dict[str, Any], *, impulse: float
-) -> dict[str, float]:
+) -> dict[str, Any]:
     matrix = _seed_curr_matrix(left, right)
     semantic_affinity = (
         (matrix["cc"] * 0.5)
@@ -1133,24 +1780,44 @@ def _presence_anchor_map(
         if not presence_id:
             continue
         meta = _ENTITY_MANIFEST_BY_ID.get(presence_id, {})
+        stable_x = _stable_ratio(f"{presence_id}|anchor", 7)
+        stable_y = _stable_ratio(f"{presence_id}|anchor", 13)
+        resolved_x = _clamp01(
+            _safe_float(
+                row.get(
+                    "x",
+                    meta.get("x", stable_x),
+                ),
+                _safe_float(meta.get("x", stable_x), stable_x),
+            )
+        )
+        resolved_y = _clamp01(
+            _safe_float(
+                row.get(
+                    "y",
+                    meta.get("y", stable_y),
+                ),
+                _safe_float(meta.get("y", stable_y), stable_y),
+            )
+        )
+        resolved_hue = _safe_float(row.get("hue", meta.get("hue", 210.0)), 210.0)
         anchors[presence_id] = {
             "id": presence_id,
-            "en": str(meta.get("en", presence_id.replace("_", " ").title())),
-            "ja": str(meta.get("ja", "")),
-            "type": str(meta.get("type", "presence") or "presence"),
-            "x": _clamp01(
-                _safe_float(
-                    meta.get("x", _stable_ratio(f"{presence_id}|anchor", 7)),
-                    _stable_ratio(f"{presence_id}|anchor", 7),
+            "en": str(
+                row.get(
+                    "en",
+                    row.get(
+                        "label", meta.get("en", presence_id.replace("_", " ").title())
+                    ),
                 )
             ),
-            "y": _clamp01(
-                _safe_float(
-                    meta.get("y", _stable_ratio(f"{presence_id}|anchor", 13)),
-                    _stable_ratio(f"{presence_id}|anchor", 13),
-                )
+            "ja": str(row.get("ja", row.get("label_ja", meta.get("ja", "")))),
+            "type": str(
+                row.get("presence_type", meta.get("type", "presence")) or "presence"
             ),
-            "hue": _safe_float(meta.get("hue", 210.0), 210.0),
+            "x": resolved_x,
+            "y": resolved_y,
+            "hue": resolved_hue,
             "embedding": _embedding_from_text(
                 _presence_prompt_template(
                     meta if isinstance(meta, dict) else {}, presence_id
@@ -1596,6 +2263,18 @@ def build_probabilistic_daimoi_particles(
             "job_triggers": {},
             "mean_package_entropy": 0.0,
             "mean_message_probability": 0.0,
+            "packet_contract": {
+                "record": DAIMOI_PACKET_COMPONENT_RECORD,
+                "schema_version": DAIMOI_PACKET_COMPONENT_SCHEMA,
+                "resource_keys": list(DAIMOI_RESOURCE_KEYS),
+            },
+            "absorb_sampler": {
+                "record": DAIMOI_ABSORB_SAMPLER_RECORD,
+                "schema_version": DAIMOI_ABSORB_SAMPLER_SCHEMA,
+                "method": DAIMOI_ABSORB_SAMPLER_METHOD,
+                "events": 0,
+                "sample_events": [],
+            },
             "behavior_defaults": list(DAIMOI_BEHAVIOR_DEFAULTS),
         }
 
@@ -1618,6 +2297,11 @@ def build_probabilistic_daimoi_particles(
 
     anchors = _presence_anchor_map(presence_impacts)
     presence_ids = [presence_id for presence_id in anchors.keys() if presence_id]
+    impact_by_id = {
+        str(row.get("id", "")).strip(): row
+        for row in presence_impacts
+        if isinstance(row, dict) and str(row.get("id", "")).strip()
+    }
     file_nodes = _file_node_rows(file_graph)
     local_density_map = {
         presence_id: _presence_density(anchors[presence_id], file_nodes, presence_id)
@@ -1636,6 +2320,8 @@ def build_probabilistic_daimoi_particles(
     delivery_count = 0
     matrix_accumulator = {"ss": 0.0, "sc": 0.0, "cs": 0.0, "cc": 0.0, "samples": 0}
     job_trigger_counts: dict[str, int] = {}
+    absorb_sampler_count = 0
+    absorb_sampler_events: list[dict[str, Any]] = []
 
     with _DAIMO_DYNAMICS_LOCK:
         runtime = _DAIMO_DYNAMICS_CACHE.get("field_particles", {})
@@ -2118,6 +2804,23 @@ def build_probabilistic_daimoi_particles(
                 pref_y = _clamp01(_safe_float(state.get("preferred_y", py), py))
                 fx += (pref_x - px) * 0.01
                 fy += (pref_y - py) * 0.01
+                simplex_phase = now_seconds * 0.23
+                fx += (
+                    _simplex_noise_2d(
+                        (px * 4.2) + simplex_phase,
+                        (py * 4.2) + (simplex_phase * 0.67),
+                        seed=31,
+                    )
+                    * 0.00028
+                )
+                fy += (
+                    _simplex_noise_2d(
+                        (px * 4.2) + 19.0 + (simplex_phase * 0.53),
+                        (py * 4.2) + 7.0 + simplex_phase,
+                        seed=43,
+                    )
+                    * 0.00028
+                )
                 damping = 0.95
                 speed_cap = 0.0048
             elif is_chaos:
@@ -2181,6 +2884,29 @@ def build_probabilistic_daimoi_particles(
                 ) + (_stable_ratio(f"{state.get('id', '')}|orbit", age + 1) * math.tau)
                 fx += math.cos(orbit_phase) * 0.00062
                 fy += math.sin(orbit_phase) * 0.00062
+                simplex_amp = (
+                    0.0002
+                    + (msg_prob * 0.00042)
+                    + ((1.0 - resource_pressure) * 0.00012)
+                )
+                simplex_phase = now_seconds * (0.29 + (msg_prob * 0.22))
+                simplex_seed_base = int(age + (len(owner_id) * 17))
+                fx += (
+                    _simplex_noise_2d(
+                        (px * 5.0) + simplex_phase,
+                        (py * 5.0) + (simplex_phase * 0.71),
+                        seed=simplex_seed_base,
+                    )
+                    * simplex_amp
+                )
+                fy += (
+                    _simplex_noise_2d(
+                        (px * 5.0) + 13.0 + (simplex_phase * 0.57),
+                        (py * 5.0) + 29.0 + simplex_phase,
+                        seed=simplex_seed_base + 53,
+                    )
+                    * simplex_amp
+                )
                 damping = max(0.74, 0.92 - (resource_pressure * 0.16))
                 speed_cap = (
                     0.0052 + ((1.0 - resource_pressure) * 0.0026) + (msg_prob * 0.0014)
@@ -2255,7 +2981,7 @@ def build_probabilistic_daimoi_particles(
                             -1.0,
                             min(
                                 1.0,
-                                (similarity * 0.72) + (embedded_bonus * 0.28) - 0.18,
+                                (similarity * 0.72) + (embedded_bonus * 0.28) - 0.08,
                             ),
                         )
                         strength = strength_base * falloff
@@ -2270,6 +2996,17 @@ def build_probabilistic_daimoi_particles(
                     fx += _safe_float(state.get("cached_node_fx", 0.0), 0.0)
                     fy += _safe_float(state.get("cached_node_fy", 0.0), 0.0)
 
+            fx += _world_edge_inward_pressure(
+                px,
+                edge_band=DAIMOI_WORLD_EDGE_BAND,
+                pressure=DAIMOI_WORLD_EDGE_PRESSURE,
+            )
+            fy += _world_edge_inward_pressure(
+                py,
+                edge_band=DAIMOI_WORLD_EDGE_BAND,
+                pressure=DAIMOI_WORLD_EDGE_PRESSURE,
+            )
+
             vx = (pvx * damping) + fx
             vy = (pvy * damping) + fy
             speed = math.sqrt((vx * vx) + (vy * vy))
@@ -2277,10 +3014,23 @@ def build_probabilistic_daimoi_particles(
                 scale = speed_cap / speed
                 vx *= scale
                 vy *= scale
+
+            next_x, next_y = px + vx, py + vy
+            next_x, vx = _reflect_world_axis(
+                next_x,
+                vx,
+                bounce=DAIMOI_WORLD_EDGE_BOUNCE,
+            )
+            next_y, vy = _reflect_world_axis(
+                next_y,
+                vy,
+                bounce=DAIMOI_WORLD_EDGE_BOUNCE,
+            )
+
             state["vx"] = vx
             state["vy"] = vy
-            state["x"] = _clamp01(px + vx)
-            state["y"] = _clamp01(py + vy)
+            state["x"] = next_x
+            state["y"] = next_y
             state["ts"] = now_monotonic
 
         collision_tree_max_items = 16
@@ -2488,40 +3238,45 @@ def build_probabilistic_daimoi_particles(
                         # --- Apply resource transfer ---
                         if "resource_transfer" in semantics:
                             transfers = semantics["resource_transfer"]
-                            if "left_to_right" in transfers:
-                                # Left (resource packet) -> Right (consumer)
-                                # We need to update the presence wallet.
-                                # Since particles are just projections, we need a way to signal back.
-                                # Store the event in 'right' state for collection by simulation loop?
-                                # Yes, append to 'wallet_delta' on the particle state.
+                            if isinstance(transfers, dict):
+                                if "left_to_right" in transfers:
+                                    # Left (resource packet) -> Right (consumer)
+                                    packet = transfers["left_to_right"]
+                                    if isinstance(packet, dict):
+                                        delta_r = right.get("wallet_delta")
+                                        if not isinstance(delta_r, dict):
+                                            delta_r = {}
+                                            right["wallet_delta"] = delta_r
+                                        for res, amt in packet.items():
+                                            res_key = str(res)
+                                            delta_r[res_key] = _safe_float(
+                                                delta_r.get(res_key, 0.0), 0.0
+                                            ) + _safe_float(amt, 0.0)
 
-                                # But wait, 'right' particle might not belong to the colliding presence if it's a handoff?
-                                # The particle state has 'owner'.
-                                # So if right['owner'] == 'presence.sim.xyz', we add credit.
-                                # We update the particle state, and simulation loop will aggregate.
+                                if "right_to_left" in transfers:
+                                    packet = transfers["right_to_left"]
+                                    if isinstance(packet, dict):
+                                        delta_l = left.get("wallet_delta")
+                                        if not isinstance(delta_l, dict):
+                                            delta_l = {}
+                                            left["wallet_delta"] = delta_l
+                                        for res, amt in packet.items():
+                                            res_key = str(res)
+                                            delta_l[res_key] = _safe_float(
+                                                delta_l.get(res_key, 0.0), 0.0
+                                            ) + _safe_float(amt, 0.0)
 
-                                packet = transfers["left_to_right"]
-                                if not isinstance(right.get("wallet_delta"), dict):
-                                    right["wallet_delta"] = {}
-                                for res, amt in packet.items():
-                                    right["wallet_delta"][res] = (
-                                        _safe_float(
-                                            right["wallet_delta"].get(res, 0.0), 0.0
-                                        )
-                                        + amt
-                                    )
-
-                            if "right_to_left" in transfers:
-                                packet = transfers["right_to_left"]
-                                if not isinstance(left.get("wallet_delta"), dict):
-                                    left["wallet_delta"] = {}
-                                for res, amt in packet.items():
-                                    left["wallet_delta"][res] = (
-                                        _safe_float(
-                                            left["wallet_delta"].get(res, 0.0), 0.0
-                                        )
-                                        + amt
-                                    )
+                                if "right_to_left" in transfers:
+                                    packet = transfers["right_to_left"]
+                                    if isinstance(packet, dict):
+                                        if not isinstance(
+                                            left.get("wallet_delta"), dict
+                                        ):
+                                            left["wallet_delta"] = {}
+                                        for res, amt in packet.items():
+                                            left["wallet_delta"][res] = _safe_float(
+                                                left["wallet_delta"].get(res, 0.0), 0.0
+                                            ) + _safe_float(amt, 0.0)
 
                 collision_count += 1
                 if collision_count >= max_collisions_per_tick:
@@ -2583,10 +3338,70 @@ def build_probabilistic_daimoi_particles(
             )
             action = "diffuse" if roll < diffuse_prob else "deflect"
 
-            triggered_job = _sample_job_key(
-                job_probs,
-                seed=f"{particle_id}|job|{best_presence}|{now_seconds_int}",
+            anchor = anchors.get(
+                best_presence, {"x": 0.5, "y": 0.5, "embedding": _normalize_vector([])}
             )
+            anchor_embedding = _normalize_vector(list(anchor.get("embedding", [])))
+            contact_strength = _clamp01(
+                1.0 - (best_distance / max(1e-6, DAIMOI_SURFACE_RADIUS))
+            )
+            packet_contract = _packet_component_contract_for_state(state, top_k=4)
+            packet_components = _packet_components_from_job_probabilities(job_probs)
+            resource_signature = dict(packet_contract.get("resource_signature", {}))
+            presence_impact = impact_by_id.get(best_presence, {})
+            need_by_resource = _presence_need_by_resource(
+                presence_impact if isinstance(presence_impact, dict) else {},
+                queue_ratio=queue_pressure,
+            )
+            absorb_sample = _sample_absorb_component(
+                components=packet_components,
+                lens_embedding=anchor_embedding,
+                need_by_resource=need_by_resource,
+                context={
+                    "pressure": resource_pressure,
+                    "congestion": _clamp01(_safe_float(collision_count, 0.0) / 1200.0),
+                    "wallet_pressure": _clamp01(
+                        sum(
+                            max(0.0, 1.0 - _safe_float(value, 0.0))
+                            for value in need_by_resource.values()
+                        )
+                        / float(max(1, len(need_by_resource)))
+                    ),
+                    "message_entropy": _clamp01(
+                        _dirichlet_entropy(job_probs)
+                        / max(1.0, math.log(len(DAIMOI_JOB_KEYS)))
+                    ),
+                    "queue": queue_pressure,
+                    "contact": contact_strength,
+                },
+                seed=f"{particle_id}|absorb|{best_presence}|{now_seconds_int}",
+            )
+
+            triggered_job = str(absorb_sample.get("selected_component_id", "")).strip()
+            if not triggered_job:
+                triggered_job = _sample_job_key(
+                    job_probs,
+                    seed=f"{particle_id}|job|{best_presence}|{now_seconds_int}",
+                )
+
+            state["last_packet_contract"] = packet_contract
+            state["last_resource_signature"] = resource_signature
+            state["last_absorb_sampler"] = absorb_sample
+
+            absorb_sampler_count += 1
+            if len(absorb_sampler_events) < 24:
+                absorb_sampler_events.append(
+                    {
+                        "particle_id": particle_id,
+                        "presence_id": best_presence,
+                        "owner_presence_id": owner_id,
+                        "action": action,
+                        "contact_strength": round(contact_strength, 6),
+                        "selected_component_id": triggered_job,
+                        "sampler": absorb_sample,
+                    }
+                )
+
             job_trigger_counts[triggered_job] = (
                 _safe_int(job_trigger_counts.get(triggered_job, 0), 0) + 1
             )
@@ -2600,14 +3415,6 @@ def build_probabilistic_daimoi_particles(
 
             if triggered_job == "deliver_message" and message_prob >= 0.45:
                 delivery_count += 1
-
-            anchor = anchors.get(
-                best_presence, {"x": 0.5, "y": 0.5, "embedding": _normalize_vector([])}
-            )
-            anchor_embedding = _normalize_vector(list(anchor.get("embedding", [])))
-            contact_strength = _clamp01(
-                1.0 - (best_distance / max(1e-6, DAIMOI_SURFACE_RADIUS))
-            )
 
             if action == "diffuse":
                 diffuse_count += 1
@@ -2845,6 +3652,98 @@ def build_probabilistic_daimoi_particles(
             package_entropy_total += package_entropy
             message_probability_total += message_prob
 
+            packet_contract_raw = state.get("last_packet_contract", {})
+            packet_contract = (
+                packet_contract_raw
+                if isinstance(packet_contract_raw, dict)
+                and "components" in packet_contract_raw
+                and isinstance(packet_contract_raw.get("components", []), list)
+                else _packet_component_contract_for_state(state, top_k=4)
+            )
+            packet_components = (
+                list(packet_contract.get("components", []))
+                if isinstance(packet_contract.get("components", []), list)
+                else []
+            )
+            resource_signature_raw = state.get(
+                "last_resource_signature",
+                packet_contract.get("resource_signature", {}),
+            )
+            resource_signature = (
+                resource_signature_raw
+                if isinstance(resource_signature_raw, dict)
+                else {}
+            )
+
+            absorb_sample_raw = state.get("last_absorb_sampler", {})
+            if isinstance(absorb_sample_raw, dict) and absorb_sample_raw:
+                absorb_sample = absorb_sample_raw
+            else:
+                impact = impact_by_id.get(owner_id, {})
+                need_preview = _presence_need_by_resource(
+                    impact if isinstance(impact, dict) else {},
+                    queue_ratio=queue_pressure,
+                )
+                owner_anchor = anchors.get(owner_id, {})
+                absorb_sample = _sample_absorb_component(
+                    components=_packet_components_from_job_probabilities(job_probs),
+                    lens_embedding=list(
+                        (
+                            owner_anchor
+                            if isinstance(owner_anchor, dict)
+                            else {"embedding": _normalize_vector([])}
+                        ).get("embedding", [])
+                    ),
+                    need_by_resource=need_preview,
+                    context={
+                        "pressure": resource_pressure,
+                        "congestion": _clamp01(
+                            _safe_float(collision_count, 0.0) / 1200.0
+                        ),
+                        "wallet_pressure": _clamp01(
+                            sum(
+                                max(0.0, 1.0 - _safe_float(value, 0.0))
+                                for value in need_preview.values()
+                            )
+                            / float(max(1, len(need_preview)))
+                        ),
+                        "message_entropy": _clamp01(
+                            package_entropy / max(1.0, math.log(len(DAIMOI_JOB_KEYS)))
+                        ),
+                        "queue": queue_pressure,
+                        "contact": 0.0,
+                    },
+                    seed=f"{state.get('id', '')}|absorb-preview|{owner_id}|{now_seconds_int}",
+                )
+
+            absorb_sampler_row = {
+                "record": str(
+                    absorb_sample.get("record", DAIMOI_ABSORB_SAMPLER_RECORD)
+                ),
+                "schema_version": str(
+                    absorb_sample.get("schema_version", DAIMOI_ABSORB_SAMPLER_SCHEMA)
+                ),
+                "method": str(
+                    absorb_sample.get("method", DAIMOI_ABSORB_SAMPLER_METHOD)
+                ),
+                "selected_component_id": str(
+                    absorb_sample.get("selected_component_id", "")
+                ),
+                "selected_probability": round(
+                    _clamp01(
+                        _safe_float(absorb_sample.get("selected_probability", 0.0), 0.0)
+                    ),
+                    6,
+                ),
+                "beta": round(
+                    max(0.0, _safe_float(absorb_sample.get("beta", 0.0), 0.0)), 6
+                ),
+                "temperature": round(
+                    max(0.0, _safe_float(absorb_sample.get("temperature", 0.0), 0.0)),
+                    6,
+                ),
+            }
+
             output_rows.append(
                 {
                     "id": str(state.get("id", "")),
@@ -2857,6 +3756,8 @@ def build_probabilistic_daimoi_particles(
                     "is_nexus": is_nexus,
                     "record": DAIMOI_PROBABILISTIC_RECORD,
                     "schema_version": DAIMOI_PROBABILISTIC_SCHEMA,
+                    "packet_record": DAIMOI_PACKET_COMPONENT_RECORD,
+                    "packet_schema_version": DAIMOI_PACKET_COMPONENT_SCHEMA,
                     "x": round(_clamp01(_safe_float(state.get("x", 0.5), 0.5)), 5),
                     "y": round(_clamp01(_safe_float(state.get("y", 0.5), 0.5)), 5),
                     "size": round(
@@ -2875,6 +3776,13 @@ def build_probabilistic_daimoi_particles(
                     "b": round(_clamp01(b_raw), 5),
                     "message_probability": round(message_prob, 6),
                     "job_probabilities": _rounded_distribution(job_probs),
+                    "packet_components": packet_components,
+                    "resource_signature": {
+                        resource: round(_clamp01(_safe_float(value, 0.0)), 6)
+                        for resource, value in resource_signature.items()
+                        if str(resource).strip()
+                    },
+                    "absorb_sampler": absorb_sampler_row,
                     "action_probabilities": _rounded_distribution(
                         {
                             "deflect": action_probs.get("deflect", 0.5),
@@ -2956,6 +3864,19 @@ def build_probabilistic_daimoi_particles(
         },
         "mean_package_entropy": round(mean_entropy, 6),
         "mean_message_probability": round(mean_message_prob, 6),
+        "packet_contract": {
+            "record": DAIMOI_PACKET_COMPONENT_RECORD,
+            "schema_version": DAIMOI_PACKET_COMPONENT_SCHEMA,
+            "resource_keys": list(DAIMOI_RESOURCE_KEYS),
+            "top_k": 4,
+        },
+        "absorb_sampler": {
+            "record": DAIMOI_ABSORB_SAMPLER_RECORD,
+            "schema_version": DAIMOI_ABSORB_SAMPLER_SCHEMA,
+            "method": DAIMOI_ABSORB_SAMPLER_METHOD,
+            "events": int(absorb_sampler_count),
+            "sample_events": absorb_sampler_events,
+        },
         "matrix_mean": matrix_mean,
         "behavior_defaults": list(DAIMOI_BEHAVIOR_DEFAULTS),
     }
