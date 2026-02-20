@@ -1,3 +1,7 @@
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include <errno.h>
 #include <float.h>
 #include <math.h>
@@ -12,6 +16,14 @@
 #define CDB_FLAG_NEXUS 0x1u
 #define CDB_FLAG_CHAOS 0x2u
 #define CDB_FLAG_ACTIVE 0x4u
+#define CDB_WORLD_EDGE_BAND 0.12f
+#define CDB_WORLD_EDGE_PRESSURE 0.18f
+#define CDB_WORLD_EDGE_BOUNCE 0.74f
+
+#define CDB_NOOI_COLS 64
+#define CDB_NOOI_ROWS 64
+#define CDB_NOOI_LAYERS 8
+#define CDB_NOOI_SIZE (CDB_NOOI_COLS * CDB_NOOI_ROWS * CDB_NOOI_LAYERS * 2)
 
 typedef struct Vec2DoubleBuffer {
     float *x[2];
@@ -41,6 +53,14 @@ typedef struct CDBEngine {
     float *mass;
     float *radius;
 
+    float *nooi_field;
+    _Atomic int nooi_index; // 0 or 1 for double buffering if needed, or just 1 buffer with lock? 
+                            // Python writes to a separate buffer then we swap?
+                            // For "Compact", let's use a single buffer with a read/write lock or atomic swap pointer.
+                            // Actually, let's use double buffering for safety.
+    float *nooi_buffer[2];
+    _Atomic int nooi_readable;
+
     uint32_t force_sleep_us;
     uint32_t chaos_sleep_us;
     uint32_t integrate_sleep_us;
@@ -53,6 +73,8 @@ typedef struct CDBEngine {
 } CDBEngine;
 
 void cdb_engine_destroy(CDBEngine *engine);
+
+int cdb_engine_update_nooi(CDBEngine *engine, const float *data);
 
 static uint32_t lcg_next(uint32_t *state) {
     *state = (*state * 1664525u) + 1013904223u;
@@ -87,6 +109,340 @@ static float clamp01(float value) {
         return 1.0f;
     }
     return value;
+}
+
+static int fast_floor_to_int(float value) {
+    int i = (int)value;
+    return (value < (float)i) ? (i - 1) : i;
+}
+
+static uint32_t mix_hash_u32(uint32_t value) {
+    value ^= value >> 16;
+    value *= 0x7feb352du;
+    value ^= value >> 15;
+    value *= 0x846ca68bu;
+    value ^= value >> 16;
+    return value;
+}
+
+static uint32_t simplex_hash2(int i, int j, uint32_t seed) {
+    uint32_t mix =
+        (((uint32_t)i + 1u) * 0x9E3779B1u)
+        ^ (((uint32_t)j + 1u) * 0x85EBCA77u)
+        ^ ((seed + 1u) * 0xC2B2AE3Du);
+    return mix_hash_u32(mix) % 12u;
+}
+
+static float simplex_grad2(uint32_t hash, float x, float y) {
+    switch (hash % 12u) {
+        case 0u:
+            return x + y;
+        case 1u:
+            return -x + y;
+        case 2u:
+            return x - y;
+        case 3u:
+            return -x - y;
+        case 4u:
+            return x;
+        case 5u:
+            return -x;
+        case 6u:
+            return x;
+        case 7u:
+            return -x;
+        case 8u:
+            return y;
+        case 9u:
+            return -y;
+        case 10u:
+            return y;
+        default:
+            return -y;
+    }
+}
+
+static float simplex_noise_2d(float x, float y, uint32_t seed) {
+    const float F2 = 0.3660254037844386f;
+    const float G2 = 0.21132486540518713f;
+
+    float s = (x + y) * F2;
+    int i = fast_floor_to_int(x + s);
+    int j = fast_floor_to_int(y + s);
+    float t = ((float)(i + j)) * G2;
+
+    float x0 = x - (((float)i) - t);
+    float y0 = y - (((float)j) - t);
+
+    int i1;
+    int j1;
+    if (x0 > y0) {
+        i1 = 1;
+        j1 = 0;
+    } else {
+        i1 = 0;
+        j1 = 1;
+    }
+
+    float x1 = x0 - ((float)i1) + G2;
+    float y1 = y0 - ((float)j1) + G2;
+    float x2 = x0 - 1.0f + (2.0f * G2);
+    float y2 = y0 - 1.0f + (2.0f * G2);
+
+    float n0 = 0.0f;
+    float n1 = 0.0f;
+    float n2 = 0.0f;
+
+    float t0 = 0.5f - (x0 * x0) - (y0 * y0);
+    if (t0 >= 0.0f) {
+        t0 *= t0;
+        n0 = t0 * t0 * simplex_grad2(simplex_hash2(i, j, seed), x0, y0);
+    }
+
+    float t1 = 0.5f - (x1 * x1) - (y1 * y1);
+    if (t1 >= 0.0f) {
+        t1 *= t1;
+        n1 = t1 * t1 * simplex_grad2(simplex_hash2(i + i1, j + j1, seed), x1, y1);
+    }
+
+    float t2 = 0.5f - (x2 * x2) - (y2 * y2);
+    if (t2 >= 0.0f) {
+        t2 *= t2;
+        n2 = t2 * t2 * simplex_grad2(simplex_hash2(i + 1, j + 1, seed), x2, y2);
+    }
+
+    return 70.0f * (n0 + n1 + n2);
+}
+
+static int cdb_graph_runtime_accumulate_gravity(
+    uint32_t node_count,
+    uint32_t edge_count,
+    const uint32_t *edge_src,
+    const uint32_t *edge_dst,
+    const float *edge_cost_cache,
+    float wl,
+    float wc,
+    float ws,
+    float global_sat,
+    const uint32_t *source_nodes,
+    const float *source_mass,
+    const float *source_need,
+    uint32_t source_count,
+    float bounded_radius,
+    float grav_const,
+    float grav_eps,
+    float *out_min_dist,
+    float *out_gravity
+) {
+    if ((out_gravity == NULL && out_min_dist == NULL) || source_count == 0u) {
+        return 0;
+    }
+
+    float *dist = (float *)calloc((size_t)node_count, sizeof(float));
+    uint8_t *visited = (uint8_t *)calloc((size_t)node_count, sizeof(uint8_t));
+    if (dist == NULL || visited == NULL) {
+        free(dist);
+        free(visited);
+        return -1;
+    }
+
+    for (uint32_t source_index = 0u; source_index < source_count; source_index += 1u) {
+        uint32_t source = source_nodes[source_index];
+        if (source >= node_count) {
+            continue;
+        }
+
+        float need = source_need != NULL ? clamp01(source_need[source_index]) : 1.0f;
+        float mass = source_mass != NULL ? fmaxf(0.0f, source_mass[source_index]) : 1.0f;
+        if (need <= 1e-6f || mass <= 1e-6f) {
+            continue;
+        }
+
+        for (uint32_t node = 0u; node < node_count; node += 1u) {
+            dist[node] = FLT_MAX;
+            visited[node] = 0u;
+        }
+        dist[source] = 0.0f;
+
+        for (uint32_t iter = 0u; iter < node_count; iter += 1u) {
+            uint32_t best_node = node_count;
+            float best_dist = bounded_radius + 1.0f;
+
+            for (uint32_t node = 0u; node < node_count; node += 1u) {
+                if (visited[node] != 0u) {
+                    continue;
+                }
+
+                float candidate = dist[node];
+                if (!isfinite(candidate)) {
+                    continue;
+                }
+                if (candidate < best_dist) {
+                    best_dist = candidate;
+                    best_node = node;
+                }
+            }
+
+            if (best_node >= node_count || best_dist > bounded_radius) {
+                break;
+            }
+
+            visited[best_node] = 1u;
+            for (uint32_t edge = 0u; edge < edge_count; edge += 1u) {
+                if (edge_src[edge] != best_node) {
+                    continue;
+                }
+
+                uint32_t dst = edge_dst[edge];
+                if (dst >= node_count) {
+                    continue;
+                }
+
+                float step = (edge_cost_cache != NULL)
+                    ? edge_cost_cache[edge]
+                    : fmaxf(0.0001f, wl + (wc * global_sat) + (ws * 0.5f));
+                float next_dist = best_dist + step;
+                if (next_dist > bounded_radius || next_dist >= dist[dst]) {
+                    continue;
+                }
+                dist[dst] = next_dist;
+            }
+        }
+
+        for (uint32_t node = 0u; node < node_count; node += 1u) {
+            float distance = dist[node];
+            if (!isfinite(distance) || distance < 0.0f || distance > bounded_radius) {
+                continue;
+            }
+
+            if (out_min_dist != NULL && distance < out_min_dist[node]) {
+                out_min_dist[node] = distance;
+            }
+            if (out_gravity != NULL) {
+                float potential = (grav_const * mass) / ((distance * distance) + grav_eps);
+                if (isfinite(potential) && potential > 0.0f) {
+                    out_gravity[node] += need * potential;
+                }
+            }
+        }
+    }
+
+    free(dist);
+    free(visited);
+    return 0;
+}
+
+static void cdb_graph_runtime_populate_edge_metrics(
+    uint32_t node_count,
+    uint32_t edge_count,
+    const uint32_t *edge_src,
+    const uint32_t *edge_dst,
+    const float *edge_affinity,
+    float global_sat,
+    float wl,
+    float wc,
+    float ws,
+    uint32_t *out_degree,
+    uint32_t *in_degree,
+    float *node_sat_sum,
+    uint32_t *node_sat_count,
+    float *edge_cost_cache
+) {
+    for (uint32_t edge = 0u; edge < edge_count; edge += 1u) {
+        uint32_t src = edge_src[edge];
+        uint32_t dst = edge_dst[edge];
+        if (src >= node_count || dst >= node_count) {
+            continue;
+        }
+        out_degree[src] += 1u;
+        in_degree[dst] += 1u;
+    }
+
+    float mean_degree = sqrtf((((float)edge_count) / fmaxf(1.0f, (float)node_count)) + 1.0f);
+    float degree_norm = fmaxf(1.0f, mean_degree * 2.0f);
+
+    for (uint32_t edge = 0u; edge < edge_count; edge += 1u) {
+        float affinity = 0.5f;
+        float sat = global_sat;
+
+        uint32_t src = edge_src[edge];
+        uint32_t dst = edge_dst[edge];
+        if (src < node_count && dst < node_count) {
+            if (edge_affinity != NULL) {
+                affinity = clamp01(edge_affinity[edge]);
+            }
+            float degree_pressure = clamp01(
+                (((float)out_degree[src]) + ((float)in_degree[dst])) / degree_norm
+            );
+            sat = clamp01((global_sat * 0.58f) + (degree_pressure * 0.42f));
+
+            node_sat_sum[src] += sat;
+            node_sat_count[src] += 1u;
+            node_sat_sum[dst] += sat;
+            node_sat_count[dst] += 1u;
+        }
+
+        if (edge_cost_cache != NULL) {
+            edge_cost_cache[edge] = fmaxf(0.0001f, wl + (wc * sat) + (ws * (1.0f - affinity)));
+        }
+    }
+}
+
+static void cdb_graph_runtime_finalize_node_outputs(
+    uint32_t node_count,
+    float global_sat,
+    const uint32_t *node_sat_count,
+    const float *node_sat_sum,
+    float *out_min_dist,
+    const float *out_gravity,
+    float *out_node_saturation,
+    float *out_node_price
+) {
+    float max_gravity = 1.0f;
+    if (out_gravity != NULL) {
+        max_gravity = 0.0f;
+        for (uint32_t node = 0u; node < node_count; node += 1u) {
+            float gravity = out_gravity[node];
+            if (isfinite(gravity) && gravity > max_gravity) {
+                max_gravity = gravity;
+            }
+        }
+        if (max_gravity <= 1e-6f) {
+            max_gravity = 1.0f;
+        }
+    }
+
+    for (uint32_t node = 0u; node < node_count; node += 1u) {
+        if (out_min_dist != NULL) {
+            if (!isfinite(out_min_dist[node]) || out_min_dist[node] >= FLT_MAX * 0.5f) {
+                out_min_dist[node] = -1.0f;
+            }
+        }
+
+        float sat = global_sat;
+        if (node_sat_count[node] > 0u) {
+            sat = clamp01(node_sat_sum[node] / (float)node_sat_count[node]);
+        }
+        if (out_node_saturation != NULL) {
+            out_node_saturation[node] = sat;
+        }
+
+        if (out_node_price != NULL) {
+            float gravity = out_gravity != NULL ? out_gravity[node] : 0.0f;
+            if (!isfinite(gravity) || gravity < 0.0f) {
+                gravity = 0.0f;
+            }
+            float pressure_hat = clamp01(gravity / max_gravity);
+            float price = expf(1.2f * pressure_hat) * (1.0f + (0.35f * sat));
+            if (!isfinite(price) || price <= 0.0f) {
+                price = 1.0f;
+            }
+            if (price > 32.0f) {
+                price = 32.0f;
+            }
+            out_node_price[node] = price;
+        }
+    }
 }
 
 uint32_t cdb_growth_guard_scores(
@@ -322,187 +678,65 @@ int cdb_graph_runtime_maps(
         }
     }
 
-    for (uint32_t edge = 0u; edge < edge_count; edge += 1u) {
-        uint32_t src = edge_src[edge];
-        uint32_t dst = edge_dst[edge];
-        if (src >= node_count || dst >= node_count) {
-            continue;
+    cdb_graph_runtime_populate_edge_metrics(
+        node_count,
+        edge_count,
+        edge_src,
+        edge_dst,
+        edge_affinity,
+        global_sat,
+        wl,
+        wc,
+        ws,
+        out_degree,
+        in_degree,
+        node_sat_sum,
+        node_sat_count,
+        edge_cost_cache
+    );
+
+    if (
+        cdb_graph_runtime_accumulate_gravity(
+            node_count,
+            edge_count,
+            edge_src,
+            edge_dst,
+            edge_cost_cache,
+            wl,
+            wc,
+            ws,
+            global_sat,
+            source_nodes,
+            source_mass,
+            source_need,
+            source_count,
+            bounded_radius,
+            grav_const,
+            grav_eps,
+            out_min_dist,
+            out_gravity
+        ) != 0
+    ) {
+        if (out_edge_cost == NULL) {
+            free(edge_cost_cache);
         }
-        out_degree[src] += 1u;
-        in_degree[dst] += 1u;
+        free(out_degree);
+        free(in_degree);
+        free(node_sat_sum);
+        free(node_sat_count);
+        return -1;
     }
 
-    float mean_degree = sqrtf((((float)edge_count) / fmaxf(1.0f, (float)node_count)) + 1.0f);
-    float degree_norm = fmaxf(1.0f, mean_degree * 2.0f);
-
-    for (uint32_t edge = 0u; edge < edge_count; edge += 1u) {
-        float affinity = 0.5f;
-        float sat = global_sat;
-        float edge_cost = fmaxf(0.0001f, wl + (wc * sat) + (ws * (1.0f - affinity)));
-
-        uint32_t src = edge_src[edge];
-        uint32_t dst = edge_dst[edge];
-        if (src < node_count && dst < node_count) {
-            if (edge_affinity != NULL) {
-                affinity = clamp01(edge_affinity[edge]);
-            }
-            float degree_pressure = clamp01(
-                (((float)out_degree[src]) + ((float)in_degree[dst])) / degree_norm
-            );
-            sat = clamp01((global_sat * 0.58f) + (degree_pressure * 0.42f));
-            edge_cost = fmaxf(0.0001f, wl + (wc * sat) + (ws * (1.0f - affinity)));
-
-            node_sat_sum[src] += sat;
-            node_sat_count[src] += 1u;
-            node_sat_sum[dst] += sat;
-            node_sat_count[dst] += 1u;
-        }
-
-        if (edge_cost_cache != NULL) {
-            edge_cost_cache[edge] = edge_cost;
-        }
-    }
-
-    if ((out_gravity != NULL || out_min_dist != NULL) && source_count > 0u) {
-        float *dist = (float *)calloc((size_t)node_count, sizeof(float));
-        uint8_t *visited = (uint8_t *)calloc((size_t)node_count, sizeof(uint8_t));
-        if (dist == NULL || visited == NULL) {
-            free(dist);
-            free(visited);
-            if (out_edge_cost == NULL) {
-                free(edge_cost_cache);
-            }
-            free(out_degree);
-            free(in_degree);
-            free(node_sat_sum);
-            free(node_sat_count);
-            return -1;
-        }
-
-        for (uint32_t source_index = 0u; source_index < source_count; source_index += 1u) {
-            uint32_t source = source_nodes[source_index];
-            if (source >= node_count) {
-                continue;
-            }
-            float need = source_need != NULL ? clamp01(source_need[source_index]) : 1.0f;
-            float mass = source_mass != NULL ? fmaxf(0.0f, source_mass[source_index]) : 1.0f;
-            if (need <= 1e-6f || mass <= 1e-6f) {
-                continue;
-            }
-
-            for (uint32_t node = 0u; node < node_count; node += 1u) {
-                dist[node] = FLT_MAX;
-                visited[node] = 0u;
-            }
-            dist[source] = 0.0f;
-
-            for (uint32_t iter = 0u; iter < node_count; iter += 1u) {
-                uint32_t best_node = node_count;
-                float best_dist = bounded_radius + 1.0f;
-
-                for (uint32_t node = 0u; node < node_count; node += 1u) {
-                    if (visited[node] != 0u) {
-                        continue;
-                    }
-                    float candidate = dist[node];
-                    if (!isfinite(candidate)) {
-                        continue;
-                    }
-                    if (candidate < best_dist) {
-                        best_dist = candidate;
-                        best_node = node;
-                    }
-                }
-
-                if (best_node >= node_count || best_dist > bounded_radius) {
-                    break;
-                }
-
-                visited[best_node] = 1u;
-                for (uint32_t edge = 0u; edge < edge_count; edge += 1u) {
-                    if (edge_src[edge] != best_node) {
-                        continue;
-                    }
-                    uint32_t dst = edge_dst[edge];
-                    if (dst >= node_count) {
-                        continue;
-                    }
-                    float step = (edge_cost_cache != NULL)
-                        ? edge_cost_cache[edge]
-                        : fmaxf(0.0001f, wl + (wc * global_sat) + (ws * 0.5f));
-                    float next_dist = best_dist + step;
-                    if (next_dist > bounded_radius || next_dist >= dist[dst]) {
-                        continue;
-                    }
-                    dist[dst] = next_dist;
-                }
-            }
-
-            for (uint32_t node = 0u; node < node_count; node += 1u) {
-                float distance = dist[node];
-                if (!isfinite(distance) || distance < 0.0f || distance > bounded_radius) {
-                    continue;
-                }
-                if (out_min_dist != NULL && distance < out_min_dist[node]) {
-                    out_min_dist[node] = distance;
-                }
-                if (out_gravity != NULL) {
-                    float potential = (grav_const * mass) / ((distance * distance) + grav_eps);
-                    if (isfinite(potential) && potential > 0.0f) {
-                        out_gravity[node] += need * potential;
-                    }
-                }
-            }
-        }
-
-        free(dist);
-        free(visited);
-    }
-
-    float max_gravity = 0.0f;
-    if (out_gravity != NULL) {
-        for (uint32_t node = 0u; node < node_count; node += 1u) {
-            float gravity = out_gravity[node];
-            if (isfinite(gravity) && gravity > max_gravity) {
-                max_gravity = gravity;
-            }
-        }
-    }
-    if (max_gravity <= 1e-6f) {
-        max_gravity = 1.0f;
-    }
-
-    for (uint32_t node = 0u; node < node_count; node += 1u) {
-        if (out_min_dist != NULL) {
-            if (!isfinite(out_min_dist[node]) || out_min_dist[node] >= FLT_MAX * 0.5f) {
-                out_min_dist[node] = -1.0f;
-            }
-        }
-
-        float sat = global_sat;
-        if (node_sat_count[node] > 0u) {
-            sat = clamp01(node_sat_sum[node] / (float)node_sat_count[node]);
-        }
-        if (out_node_saturation != NULL) {
-            out_node_saturation[node] = sat;
-        }
-
-        if (out_node_price != NULL) {
-            float gravity = out_gravity != NULL ? out_gravity[node] : 0.0f;
-            if (!isfinite(gravity) || gravity < 0.0f) {
-                gravity = 0.0f;
-            }
-            float pressure_hat = clamp01(gravity / max_gravity);
-            float price = expf(1.2f * pressure_hat) * (1.0f + (0.35f * sat));
-            if (!isfinite(price) || price <= 0.0f) {
-                price = 1.0f;
-            }
-            if (price > 32.0f) {
-                price = 32.0f;
-            }
-            out_node_price[node] = price;
-        }
-    }
+    cdb_graph_runtime_finalize_node_outputs(
+        node_count,
+        global_sat,
+        node_sat_count,
+        node_sat_sum,
+        out_min_dist,
+        out_gravity,
+        out_node_saturation,
+        out_node_price
+    );
 
     if (out_edge_cost == NULL) {
         free(edge_cost_cache);
@@ -512,6 +746,28 @@ int cdb_graph_runtime_maps(
     free(node_sat_sum);
     free(node_sat_count);
     return 0;
+}
+
+static float cdb_route_edge_score(
+    uint32_t edge,
+    uint32_t dst,
+    const float *edge_cost,
+    const float *node_gravity,
+    float gravity_here,
+    float eta_gain,
+    float cost_gain
+) {
+    float gravity_next = 0.0f;
+    if (node_gravity != NULL) {
+        gravity_next = fmaxf(0.0f, node_gravity[dst]);
+    }
+
+    float cost = 1.0f;
+    if (edge_cost != NULL) {
+        cost = fmaxf(0.0001f, edge_cost[edge]);
+    }
+
+    return (eta_gain * (gravity_next - gravity_here)) - (cost_gain * cost);
 }
 
 int cdb_graph_route_step(
@@ -572,16 +828,15 @@ int cdb_graph_route_step(
                 continue;
             }
 
-            float gravity_next = 0.0f;
-            if (node_gravity != NULL) {
-                gravity_next = fmaxf(0.0f, node_gravity[dst]);
-            }
-            float cost = 1.0f;
-            if (edge_cost != NULL) {
-                cost = fmaxf(0.0001f, edge_cost[edge]);
-            }
-
-            float score = (eta_gain * (gravity_next - gravity_here)) - (cost_gain * cost);
+            float score = cdb_route_edge_score(
+                edge,
+                dst,
+                edge_cost,
+                node_gravity,
+                gravity_here,
+                eta_gain,
+                cost_gain
+            );
             candidate_count += 1u;
 
             if (score > best_score) {
@@ -647,15 +902,15 @@ int cdb_graph_route_step(
                 if (dst >= node_count) {
                     continue;
                 }
-                float gravity_next = 0.0f;
-                if (node_gravity != NULL) {
-                    gravity_next = fmaxf(0.0f, node_gravity[dst]);
-                }
-                float cost = 1.0f;
-                if (edge_cost != NULL) {
-                    cost = fmaxf(0.0001f, edge_cost[edge]);
-                }
-                float score = (eta_gain * (gravity_next - gravity_here)) - (cost_gain * cost);
+                float score = cdb_route_edge_score(
+                    edge,
+                    dst,
+                    edge_cost,
+                    node_gravity,
+                    gravity_here,
+                    eta_gain,
+                    cost_gain
+                );
                 if (seen_rank == target_rank) {
                     explore_node = dst;
                     explore_score = score;
@@ -759,6 +1014,41 @@ static void *force_system_worker(void *arg) {
             fx -= vxi * 0.06f;
             fy -= vyi * 0.06f;
 
+            // Apply Nooi Field Acceleration
+            // a_field_i = sum(w_{i,l} * F_l[c(z_i)])
+            // Simplified: weight = 1.0 if layer == (owner % 8), else 0.0
+            int nooi_idx = atomic_load_explicit(&engine->nooi_readable, memory_order_acquire);
+            const float *nooi = engine->nooi_buffer[nooi_idx];
+            if (nooi != NULL) {
+                int cx = fast_floor_to_int(xi * (float)CDB_NOOI_COLS);
+                int cy = fast_floor_to_int(yi * (float)CDB_NOOI_ROWS);
+                if (cx >= 0 && cx < CDB_NOOI_COLS && cy >= 0 && cy < CDB_NOOI_ROWS) {
+                    uint32_t owner = engine->owner_id[i];
+                    int layer = (int)(owner % CDB_NOOI_LAYERS);
+                    
+                    // Index: (layer * ROWS * COLS + row * COLS + col) * 2
+                    // Layers are outer dimension? NooiField.layers is list of grids.
+                    // Flattened: [Layer0_vx...][Layer0_vy...] ? No, NooiField stores [vx, vy, vx, vy...] per layer.
+                    // Layer layout: [L0_cell0_vx, L0_cell0_vy, ... L0_cellN_vy, L1_cell0_vx...]
+                    // Grid size = COLS * ROWS * 2
+                    size_t layer_stride = (size_t)(CDB_NOOI_COLS * CDB_NOOI_ROWS * 2);
+                    size_t cell_offset = (size_t)((cy * CDB_NOOI_COLS + cx) * 2);
+                    size_t idx = (size_t)(layer * layer_stride) + cell_offset;
+                    
+                    // Check bounds just in case
+                    if (idx + 1 < (size_t)CDB_NOOI_SIZE) {
+                        float field_vx = nooi[idx];
+                        float field_vy = nooi[idx + 1];
+                        
+                        // Apply force
+                        // w_{i,l} is implicitly 1.0 for own layer, 0 for others here.
+                        // Can add cross-layer interaction later.
+                        fx += field_vx * 2.5f; // Scaling factor
+                        fy += field_vy * 2.5f;
+                    }
+                }
+            }
+
             uint32_t owner = engine->owner_id[i];
             uint32_t group = engine->group_id[i];
             for (uint32_t sample = 1; sample <= 6; sample += 1) {
@@ -802,7 +1092,10 @@ static void *chaos_system_worker(void *arg) {
 
     float phase = 0.0f;
     while (atomic_load_explicit(&engine->running, memory_order_acquire) != 0) {
+        int pos_index = atomic_load_explicit(&engine->position.readable, memory_order_acquire);
         int write_index = 1 - atomic_load_explicit(&engine->noise.readable, memory_order_relaxed);
+        const float *pos_x = engine->position.x[pos_index];
+        const float *pos_y = engine->position.y[pos_index];
         float *noise_x = engine->noise.x[write_index];
         float *noise_y = engine->noise.y[write_index];
         uint32_t count = engine->particle_count;
@@ -814,9 +1107,28 @@ static void *chaos_system_worker(void *arg) {
 
         for (uint32_t i = 0; i < count; i += 1) {
             float amp = ((engine->flags[i] & CDB_FLAG_CHAOS) != 0u) ? 0.08f : 0.013f;
-            float seed = (float)((i * 37u) % 8192u) * 0.0008f;
-            noise_x[i] = sinf(phase + seed) * amp;
-            noise_y[i] = cosf((phase * 0.91f) + seed) * amp;
+            float harmonic_seed = (float)((i * 37u) % 8192u) * 0.0008f;
+            float harmonic_x = sinf(phase + harmonic_seed);
+            float harmonic_y = cosf((phase * 0.91f) + harmonic_seed);
+
+            float px = clamp01(pos_x[i]);
+            float py = clamp01(pos_y[i]);
+            uint32_t simplex_seed = engine->seed ^ ((i + 1u) * 2246822519u);
+            float simplex_phase = phase * 0.37f;
+            float simplex_x = simplex_noise_2d(
+                (px * 4.4f) + simplex_phase,
+                (py * 4.4f) + (simplex_phase * 0.73f),
+                simplex_seed
+            );
+            float simplex_y = simplex_noise_2d(
+                (px * 4.4f) + 17.0f + (simplex_phase * 0.61f),
+                (py * 4.4f) + 11.0f + simplex_phase,
+                simplex_seed + 101u
+            );
+
+            float simplex_mix = ((engine->flags[i] & CDB_FLAG_CHAOS) != 0u) ? 0.62f : 0.36f;
+            noise_x[i] = ((harmonic_x * (1.0f - simplex_mix)) + (simplex_x * simplex_mix)) * amp;
+            noise_y[i] = ((harmonic_y * (1.0f - simplex_mix)) + (simplex_y * simplex_mix)) * amp;
         }
 
         atomic_store_explicit(&engine->noise.readable, write_index, memory_order_release);
@@ -932,6 +1244,25 @@ static void *integrate_system_worker(void *arg) {
             float vx = vel_x[i] + ((acc_x[i] + noise_x[i]) * dt);
             float vy = vel_y[i] + ((acc_y[i] + noise_y[i]) * dt);
 
+            float edge_fx = 0.0f;
+            float edge_fy = 0.0f;
+            if (pos_x[i] < CDB_WORLD_EDGE_BAND) {
+                edge_fx += ((CDB_WORLD_EDGE_BAND - pos_x[i]) / CDB_WORLD_EDGE_BAND)
+                    * CDB_WORLD_EDGE_PRESSURE;
+            } else if (pos_x[i] > (1.0f - CDB_WORLD_EDGE_BAND)) {
+                edge_fx -= ((pos_x[i] - (1.0f - CDB_WORLD_EDGE_BAND)) / CDB_WORLD_EDGE_BAND)
+                    * CDB_WORLD_EDGE_PRESSURE;
+            }
+            if (pos_y[i] < CDB_WORLD_EDGE_BAND) {
+                edge_fy += ((CDB_WORLD_EDGE_BAND - pos_y[i]) / CDB_WORLD_EDGE_BAND)
+                    * CDB_WORLD_EDGE_PRESSURE;
+            } else if (pos_y[i] > (1.0f - CDB_WORLD_EDGE_BAND)) {
+                edge_fy -= ((pos_y[i] - (1.0f - CDB_WORLD_EDGE_BAND)) / CDB_WORLD_EDGE_BAND)
+                    * CDB_WORLD_EDGE_PRESSURE;
+            }
+            vx += edge_fx * dt;
+            vy += edge_fy * dt;
+
             float speed_sq = (vx * vx) + (vy * vy);
             float speed_cap = ((engine->flags[i] & CDB_FLAG_NEXUS) != 0u) ? 0.022f : 0.06f;
             if (speed_sq > (speed_cap * speed_cap)) {
@@ -943,19 +1274,22 @@ static void *integrate_system_worker(void *arg) {
             float x = pos_x[i] + (vx * dt);
             float y = pos_y[i] + (vy * dt);
             if (x < 0.0f) {
-                x = 0.0f;
-                vx = -vx * 0.52f;
+                x = -x;
+                vx = fabsf(vx) * CDB_WORLD_EDGE_BOUNCE;
             } else if (x > 1.0f) {
-                x = 1.0f;
-                vx = -vx * 0.52f;
+                x = 2.0f - x;
+                vx = -fabsf(vx) * CDB_WORLD_EDGE_BOUNCE;
             }
             if (y < 0.0f) {
-                y = 0.0f;
-                vy = -vy * 0.52f;
+                y = -y;
+                vy = fabsf(vy) * CDB_WORLD_EDGE_BOUNCE;
             } else if (y > 1.0f) {
-                y = 1.0f;
-                vy = -vy * 0.52f;
+                y = 2.0f - y;
+                vy = -fabsf(vy) * CDB_WORLD_EDGE_BOUNCE;
             }
+
+            x = clamp01(x);
+            y = clamp01(y);
 
             write_pos_x[i] = x;
             write_pos_y[i] = y;
@@ -1020,6 +1354,23 @@ CDBEngine *cdb_engine_create(uint32_t particle_count, uint32_t seed) {
         vec2_buffer_destroy(&engine->noise);
         vec2_buffer_destroy(&engine->action_prob);
         vec2_buffer_destroy(&engine->particle_metrics);
+        free(engine);
+        return NULL;
+    }
+
+    engine->nooi_buffer[0] = (float *)calloc(CDB_NOOI_SIZE, sizeof(float));
+    engine->nooi_buffer[1] = (float *)calloc(CDB_NOOI_SIZE, sizeof(float));
+    atomic_store_explicit(&engine->nooi_readable, 0, memory_order_release);
+
+    if (engine->nooi_buffer[0] == NULL || engine->nooi_buffer[1] == NULL) {
+        vec2_buffer_destroy(&engine->position);
+        vec2_buffer_destroy(&engine->velocity);
+        vec2_buffer_destroy(&engine->acceleration);
+        vec2_buffer_destroy(&engine->noise);
+        vec2_buffer_destroy(&engine->action_prob);
+        vec2_buffer_destroy(&engine->particle_metrics);
+        free(engine->nooi_buffer[0]);
+        free(engine->nooi_buffer[1]);
         free(engine);
         return NULL;
     }
@@ -1159,6 +1510,9 @@ void cdb_engine_destroy(CDBEngine *engine) {
     vec2_buffer_destroy(&engine->action_prob);
     vec2_buffer_destroy(&engine->particle_metrics);
 
+    free(engine->nooi_buffer[0]);
+    free(engine->nooi_buffer[1]);
+
     free(engine->owner_id);
     free(engine->group_id);
     free(engine->flags);
@@ -1166,6 +1520,24 @@ void cdb_engine_destroy(CDBEngine *engine) {
     free(engine->radius);
 
     free(engine);
+}
+
+int cdb_engine_update_nooi(CDBEngine *engine, const float *data) {
+    if (engine == NULL || data == NULL) {
+        return -1;
+    }
+    
+    int current_read = atomic_load_explicit(&engine->nooi_readable, memory_order_relaxed);
+    int write_idx = 1 - current_read;
+    float *buffer = engine->nooi_buffer[write_idx];
+    
+    if (buffer == NULL) {
+        return -1;
+    }
+    
+    memcpy(buffer, data, CDB_NOOI_SIZE * sizeof(float));
+    atomic_store_explicit(&engine->nooi_readable, write_idx, memory_order_release);
+    return 0;
 }
 
 uint32_t cdb_engine_particle_count(CDBEngine *engine) {

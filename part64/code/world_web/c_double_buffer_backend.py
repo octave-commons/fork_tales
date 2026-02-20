@@ -65,6 +65,23 @@ _RESOURCE_WALLET_FLOOR: dict[str, float] = {
     "network": 7.0,
 }
 _RESOURCE_NEED_MIN = 0.03
+_RESOURCE_NEED_EMA_ALPHA = 0.24
+_RESOURCE_NEED_THRESHOLDS: dict[str, float] = {
+    "cpu": 0.42,
+    "gpu": 0.38,
+    "npu": 0.36,
+    "ram": 0.45,
+    "disk": 0.4,
+    "network": 0.41,
+}
+_RESOURCE_NEED_STEEPNESS: dict[str, float] = {
+    "cpu": 6.4,
+    "gpu": 7.1,
+    "npu": 6.8,
+    "ram": 5.4,
+    "disk": 5.8,
+    "network": 6.0,
+}
 
 _GROWTH_MODE_MAP = {
     0: "normal",
@@ -112,6 +129,126 @@ def _clamp01(value: float) -> float:
     if value >= 1.0:
         return 1.0
     return value
+
+
+def _sigmoid(value: float) -> float:
+    if value >= 0.0:
+        expo = math.exp(-value)
+        return 1.0 / (1.0 + expo)
+    expo = math.exp(value)
+    return expo / (1.0 + expo)
+
+
+def _simplex_grad(hash_val: int, x: float, y: float) -> float:
+    grads: tuple[tuple[float, float], ...] = (
+        (1.0, 1.0),
+        (-1.0, 1.0),
+        (1.0, -1.0),
+        (-1.0, -1.0),
+        (1.0, 0.0),
+        (-1.0, 0.0),
+        (1.0, 0.0),
+        (-1.0, 0.0),
+        (0.0, 1.0),
+        (0.0, -1.0),
+        (0.0, 1.0),
+        (0.0, -1.0),
+    )
+    gx, gy = grads[int(hash_val) % len(grads)]
+    return (gx * x) + (gy * y)
+
+
+def _simplex_hash(i: int, j: int, seed: int) -> int:
+    mix = (
+        ((int(i) + 1) * 0x9E3779B1)
+        ^ ((int(j) + 1) * 0x85EBCA77)
+        ^ ((int(seed) + 1) * 0xC2B2AE3D)
+    ) & 0xFFFFFFFF
+    mix ^= mix >> 16
+    mix = (mix * 0x7FEB352D) & 0xFFFFFFFF
+    mix ^= mix >> 15
+    mix = (mix * 0x846CA68B) & 0xFFFFFFFF
+    mix ^= mix >> 16
+    return int(mix % 12)
+
+
+def _simplex_noise_2d(x: float, y: float, *, seed: int = 0) -> float:
+    f2 = 0.5 * (math.sqrt(3.0) - 1.0)
+    g2 = (3.0 - math.sqrt(3.0)) / 6.0
+
+    s = (x + y) * f2
+    i = int(math.floor(x + s))
+    j = int(math.floor(y + s))
+    t = (i + j) * g2
+    x0 = x - (i - t)
+    y0 = y - (j - t)
+
+    if x0 > y0:
+        i1, j1 = 1, 0
+    else:
+        i1, j1 = 0, 1
+
+    x1 = x0 - i1 + g2
+    y1 = y0 - j1 + g2
+    x2 = x0 - 1.0 + (2.0 * g2)
+    y2 = y0 - 1.0 + (2.0 * g2)
+
+    n0 = 0.0
+    n1 = 0.0
+    n2 = 0.0
+
+    t0 = 0.5 - (x0 * x0) - (y0 * y0)
+    if t0 >= 0.0:
+        t0 *= t0
+        n0 = t0 * t0 * _simplex_grad(_simplex_hash(i, j, seed), x0, y0)
+
+    t1 = 0.5 - (x1 * x1) - (y1 * y1)
+    if t1 >= 0.0:
+        t1 *= t1
+        n1 = (
+            t1
+            * t1
+            * _simplex_grad(
+                _simplex_hash(i + i1, j + j1, seed),
+                x1,
+                y1,
+            )
+        )
+
+    t2 = 0.5 - (x2 * x2) - (y2 * y2)
+    if t2 >= 0.0:
+        t2 *= t2
+        n2 = t2 * t2 * _simplex_grad(_simplex_hash(i + 1, j + 1, seed), x2, y2)
+
+    return 70.0 * (n0 + n1 + n2)
+
+
+def _simplex_motion_delta(
+    *,
+    x: float,
+    y: float,
+    now: float,
+    seed: int,
+    amplitude: float,
+) -> tuple[float, float]:
+    amp = max(0.0, _safe_float(amplitude, 0.0))
+    if amp <= 1e-10:
+        return (0.0, 0.0)
+
+    scale = 4.4
+    phase = _safe_float(now, 0.0) * 0.28
+    seed_value = int(seed)
+    noise_x = _simplex_noise_2d(
+        (x * scale) + phase,
+        (y * scale) + (phase * 0.73),
+        seed=seed_value,
+    )
+    noise_y = _simplex_noise_2d(
+        (x * scale) + 17.0 + (phase * 0.61),
+        (y * scale) + 11.0 + phase,
+        seed=seed_value + 101,
+    )
+    return (noise_x * amp, noise_y * amp)
 
 
 def _safe_optional_float(value: Any) -> float | None:
@@ -478,21 +615,25 @@ def _default_resource_signature(queue_ratio: float) -> dict[str, float]:
     return _normalize_resource_signature(base)
 
 
-def _presence_resource_need_vector(
+def _presence_resource_need_model(
     *,
     presence_id: str,
     impact: dict[str, Any],
     queue_ratio: float,
     base_need: float | None = None,
-) -> dict[str, float]:
+) -> dict[str, Any]:
     impact_row = impact if isinstance(impact, dict) else {}
     affected_by = impact_row.get("affected_by", {})
     if not isinstance(affected_by, dict):
         affected_by = {}
+    affects = impact_row.get("affects", {})
+    if not isinstance(affects, dict):
+        affects = {}
 
     resource_signal = _clamp01(_safe_float(affected_by.get("resource", 0.0), 0.0))
     file_signal = _clamp01(_safe_float(affected_by.get("files", 0.0), 0.0))
     click_signal = _clamp01(_safe_float(affected_by.get("clicks", 0.0), 0.0))
+    world_signal = _clamp01(_safe_float(affects.get("world", 0.0), 0.0))
     queue_clamped = _clamp01(_safe_float(queue_ratio, 0.0))
     if base_need is None:
         base_need = _clamp01(
@@ -503,16 +644,32 @@ def _presence_resource_need_vector(
         )
     base_need_value = _clamp01(_safe_float(base_need, 0.0))
 
+    priority_signal = _clamp01(
+        (resource_signal * 0.42)
+        + (world_signal * 0.24)
+        + (file_signal * 0.18)
+        + (click_signal * 0.08)
+        + (queue_clamped * 0.08)
+    )
+    priority = 0.72 + (0.78 * priority_signal)
+
     wallet_by_type = _resource_wallet_by_type(impact_row.get("resource_wallet", {}))
     core_resource = _core_resource_type_from_presence_id(presence_id)
     token = str(presence_id or "").strip().lower()
+    util_ema_prev_raw = impact_row.get("_resource_util_ema", {})
+    util_ema_prev = util_ema_prev_raw if isinstance(util_ema_prev_raw, dict) else {}
 
     needs: dict[str, float] = {}
+    util_ema: dict[str, float] = {}
+    raw_utilization: dict[str, float] = {}
+    thresholds: dict[str, float] = {}
+    steepness: dict[str, float] = {}
+
     for resource in _RESOURCE_TYPES:
         floor = max(0.1, _safe_float(_RESOURCE_WALLET_FLOOR.get(resource, 6.0), 6.0))
         balance = max(0.0, _safe_float(wallet_by_type.get(resource, 0.0), 0.0))
-        deficit = _clamp01((floor - balance) / floor)
-        queue_push = 0.0
+        balance_ratio = _clamp01(balance / floor)
+        deficit = _clamp01(1.0 - balance_ratio)
         if resource == "network":
             queue_push = queue_clamped * 0.22
         elif resource == "disk":
@@ -523,26 +680,88 @@ def _presence_resource_need_vector(
             queue_push = queue_clamped * 0.05
 
         id_hint = 0.08 if resource in token else 0.0
-        signal = _clamp01(
-            (base_need_value * 0.24) + (deficit * 0.62) + queue_push + id_hint
+        util_raw = _clamp01(
+            (deficit * 0.58) + (base_need_value * 0.24) + queue_push + id_hint
         )
-        needs[resource] = signal
+        util_prev = _clamp01(
+            _safe_float(util_ema_prev.get(resource, util_raw), util_raw)
+        )
+        util_next = _clamp01(
+            (util_prev * (1.0 - _RESOURCE_NEED_EMA_ALPHA))
+            + (util_raw * _RESOURCE_NEED_EMA_ALPHA)
+        )
+
+        theta = _clamp01(_safe_float(_RESOURCE_NEED_THRESHOLDS.get(resource, 0.4), 0.4))
+        slope = max(0.1, _safe_float(_RESOURCE_NEED_STEEPNESS.get(resource, 6.0), 6.0))
+        logistic = _sigmoid(slope * (util_next - theta))
+
+        needs[resource] = _clamp01(priority * logistic)
+        util_ema[resource] = util_next
+        raw_utilization[resource] = util_raw
+        thresholds[resource] = theta
+        steepness[resource] = slope
 
     if core_resource:
         for resource in _RESOURCE_TYPES:
             if resource == core_resource:
-                needs[resource] = max(needs[resource], 0.34 + (resource_signal * 0.24))
+                needs[resource] = max(needs[resource], 0.38 + (resource_signal * 0.28))
             else:
-                needs[resource] = _clamp01(needs[resource] * 0.26)
+                needs[resource] = _clamp01(needs[resource] * 0.24)
 
     if sum(needs.values()) <= 1e-8:
         signature = _default_resource_signature(queue_clamped)
-        return {
+        needs = {
             resource: _safe_float(signature.get(resource, 0.0), 0.0)
             for resource in _RESOURCE_TYPES
         }
+
+    impact_row["_resource_util_ema"] = {
+        resource: _clamp01(_safe_float(value, 0.0))
+        for resource, value in util_ema.items()
+    }
+
     return {
-        resource: _clamp01(_safe_float(needs.get(resource, 0.0), 0.0))
+        "needs": {
+            resource: _clamp01(_safe_float(needs.get(resource, 0.0), 0.0))
+            for resource in _RESOURCE_TYPES
+        },
+        "util_ema": {
+            resource: _clamp01(_safe_float(util_ema.get(resource, 0.0), 0.0))
+            for resource in _RESOURCE_TYPES
+        },
+        "util_raw": {
+            resource: _clamp01(_safe_float(raw_utilization.get(resource, 0.0), 0.0))
+            for resource in _RESOURCE_TYPES
+        },
+        "priority": max(0.0, _safe_float(priority, 1.0)),
+        "alpha": _RESOURCE_NEED_EMA_ALPHA,
+        "thresholds": thresholds,
+        "steepness": steepness,
+    }
+
+
+def _presence_resource_need_vector(
+    *,
+    presence_id: str,
+    impact: dict[str, Any],
+    queue_ratio: float,
+    base_need: float | None = None,
+) -> dict[str, float]:
+    model = _presence_resource_need_model(
+        presence_id=presence_id,
+        impact=impact,
+        queue_ratio=queue_ratio,
+        base_need=base_need,
+    )
+    needs = model.get("needs", {}) if isinstance(model, dict) else {}
+    if isinstance(needs, dict) and needs:
+        return {
+            resource: _clamp01(_safe_float(needs.get(resource, 0.0), 0.0))
+            for resource in _RESOURCE_TYPES
+        }
+    signature = _default_resource_signature(queue_ratio)
+    return {
+        resource: _safe_float(signature.get(resource, 0.0), 0.0)
         for resource in _RESOURCE_TYPES
     }
 
@@ -758,6 +977,48 @@ def _presence_layout(
     return selected_ids[:_CDB_MAX_PRESENCE_SLOTS], layout_map
 
 
+def _mask_nodes_for_anchor(
+    *,
+    node_ids: list[str],
+    node_positions: list[tuple[float, float]],
+    anchor_x: float,
+    anchor_y: float,
+    k: int = 3,
+) -> list[dict[str, Any]]:
+    if not node_ids or not node_positions:
+        return []
+    node_count = min(len(node_ids), len(node_positions))
+    if node_count <= 0:
+        return []
+    mask_size = max(1, min(int(k), node_count))
+    nearest: list[tuple[float, int]] = []
+    for index in range(node_count):
+        nx, ny = node_positions[index]
+        dx = _safe_float(nx, 0.5) - _safe_float(anchor_x, 0.5)
+        dy = _safe_float(ny, 0.5) - _safe_float(anchor_y, 0.5)
+        nearest.append(((dx * dx) + (dy * dy), index))
+    nearest.sort(key=lambda row: (row[0], row[1]))
+    selected = nearest[:mask_size]
+
+    raw_weights = [
+        1.0 / max(0.0004, _safe_float(dist_sq, 0.0)) for dist_sq, _ in selected
+    ]
+    weight_total = sum(raw_weights)
+    if weight_total <= 1e-12:
+        normalized_weights = [1.0 / float(len(selected)) for _ in selected]
+    else:
+        normalized_weights = [weight / weight_total for weight in raw_weights]
+
+    return [
+        {
+            "node_id": str(node_ids[index]),
+            "weight": round(_clamp01(_safe_float(weight, 0.0)), 6),
+            "distance": round(math.sqrt(max(0.0, _safe_float(dist_sq, 0.0))), 6),
+        }
+        for weight, (dist_sq, index) in zip(normalized_weights, selected)
+    ]
+
+
 def _seed_from_layout(*, presence_ids: list[str], file_node_count: int) -> int:
     seed = 0x9E3779B9
     seed ^= (max(0, int(file_node_count)) * 2654435761) & 0xFFFFFFFF
@@ -828,6 +1089,13 @@ def _load_native_lib() -> ctypes.CDLL:
             ctypes.POINTER(ctypes.c_uint64),
         ]
         lib.cdb_engine_snapshot.restype = ctypes.c_uint32
+
+        if hasattr(lib, "cdb_engine_update_nooi"):
+            lib.cdb_engine_update_nooi.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_float),
+            ]
+            lib.cdb_engine_update_nooi.restype = ctypes.c_int
 
         if hasattr(lib, "cdb_growth_guard_scores"):
             lib.cdb_growth_guard_scores.argtypes = [
@@ -1045,6 +1313,27 @@ class _CDBEngine:
                 self._owner,
                 self._flags,
             )
+
+    def update_nooi(self, data: list[float]) -> None:
+        if not data:
+            return
+        with self._lock:
+            if self._ptr is None:
+                return
+
+            # 64*64*8*2 = 65536 floats
+            expected_size = 65536
+            if len(data) != expected_size:
+                # Should we error or silently fail?
+                # Fail for now to be safe, or truncate/pad?
+                # Let's truncate/pad to be robust.
+                if len(data) > expected_size:
+                    data = data[:expected_size]
+                else:
+                    data = data + [0.0] * (expected_size - len(data))
+
+            c_array = (ctypes.c_float * expected_size)(*data)
+            self._lib.cdb_engine_update_nooi(self._ptr, c_array)
 
 
 def _get_engine(*, count: int, seed: int) -> _CDBEngine:
@@ -1318,6 +1607,7 @@ def compute_graph_runtime_maps_native(
     source_mass: list[float] = []
     source_need: list[float] = []
     source_need_by_resource: list[dict[str, float]] = []
+    source_profiles: list[dict[str, Any]] = []
     source_node_index_by_presence: dict[str, int] = {}
     queue_clamped = _clamp01(_safe_float(queue_ratio, 0.0))
     node_source_pressure: list[float] = [0.0 for _ in range(node_count)]
@@ -1362,21 +1652,190 @@ def compute_graph_runtime_maps_native(
         source_nodes.append(int(nearest_index))
         source_mass.append(float(mass_value))
         source_need.append(float(max(0.01, need_value)))
-        source_need_by_resource.append(
-            _presence_resource_need_vector(
-                presence_id=presence_id,
-                impact=impact if isinstance(impact, dict) else {},
-                queue_ratio=queue_clamped,
-                base_need=need_value,
-            )
+        need_model = _presence_resource_need_model(
+            presence_id=presence_id,
+            impact=impact if isinstance(impact, dict) else {},
+            queue_ratio=queue_clamped,
+            base_need=need_value,
         )
+        need_by_resource_raw = (
+            need_model.get("needs", {}) if isinstance(need_model, dict) else {}
+        )
+        need_by_resource = {
+            resource: _clamp01(
+                _safe_float(need_by_resource_raw.get(resource, 0.0), 0.0)
+            )
+            for resource in _RESOURCE_TYPES
+        }
+        source_need_by_resource.append(need_by_resource)
         node_source_pressure[int(nearest_index)] += float(max(0.01, need_value))
+
+        mask_nodes = _mask_nodes_for_anchor(
+            node_ids=node_ids,
+            node_positions=node_positions,
+            anchor_x=anchor_x,
+            anchor_y=anchor_y,
+            k=3,
+        )
+        influence_strength = _clamp01(
+            (world_signal * 0.55) + (file_signal * 0.25) + (click_signal * 0.2)
+        )
+        source_profiles.append(
+            {
+                "presence_id": presence_id,
+                "source_node_id": node_ids[int(nearest_index)],
+                "mask": {
+                    "mode": "nearest-k",
+                    "k": int(len(mask_nodes)),
+                    "nodes": mask_nodes,
+                },
+                "influence": {
+                    "mode": "anchor-mask",
+                    "strength": round(influence_strength, 6),
+                    "anchor": {
+                        "x": round(_clamp01(_safe_float(anchor_x, 0.5)), 6),
+                        "y": round(_clamp01(_safe_float(anchor_y, 0.5)), 6),
+                    },
+                },
+                "need_scalar": round(max(0.01, need_value), 6),
+                "need_by_resource": {
+                    resource: round(
+                        _clamp01(_safe_float(need_by_resource.get(resource, 0.0), 0.0)),
+                        6,
+                    )
+                    for resource in _RESOURCE_TYPES
+                },
+                "need_model": {
+                    "kind": "ema-logistic.v1",
+                    "priority": round(
+                        max(0.0, _safe_float(need_model.get("priority", 1.0), 1.0)),
+                        6,
+                    ),
+                    "alpha": round(
+                        max(0.0, _safe_float(need_model.get("alpha", 0.0), 0.0)),
+                        6,
+                    ),
+                    "util_raw": {
+                        resource: round(
+                            _clamp01(
+                                _safe_float(
+                                    (
+                                        need_model.get("util_raw", {})
+                                        if isinstance(need_model, dict)
+                                        else {}
+                                    ).get(resource, 0.0),
+                                    0.0,
+                                )
+                            ),
+                            6,
+                        )
+                        for resource in _RESOURCE_TYPES
+                    },
+                    "util_ema": {
+                        resource: round(
+                            _clamp01(
+                                _safe_float(
+                                    (
+                                        need_model.get("util_ema", {})
+                                        if isinstance(need_model, dict)
+                                        else {}
+                                    ).get(resource, 0.0),
+                                    0.0,
+                                )
+                            ),
+                            6,
+                        )
+                        for resource in _RESOURCE_TYPES
+                    },
+                    "thresholds": {
+                        resource: round(
+                            _clamp01(
+                                _safe_float(
+                                    (
+                                        need_model.get("thresholds", {})
+                                        if isinstance(need_model, dict)
+                                        else {}
+                                    ).get(resource, 0.0),
+                                    0.0,
+                                )
+                            ),
+                            6,
+                        )
+                        for resource in _RESOURCE_TYPES
+                    },
+                },
+                "mass": round(mass_value, 6),
+            }
+        )
 
     if not source_nodes:
         source_nodes = [0]
         source_mass = [1.0]
         source_need = [max(0.05, queue_clamped)]
-        source_need_by_resource = [_default_resource_signature(queue_clamped)]
+        fallback_need = _default_resource_signature(queue_clamped)
+        source_need_by_resource = [fallback_need]
+        source_profiles = [
+            {
+                "presence_id": "anchor_registry",
+                "source_node_id": node_ids[0],
+                "mask": {
+                    "mode": "nearest-k",
+                    "k": 1,
+                    "nodes": [{"node_id": node_ids[0], "weight": 1.0, "distance": 0.0}],
+                },
+                "influence": {
+                    "mode": "fallback",
+                    "strength": 1.0,
+                    "anchor": {
+                        "x": round(_safe_float(node_positions[0][0], 0.5), 6),
+                        "y": round(_safe_float(node_positions[0][1], 0.5), 6),
+                    },
+                },
+                "need_scalar": round(max(0.05, queue_clamped), 6),
+                "need_by_resource": {
+                    resource: round(
+                        _clamp01(_safe_float(fallback_need.get(resource, 0.0), 0.0)), 6
+                    )
+                    for resource in _RESOURCE_TYPES
+                },
+                "need_model": {
+                    "kind": "ema-logistic.v1",
+                    "priority": 1.0,
+                    "alpha": round(_RESOURCE_NEED_EMA_ALPHA, 6),
+                    "util_raw": {
+                        resource: round(
+                            _clamp01(
+                                _safe_float(fallback_need.get(resource, 0.0), 0.0)
+                            ),
+                            6,
+                        )
+                        for resource in _RESOURCE_TYPES
+                    },
+                    "util_ema": {
+                        resource: round(
+                            _clamp01(
+                                _safe_float(fallback_need.get(resource, 0.0), 0.0)
+                            ),
+                            6,
+                        )
+                        for resource in _RESOURCE_TYPES
+                    },
+                    "thresholds": {
+                        resource: round(
+                            _clamp01(
+                                _safe_float(
+                                    _RESOURCE_NEED_THRESHOLDS.get(resource, 0.4),
+                                    0.4,
+                                )
+                            ),
+                            6,
+                        )
+                        for resource in _RESOURCE_TYPES
+                    },
+                },
+                "mass": 1.0,
+            }
+        ]
 
     try:
         lib = _load_native_lib()
@@ -1605,6 +2064,13 @@ def compute_graph_runtime_maps_native(
         "edge_src_index": edge_sources,
         "edge_dst_index": edge_targets,
         "source_node_index_by_presence": source_node_index_by_presence,
+        "source_profiles": source_profiles,
+        "presence_source_count": int(len(source_profiles)),
+        "presence_model": {
+            "mask": "nearest-k.v1",
+            "need": "ema-logistic-resource-need.v2",
+            "mass": "signal-wallet.v1",
+        },
         "min_distance": min_distance,
         "gravity": gravity,
         "node_saturation": node_saturation,
@@ -2352,7 +2818,23 @@ def build_double_buffer_field_particles(
         presence_ids=presence_ids,
         file_node_count=len(file_nodes),
     )
+
+    # Try to inject field data before engine creation/snapshot if possible,
+    # or rather update the engine.
+    # Note: _get_engine returns a persistent singleton if parameters match.
     engine = _get_engine(count=target_count, seed=seed)
+
+    try:
+        from .simulation import _NOOI_FIELD
+
+        if _NOOI_FIELD:
+            flat_field = []
+            for layer in _NOOI_FIELD.layers:
+                flat_field.extend(layer)
+            engine.update_nooi(flat_field)
+    except ImportError:
+        pass
+
     (
         count,
         frame_id,
@@ -2927,6 +3409,24 @@ def build_double_buffer_field_particles(
                     6,
                 )
 
+        simplex_seed = (
+            ((int(frame_id) + 1) * 1315423911)
+            ^ ((index + 1) * 2654435761)
+            ^ ((owner_id + 1) * 2246822519)
+        ) & 0xFFFFFFFF
+        simplex_amp = 0.0009 if is_nexus else (0.0026 if is_chaos else 0.0018)
+        simplex_dx, simplex_dy = _simplex_motion_delta(
+            x=x_norm,
+            y=y_norm,
+            now=now,
+            seed=simplex_seed,
+            amplitude=simplex_amp,
+        )
+        x_norm = _clamp01(x_norm + simplex_dx)
+        y_norm = _clamp01(y_norm + simplex_dy)
+        motion_vx += simplex_dx * 0.92
+        motion_vy += simplex_dy * 0.92
+
         gravity_signal = _clamp01(gravity_potential / graph_gravity_max)
         price_signal = _clamp01((local_price - 1.0) / 4.0)
         route_signal = _clamp01(route_probability)
@@ -3162,6 +3662,125 @@ def build_double_buffer_field_particles(
             "node_count": int(_safe_float(graph_runtime.get("node_count", 0), 0.0)),
             "edge_count": int(_safe_float(graph_runtime.get("edge_count", 0), 0.0)),
             "source_count": int(_safe_float(graph_runtime.get("source_count", 0), 0.0)),
+            "presence_source_count": int(
+                _safe_float(graph_runtime.get("presence_source_count", 0), 0.0)
+            ),
+            "presence_model": dict(graph_runtime.get("presence_model", {})),
+            "source_profiles": [
+                {
+                    "presence_id": str(row.get("presence_id", "")),
+                    "source_node_id": str(row.get("source_node_id", "")),
+                    "mask": dict(row.get("mask", {})),
+                    "influence": dict(row.get("influence", {})),
+                    "need_scalar": round(
+                        _safe_float(row.get("need_scalar", 0.0), 0.0),
+                        6,
+                    ),
+                    "need_by_resource": {
+                        str(resource): round(_safe_float(value, 0.0), 6)
+                        for resource, value in (
+                            row.get("need_by_resource", {})
+                            if isinstance(row.get("need_by_resource", {}), dict)
+                            else {}
+                        ).items()
+                        if str(resource).strip()
+                    },
+                    "need_model": {
+                        "kind": str(
+                            (
+                                row.get("need_model", {})
+                                if isinstance(row.get("need_model", {}), dict)
+                                else {}
+                            ).get("kind", "")
+                        ),
+                        "priority": round(
+                            _safe_float(
+                                (
+                                    row.get("need_model", {})
+                                    if isinstance(row.get("need_model", {}), dict)
+                                    else {}
+                                ).get("priority", 0.0),
+                                0.0,
+                            ),
+                            6,
+                        ),
+                        "alpha": round(
+                            _safe_float(
+                                (
+                                    row.get("need_model", {})
+                                    if isinstance(row.get("need_model", {}), dict)
+                                    else {}
+                                ).get("alpha", 0.0),
+                                0.0,
+                            ),
+                            6,
+                        ),
+                        "util_raw": {
+                            str(resource): round(_safe_float(value, 0.0), 6)
+                            for resource, value in (
+                                (
+                                    row.get("need_model", {})
+                                    if isinstance(row.get("need_model", {}), dict)
+                                    else {}
+                                ).get("util_raw", {})
+                                if isinstance(
+                                    (
+                                        row.get("need_model", {})
+                                        if isinstance(row.get("need_model", {}), dict)
+                                        else {}
+                                    ).get("util_raw", {}),
+                                    dict,
+                                )
+                                else {}
+                            ).items()
+                            if str(resource).strip()
+                        },
+                        "util_ema": {
+                            str(resource): round(_safe_float(value, 0.0), 6)
+                            for resource, value in (
+                                (
+                                    row.get("need_model", {})
+                                    if isinstance(row.get("need_model", {}), dict)
+                                    else {}
+                                ).get("util_ema", {})
+                                if isinstance(
+                                    (
+                                        row.get("need_model", {})
+                                        if isinstance(row.get("need_model", {}), dict)
+                                        else {}
+                                    ).get("util_ema", {}),
+                                    dict,
+                                )
+                                else {}
+                            ).items()
+                            if str(resource).strip()
+                        },
+                        "thresholds": {
+                            str(resource): round(_safe_float(value, 0.0), 6)
+                            for resource, value in (
+                                (
+                                    row.get("need_model", {})
+                                    if isinstance(row.get("need_model", {}), dict)
+                                    else {}
+                                ).get("thresholds", {})
+                                if isinstance(
+                                    (
+                                        row.get("need_model", {})
+                                        if isinstance(row.get("need_model", {}), dict)
+                                        else {}
+                                    ).get("thresholds", {}),
+                                    dict,
+                                )
+                                else {}
+                            ).items()
+                            if str(resource).strip()
+                        },
+                    },
+                    "mass": round(_safe_float(row.get("mass", 0.0), 0.0), 6),
+                }
+                for row in list(graph_runtime.get("source_profiles", []))[:8]
+                if isinstance(row, dict)
+            ],
             "radius_cost": round(
                 _safe_float(graph_runtime.get("radius_cost", 6.0), 6.0),
                 6,
