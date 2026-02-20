@@ -26,6 +26,9 @@ export function VitalsPanel({ entities, catalog, presenceDynamics }: Props) {
   );
   const witnessState = presenceDynamics?.witness_thread;
   const witnessContinuityPct = Math.round((witnessState?.continuity_index ?? 0) * 100);
+  const growthGuard = presenceDynamics?.growth_guard;
+  const growthPressurePct = Math.round(Number(growthGuard?.pressure?.blend ?? 0) * 100);
+  const growthAction = growthGuard?.action;
   const witnessLinks = (witnessState?.linked_presences ?? []).map((presenceId) => {
     const item = manifestById.get(presenceId);
     if (!item) {
@@ -99,6 +102,33 @@ export function VitalsPanel({ entities, catalog, presenceDynamics }: Props) {
                 <li>Check lineage rows to see what changed and where it landed.</li>
                 <li>Use <code>/say witness_thread ...</code> to narrate why a trace matters.</li>
               </ol>
+            </div>
+          </div>
+        </article>
+      )}
+
+      {growthGuard && (
+        <article className="border border-[rgba(166,226,46,0.34)] rounded-2xl p-4 bg-gradient-to-br from-[rgba(41,48,32,0.94)] via-[rgba(37,43,31,0.92)] to-[rgba(31,36,29,0.94)] shadow-sm">
+          <div className="flex flex-col gap-2 md:flex-row md:justify-between md:items-start">
+            <div>
+              <h3 className="text-lg font-semibold text-ink">Growth Guard / 増殖監視</h3>
+              <p className="text-xs text-muted mt-1">
+                mode={growthGuard.mode} pressure={growthPressurePct}% action={growthAction?.kind ?? "noop"}
+              </p>
+            </div>
+            <div className="grid grid-cols-3 gap-2 w-full md:w-auto">
+              <div className="rounded-lg border border-[var(--line)] bg-[rgba(39,40,34,0.88)] px-3 py-2">
+                <p className="text-[10px] uppercase tracking-wide text-muted">collapsed files</p>
+                <p className="font-mono font-semibold text-ink">{Number(growthAction?.collapsed_file_nodes ?? 0)}</p>
+              </div>
+              <div className="rounded-lg border border-[var(--line)] bg-[rgba(39,40,34,0.88)] px-3 py-2">
+                <p className="text-[10px] uppercase tracking-wide text-muted">collapsed edges</p>
+                <p className="font-mono font-semibold text-ink">{Number(growthAction?.collapsed_edges ?? 0)}</p>
+              </div>
+              <div className="rounded-lg border border-[var(--line)] bg-[rgba(39,40,34,0.88)] px-3 py-2">
+                <p className="text-[10px] uppercase tracking-wide text-muted">clusters</p>
+                <p className="font-mono font-semibold text-ink">{Number(growthAction?.clusters ?? 0)}</p>
+              </div>
             </div>
           </div>
         </article>

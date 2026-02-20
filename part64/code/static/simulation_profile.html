@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Simulation Profile</title>
+    <style>
+      :root {
+        --ink: #eef2ff;
+        --ink-muted: #b6c2e1;
+        --line: rgba(173, 191, 255, 0.28);
+        --line-strong: rgba(173, 191, 255, 0.44);
+        --surface-0: #0b1222;
+        --surface-1: rgba(20, 31, 56, 0.76);
+        --surface-2: rgba(16, 24, 46, 0.9);
+        --ok: #50e3a4;
+        --warn: #ffd479;
+        --bad: #ff7e9f;
+        --brand: #75d8ff;
+        --accent: #8dc2ff;
+      }
+
+      * { box-sizing: border-box; }
+
+      html, body {
+        margin: 0;
+        min-height: 100%;
+        color: var(--ink);
+        background: radial-gradient(115% 130% at 100% 0%, rgba(117, 216, 255, 0.18), transparent 56%), var(--surface-0);
+        font-family: "Space Grotesk", "SF Mono", "Menlo", monospace;
+      }
+
+      /* Portal Navigation */
+      .portal-nav {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.75rem 1rem;
+        background: rgba(13, 20, 38, 0.9);
+        border-bottom: 1px solid var(--line);
+        backdrop-filter: blur(12px);
+        position: sticky;
+        top: 0;
+        z-index: 100;
+      }
+      .portal-links { display: flex; gap: 1.5rem; }
+      .portal-link {
+        color: var(--ink-muted);
+        text-decoration: none;
+        font-size: 0.9rem;
+        font-weight: 500;
+        transition: color 0.2s;
+      }
+      .portal-link:hover, .portal-link.active { color: var(--brand); }
+      .portal-title {
+        font-size: 0.85rem;
+        color: var(--ink-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      .frame {
+        width: min(1000px, calc(100vw - 2rem));
+        margin: 2rem auto;
+        display: grid;
+        gap: 1.5rem;
+      }
+
+      .card {
+        background: var(--surface-1);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 1.5rem;
+        backdrop-filter: blur(8px);
+      }
+
+      header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 1rem;
+        margin-bottom: 1rem;
+      }
+
+      h1 { margin: 0; font-size: 1.5rem; }
+      .sim-id { color: var(--ink-muted); font-size: 0.9rem; font-family: monospace; }
+
+      .stat-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 1rem;
+        margin-bottom: 1.5rem;
+      }
+
+      .stat-item {
+        background: var(--surface-2);
+        padding: 1rem;
+        border-radius: 8px;
+        border: 1px solid var(--line);
+      }
+      .stat-label { color: var(--ink-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
+      .stat-val { font-size: 1.25rem; font-weight: 700; margin-top: 0.25rem; }
+
+      .section-title {
+        color: var(--accent);
+        font-size: 1rem;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        margin: 0 0 1rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .pill {
+        padding: 0.2rem 0.6rem;
+        border-radius: 99px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+      }
+      .pill-ok { background: rgba(80, 227, 164, 0.15); color: var(--ok); border: 1px solid rgba(80, 227, 164, 0.3); }
+      .pill-warn { background: rgba(255, 212, 121, 0.15); color: var(--warn); border: 1px solid rgba(255, 212, 121, 0.3); }
+      .pill-bad { background: rgba(255, 126, 159, 0.15); color: var(--bad); border: 1px solid rgba(255, 126, 159, 0.3); }
+
+      .resource-bar {
+        height: 8px;
+        background: rgba(255,255,255,0.1);
+        border-radius: 4px;
+        overflow: hidden;
+        margin-top: 0.5rem;
+      }
+      .resource-fill { height: 100%; transition: width 0.3s; }
+      .fill-ok { background: var(--ok); }
+      .fill-warn { background: var(--warn); }
+      .fill-bad { background: var(--bad); }
+
+      .details-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.9rem;
+      }
+      .details-table td {
+        padding: 0.5rem 0;
+        border-bottom: 1px solid rgba(173, 191, 255, 0.1);
+      }
+      .details-table tr:last-child td { border-bottom: none; }
+      .dt-key { color: var(--ink-muted); width: 140px; }
+
+      .actions {
+        display: flex;
+        gap: 1rem;
+        margin-top: 1rem;
+      }
+      
+      .btn {
+        background: rgba(117, 216, 255, 0.1);
+        color: var(--brand);
+        border: 1px solid var(--brand);
+        padding: 0.5rem 1rem;
+        border-radius: 6px;
+        text-decoration: none;
+        font-size: 0.9rem;
+        cursor: pointer;
+        transition: all 0.2s;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .btn:hover { background: rgba(117, 216, 255, 0.25); }
+      .btn-danger { color: var(--bad); border-color: var(--bad); background: rgba(255, 126, 159, 0.1); }
+      .btn-danger:hover { background: rgba(255, 126, 159, 0.25); }
+
+      #previewContainer {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        overflow: hidden;
+        background: #000;
+        min-height: 300px;
+        position: relative;
+      }
+      iframe { width: 100%; height: 100%; border: 0; min-height: 400px; }
+      
+      .loading { text-align: center; padding: 2rem; color: var(--ink-muted); }
+    </style>
+  </head>
+  <body>
+    <nav class="portal-nav">
+      <div class="portal-links">
+        <a href="/dashboard/docker" class="portal-link">Meta Operations</a>
+        <a href="/dashboard/bench" class="portal-link">Workbench</a>
+        <a href="/" class="portal-link">Runtime</a>
+      </div>
+      <div class="portal-title">Simulation Portal</div>
+    </nav>
+
+    <div class="frame">
+      <div class="card" id="mainCard">
+        <div class="loading">Loading profile...</div>
+      </div>
+    </div>
+
+    <script>
+      const mainCard = document.getElementById('mainCard');
+      const params = new URLSearchParams(window.location.search);
+      const simId = params.get('id');
+
+      function getStatusPill(state) {
+        state = (state || '').toLowerCase();
+        if (state === 'running') return '<span class="pill pill-ok">Running</span>';
+        if (state === 'exited' || state === 'dead') return '<span class="pill pill-bad">Stopped</span>';
+        return `<span class="pill pill-warn">${state}</span>`;
+      }
+
+      function getResourceClass(ratio) {
+        if (ratio > 0.9) return 'fill-bad';
+        if (ratio > 0.75) return 'fill-warn';
+        return 'fill-ok';
+      }
+
+      function formatBytes(bytes) {
+        if (!bytes) return '0 B';
+        const units = ['B', 'KiB', 'MiB', 'GiB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(1024));
+        return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
+      }
+
+      async function loadProfile() {
+        if (!simId) {
+          mainCard.innerHTML = '<div class="loading">No simulation ID provided.</div>';
+          return;
+        }
+
+        try {
+          // 1. Get docker info
+          const dockResp = await fetch('/api/docker/simulations');
+          const dockData = await dockResp.json();
+          
+          // 2. Find target
+          const sim = dockData.simulations.find(s => s.id === simId || s.name === simId || s.short_id === simId);
+          
+          if (!sim) {
+            mainCard.innerHTML = `<div class="loading">Simulation not found (ID: ${simId})</div>`;
+            return;
+          }
+
+          // 3. Extract metrics
+          const res = sim.resources || {};
+          const cpuPct = res.usage?.cpu_percent || 0;
+          const memBytes = res.usage?.memory_usage_bytes || 0;
+          const memLimit = res.usage?.memory_limit_bytes || 0;
+          const memPct = memLimit ? (memBytes / memLimit) * 100 : 0;
+          const pids = res.usage?.pids_current || 0;
+          
+          const routeId = String(sim?.route?.id || '').trim();
+          const gatedUrl = routeId ? `/sim/${encodeURIComponent(routeId)}/` : '';
+          const previewUrl = gatedUrl || sim.endpoints?.find(e => e.kind === 'world')?.url || '';
+
+          mainCard.innerHTML = `
+            <header>
+              <div>
+                <h1>${sim.name}</h1>
+                <div class="sim-id">${sim.id}</div>
+              </div>
+              ${getStatusPill(sim.state)}
+            </header>
+
+            <div class="stat-grid">
+              <div class="stat-item">
+                <div class="stat-label">CPU Usage</div>
+                <div class="stat-val">${cpuPct.toFixed(1)}%</div>
+                <div class="resource-bar">
+                  <div class="resource-fill ${getResourceClass(cpuPct/100)}" style="width: ${Math.min(cpuPct, 100)}%"></div>
+                </div>
+              </div>
+              <div class="stat-item">
+                <div class="stat-label">Memory</div>
+                <div class="stat-val">${formatBytes(memBytes)}</div>
+                <div class="resource-bar">
+                  <div class="resource-fill ${getResourceClass(memPct/100)}" style="width: ${memPct}%"></div>
+                </div>
+                <div style="font-size: 0.8rem; color: var(--ink-muted); margin-top: 0.25rem;">Limit: ${formatBytes(memLimit)}</div>
+              </div>
+              <div class="stat-item">
+                <div class="stat-label">PIDs</div>
+                <div class="stat-val">${pids}</div>
+              </div>
+              <div class="stat-item">
+                <div class="stat-label">Restarts</div>
+                <div class="stat-val">${sim.lifecycle?.restart_count || 0}</div>
+              </div>
+            </div>
+
+            <div class="actions">
+              ${previewUrl ? `<a href="${previewUrl}" target="_blank" class="btn">Open Interface</a>` : ''}
+              <a href="/dashboard/bench" class="btn">Benchmark This</a>
+            </div>
+
+            <h2 class="section-title" style="margin-top: 2rem;">Configuration</h2>
+            <table class="details-table">
+              <tr><td class="dt-key">Image</td><td>${sim.image}</td></tr>
+              <tr><td class="dt-key">Created</td><td>${new Date(sim.created_at).toLocaleString()}</td></tr>
+              <tr><td class="dt-key">Network</td><td>${sim.networks?.join(', ') || '-'}</td></tr>
+              <tr><td class="dt-key">Project</td><td>${sim.project}</td></tr>
+              <tr><td class="dt-key">Service</td><td>${sim.service}</td></tr>
+              <tr><td class="dt-key">Stability</td><td>${sim.lifecycle?.stability || '-'}</td></tr>
+            </table>
+
+            ${previewUrl ? `
+              <h2 class="section-title" style="margin-top: 2rem;">Live Preview</h2>
+              <div id="previewContainer">
+                <iframe src="${previewUrl}"></iframe>
+              </div>
+            ` : ''}
+          `;
+
+        } catch (e) {
+          mainCard.innerHTML = `<div class="loading">Error loading profile: ${e.message}</div>`;
+        }
+      }
+
+      loadProfile();
+      setInterval(loadProfile, 5000); // Live update
+    </script>
+  </body>
+</html>

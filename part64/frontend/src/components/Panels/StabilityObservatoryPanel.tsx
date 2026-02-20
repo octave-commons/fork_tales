@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, Gauge, RefreshCw, ShieldAlert } from "lucide-react";
+import { relativeTime } from "../../app/time";
 import { runtimeApiUrl } from "../../runtime/endpoints";
 import type {
   Catalog,
@@ -48,28 +49,6 @@ interface DriftSeverityCount {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
-}
-
-function relativeTime(iso: string | undefined): string {
-  if (!iso) {
-    return "n/a";
-  }
-  const parsed = Date.parse(iso);
-  if (!Number.isFinite(parsed)) {
-    return iso;
-  }
-  const deltaMs = Date.now() - parsed;
-  const deltaSec = Math.round(deltaMs / 1000);
-  if (deltaSec < 45) {
-    return `${Math.max(0, deltaSec)}s ago`;
-  }
-  if (deltaSec < 3600) {
-    return `${Math.round(deltaSec / 60)}m ago`;
-  }
-  if (deltaSec < 86400) {
-    return `${Math.round(deltaSec / 3600)}h ago`;
-  }
-  return `${Math.round(deltaSec / 86400)}d ago`;
 }
 
 function shortPath(pathValue: string | undefined): string {

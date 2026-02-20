@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { OVERLAY_VIEW_OPTIONS, type OverlayViewId } from "../Simulation/Canvas";
 import type { UIPerspective } from "../../types";
 import {
@@ -40,6 +41,7 @@ interface Props {
   autopilotEnabled: boolean;
   autopilotStatus: "running" | "waiting" | "stopped";
   autopilotSummary: string;
+  interfaceOpacity: number;
   coreCameraZoom: number;
   coreCameraPitch: number;
   coreCameraYaw: number;
@@ -63,6 +65,8 @@ interface Props {
   onNudgeCoreZoom: (delta: number) => void;
   onResetCoreCamera: () => void;
   onSelectPerspective: (perspective: UIPerspective) => void;
+  onSetInterfaceOpacity: (value: number) => void;
+  onResetInterfaceOpacity: () => void;
   onBoostCoreVisibility: () => void;
   onResetCoreVisualTuning: () => void;
   onSetCoreVisualDial: (dial: keyof CoreVisualTuning, value: number) => void;
@@ -71,11 +75,15 @@ interface Props {
   onSetCoreOrbitSpeed: (value: number) => void;
 }
 
+const INTERFACE_OPACITY_MIN = 0.38;
+const INTERFACE_OPACITY_MAX = 1;
+
 export function CoreControlPanel({
   projectionPerspective,
   autopilotEnabled,
   autopilotStatus,
   autopilotSummary,
+  interfaceOpacity,
   coreCameraZoom,
   coreCameraPitch,
   coreCameraYaw,
@@ -99,6 +107,8 @@ export function CoreControlPanel({
   onNudgeCoreZoom,
   onResetCoreCamera,
   onSelectPerspective,
+  onSetInterfaceOpacity,
+  onResetInterfaceOpacity,
   onBoostCoreVisibility,
   onResetCoreVisualTuning,
   onSetCoreVisualDial,
@@ -106,13 +116,18 @@ export function CoreControlPanel({
   onSetCoreSimulationDial,
   onSetCoreOrbitSpeed,
 }: Props) {
+  const [showVisualDials, setShowVisualDials] = useState(true);
+  const [showSimulationControls, setShowSimulationControls] = useState(true);
+  const interfaceTransparencyPercent = Math.round((1 - interfaceOpacity) * 100);
+
   return (
-    <div className="grid gap-2 lg:grid-cols-[1fr_auto] lg:items-center">
+    <div className="grid gap-2">
       <div className="text-[10px] text-muted space-y-0.5 font-mono opacity-70">
         <div className="flex flex-wrap gap-x-3 gap-y-1">
           <span>perspective: <code>{projectionPerspective}</code></span>
           <span>autopilot: <code>{autopilotEnabled ? autopilotStatus : "stopped"}</code></span>
           <span className="opacity-80">note: <code>{autopilotSummary}</code></span>
+          <span>interface: <code>{Math.round(interfaceOpacity * 100)}%</code> opacity</span>
         </div>
         <div className="flex flex-wrap gap-x-3 gap-y-1">
           <span>
@@ -146,7 +161,7 @@ export function CoreControlPanel({
           ) : null}
         </div>
       </div>
-      <div className="flex flex-wrap items-center justify-end gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
           onClick={onToggleAutopilot}
@@ -183,12 +198,12 @@ export function CoreControlPanel({
           {coreOrbitEnabled ? "Orbit On" : "Orbit Off"}
         </button>
 
-        <div className="flex items-center gap-1 border rounded px-1 py-0.5 text-[10px] bg-[rgba(10,22,34,0.68)] border-[rgba(120,178,221,0.35)]">
+        <div className="flex items-center gap-1 border rounded px-1 py-0.5 text-[10px] bg-[rgba(10,22,34,0.22)] border-[rgba(120,178,221,0.28)]">
           <button type="button" onClick={() => onNudgeCoreFlightSpeed(-0.12)} className="px-1 text-[#bdd9f2]">thrust-</button>
           <button type="button" onClick={() => onNudgeCoreFlightSpeed(0.12)} className="px-1 text-[#9ed6f8]">thrust+</button>
         </div>
 
-        <div className="flex items-center gap-1 border rounded px-1 py-0.5 text-[10px] bg-[rgba(10,22,34,0.68)] border-[rgba(120,178,221,0.35)]">
+        <div className="flex items-center gap-1 border rounded px-1 py-0.5 text-[10px] bg-[rgba(10,22,34,0.22)] border-[rgba(120,178,221,0.28)]">
           <button type="button" onClick={() => onNudgeCoreOrbitSpeed(-0.08)} className="px-1 text-[#bdd9f2]">orbit-</button>
           <button type="button" onClick={() => onNudgeCoreOrbitSpeed(0.08)} className="px-1 text-[#9ed6f8]">orbit+</button>
         </div>
@@ -196,7 +211,7 @@ export function CoreControlPanel({
         <select
           value={coreOverlayView}
           onChange={(event) => onApplyCoreLayerPreset(event.target.value as OverlayViewId)}
-          className="border rounded px-2 py-0.5 text-[10px] font-semibold bg-[rgba(10,22,34,0.74)] text-[#9dd5f8] border-[rgba(120,178,221,0.4)]"
+          className="border rounded px-2 py-0.5 text-[10px] font-semibold bg-[rgba(10,22,34,0.24)] text-[#9dd5f8] border-[rgba(120,178,221,0.32)]"
           title="simulation-core layer preset"
         >
           {OVERLAY_VIEW_OPTIONS.map((option) => (
@@ -206,11 +221,27 @@ export function CoreControlPanel({
           ))}
         </select>
 
-        <div className="flex items-center gap-1 border rounded px-1 py-0.5 text-[10px] bg-[rgba(10,22,34,0.68)] border-[rgba(120,178,221,0.35)]">
+        <div className="flex items-center gap-1 border rounded px-1 py-0.5 text-[10px] bg-[rgba(10,22,34,0.22)] border-[rgba(120,178,221,0.28)]">
           <button type="button" onClick={() => onNudgeCoreZoom(-0.08)} className="px-1 text-[#9ed6f8]">-</button>
           <button type="button" onClick={() => onNudgeCoreZoom(0.08)} className="px-1 text-[#9ed6f8]">+</button>
           <button type="button" onClick={onResetCoreCamera} className="px-1 text-[#f3d9b8]">reset</button>
         </div>
+
+        <button
+          type="button"
+          onClick={() => setShowVisualDials((prev) => !prev)}
+          className="border rounded px-2 py-0.5 text-[10px] font-semibold transition-colors bg-[rgba(11,24,36,0.24)] text-[#cbe9ff] border-[rgba(120,178,221,0.32)]"
+        >
+          {showVisualDials ? "hide dials" : "show dials"}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setShowSimulationControls((prev) => !prev)}
+          className="border rounded px-2 py-0.5 text-[10px] font-semibold transition-colors bg-[rgba(11,24,36,0.24)] text-[#cbe9ff] border-[rgba(120,178,221,0.32)]"
+        >
+          {showSimulationControls ? "hide sim" : "show sim"}
+        </button>
 
         {projectionOptions.map((option) => (
           <button
@@ -229,200 +260,235 @@ export function CoreControlPanel({
         ))}
       </div>
 
-      <div className="lg:col-span-2 rounded-lg border border-[rgba(122,184,226,0.34)] bg-[rgba(9,18,28,0.72)] px-2 py-2">
-        <div className="flex items-center justify-between gap-2">
-          <p className="text-[10px] uppercase tracking-[0.12em] text-[#9dd5f8]">simulation dials</p>
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={onBoostCoreVisibility}
-              className="rounded border border-[rgba(180,235,197,0.44)] px-2 py-0.5 text-[10px] font-semibold text-[#d4f5dc] hover:bg-[rgba(88,170,118,0.24)]"
-            >
-              boost visibility
-            </button>
-            <button
-              type="button"
-              onClick={onResetCoreVisualTuning}
-              className="rounded border border-[rgba(178,205,228,0.36)] px-2 py-0.5 text-[10px] font-semibold text-[#d5e9fb] hover:bg-[rgba(102,154,196,0.2)]"
-            >
-              reset look
-            </button>
-          </div>
-        </div>
-
-        <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-          <label className="grid gap-1">
-            <span className="text-[10px] text-[#cde4f8]">brightness <code>{coreVisualTuning.brightness.toFixed(2)}</code></span>
-            <input
-              type="range"
-              min={CORE_VISUAL_BRIGHTNESS_MIN}
-              max={CORE_VISUAL_BRIGHTNESS_MAX}
-              step={0.01}
-              value={coreVisualTuning.brightness}
-              onChange={(event) => onSetCoreVisualDial("brightness", Number(event.target.value))}
-              className="h-1 w-full accent-[#8ed8ff]"
-            />
-          </label>
-
-          <label className="grid gap-1">
-            <span className="text-[10px] text-[#cde4f8]">contrast <code>{coreVisualTuning.contrast.toFixed(2)}</code></span>
-            <input
-              type="range"
-              min={CORE_VISUAL_CONTRAST_MIN}
-              max={CORE_VISUAL_CONTRAST_MAX}
-              step={0.01}
-              value={coreVisualTuning.contrast}
-              onChange={(event) => onSetCoreVisualDial("contrast", Number(event.target.value))}
-              className="h-1 w-full accent-[#8ed8ff]"
-            />
-          </label>
-
-          <label className="grid gap-1">
-            <span className="text-[10px] text-[#cde4f8]">saturation <code>{coreVisualTuning.saturation.toFixed(2)}</code></span>
-            <input
-              type="range"
-              min={CORE_VISUAL_SATURATION_MIN}
-              max={CORE_VISUAL_SATURATION_MAX}
-              step={0.01}
-              value={coreVisualTuning.saturation}
-              onChange={(event) => onSetCoreVisualDial("saturation", Number(event.target.value))}
-              className="h-1 w-full accent-[#8ed8ff]"
-            />
-          </label>
-
-          <label className="grid gap-1">
-            <span className="text-[10px] text-[#cde4f8]">hue shift <code>{coreVisualTuning.hueRotate.toFixed(0)}deg</code></span>
-            <input
-              type="range"
-              min={CORE_VISUAL_HUE_MIN}
-              max={CORE_VISUAL_HUE_MAX}
-              step={1}
-              value={coreVisualTuning.hueRotate}
-              onChange={(event) => onSetCoreVisualDial("hueRotate", Number(event.target.value))}
-              className="h-1 w-full accent-[#8ed8ff]"
-            />
-          </label>
-
-          <label className="grid gap-1">
-            <span className="text-[10px] text-[#cde4f8]">field dim <code>{coreVisualTuning.backgroundWash.toFixed(2)}</code></span>
-            <input
-              type="range"
-              min={CORE_VISUAL_WASH_MIN}
-              max={CORE_VISUAL_WASH_MAX}
-              step={0.01}
-              value={coreVisualTuning.backgroundWash}
-              onChange={(event) => onSetCoreVisualDial("backgroundWash", Number(event.target.value))}
-              className="h-1 w-full accent-[#8ed8ff]"
-            />
-          </label>
-
-          <label className="grid gap-1">
-            <span className="text-[10px] text-[#cde4f8]">edge vignette <code>{coreVisualTuning.vignette.toFixed(2)}x</code></span>
-            <input
-              type="range"
-              min={CORE_VISUAL_VIGNETTE_MIN}
-              max={CORE_VISUAL_VIGNETTE_MAX}
-              step={0.01}
-              value={coreVisualTuning.vignette}
-              onChange={(event) => onSetCoreVisualDial("vignette", Number(event.target.value))}
-              className="h-1 w-full accent-[#8ed8ff]"
-            />
-          </label>
-        </div>
-
-        <div className="mt-3 rounded-md border border-[rgba(116,176,216,0.26)] bg-[rgba(8,16,24,0.58)] px-2 py-2">
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-[10px] uppercase tracking-[0.12em] text-[#9dd5f8]">simulation controls</p>
-            <button
-              type="button"
-              onClick={onResetCoreSimulationTuning}
-              className="rounded border border-[rgba(178,205,228,0.36)] px-2 py-0.5 text-[10px] font-semibold text-[#d5e9fb] hover:bg-[rgba(102,154,196,0.2)]"
-            >
-              reset sim
-            </button>
-          </div>
-
-          <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-            <label className="grid gap-1">
-              <span className="text-[10px] text-[#cde4f8]">particles <code>{Math.round(coreSimulationTuning.particleDensity * 100)}%</code></span>
+      {showVisualDials || showSimulationControls ? (
+        <div className="rounded-lg border border-[rgba(122,184,226,0.28)] bg-[rgba(9,18,28,0.18)] px-2 py-2">
+          <div className="rounded-md border border-[rgba(122,184,226,0.24)] bg-[rgba(8,16,24,0.14)] px-2 py-2">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[10px] uppercase tracking-[0.12em] text-[#9dd5f8]">interface transparency</p>
+              <button
+                type="button"
+                onClick={onResetInterfaceOpacity}
+                className="rounded border border-[rgba(178,205,228,0.36)] px-2 py-0.5 text-[10px] font-semibold text-[#d5e9fb] hover:bg-[rgba(102,154,196,0.2)]"
+              >
+                reset ui
+              </button>
+            </div>
+            <label className="mt-2 grid gap-1">
+              <span className="text-[10px] text-[#cde4f8]">
+                transparency <code>{interfaceTransparencyPercent}%</code>
+              </span>
               <input
                 type="range"
-                min={CORE_SIM_PARTICLE_DENSITY_MIN}
-                max={CORE_SIM_PARTICLE_DENSITY_MAX}
+                min={INTERFACE_OPACITY_MIN}
+                max={INTERFACE_OPACITY_MAX}
                 step={0.01}
-                value={coreSimulationTuning.particleDensity}
-                onChange={(event) => onSetCoreSimulationDial("particleDensity", Number(event.target.value))}
-                className="h-1 w-full accent-[#8ed8ff]"
-              />
-            </label>
-
-            <label className="grid gap-1">
-              <span className="text-[10px] text-[#cde4f8]">particle size <code>{coreSimulationTuning.particleScale.toFixed(2)}x</code></span>
-              <input
-                type="range"
-                min={CORE_SIM_PARTICLE_SCALE_MIN}
-                max={CORE_SIM_PARTICLE_SCALE_MAX}
-                step={0.01}
-                value={coreSimulationTuning.particleScale}
-                onChange={(event) => onSetCoreSimulationDial("particleScale", Number(event.target.value))}
-                className="h-1 w-full accent-[#8ed8ff]"
-              />
-            </label>
-
-            <label className="grid gap-1">
-              <span className="text-[10px] text-[#cde4f8]">field motion <code>{coreSimulationTuning.motionSpeed.toFixed(2)}x</code></span>
-              <input
-                type="range"
-                min={CORE_SIM_MOTION_SPEED_MIN}
-                max={CORE_SIM_MOTION_SPEED_MAX}
-                step={0.01}
-                value={coreSimulationTuning.motionSpeed}
-                onChange={(event) => onSetCoreSimulationDial("motionSpeed", Number(event.target.value))}
-                className="h-1 w-full accent-[#8ed8ff]"
-              />
-            </label>
-
-            <label className="grid gap-1">
-              <span className="text-[10px] text-[#cde4f8]">mouse influence <code>{coreSimulationTuning.mouseInfluence.toFixed(2)}x</code></span>
-              <input
-                type="range"
-                min={CORE_SIM_MOUSE_INFLUENCE_MIN}
-                max={CORE_SIM_MOUSE_INFLUENCE_MAX}
-                step={0.01}
-                value={coreSimulationTuning.mouseInfluence}
-                onChange={(event) => onSetCoreSimulationDial("mouseInfluence", Number(event.target.value))}
-                className="h-1 w-full accent-[#8ed8ff]"
-              />
-            </label>
-
-            <label className="grid gap-1">
-              <span className="text-[10px] text-[#cde4f8]">layer depth <code>{coreSimulationTuning.layerDepth.toFixed(2)}x</code></span>
-              <input
-                type="range"
-                min={CORE_SIM_LAYER_DEPTH_MIN}
-                max={CORE_SIM_LAYER_DEPTH_MAX}
-                step={0.01}
-                value={coreSimulationTuning.layerDepth}
-                onChange={(event) => onSetCoreSimulationDial("layerDepth", Number(event.target.value))}
-                className="h-1 w-full accent-[#8ed8ff]"
-              />
-            </label>
-
-            <label className="grid gap-1">
-              <span className="text-[10px] text-[#cde4f8]">orbit speed <code>{coreOrbitSpeed.toFixed(2)}x</code></span>
-              <input
-                type="range"
-                min={CORE_ORBIT_SPEED_MIN}
-                max={CORE_ORBIT_SPEED_MAX}
-                step={0.01}
-                value={coreOrbitSpeed}
-                onChange={(event) => onSetCoreOrbitSpeed(Number(event.target.value))}
+                value={interfaceOpacity}
+                onChange={(event) => onSetInterfaceOpacity(Number(event.target.value))}
                 className="h-1 w-full accent-[#8ed8ff]"
               />
             </label>
           </div>
+
+          {showVisualDials ? (
+            <>
+              <div className="mt-3 flex items-center justify-between gap-2">
+                <p className="text-[10px] uppercase tracking-[0.12em] text-[#9dd5f8]">simulation dials</p>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={onBoostCoreVisibility}
+                    className="rounded border border-[rgba(180,235,197,0.44)] px-2 py-0.5 text-[10px] font-semibold text-[#d4f5dc] hover:bg-[rgba(88,170,118,0.24)]"
+                  >
+                    boost visibility
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onResetCoreVisualTuning}
+                    className="rounded border border-[rgba(178,205,228,0.36)] px-2 py-0.5 text-[10px] font-semibold text-[#d5e9fb] hover:bg-[rgba(102,154,196,0.2)]"
+                  >
+                    reset look
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                <label className="grid gap-1">
+                  <span className="text-[10px] text-[#cde4f8]">brightness <code>{coreVisualTuning.brightness.toFixed(2)}</code></span>
+                  <input
+                    type="range"
+                    min={CORE_VISUAL_BRIGHTNESS_MIN}
+                    max={CORE_VISUAL_BRIGHTNESS_MAX}
+                    step={0.01}
+                    value={coreVisualTuning.brightness}
+                    onChange={(event) => onSetCoreVisualDial("brightness", Number(event.target.value))}
+                    className="h-1 w-full accent-[#8ed8ff]"
+                  />
+                </label>
+
+                <label className="grid gap-1">
+                  <span className="text-[10px] text-[#cde4f8]">contrast <code>{coreVisualTuning.contrast.toFixed(2)}</code></span>
+                  <input
+                    type="range"
+                    min={CORE_VISUAL_CONTRAST_MIN}
+                    max={CORE_VISUAL_CONTRAST_MAX}
+                    step={0.01}
+                    value={coreVisualTuning.contrast}
+                    onChange={(event) => onSetCoreVisualDial("contrast", Number(event.target.value))}
+                    className="h-1 w-full accent-[#8ed8ff]"
+                  />
+                </label>
+
+                <label className="grid gap-1">
+                  <span className="text-[10px] text-[#cde4f8]">saturation <code>{coreVisualTuning.saturation.toFixed(2)}</code></span>
+                  <input
+                    type="range"
+                    min={CORE_VISUAL_SATURATION_MIN}
+                    max={CORE_VISUAL_SATURATION_MAX}
+                    step={0.01}
+                    value={coreVisualTuning.saturation}
+                    onChange={(event) => onSetCoreVisualDial("saturation", Number(event.target.value))}
+                    className="h-1 w-full accent-[#8ed8ff]"
+                  />
+                </label>
+
+                <label className="grid gap-1">
+                  <span className="text-[10px] text-[#cde4f8]">hue shift <code>{coreVisualTuning.hueRotate.toFixed(0)}deg</code></span>
+                  <input
+                    type="range"
+                    min={CORE_VISUAL_HUE_MIN}
+                    max={CORE_VISUAL_HUE_MAX}
+                    step={1}
+                    value={coreVisualTuning.hueRotate}
+                    onChange={(event) => onSetCoreVisualDial("hueRotate", Number(event.target.value))}
+                    className="h-1 w-full accent-[#8ed8ff]"
+                  />
+                </label>
+
+                <label className="grid gap-1">
+                  <span className="text-[10px] text-[#cde4f8]">field dim <code>{coreVisualTuning.backgroundWash.toFixed(2)}</code></span>
+                  <input
+                    type="range"
+                    min={CORE_VISUAL_WASH_MIN}
+                    max={CORE_VISUAL_WASH_MAX}
+                    step={0.01}
+                    value={coreVisualTuning.backgroundWash}
+                    onChange={(event) => onSetCoreVisualDial("backgroundWash", Number(event.target.value))}
+                    className="h-1 w-full accent-[#8ed8ff]"
+                  />
+                </label>
+
+                <label className="grid gap-1">
+                  <span className="text-[10px] text-[#cde4f8]">edge vignette <code>{coreVisualTuning.vignette.toFixed(2)}x</code></span>
+                  <input
+                    type="range"
+                    min={CORE_VISUAL_VIGNETTE_MIN}
+                    max={CORE_VISUAL_VIGNETTE_MAX}
+                    step={0.01}
+                    value={coreVisualTuning.vignette}
+                    onChange={(event) => onSetCoreVisualDial("vignette", Number(event.target.value))}
+                    className="h-1 w-full accent-[#8ed8ff]"
+                  />
+                </label>
+              </div>
+            </>
+          ) : null}
+
+          {showSimulationControls ? (
+            <div className={`${showVisualDials ? "mt-3" : ""} rounded-md border border-[rgba(116,176,216,0.24)] bg-[rgba(8,16,24,0.14)] px-2 py-2`}>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[10px] uppercase tracking-[0.12em] text-[#9dd5f8]">simulation controls</p>
+                <button
+                  type="button"
+                  onClick={onResetCoreSimulationTuning}
+                  className="rounded border border-[rgba(178,205,228,0.36)] px-2 py-0.5 text-[10px] font-semibold text-[#d5e9fb] hover:bg-[rgba(102,154,196,0.2)]"
+                >
+                  reset sim
+                </button>
+              </div>
+
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                <label className="grid gap-1">
+                  <span className="text-[10px] text-[#cde4f8]">particles <code>{Math.round(coreSimulationTuning.particleDensity * 100)}%</code></span>
+                  <input
+                    type="range"
+                    min={CORE_SIM_PARTICLE_DENSITY_MIN}
+                    max={CORE_SIM_PARTICLE_DENSITY_MAX}
+                    step={0.01}
+                    value={coreSimulationTuning.particleDensity}
+                    onChange={(event) => onSetCoreSimulationDial("particleDensity", Number(event.target.value))}
+                    className="h-1 w-full accent-[#8ed8ff]"
+                  />
+                </label>
+
+                <label className="grid gap-1">
+                  <span className="text-[10px] text-[#cde4f8]">particle size <code>{coreSimulationTuning.particleScale.toFixed(2)}x</code></span>
+                  <input
+                    type="range"
+                    min={CORE_SIM_PARTICLE_SCALE_MIN}
+                    max={CORE_SIM_PARTICLE_SCALE_MAX}
+                    step={0.01}
+                    value={coreSimulationTuning.particleScale}
+                    onChange={(event) => onSetCoreSimulationDial("particleScale", Number(event.target.value))}
+                    className="h-1 w-full accent-[#8ed8ff]"
+                  />
+                </label>
+
+                <label className="grid gap-1">
+                  <span className="text-[10px] text-[#cde4f8]">field motion <code>{coreSimulationTuning.motionSpeed.toFixed(2)}x</code></span>
+                  <input
+                    type="range"
+                    min={CORE_SIM_MOTION_SPEED_MIN}
+                    max={CORE_SIM_MOTION_SPEED_MAX}
+                    step={0.01}
+                    value={coreSimulationTuning.motionSpeed}
+                    onChange={(event) => onSetCoreSimulationDial("motionSpeed", Number(event.target.value))}
+                    className="h-1 w-full accent-[#8ed8ff]"
+                  />
+                </label>
+
+                <label className="grid gap-1">
+                  <span className="text-[10px] text-[#cde4f8]">mouse influence <code>{coreSimulationTuning.mouseInfluence.toFixed(2)}x</code></span>
+                  <input
+                    type="range"
+                    min={CORE_SIM_MOUSE_INFLUENCE_MIN}
+                    max={CORE_SIM_MOUSE_INFLUENCE_MAX}
+                    step={0.01}
+                    value={coreSimulationTuning.mouseInfluence}
+                    onChange={(event) => onSetCoreSimulationDial("mouseInfluence", Number(event.target.value))}
+                    className="h-1 w-full accent-[#8ed8ff]"
+                  />
+                </label>
+
+                <label className="grid gap-1">
+                  <span className="text-[10px] text-[#cde4f8]">layer depth <code>{coreSimulationTuning.layerDepth.toFixed(2)}x</code></span>
+                  <input
+                    type="range"
+                    min={CORE_SIM_LAYER_DEPTH_MIN}
+                    max={CORE_SIM_LAYER_DEPTH_MAX}
+                    step={0.01}
+                    value={coreSimulationTuning.layerDepth}
+                    onChange={(event) => onSetCoreSimulationDial("layerDepth", Number(event.target.value))}
+                    className="h-1 w-full accent-[#8ed8ff]"
+                  />
+                </label>
+
+                <label className="grid gap-1">
+                  <span className="text-[10px] text-[#cde4f8]">orbit speed <code>{coreOrbitSpeed.toFixed(2)}x</code></span>
+                  <input
+                    type="range"
+                    min={CORE_ORBIT_SPEED_MIN}
+                    max={CORE_ORBIT_SPEED_MAX}
+                    step={0.01}
+                    value={coreOrbitSpeed}
+                    onChange={(event) => onSetCoreOrbitSpeed(Number(event.target.value))}
+                    className="h-1 w-full accent-[#8ed8ff]"
+                  />
+                </label>
+              </div>
+            </div>
+          ) : null}
         </div>
-      </div>
+      ) : null}
     </div>
   );
 }

@@ -5,6 +5,7 @@ import {
 
 interface Props {
   activeLayerCount: number;
+  inline?: boolean;
   isOpen: boolean;
   layerVisibility: Record<CoreLayerId, boolean>;
   onToggleOpen: () => void;
@@ -14,15 +15,23 @@ interface Props {
 
 export function CoreLayerManagerOverlay({
   activeLayerCount,
+  inline = false,
   isOpen,
   layerVisibility,
   onToggleOpen,
   onSetAllLayers,
   onSetLayerEnabled,
 }: Props) {
+  const shellClassName = inline
+    ? "w-full"
+    : "pointer-events-none fixed top-24 right-2 z-[70] w-[min(92vw,19rem)]";
+  const cardClassName = inline
+    ? "pointer-events-auto rounded-xl border border-[rgba(130,190,232,0.32)] bg-[linear-gradient(170deg,rgba(7,18,29,0.18),rgba(10,24,38,0.14))] p-2 shadow-[0_6px_12px_rgba(0,7,14,0.16)]"
+    : "pointer-events-auto rounded-xl border border-[rgba(130,190,232,0.36)] bg-[linear-gradient(170deg,rgba(7,18,29,0.22),rgba(10,24,38,0.16))] p-2 shadow-[0_8px_18px_rgba(0,7,14,0.22)]";
+
   return (
-    <div className="pointer-events-none fixed top-24 right-2 z-[70] w-[min(92vw,19rem)]">
-      <section className="pointer-events-auto rounded-xl border border-[rgba(130,190,232,0.42)] bg-[linear-gradient(170deg,rgba(7,18,29,0.9),rgba(10,24,38,0.86))] p-2 shadow-[0_18px_48px_rgba(0,7,14,0.52)] backdrop-blur-[4px]">
+    <div className={shellClassName}>
+      <section className={cardClassName}>
         <header className="flex items-center justify-between gap-2">
           <div>
             <p className="text-[10px] uppercase tracking-[0.12em] text-[#a4dcff]">layers manager</p>

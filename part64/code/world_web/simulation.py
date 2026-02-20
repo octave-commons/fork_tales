@@ -54,6 +54,7 @@ from .constants import (
     HEALTH_SENTINEL_GPU1_PROFILE,
     HEALTH_SENTINEL_GPU2_PROFILE,
     HEALTH_SENTINEL_NPU0_PROFILE,
+    RESOURCE_CORE_PROFILE,  # New profile
     _WEAVER_GRAPH_CACHE_LOCK,
     _WEAVER_GRAPH_CACHE,
 )
@@ -74,6 +75,163 @@ from .db import (
     _cosine_similarity,
     _load_eta_mu_knowledge_entries,
 )
+from .daimoi_probabilistic import (
+    build_probabilistic_daimoi_particles,
+    DAIMOI_JOB_KEYS,
+)
+from .presence_runtime import (
+    simulation_fingerprint,
+    sync_presence_runtime_state,
+    get_presence_runtime_manager,
+)
+from .sim_slice_bridge import resolve_sim_point_budget_slice
+from .resource_economy import (
+    sync_sub_sim_presences,
+    process_resource_cycle,
+)
+
+
+SIMULATION_GROWTH_GUARD_RECORD = "eta-mu.simulation-growth-guard.v1"
+SIMULATION_GROWTH_GUARD_SCHEMA_VERSION = "simulation.growth-guard.v1"
+SIMULATION_GROWTH_EVENT_RECORD = "eta-mu.simulation-event.v1"
+SIMULATION_GROWTH_EVENT_SCHEMA_VERSION = "simulation.events.v1"
+SIMULATION_GROWTH_WATCH_THRESHOLD = 0.62
+SIMULATION_GROWTH_CRITICAL_THRESHOLD = 0.82
+SIMULATION_GROWTH_MAX_CLUSTER_NODES = 18
+SIMULATION_FILE_GRAPH_PROJECTION_RECORD = "ημ.file-graph-projection.v1"
+SIMULATION_FILE_GRAPH_PROJECTION_SCHEMA_VERSION = "file-graph.projection.v1"
+SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD = max(
+    120,
+    int(os.getenv("SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD", "340") or "340"),
+)
+SIMULATION_FILE_GRAPH_PROJECTION_EDGE_CAP_MIN = max(
+    120,
+    int(os.getenv("SIMULATION_FILE_GRAPH_PROJECTION_EDGE_CAP_MIN", "220") or "220"),
+)
+SIMULATION_FILE_GRAPH_PROJECTION_EDGE_CAP_MAX = max(
+    SIMULATION_FILE_GRAPH_PROJECTION_EDGE_CAP_MIN,
+    int(os.getenv("SIMULATION_FILE_GRAPH_PROJECTION_EDGE_CAP_MAX", "860") or "860"),
+)
+SIMULATION_FILE_GRAPH_PROJECTION_EDGE_CAP_FACTOR = max(
+    0.6,
+    float(
+        os.getenv("SIMULATION_FILE_GRAPH_PROJECTION_EDGE_CAP_FACTOR", "1.55") or "1.55"
+    ),
+)
+SIMULATION_LAYOUT_CACHE_TTL_SECONDS = max(
+    1.0,
+    _safe_float(
+        os.getenv("SIMULATION_LAYOUT_CACHE_TTL_SECONDS", "24.0") or "24.0",
+        24.0,
+    ),
+)
+SIMULATION_FILE_GRAPH_SUMMARY_CHARS = max(
+    160,
+    _safe_int(os.getenv("SIMULATION_FILE_GRAPH_SUMMARY_CHARS", "320") or "320", 320),
+)
+SIMULATION_FILE_GRAPH_EXCERPT_CHARS = max(
+    120,
+    _safe_int(os.getenv("SIMULATION_FILE_GRAPH_EXCERPT_CHARS", "280") or "280", 280),
+)
+SIMULATION_FILE_GRAPH_EMBED_LAYER_POINT_CAP = max(
+    2,
+    _safe_int(
+        os.getenv("SIMULATION_FILE_GRAPH_EMBED_LAYER_POINT_CAP", "6") or "6",
+        6,
+    ),
+)
+SIMULATION_FILE_GRAPH_EMBED_IDS_CAP = max(
+    1,
+    _safe_int(os.getenv("SIMULATION_FILE_GRAPH_EMBED_IDS_CAP", "4") or "4", 4),
+)
+SIMULATION_FILE_GRAPH_EMBED_LINK_CAP = max(
+    2,
+    _safe_int(os.getenv("SIMULATION_FILE_GRAPH_EMBED_LINK_CAP", "8") or "8", 8),
+)
+SIMULATION_FILE_GRAPH_EDGE_RESPONSE_CAP = max(
+    512,
+    _safe_int(
+        os.getenv("SIMULATION_FILE_GRAPH_EDGE_RESPONSE_CAP", "4096") or "4096",
+        4096,
+    ),
+)
+SIMULATION_FILE_GRAPH_EDGE_RESPONSE_FACTOR = max(
+    1.0,
+    _safe_float(
+        os.getenv("SIMULATION_FILE_GRAPH_EDGE_RESPONSE_FACTOR", "2.0") or "2.0",
+        2.0,
+    ),
+)
+
+SIMULATION_FILE_GRAPH_NODE_FIELDS: tuple[str, ...] = (
+    "id",
+    "node_id",
+    "node_type",
+    "field",
+    "tag",
+    "label",
+    "label_ja",
+    "presence_kind",
+    "name",
+    "kind",
+    "x",
+    "y",
+    "hue",
+    "importance",
+    "source_rel_path",
+    "archived_rel_path",
+    "archive_rel_path",
+    "url",
+    "dominant_field",
+    "dominant_presence",
+    "field_scores",
+    "text_excerpt",
+    "summary",
+    "tags",
+    "labels",
+    "member_count",
+    "embed_layer_points",
+    "embed_layer_count",
+    "vecstore_collection",
+    "concept_presence_id",
+    "concept_presence_label",
+    "organized_by",
+    "embedding_links",
+)
+
+SIMULATION_FILE_GRAPH_RENDER_NODE_FIELDS: tuple[str, ...] = (
+    "id",
+    "node_id",
+    "node_type",
+    "field",
+    "tag",
+    "label",
+    "label_ja",
+    "presence_kind",
+    "name",
+    "kind",
+    "x",
+    "y",
+    "hue",
+    "importance",
+    "source_rel_path",
+    "dominant_field",
+    "dominant_presence",
+    "embed_layer_count",
+    "vecstore_collection",
+    "concept_presence_id",
+    "concept_presence_label",
+    "organized_by",
+    "resource_wallet",  # Exposed for debugging/visualization
+)
+
+_SIMULATION_LAYOUT_CACHE_LOCK = threading.Lock()
+_SIMULATION_LAYOUT_CACHE: dict[str, Any] = {
+    "key": "",
+    "prepared_monotonic": 0.0,
+    "prepared_graph": None,
+    "embedding_points": [],
+}
 
 
 def _world_web_symbol(name: str, default: Any) -> Any:
@@ -103,6 +261,1553 @@ def _normalize_path_for_file_id(path_like: str) -> str:
 def _file_id_for_path(path_like: str) -> str:
     norm = _normalize_path_for_file_id(path_like)
     return hashlib.sha256(norm.encode("utf-8")).hexdigest() if norm else ""
+
+
+def _file_node_usage_path(node: dict[str, Any]) -> str:
+    return _normalize_path_for_file_id(
+        str(
+            node.get("source_rel_path")
+            or node.get("archived_rel_path")
+            or node.get("archive_rel_path")
+            or node.get("name")
+            or node.get("label")
+            or ""
+        )
+    )
+
+
+def _file_node_usage_score(
+    node: dict[str, Any],
+    *,
+    recent_paths: set[str],
+) -> tuple[float, bool, str]:
+    usage_path = _file_node_usage_path(node)
+    recent_hit = bool(usage_path and usage_path in recent_paths)
+    importance = _clamp01(_safe_float(node.get("importance", 0.25), 0.25))
+    layer_ratio = _clamp01(_safe_int(node.get("embed_layer_count", 0), 0) / 4.0)
+    collection_bonus = 0.08 if str(node.get("vecstore_collection", "")).strip() else 0.0
+    recent_bonus = 0.34 if recent_hit else 0.0
+    score = _clamp01(
+        (importance * 0.56) + (layer_ratio * 0.2) + collection_bonus + recent_bonus
+    )
+    return score, recent_hit, usage_path
+
+
+def _growth_guard_pressure_native(
+    *,
+    file_count: int,
+    edge_count: int,
+    crawler_count: int,
+    item_count: int,
+    sim_point_budget: int,
+    queue_pending_count: int,
+    queue_event_count: int,
+    cpu_utilization: float,
+) -> dict[str, Any] | None:
+    try:
+        from .c_double_buffer_backend import compute_growth_guard_pressure_native
+
+        return compute_growth_guard_pressure_native(
+            file_count=file_count,
+            edge_count=edge_count,
+            crawler_count=crawler_count,
+            item_count=item_count,
+            sim_point_budget=sim_point_budget,
+            queue_pending_count=queue_pending_count,
+            queue_event_count=queue_event_count,
+            cpu_utilization=cpu_utilization,
+            weaver_graph_node_limit=_safe_float(WEAVER_GRAPH_NODE_LIMIT, 1.0),
+            watch_threshold=SIMULATION_GROWTH_WATCH_THRESHOLD,
+            critical_threshold=SIMULATION_GROWTH_CRITICAL_THRESHOLD,
+        )
+    except Exception:
+        return None
+
+
+def _growth_guard_scores_native(
+    *,
+    importance: list[float],
+    layer_counts: list[int],
+    has_collection: list[bool],
+    recent_hit: list[bool],
+) -> list[float] | None:
+    try:
+        from .c_double_buffer_backend import compute_growth_guard_scores_native
+
+        return compute_growth_guard_scores_native(
+            importance=importance,
+            layer_counts=layer_counts,
+            has_collection=has_collection,
+            recent_hit=recent_hit,
+        )
+    except Exception:
+        return None
+
+
+def _default_growth_guard(
+    *,
+    generated_at: str,
+    sim_point_budget: int,
+) -> dict[str, Any]:
+    return {
+        "record": SIMULATION_GROWTH_GUARD_RECORD,
+        "schema_version": SIMULATION_GROWTH_GUARD_SCHEMA_VERSION,
+        "generated_at": generated_at,
+        "active": False,
+        "mode": "normal",
+        "thresholds": {
+            "watch": round(SIMULATION_GROWTH_WATCH_THRESHOLD, 4),
+            "critical": round(SIMULATION_GROWTH_CRITICAL_THRESHOLD, 4),
+        },
+        "pressure": {
+            "blend": 0.0,
+            "points": 0.0,
+            "files": 0.0,
+            "edges": 0.0,
+            "crawler": 0.0,
+            "queue": 0.0,
+            "resource": 0.0,
+        },
+        "capacity": {
+            "sim_point_budget": int(sim_point_budget),
+            "target_file_nodes": 0,
+            "target_edges": 0,
+        },
+        "demand": {
+            "items": 0,
+            "file_nodes": 0,
+            "edges": 0,
+            "crawler_nodes": 0,
+        },
+        "action": {
+            "kind": "noop",
+            "reason": "within_capacity",
+            "collapsed_file_nodes": 0,
+            "collapsed_edges": 0,
+            "clusters": 0,
+        },
+        "daimoi": [],
+        "events": [],
+    }
+
+
+def _apply_daimoi_growth_guard_to_file_graph(
+    *,
+    file_graph: dict[str, Any] | None,
+    crawler_graph: dict[str, Any] | None,
+    item_count: int,
+    sim_point_budget: int,
+    queue_snapshot: dict[str, Any],
+    influence_snapshot: dict[str, Any],
+    cpu_utilization: float,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    guard = _default_growth_guard(
+        generated_at=now_iso, sim_point_budget=sim_point_budget
+    )
+
+    def _event(
+        kind: str, status: str, reason: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        return {
+            "record": SIMULATION_GROWTH_EVENT_RECORD,
+            "schema_version": SIMULATION_GROWTH_EVENT_SCHEMA_VERSION,
+            "kind": kind,
+            "status": status,
+            "reason": reason,
+            "ts": now_iso,
+            "payload": payload,
+        }
+
+    if not isinstance(file_graph, dict):
+        return file_graph, guard
+
+    try:
+        file_nodes_raw = file_graph.get("file_nodes", [])
+        file_nodes = [row for row in file_nodes_raw if isinstance(row, dict)]
+        edge_rows = [
+            row for row in file_graph.get("edges", []) if isinstance(row, dict)
+        ]
+        crawler_nodes = (
+            [
+                row
+                for row in crawler_graph.get("crawler_nodes", [])
+                if isinstance(row, dict)
+            ]
+            if isinstance(crawler_graph, dict)
+            else []
+        )
+
+        file_count = len(file_nodes)
+        edge_count = len(edge_rows)
+        crawler_count = len(crawler_nodes)
+        queue_pending_count = int(queue_snapshot.get("pending_count", 0))
+        queue_event_count = int(queue_snapshot.get("event_count", 0))
+        native_pressure = _growth_guard_pressure_native(
+            file_count=file_count,
+            edge_count=edge_count,
+            crawler_count=crawler_count,
+            item_count=item_count,
+            sim_point_budget=sim_point_budget,
+            queue_pending_count=queue_pending_count,
+            queue_event_count=queue_event_count,
+            cpu_utilization=cpu_utilization,
+        )
+
+        if isinstance(native_pressure, dict):
+            target_file_nodes = max(
+                24,
+                _safe_int(native_pressure.get("target_file_nodes", 96), 96),
+            )
+            target_edge_count = max(
+                120,
+                _safe_int(native_pressure.get("target_edge_count", 240), 240),
+            )
+            point_ratio = _clamp01(
+                _safe_float(native_pressure.get("point_ratio", 0.0), 0.0)
+            )
+            file_ratio = _clamp01(
+                _safe_float(native_pressure.get("file_ratio", 0.0), 0.0)
+            )
+            edge_ratio = _clamp01(
+                _safe_float(native_pressure.get("edge_ratio", 0.0), 0.0)
+            )
+            crawler_ratio = _clamp01(
+                _safe_float(native_pressure.get("crawler_ratio", 0.0), 0.0)
+            )
+            queue_ratio = _clamp01(
+                _safe_float(native_pressure.get("queue_ratio", 0.0), 0.0)
+            )
+            resource_ratio = _clamp01(
+                _safe_float(native_pressure.get("resource_ratio", 0.0), 0.0)
+            )
+            blend = _clamp01(_safe_float(native_pressure.get("blend", 0.0), 0.0))
+            mode = str(native_pressure.get("mode", "normal") or "normal")
+        else:
+            target_file_nodes = max(
+                96,
+                min(
+                    256,
+                    int(max(96.0, _safe_float(sim_point_budget, 0.0) * 0.36)),
+                ),
+            )
+            if cpu_utilization >= 88.0:
+                target_file_nodes = max(72, int(target_file_nodes * 0.72))
+            elif cpu_utilization >= 78.0:
+                target_file_nodes = max(84, int(target_file_nodes * 0.84))
+            target_edge_count = max(240, int(target_file_nodes * 3.0))
+
+            queue_ratio = _clamp01(
+                (queue_pending_count + (queue_event_count * 0.25)) / 16.0
+            )
+            resource_ratio = _clamp01(_safe_float(cpu_utilization, 0.0) / 100.0)
+            point_ratio = _clamp01(
+                max(0.0, _safe_float(item_count, 0.0))
+                / max(1.0, _safe_float(sim_point_budget, 1.0))
+            )
+            file_ratio = _clamp01(
+                max(0.0, _safe_float(file_count, 0.0))
+                / max(1.0, _safe_float(target_file_nodes, 1.0))
+            )
+            edge_ratio = _clamp01(
+                max(0.0, _safe_float(edge_count, 0.0))
+                / max(1.0, _safe_float(target_edge_count, 1.0))
+            )
+            crawler_ratio = _clamp01(
+                max(0.0, _safe_float(crawler_count, 0.0))
+                / max(1.0, _safe_float(WEAVER_GRAPH_NODE_LIMIT, 1.0))
+            )
+            blend = _clamp01(
+                (file_ratio * 0.48)
+                + (edge_ratio * 0.24)
+                + (point_ratio * 0.14)
+                + (queue_ratio * 0.08)
+                + (resource_ratio * 0.06)
+            )
+
+            mode = "normal"
+            if blend >= SIMULATION_GROWTH_CRITICAL_THRESHOLD:
+                mode = "critical"
+            elif blend >= SIMULATION_GROWTH_WATCH_THRESHOLD:
+                mode = "watch"
+
+        guard["mode"] = mode
+        guard["pressure"] = {
+            "blend": round(blend, 4),
+            "points": round(point_ratio, 4),
+            "files": round(file_ratio, 4),
+            "edges": round(edge_ratio, 4),
+            "crawler": round(crawler_ratio, 4),
+            "queue": round(queue_ratio, 4),
+            "resource": round(resource_ratio, 4),
+        }
+        guard["capacity"] = {
+            "sim_point_budget": int(sim_point_budget),
+            "target_file_nodes": int(target_file_nodes),
+            "target_edges": int(target_edge_count),
+        }
+        guard["demand"] = {
+            "items": int(max(0, item_count)),
+            "file_nodes": int(file_count),
+            "edges": int(edge_count),
+            "crawler_nodes": int(crawler_count),
+        }
+
+        should_attempt = (
+            mode != "normal"
+            and (file_count > target_file_nodes or edge_count > target_edge_count)
+            and file_count > 0
+        )
+        if not should_attempt:
+            if mode != "normal":
+                guard["events"] = [
+                    _event(
+                        "daimoi.consolidation.skipped",
+                        "ok",
+                        "within_target_limits",
+                        {
+                            "mode": mode,
+                            "file_nodes": file_count,
+                            "edges": edge_count,
+                            "target_file_nodes": target_file_nodes,
+                            "target_edges": target_edge_count,
+                        },
+                    )
+                ]
+            return file_graph, guard
+
+        recent_paths = {
+            _normalize_path_for_file_id(str(path))
+            for path in (
+                influence_snapshot.get("recent_file_paths", [])
+                if isinstance(influence_snapshot, dict)
+                else []
+            )
+            if _normalize_path_for_file_id(str(path))
+        }
+
+        scored_node_ids: list[str] = []
+        scored_nodes: list[dict[str, Any]] = []
+        usage_paths: list[str] = []
+        recent_hits: list[bool] = []
+        importance_values: list[float] = []
+        layer_counts: list[int] = []
+        has_collection_flags: list[bool] = []
+        for node in file_nodes:
+            node_id = str(node.get("id", "")).strip()
+            if not node_id:
+                continue
+            node_copy = dict(node)
+            usage_path = _file_node_usage_path(node_copy)
+            recent_hit = bool(usage_path and usage_path in recent_paths)
+            scored_node_ids.append(node_id)
+            scored_nodes.append(node_copy)
+            usage_paths.append(usage_path)
+            recent_hits.append(recent_hit)
+            importance_values.append(
+                _clamp01(_safe_float(node_copy.get("importance", 0.25), 0.25))
+            )
+            layer_counts.append(
+                max(0, _safe_int(node_copy.get("embed_layer_count", 0), 0))
+            )
+            has_collection_flags.append(
+                bool(str(node_copy.get("vecstore_collection", "")).strip())
+            )
+
+        native_scores = _growth_guard_scores_native(
+            importance=importance_values,
+            layer_counts=layer_counts,
+            has_collection=has_collection_flags,
+            recent_hit=recent_hits,
+        )
+        scored_entries: list[dict[str, Any]] = []
+        for index, node_id in enumerate(scored_node_ids):
+            node = scored_nodes[index]
+            if isinstance(native_scores, list) and index < len(native_scores):
+                usage_score = _clamp01(_safe_float(native_scores[index], 0.0))
+                recent_hit = recent_hits[index]
+                usage_path = usage_paths[index]
+            else:
+                usage_score, recent_hit, usage_path = _file_node_usage_score(
+                    node,
+                    recent_paths=recent_paths,
+                )
+            scored_entries.append(
+                {
+                    "id": node_id,
+                    "node": node,
+                    "usage_score": usage_score,
+                    "recent_hit": recent_hit,
+                    "usage_path": usage_path,
+                }
+            )
+        if not scored_entries:
+            guard["events"] = [
+                _event(
+                    "daimoi.consolidation.skipped",
+                    "ok",
+                    "no_file_nodes",
+                    {
+                        "mode": mode,
+                    },
+                )
+            ]
+            return file_graph, guard
+
+        scored_entries.sort(
+            key=lambda row: (
+                -_safe_float(row.get("usage_score", 0.0), 0.0),
+                str(row.get("id", "")),
+            )
+        )
+
+        protected_ids = {
+            str(row.get("id", "")).strip()
+            for row in scored_entries
+            if bool(row.get("recent_hit", False))
+            or _safe_float(row.get("usage_score", 0.0), 0.0) >= 0.74
+        }
+        max_clusters = max(6, SIMULATION_GROWTH_MAX_CLUSTER_NODES)
+        if mode == "critical":
+            keep_target = max(48, int(target_file_nodes * 0.72) - max_clusters)
+        else:
+            keep_target = max(64, int(target_file_nodes * 0.86) - max_clusters)
+        keep_target = min(len(scored_entries), max(24, keep_target))
+
+        keep_ids = set(protected_ids)
+        for row in scored_entries:
+            candidate_id = str(row.get("id", "")).strip()
+            if not candidate_id:
+                continue
+            if len(keep_ids) >= keep_target and candidate_id not in protected_ids:
+                break
+            keep_ids.add(candidate_id)
+
+        low_entries = [
+            row
+            for row in scored_entries
+            if str(row.get("id", "")).strip()
+            and str(row.get("id", "")).strip() not in keep_ids
+        ]
+        if not low_entries:
+            guard["events"] = [
+                _event(
+                    "daimoi.consolidation.skipped",
+                    "ok",
+                    "no_low_use_candidates",
+                    {
+                        "mode": mode,
+                        "protected": len(protected_ids),
+                        "keep_target": keep_target,
+                    },
+                )
+            ]
+            return file_graph, guard
+
+        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in low_entries:
+            node = row.get("node", {}) if isinstance(row, dict) else {}
+            field_id = (
+                str(
+                    (node if isinstance(node, dict) else {}).get("dominant_field", "f3")
+                ).strip()
+                or "f3"
+            )
+            node_kind = (
+                str((node if isinstance(node, dict) else {}).get("kind", "file"))
+                .strip()
+                .lower()
+                or "file"
+            )
+            grouped[f"{field_id}|{node_kind}"].append(row)
+
+        grouped_rows = sorted(
+            grouped.items(),
+            key=lambda pair: (-len(pair[1]), pair[0]),
+        )
+        if len(grouped_rows) > max_clusters:
+            overflow_rows: list[dict[str, Any]] = []
+            for _, rows in grouped_rows[max_clusters - 1 :]:
+                overflow_rows.extend(rows)
+            grouped_rows = grouped_rows[: max_clusters - 1]
+            if overflow_rows:
+                grouped_rows.append(("f3|overflow", overflow_rows))
+
+        cluster_nodes: list[dict[str, Any]] = []
+        low_id_to_cluster: dict[str, str] = {}
+        for cluster_index, (group_key, rows) in enumerate(grouped_rows):
+            if not rows:
+                continue
+            field_id, _, node_kind = group_key.partition("|")
+            member_ids = sorted(
+                {
+                    str(row.get("id", "")).strip()
+                    for row in rows
+                    if str(row.get("id", "")).strip()
+                }
+            )
+            if not member_ids:
+                continue
+            seed = f"{group_key}|{len(member_ids)}|{'|'.join(member_ids[:18])}"
+            cluster_id = f"file:cluster:{sha1(seed.encode('utf-8')).hexdigest()[:14]}"
+
+            x_weighted = 0.0
+            y_weighted = 0.0
+            hue_weighted = 0.0
+            weight_total = 0.0
+            importance_sum = 0.0
+            for row in rows:
+                node = row.get("node", {}) if isinstance(row, dict) else {}
+                node_usage = _safe_float(row.get("usage_score", 0.0), 0.0)
+                node_importance = _clamp01(
+                    _safe_float(
+                        (node if isinstance(node, dict) else {}).get(
+                            "importance", 0.25
+                        ),
+                        0.25,
+                    )
+                )
+                node_weight = max(0.08, (node_usage * 0.4) + (node_importance * 0.6))
+                x_weighted += (
+                    _clamp01(
+                        _safe_float(
+                            (node if isinstance(node, dict) else {}).get("x", 0.5), 0.5
+                        )
+                    )
+                    * node_weight
+                )
+                y_weighted += (
+                    _clamp01(
+                        _safe_float(
+                            (node if isinstance(node, dict) else {}).get("y", 0.5), 0.5
+                        )
+                    )
+                    * node_weight
+                )
+                hue_weighted += (
+                    _safe_float(
+                        (node if isinstance(node, dict) else {}).get("hue", 200),
+                        200.0,
+                    )
+                    * node_weight
+                )
+                weight_total += node_weight
+                importance_sum += node_importance
+                low_id_to_cluster[str(row.get("id", "")).strip()] = cluster_id
+
+            if weight_total <= 1e-8:
+                weight_total = 1.0
+            centroid_x = _clamp01(x_weighted / weight_total)
+            centroid_y = _clamp01(y_weighted / weight_total)
+            mean_importance = _clamp01(importance_sum / max(1, len(rows)))
+            cluster_importance = _clamp01(0.18 + (mean_importance * 0.46))
+            dominant_presence = (
+                str(FIELD_TO_PRESENCE.get(field_id, "anchor_registry")).strip()
+                or "anchor_registry"
+            )
+            cluster_label = f"Consolidated {field_id} {node_kind} ({len(member_ids)})"
+
+            cluster_nodes.append(
+                {
+                    "id": cluster_id,
+                    "node_id": cluster_id,
+                    "node_type": "file",
+                    "name": cluster_label,
+                    "label": cluster_label,
+                    "kind": "cluster",
+                    "x": round(centroid_x, 4),
+                    "y": round(centroid_y, 4),
+                    "hue": int(round(hue_weighted / weight_total)) % 360,
+                    "importance": round(cluster_importance, 4),
+                    "source_rel_path": f"_consolidated/{field_id}/{node_kind}-{cluster_index + 1}",
+                    "archive_kind": "cluster",
+                    "dominant_field": field_id,
+                    "dominant_presence": dominant_presence,
+                    "field_scores": {field_id: 1.0},
+                    "summary": (
+                        "Daimoi consolidated low-use files to keep simulation load stable."
+                    ),
+                    "consolidated": True,
+                    "consolidated_count": len(member_ids),
+                    "consolidated_node_ids": member_ids[:32],
+                }
+            )
+
+        keep_nodes = [
+            dict(row.get("node", {}))
+            for row in scored_entries
+            if str(row.get("id", "")).strip() in keep_ids
+            and isinstance(row.get("node", {}), dict)
+        ]
+        next_file_nodes = keep_nodes + cluster_nodes
+
+        cluster_ids = {
+            str(row.get("id", "")).strip()
+            for row in cluster_nodes
+            if str(row.get("id", "")).strip()
+        }
+        edge_buckets: dict[tuple[str, str, str, str], dict[str, float]] = {}
+        for edge in edge_rows:
+            source_id = str(edge.get("source", "")).strip()
+            target_id = str(edge.get("target", "")).strip()
+            if source_id in low_id_to_cluster:
+                source_id = low_id_to_cluster[source_id]
+            if target_id in low_id_to_cluster:
+                target_id = low_id_to_cluster[target_id]
+            if not source_id or not target_id or source_id == target_id:
+                continue
+            edge_kind = str(edge.get("kind", "relates")).strip().lower() or "relates"
+            edge_field = str(edge.get("field", "")).strip()
+            edge_weight = _clamp01(_safe_float(edge.get("weight", 0.42), 0.42))
+            key = (source_id, target_id, edge_kind, edge_field)
+            bucket = edge_buckets.setdefault(key, {"weight_sum": 0.0, "count": 0.0})
+            bucket["weight_sum"] += edge_weight
+            bucket["count"] += 1.0
+
+        next_edges: list[dict[str, Any]] = []
+        for (source_id, target_id, edge_kind, edge_field), bucket in sorted(
+            edge_buckets.items(),
+            key=lambda item: (
+                -(
+                    _safe_float(item[1].get("weight_sum", 0.0), 0.0)
+                    / max(1.0, _safe_float(item[1].get("count", 1.0), 1.0))
+                ),
+                item[0][0],
+                item[0][1],
+                item[0][2],
+            ),
+        ):
+            avg_weight = _clamp01(
+                _safe_float(bucket.get("weight_sum", 0.0), 0.0)
+                / max(1.0, _safe_float(bucket.get("count", 1.0), 1.0))
+            )
+            edge_seed = f"{source_id}|{target_id}|{edge_kind}|{edge_field}"
+            next_edges.append(
+                {
+                    "id": "edge:" + sha1(edge_seed.encode("utf-8")).hexdigest()[:16],
+                    "source": source_id,
+                    "target": target_id,
+                    "field": edge_field,
+                    "weight": round(avg_weight, 4),
+                    "kind": edge_kind,
+                }
+            )
+
+        cluster_source_ids = {
+            str(edge.get("source", "")).strip()
+            for edge in next_edges
+            if isinstance(edge, dict)
+        }
+        for node in cluster_nodes:
+            cluster_id = str(node.get("id", "")).strip()
+            if not cluster_id or cluster_id in cluster_source_ids:
+                continue
+            field_id = str(node.get("dominant_field", "f3")).strip() or "f3"
+            target_presence = (
+                str(
+                    node.get(
+                        "dominant_presence",
+                        FIELD_TO_PRESENCE.get(field_id, "anchor_registry"),
+                    )
+                ).strip()
+                or "anchor_registry"
+            )
+            target_node = f"field:{target_presence}"
+            seed = f"{cluster_id}|{target_node}|categorizes"
+            next_edges.append(
+                {
+                    "id": "edge:" + sha1(seed.encode("utf-8")).hexdigest()[:16],
+                    "source": cluster_id,
+                    "target": target_node,
+                    "field": field_id,
+                    "weight": 0.64,
+                    "kind": "categorizes",
+                }
+            )
+
+        edge_cap = max(target_edge_count, len(next_file_nodes) * 3)
+        if len(next_edges) > edge_cap:
+            next_edges = next_edges[:edge_cap]
+
+        collapsed_file_nodes = max(0, len(file_nodes) - len(next_file_nodes))
+        collapsed_edges = max(0, len(edge_rows) - len(next_edges))
+        if collapsed_file_nodes <= 0 and collapsed_edges <= 0:
+            guard["events"] = [
+                _event(
+                    "daimoi.consolidation.skipped",
+                    "ok",
+                    "no_reduction_needed",
+                    {
+                        "mode": mode,
+                        "file_nodes": file_count,
+                        "edges": edge_count,
+                    },
+                )
+            ]
+            return file_graph, guard
+
+        graph_nodes_raw = file_graph.get("nodes", [])
+        non_file_nodes = [
+            dict(node)
+            for node in (graph_nodes_raw if isinstance(graph_nodes_raw, list) else [])
+            if isinstance(node, dict)
+            and str(node.get("node_type", "")).strip().lower() != "file"
+        ]
+
+        updated_graph = dict(file_graph)
+        updated_graph["file_nodes"] = next_file_nodes
+        updated_graph["nodes"] = non_file_nodes + next_file_nodes
+        updated_graph["edges"] = next_edges
+        graph_stats = (
+            dict(file_graph.get("stats", {}))
+            if isinstance(file_graph.get("stats", {}), dict)
+            else {}
+        )
+        graph_stats["file_count"] = len(next_file_nodes)
+        graph_stats["edge_count"] = len(next_edges)
+        graph_stats["consolidated_file_count"] = collapsed_file_nodes
+        graph_stats["consolidated_cluster_count"] = len(cluster_nodes)
+        graph_stats["consolidation_applied"] = True
+        graph_stats["consolidation_mode"] = mode
+        updated_graph["stats"] = graph_stats
+
+        consolidation_info = {
+            "record": SIMULATION_GROWTH_GUARD_RECORD,
+            "schema_version": SIMULATION_GROWTH_GUARD_SCHEMA_VERSION,
+            "generated_at": now_iso,
+            "mode": mode,
+            "collapsed_file_nodes": collapsed_file_nodes,
+            "collapsed_edges": collapsed_edges,
+            "clusters": len(cluster_nodes),
+            "protected_recent_paths": len(recent_paths),
+        }
+        updated_graph["consolidation"] = consolidation_info
+
+        deployment_row = {
+            "id": "daimo:consolidator",
+            "name": "Consolidator Daimoi",
+            "state": "deployed",
+            "mode": mode,
+            "collapsed_file_nodes": collapsed_file_nodes,
+            "collapsed_edges": collapsed_edges,
+            "clusters": len(cluster_nodes),
+            "at_iso": now_iso,
+        }
+        guard["active"] = True
+        guard["action"] = {
+            "kind": "daimoi.consolidation.deployed",
+            "reason": "growth_pressure_high",
+            "collapsed_file_nodes": collapsed_file_nodes,
+            "collapsed_edges": collapsed_edges,
+            "clusters": len(cluster_nodes),
+        }
+        guard["daimoi"] = [deployment_row]
+        guard["events"] = [
+            _event(
+                "simulation.growth.pressure",
+                "ok",
+                "growth_pressure_high",
+                {
+                    "mode": mode,
+                    "blend": round(blend, 4),
+                    "file_ratio": round(file_ratio, 4),
+                    "edge_ratio": round(edge_ratio, 4),
+                },
+            ),
+            _event(
+                "daimoi.consolidation.deployed",
+                "ok",
+                "growth_pressure_high",
+                {
+                    "mode": mode,
+                    "collapsed_file_nodes": collapsed_file_nodes,
+                    "collapsed_edges": collapsed_edges,
+                    "clusters": len(cluster_nodes),
+                    "protected_recent_paths": len(recent_paths),
+                },
+            ),
+        ]
+        return updated_graph, guard
+    except Exception as exc:
+        guard["mode"] = "watch"
+        guard["events"] = [
+            _event(
+                "daimoi.consolidation.failed",
+                "blocked",
+                "fail_safe_noop",
+                {
+                    "error": exc.__class__.__name__,
+                },
+            )
+        ]
+        return file_graph, guard
+
+
+def _project_file_graph_for_simulation(
+    *,
+    file_graph: dict[str, Any] | None,
+    influence_snapshot: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if not isinstance(file_graph, dict):
+        return file_graph, None
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    def _event(
+        kind: str, status: str, reason: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        return {
+            "record": SIMULATION_GROWTH_EVENT_RECORD,
+            "schema_version": SIMULATION_GROWTH_EVENT_SCHEMA_VERSION,
+            "kind": kind,
+            "status": status,
+            "reason": reason,
+            "ts": now_iso,
+            "payload": payload,
+        }
+
+    try:
+        file_nodes = [
+            dict(row)
+            for row in file_graph.get("file_nodes", [])
+            if isinstance(row, dict)
+        ]
+        field_nodes = [
+            dict(row)
+            for row in file_graph.get("field_nodes", [])
+            if isinstance(row, dict)
+        ]
+        tag_nodes = [
+            dict(row)
+            for row in file_graph.get("tag_nodes", [])
+            if isinstance(row, dict)
+        ]
+        graph_nodes = [
+            dict(row) for row in file_graph.get("nodes", []) if isinstance(row, dict)
+        ]
+        if not graph_nodes:
+            graph_nodes = [*field_nodes, *tag_nodes, *file_nodes]
+
+        node_by_id: dict[str, dict[str, Any]] = {}
+        for node in graph_nodes:
+            node_id = str(node.get("id", "")).strip()
+            if node_id and node_id not in node_by_id:
+                node_by_id[node_id] = node
+
+        raw_edges = file_graph.get("edges", [])
+        if not isinstance(raw_edges, list):
+            raw_edges = []
+
+        edge_rows: list[dict[str, Any]] = []
+        for index, edge in enumerate(raw_edges):
+            if not isinstance(edge, dict):
+                continue
+            source_id = str(edge.get("source", "")).strip()
+            target_id = str(edge.get("target", "")).strip()
+            if not source_id or not target_id or source_id == target_id:
+                continue
+            if source_id not in node_by_id or target_id not in node_by_id:
+                continue
+            edge_rows.append(
+                {
+                    "id": str(
+                        edge.get(
+                            "id",
+                            "edge:"
+                            + sha1(
+                                f"{source_id}|{target_id}|{index}".encode("utf-8")
+                            ).hexdigest()[:16],
+                        )
+                    ),
+                    "source": source_id,
+                    "target": target_id,
+                    "field": str(edge.get("field", "")).strip(),
+                    "kind": str(edge.get("kind", "relates")).strip().lower()
+                    or "relates",
+                    "weight": round(
+                        _clamp01(_safe_float(edge.get("weight", 0.22), 0.22)), 4
+                    ),
+                }
+            )
+
+        edge_count_before = len(edge_rows)
+        file_count_before = len(file_nodes)
+        if edge_count_before <= 0:
+            projection_payload = {
+                "record": SIMULATION_FILE_GRAPH_PROJECTION_RECORD,
+                "schema_version": SIMULATION_FILE_GRAPH_PROJECTION_SCHEMA_VERSION,
+                "generated_at": now_iso,
+                "mode": "hub-overflow",
+                "active": False,
+                "reason": "no_edges",
+                "limits": {
+                    "edge_threshold": int(
+                        SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD
+                    ),
+                },
+                "before": {
+                    "file_nodes": int(file_count_before),
+                    "edges": int(edge_count_before),
+                },
+                "after": {
+                    "file_nodes": int(file_count_before),
+                    "edges": int(edge_count_before),
+                },
+                "collapsed_edges": 0,
+                "overflow_nodes": 0,
+                "overflow_edges": 0,
+                "group_count": 0,
+                "groups": [],
+            }
+            updated_graph = dict(file_graph)
+            updated_graph["projection"] = projection_payload
+            return updated_graph, None
+
+        if edge_count_before < SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD:
+            projection_payload = {
+                "record": SIMULATION_FILE_GRAPH_PROJECTION_RECORD,
+                "schema_version": SIMULATION_FILE_GRAPH_PROJECTION_SCHEMA_VERSION,
+                "generated_at": now_iso,
+                "mode": "hub-overflow",
+                "active": False,
+                "reason": "below_threshold",
+                "limits": {
+                    "edge_threshold": int(
+                        SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD
+                    ),
+                },
+                "before": {
+                    "file_nodes": int(file_count_before),
+                    "edges": int(edge_count_before),
+                },
+                "after": {
+                    "file_nodes": int(file_count_before),
+                    "edges": int(edge_count_before),
+                },
+                "collapsed_edges": 0,
+                "overflow_nodes": 0,
+                "overflow_edges": 0,
+                "group_count": 0,
+                "groups": [],
+            }
+            updated_graph = dict(file_graph)
+            updated_graph["projection"] = projection_payload
+            return updated_graph, None
+
+        recent_paths = {
+            _normalize_path_for_file_id(str(path))
+            for path in (
+                influence_snapshot.get("recent_file_paths", [])
+                if isinstance(influence_snapshot, dict)
+                else []
+            )
+            if _normalize_path_for_file_id(str(path))
+        }
+
+        kind_bonus = {
+            "spawns_presence": 1.24,
+            "organized_by_presence": 1.08,
+            "categorizes": 0.94,
+            "labeled_as": 0.66,
+            "relates_tag": 0.42,
+        }
+
+        target_degree: dict[str, int] = defaultdict(int)
+        for row in edge_rows:
+            target_degree[str(row.get("target", ""))] += 1
+
+        scored_edges: list[dict[str, Any]] = []
+        for row in edge_rows:
+            source_id = str(row.get("source", "")).strip()
+            target_id = str(row.get("target", "")).strip()
+            source_node = node_by_id.get(source_id, {})
+            target_node = node_by_id.get(target_id, {})
+            source_score, source_recent_hit, _ = _file_node_usage_score(
+                source_node,
+                recent_paths=recent_paths,
+            )
+            target_importance = _clamp01(
+                _safe_float(target_node.get("importance", 0.24), 0.24)
+            )
+            weight = _clamp01(_safe_float(row.get("weight", 0.22), 0.22))
+            kind = str(row.get("kind", "relates")).strip().lower() or "relates"
+            hub_penalty = 1.0 / (
+                1.0
+                + (
+                    max(0, target_degree.get(target_id, 1) - 1)
+                    * (0.018 if kind == "categorizes" else 0.006)
+                )
+            )
+            score = (
+                (weight * 1.46)
+                + float(kind_bonus.get(kind, 0.58))
+                + (source_score * 0.64)
+                + (target_importance * 0.28)
+                + (0.22 if source_recent_hit else 0.0)
+            ) * hub_penalty
+            scored_edges.append(
+                {
+                    "row": row,
+                    "score": round(score, 8),
+                    "source_node": source_node,
+                }
+            )
+
+        scored_edges.sort(
+            key=lambda item: (
+                -_safe_float(item.get("score", 0.0), 0.0),
+                str(item.get("row", {}).get("kind", "")),
+                str(item.get("row", {}).get("source", "")),
+                str(item.get("row", {}).get("target", "")),
+                str(item.get("row", {}).get("id", "")),
+            )
+        )
+
+        file_count = max(1, file_count_before)
+        global_edge_cap = max(
+            SIMULATION_FILE_GRAPH_PROJECTION_EDGE_CAP_MIN,
+            min(
+                SIMULATION_FILE_GRAPH_PROJECTION_EDGE_CAP_MAX,
+                int(
+                    max(64.0, _safe_float(file_count, 64.0))
+                    * SIMULATION_FILE_GRAPH_PROJECTION_EDGE_CAP_FACTOR
+                ),
+            ),
+        )
+        per_source_cap = 4
+        per_source_categorizes_cap = 1
+        per_field_hub_cap = max(26, min(92, int(file_count * 0.13)))
+        per_concept_hub_cap = max(24, min(120, int(file_count * 0.16)))
+        tag_member_cap = max(46, min(240, int(file_count * 0.5)))
+        tag_pair_cap = max(18, min(110, int(file_count * 0.24)))
+        overflow_group_limit = max(6, min(48, int(file_count * 0.14)))
+
+        kept_edges: list[dict[str, Any]] = []
+        source_counts: dict[str, int] = defaultdict(int)
+        source_categorize_counts: dict[str, int] = defaultdict(int)
+        field_target_counts: dict[str, int] = defaultdict(int)
+        concept_target_counts: dict[str, int] = defaultdict(int)
+        picked_tag_member_edges = 0
+        picked_tag_pair_edges = 0
+
+        grouped_dropped: dict[str, dict[str, Any]] = {}
+
+        for scored in scored_edges:
+            row = scored.get("row", {}) if isinstance(scored, dict) else {}
+            if not isinstance(row, dict):
+                continue
+            source_id = str(row.get("source", "")).strip()
+            target_id = str(row.get("target", "")).strip()
+            kind = str(row.get("kind", "")).strip().lower() or "relates"
+            field_id = str(row.get("field", "")).strip()
+            source_node = (
+                scored.get("source_node", {})
+                if isinstance(scored.get("source_node", {}), dict)
+                else {}
+            )
+
+            drop_reason = ""
+            if len(kept_edges) >= global_edge_cap:
+                drop_reason = "global_cap"
+            elif source_counts[source_id] >= per_source_cap:
+                drop_reason = "per_source_cap"
+            elif kind == "categorizes":
+                if source_categorize_counts[source_id] >= per_source_categorizes_cap:
+                    drop_reason = "per_source_categorizes_cap"
+                elif (
+                    target_id.startswith("field:")
+                    and field_target_counts[target_id] >= per_field_hub_cap
+                ):
+                    drop_reason = "field_hub_cap"
+            elif (
+                kind == "organized_by_presence"
+                and target_id.startswith("presence:concept:")
+                and concept_target_counts[target_id] >= per_concept_hub_cap
+            ):
+                drop_reason = "concept_hub_cap"
+            elif kind == "labeled_as" and picked_tag_member_edges >= tag_member_cap:
+                drop_reason = "tag_member_cap"
+            elif kind == "relates_tag" and picked_tag_pair_edges >= tag_pair_cap:
+                drop_reason = "tag_pair_cap"
+
+            if not drop_reason:
+                kept_edges.append(row)
+                source_counts[source_id] += 1
+                if kind == "categorizes":
+                    source_categorize_counts[source_id] += 1
+                    if target_id.startswith("field:"):
+                        field_target_counts[target_id] += 1
+                if kind == "organized_by_presence" and target_id.startswith(
+                    "presence:concept:"
+                ):
+                    concept_target_counts[target_id] += 1
+                if kind == "labeled_as":
+                    picked_tag_member_edges += 1
+                if kind == "relates_tag":
+                    picked_tag_pair_edges += 1
+                continue
+
+            source_field = str(source_node.get("dominant_field", "f3")).strip() or "f3"
+            if kind in {"categorizes", "organized_by_presence", "spawns_presence"}:
+                bucket_key = f"{kind}|{target_id}|{field_id or source_field}"
+            elif kind in {"labeled_as", "relates_tag"}:
+                bucket_key = f"{kind}|{source_field}|{field_id or source_field}"
+            else:
+                bucket_key = f"{kind}|{target_id}|{field_id or source_field}"
+
+            group = grouped_dropped.setdefault(
+                bucket_key,
+                {
+                    "id": "projection-group:"
+                    + sha1(bucket_key.encode("utf-8")).hexdigest()[:14],
+                    "kind": kind,
+                    "target": (
+                        target_id
+                        if kind
+                        in {"categorizes", "organized_by_presence", "spawns_presence"}
+                        else ""
+                    ),
+                    "field": field_id or source_field,
+                    "member_edge_ids": [],
+                    "member_source_ids": set(),
+                    "member_target_ids": set(),
+                    "weight_sum": 0.0,
+                    "weight_count": 0,
+                    "x_weighted": 0.0,
+                    "y_weighted": 0.0,
+                    "hue_weighted": 0.0,
+                    "weight_total": 0.0,
+                    "reason_counts": defaultdict(int),
+                },
+            )
+            group["member_edge_ids"].append(str(row.get("id", "")))
+            group["member_source_ids"].add(source_id)
+            group["member_target_ids"].add(target_id)
+            group["weight_sum"] += _safe_float(row.get("weight", 0.0), 0.0)
+            group["weight_count"] += 1
+            group["reason_counts"][drop_reason] += 1
+
+            source_weight = max(
+                0.08,
+                _clamp01(_safe_float(source_node.get("importance", 0.24), 0.24)),
+            )
+            source_x = _clamp01(_safe_float(source_node.get("x", 0.5), 0.5))
+            source_y = _clamp01(_safe_float(source_node.get("y", 0.5), 0.5))
+            source_hue = _safe_float(source_node.get("hue", 200), 200.0)
+            group["x_weighted"] += source_x * source_weight
+            group["y_weighted"] += source_y * source_weight
+            group["hue_weighted"] += source_hue * source_weight
+            group["weight_total"] += source_weight
+
+        collapsed_edges = max(0, edge_count_before - len(kept_edges))
+        if collapsed_edges <= 0:
+            projection_payload = {
+                "record": SIMULATION_FILE_GRAPH_PROJECTION_RECORD,
+                "schema_version": SIMULATION_FILE_GRAPH_PROJECTION_SCHEMA_VERSION,
+                "generated_at": now_iso,
+                "mode": "hub-overflow",
+                "active": False,
+                "reason": "within_projection_limits",
+                "limits": {
+                    "edge_threshold": int(
+                        SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD
+                    ),
+                    "edge_cap": int(global_edge_cap),
+                },
+                "before": {
+                    "file_nodes": int(file_count_before),
+                    "edges": int(edge_count_before),
+                },
+                "after": {
+                    "file_nodes": int(file_count_before),
+                    "edges": int(edge_count_before),
+                },
+                "collapsed_edges": 0,
+                "overflow_nodes": 0,
+                "overflow_edges": 0,
+                "group_count": 0,
+                "groups": [],
+            }
+            updated_graph = dict(file_graph)
+            updated_graph["projection"] = projection_payload
+            return updated_graph, None
+
+        finalized_groups: list[dict[str, Any]] = []
+        grouped_rows = sorted(
+            grouped_dropped.values(),
+            key=lambda item: (
+                -len(item.get("member_edge_ids", [])),
+                str(item.get("id", "")),
+            ),
+        )
+        for group in grouped_rows:
+            member_edge_ids = sorted(
+                {
+                    str(edge_id).strip()
+                    for edge_id in group.get("member_edge_ids", [])
+                    if str(edge_id).strip()
+                }
+            )
+            member_source_ids = sorted(
+                {
+                    str(node_id).strip()
+                    for node_id in group.get("member_source_ids", set())
+                    if str(node_id).strip()
+                }
+            )
+            member_target_ids = sorted(
+                {
+                    str(node_id).strip()
+                    for node_id in group.get("member_target_ids", set())
+                    if str(node_id).strip()
+                }
+            )
+            if not member_edge_ids:
+                continue
+            digest_input = "\n".join(member_edge_ids)
+            reason_counts = group.get("reason_counts", {})
+            reason_rows = {
+                str(key): int(value)
+                for key, value in sorted(
+                    (
+                        (str(k), int(v))
+                        for k, v in reason_counts.items()
+                        if str(k).strip()
+                    ),
+                    key=lambda row: row[0],
+                )
+            }
+            finalized_groups.append(
+                {
+                    "id": str(group.get("id", "")),
+                    "kind": str(group.get("kind", "relates")),
+                    "target": str(group.get("target", "")),
+                    "field": str(group.get("field", "")),
+                    "member_edge_count": len(member_edge_ids),
+                    "member_source_count": len(member_source_ids),
+                    "member_target_count": len(member_target_ids),
+                    "member_edge_ids": member_edge_ids,
+                    "member_source_ids": member_source_ids,
+                    "member_target_ids": member_target_ids,
+                    "member_edge_digest": sha1(
+                        digest_input.encode("utf-8")
+                    ).hexdigest(),
+                    "reasons": reason_rows,
+                    "weight_sum": _safe_float(group.get("weight_sum", 0.0), 0.0),
+                    "weight_count": max(1, _safe_int(group.get("weight_count", 1), 1)),
+                    "x_weighted": _safe_float(group.get("x_weighted", 0.0), 0.0),
+                    "y_weighted": _safe_float(group.get("y_weighted", 0.0), 0.0),
+                    "hue_weighted": _safe_float(group.get("hue_weighted", 0.0), 0.0),
+                    "weight_total": max(
+                        1e-6,
+                        _safe_float(group.get("weight_total", 0.0), 0.0),
+                    ),
+                }
+            )
+
+        visual_groups = [
+            group
+            for group in finalized_groups
+            if (
+                str(group.get("kind", "")) == "categorizes"
+                and str(group.get("target", "")).startswith("field:")
+            )
+            or (
+                str(group.get("kind", "")) == "organized_by_presence"
+                and str(group.get("target", "")).startswith("presence:concept:")
+            )
+        ]
+        visual_groups.sort(
+            key=lambda item: (
+                -int(item.get("member_edge_count", 0)),
+                str(item.get("id", "")),
+            )
+        )
+        visual_groups = visual_groups[:overflow_group_limit]
+        visual_group_ids = {
+            str(group.get("id", "")).strip()
+            for group in visual_groups
+            if str(group.get("id", "")).strip()
+        }
+
+        overflow_nodes: list[dict[str, Any]] = []
+        overflow_edges: list[dict[str, Any]] = []
+        for index, group in enumerate(visual_groups):
+            group_id = str(group.get("id", "")).strip()
+            target_id = str(group.get("target", "")).strip()
+            if not group_id or not target_id:
+                continue
+            target_node = node_by_id.get(target_id)
+            if not isinstance(target_node, dict):
+                continue
+
+            group_weight_total = max(
+                1e-6, _safe_float(group.get("weight_total", 0.0), 0.0)
+            )
+            centroid_x = _clamp01(
+                _safe_float(group.get("x_weighted", 0.0), 0.0) / group_weight_total
+            )
+            centroid_y = _clamp01(
+                _safe_float(group.get("y_weighted", 0.0), 0.0) / group_weight_total
+            )
+            hue_fallback = _safe_float(target_node.get("hue", 200), 200.0)
+            hue_weighted = _safe_float(
+                group.get("hue_weighted", hue_fallback), hue_fallback
+            )
+            hue = (
+                int(
+                    round(
+                        hue_weighted / group_weight_total
+                        if group_weight_total > 1e-6
+                        else hue_fallback
+                    )
+                )
+                % 360
+            )
+
+            field_id = str(group.get("field", "")).strip()
+            if not field_id:
+                field_id = str(target_node.get("field", "")).strip() or "f3"
+
+            dominant_presence = ""
+            if target_id.startswith("field:"):
+                dominant_presence = target_id.split("field:", 1)[1]
+            elif target_id.startswith("presence:"):
+                dominant_presence = target_id.split("presence:", 1)[1]
+            if not dominant_presence:
+                dominant_presence = (
+                    str(target_node.get("dominant_presence", "")).strip()
+                    or str(target_node.get("node_id", "")).strip()
+                    or "anchor_registry"
+                )
+
+            target_label = (
+                str(target_node.get("label", "")).strip()
+                or str(target_node.get("name", "")).strip()
+                or target_id
+            )
+            kind = str(group.get("kind", "categorizes")).strip() or "categorizes"
+            overflow_label = f"Overflow {kind} -> {target_label}"
+            overflow_node_id = (
+                "file:projection:"
+                + sha1(f"{group_id}|node|{index}".encode("utf-8")).hexdigest()[:14]
+            )
+            member_sources = group.get("member_source_ids", [])
+            member_source_count = (
+                len(member_sources) if isinstance(member_sources, list) else 0
+            )
+            overflow_importance = _clamp01(
+                0.2
+                + min(
+                    0.62,
+                    math.log1p(max(1, member_source_count)) / 5.8,
+                )
+            )
+
+            overflow_nodes.append(
+                {
+                    "id": overflow_node_id,
+                    "node_id": overflow_node_id,
+                    "node_type": "file",
+                    "name": overflow_label,
+                    "label": overflow_label,
+                    "kind": "projection_overflow",
+                    "x": round(centroid_x, 4),
+                    "y": round(centroid_y, 4),
+                    "hue": int(hue),
+                    "importance": round(overflow_importance, 4),
+                    "source_rel_path": (
+                        "_projection/" + sha1(group_id.encode("utf-8")).hexdigest()[:18]
+                    ),
+                    "archive_kind": "projection",
+                    "dominant_field": field_id,
+                    "dominant_presence": dominant_presence,
+                    "field_scores": {field_id: 1.0},
+                    "summary": "Simulation projection bucket preserving grouped edge lineage.",
+                    "consolidated": True,
+                    "consolidated_count": member_source_count,
+                    "projection_overflow": True,
+                    "projection_group_id": group_id,
+                }
+            )
+
+            overflow_edges.append(
+                {
+                    "id": "edge:projection:"
+                    + sha1(
+                        f"{overflow_node_id}|{target_id}|{kind}".encode("utf-8")
+                    ).hexdigest()[:16],
+                    "source": overflow_node_id,
+                    "target": target_id,
+                    "field": field_id,
+                    "weight": round(
+                        _clamp01(
+                            _safe_float(group.get("weight_sum", 0.0), 0.0)
+                            / max(1.0, _safe_float(group.get("weight_count", 1), 1.0))
+                        ),
+                        4,
+                    ),
+                    "kind": kind,
+                    "projection_overflow": True,
+                    "projection_group_id": group_id,
+                    "projection_member_edge_count": int(
+                        group.get("member_edge_count", 0)
+                    ),
+                    "projection_member_edge_digest": str(
+                        group.get("member_edge_digest", "")
+                    ),
+                }
+            )
+
+        next_file_nodes = file_nodes + overflow_nodes
+        non_file_nodes = [
+            dict(node)
+            for node in graph_nodes
+            if str(node.get("node_type", "")).strip().lower() != "file"
+        ]
+        next_edges = kept_edges + overflow_edges
+
+        projection_groups = []
+        for group in finalized_groups:
+            group_row = dict(group)
+            group_row["surface_visible"] = (
+                str(group.get("id", "")).strip() in visual_group_ids
+            )
+            projection_groups.append(group_row)
+
+        projection_payload = {
+            "record": SIMULATION_FILE_GRAPH_PROJECTION_RECORD,
+            "schema_version": SIMULATION_FILE_GRAPH_PROJECTION_SCHEMA_VERSION,
+            "generated_at": now_iso,
+            "mode": "hub-overflow",
+            "active": True,
+            "reason": "edge_budget",
+            "limits": {
+                "edge_threshold": int(SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD),
+                "edge_cap": int(global_edge_cap),
+                "per_source_cap": int(per_source_cap),
+                "per_source_categorizes_cap": int(per_source_categorizes_cap),
+                "field_hub_cap": int(per_field_hub_cap),
+                "concept_hub_cap": int(per_concept_hub_cap),
+                "tag_member_cap": int(tag_member_cap),
+                "tag_pair_cap": int(tag_pair_cap),
+                "overflow_group_cap": int(overflow_group_limit),
+            },
+            "before": {
+                "file_nodes": int(file_count_before),
+                "edges": int(edge_count_before),
+            },
+            "after": {
+                "file_nodes": int(len(next_file_nodes)),
+                "edges": int(len(next_edges)),
+            },
+            "collapsed_edges": int(collapsed_edges),
+            "overflow_nodes": int(len(overflow_nodes)),
+            "overflow_edges": int(len(overflow_edges)),
+            "group_count": int(len(projection_groups)),
+            "groups": projection_groups,
+        }
+
+        updated_graph = dict(file_graph)
+        updated_graph["file_nodes"] = next_file_nodes
+        updated_graph["nodes"] = non_file_nodes + next_file_nodes
+        updated_graph["edges"] = next_edges
+        updated_graph["projection"] = projection_payload
+
+        graph_stats = (
+            dict(file_graph.get("stats", {}))
+            if isinstance(file_graph.get("stats", {}), dict)
+            else {}
+        )
+        graph_stats["file_count"] = len(next_file_nodes)
+        graph_stats["edge_count"] = len(next_edges)
+        graph_stats["projection_active"] = True
+        graph_stats["projection_collapsed_edge_count"] = int(collapsed_edges)
+        graph_stats["projection_overflow_node_count"] = len(overflow_nodes)
+        graph_stats["projection_overflow_edge_count"] = len(overflow_edges)
+        graph_stats["projection_group_count"] = len(projection_groups)
+        updated_graph["stats"] = graph_stats
+
+        return (
+            updated_graph,
+            _event(
+                "simulation.file_graph.projection.applied",
+                "ok",
+                "edge_budget",
+                {
+                    "edge_count_before": int(edge_count_before),
+                    "edge_count_after": int(len(next_edges)),
+                    "collapsed_edges": int(collapsed_edges),
+                    "overflow_nodes": int(len(overflow_nodes)),
+                    "overflow_edges": int(len(overflow_edges)),
+                    "group_count": int(len(projection_groups)),
+                    "edge_cap": int(global_edge_cap),
+                },
+            ),
+        )
+    except Exception as exc:
+        failed_payload = {
+            "record": SIMULATION_FILE_GRAPH_PROJECTION_RECORD,
+            "schema_version": SIMULATION_FILE_GRAPH_PROJECTION_SCHEMA_VERSION,
+            "generated_at": now_iso,
+            "mode": "hub-overflow",
+            "active": False,
+            "reason": "fail_safe_noop",
+            "error": exc.__class__.__name__,
+            "limits": {
+                "edge_threshold": int(SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD),
+            },
+            "before": {
+                "file_nodes": len(
+                    [
+                        row
+                        for row in file_graph.get("file_nodes", [])
+                        if isinstance(row, dict)
+                    ]
+                ),
+                "edges": len(
+                    [
+                        row
+                        for row in file_graph.get("edges", [])
+                        if isinstance(row, dict)
+                    ]
+                ),
+            },
+            "after": {
+                "file_nodes": len(
+                    [
+                        row
+                        for row in file_graph.get("file_nodes", [])
+                        if isinstance(row, dict)
+                    ]
+                ),
+                "edges": len(
+                    [
+                        row
+                        for row in file_graph.get("edges", [])
+                        if isinstance(row, dict)
+                    ]
+                ),
+            },
+            "collapsed_edges": 0,
+            "overflow_nodes": 0,
+            "overflow_edges": 0,
+            "group_count": 0,
+            "groups": [],
+        }
+        updated_graph = dict(file_graph)
+        updated_graph["projection"] = failed_payload
+        return (
+            updated_graph,
+            _event(
+                "simulation.file_graph.projection.failed",
+                "blocked",
+                "fail_safe_noop",
+                {
+                    "error": exc.__class__.__name__,
+                },
+            ),
+        )
 
 
 def _stable_entity_id(prefix: str, seed: str, width: int = 20) -> str:
@@ -2520,6 +4225,547 @@ def _json_deep_clone(payload: dict[str, Any]) -> dict[str, Any]:
     return json.loads(json.dumps(payload, ensure_ascii=False))
 
 
+def _bounded_text(value: Any, *, limit: int) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return text[:limit]
+
+
+def _compact_embed_layer_points(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    compact_rows: list[dict[str, Any]] = []
+    for row in value[:SIMULATION_FILE_GRAPH_EMBED_LAYER_POINT_CAP]:
+        if not isinstance(row, dict):
+            continue
+        embed_ids_raw = row.get("embed_ids", [])
+        embed_ids = (
+            [
+                str(embed_id).strip()
+                for embed_id in embed_ids_raw[:SIMULATION_FILE_GRAPH_EMBED_IDS_CAP]
+                if str(embed_id).strip()
+            ]
+            if isinstance(embed_ids_raw, list)
+            else []
+        )
+        compact_rows.append(
+            {
+                "id": str(row.get("id", "")).strip(),
+                "key": str(row.get("key", "")).strip(),
+                "x": round(_clamp01(_safe_float(row.get("x", 0.5), 0.5)), 5),
+                "y": round(_clamp01(_safe_float(row.get("y", 0.5), 0.5)), 5),
+                "hue": round(_safe_float(row.get("hue", 210.0), 210.0), 3),
+                "active": bool(row.get("active", True)),
+                "embed_ids": embed_ids,
+            }
+        )
+    return compact_rows
+
+
+def _compact_file_graph_node(node: dict[str, Any]) -> dict[str, Any]:
+    compact: dict[str, Any] = {
+        key: node[key] for key in SIMULATION_FILE_GRAPH_NODE_FIELDS if key in node
+    }
+    compact["x"] = round(_clamp01(_safe_float(compact.get("x", 0.5), 0.5)), 6)
+    compact["y"] = round(_clamp01(_safe_float(compact.get("y", 0.5), 0.5)), 6)
+    compact["hue"] = int(round(_safe_float(compact.get("hue", 200.0), 200.0))) % 360
+    compact["importance"] = round(
+        _clamp01(_safe_float(compact.get("importance", 0.24), 0.24)),
+        6,
+    )
+
+    compact["summary"] = _bounded_text(
+        compact.get("summary", ""),
+        limit=SIMULATION_FILE_GRAPH_SUMMARY_CHARS,
+    )
+    compact["text_excerpt"] = _bounded_text(
+        compact.get("text_excerpt", ""),
+        limit=SIMULATION_FILE_GRAPH_EXCERPT_CHARS,
+    )
+
+    tags_raw = compact.get("tags", [])
+    compact["tags"] = (
+        [str(tag).strip() for tag in tags_raw[:16] if str(tag).strip()]
+        if isinstance(tags_raw, list)
+        else []
+    )
+    labels_raw = compact.get("labels", [])
+    compact["labels"] = (
+        [str(label).strip() for label in labels_raw[:16] if str(label).strip()]
+        if isinstance(labels_raw, list)
+        else []
+    )
+
+    field_scores_raw = compact.get("field_scores", {})
+    if isinstance(field_scores_raw, dict):
+        compact["field_scores"] = {
+            str(key).strip(): round(_clamp01(_safe_float(value, 0.0)), 6)
+            for key, value in list(field_scores_raw.items())[:24]
+            if str(key).strip()
+        }
+    else:
+        compact["field_scores"] = {}
+
+    embedding_links_raw = compact.get("embedding_links", [])
+    compact["embedding_links"] = (
+        [
+            str(link).strip()
+            for link in embedding_links_raw[:SIMULATION_FILE_GRAPH_EMBED_LINK_CAP]
+            if str(link).strip()
+        ]
+        if isinstance(embedding_links_raw, list)
+        else []
+    )
+
+    compact["embed_layer_points"] = _compact_embed_layer_points(
+        compact.get("embed_layer_points", [])
+    )
+    compact["embed_layer_count"] = int(
+        _safe_int(compact.get("embed_layer_count", 0), 0)
+    )
+    return compact
+
+
+def _compact_file_graph_nodes(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [_compact_file_graph_node(node) for node in value if isinstance(node, dict)]
+
+
+def _compact_file_graph_render_node(node: dict[str, Any]) -> dict[str, Any]:
+    compact = {
+        key: node[key]
+        for key in SIMULATION_FILE_GRAPH_RENDER_NODE_FIELDS
+        if key in node
+    }
+    compact["x"] = round(_clamp01(_safe_float(compact.get("x", 0.5), 0.5)), 6)
+    compact["y"] = round(_clamp01(_safe_float(compact.get("y", 0.5), 0.5)), 6)
+    compact["hue"] = int(round(_safe_float(compact.get("hue", 200.0), 200.0))) % 360
+    compact["importance"] = round(
+        _clamp01(_safe_float(compact.get("importance", 0.24), 0.24)),
+        6,
+    )
+    compact["embed_layer_count"] = int(
+        _safe_int(compact.get("embed_layer_count", 0), 0)
+    )
+    return compact
+
+
+def _compact_file_graph_for_simulation(file_graph: dict[str, Any]) -> dict[str, Any]:
+    compact_file_nodes = _compact_file_graph_nodes(file_graph.get("file_nodes", []))
+    compact_field_nodes = _compact_file_graph_nodes(file_graph.get("field_nodes", []))
+    compact_tag_nodes = _compact_file_graph_nodes(file_graph.get("tag_nodes", []))
+    file_node_ids = {
+        str(node.get("id", "")).strip()
+        for node in compact_file_nodes
+        if isinstance(node, dict) and str(node.get("id", "")).strip()
+    }
+
+    raw_nodes = file_graph.get("nodes", [])
+    compact_non_file_nodes: list[dict[str, Any]] = []
+    non_file_seen_ids: set[str] = set()
+    for node in raw_nodes:
+        if not isinstance(node, dict):
+            continue
+        node_type = str(node.get("node_type", "")).strip().lower()
+        node_id = str(node.get("id", "")).strip()
+        if node_type == "file":
+            continue
+        if not node_type and node_id and node_id in file_node_ids:
+            continue
+        compact_node = _compact_file_graph_render_node(node)
+        compact_node_id = str(compact_node.get("id", "")).strip()
+        if compact_node_id and compact_node_id in non_file_seen_ids:
+            continue
+        if compact_node_id:
+            non_file_seen_ids.add(compact_node_id)
+        compact_non_file_nodes.append(compact_node)
+
+    if not compact_non_file_nodes:
+        for node in [*compact_field_nodes, *compact_tag_nodes]:
+            compact_node = _compact_file_graph_render_node(node)
+            compact_node_id = str(compact_node.get("id", "")).strip()
+            if compact_node_id and compact_node_id in non_file_seen_ids:
+                continue
+            if compact_node_id:
+                non_file_seen_ids.add(compact_node_id)
+            compact_non_file_nodes.append(compact_node)
+
+    compact_file_nodes_for_render = [
+        _compact_file_graph_render_node(node) for node in compact_file_nodes
+    ]
+    compact_nodes = [*compact_non_file_nodes, *compact_file_nodes_for_render]
+
+    edges_raw = file_graph.get("edges", [])
+    compact_edges = [
+        {
+            "id": str(edge.get("id", "")).strip(),
+            "source": str(edge.get("source", "")).strip(),
+            "target": str(edge.get("target", "")).strip(),
+            "field": str(edge.get("field", "")).strip(),
+            "weight": round(_clamp01(_safe_float(edge.get("weight", 0.42), 0.42)), 6),
+            "kind": str(edge.get("kind", "relates")).strip().lower() or "relates",
+        }
+        for edge in edges_raw
+        if isinstance(edge, dict)
+    ]
+    dynamic_edge_cap = max(
+        384,
+        min(
+            SIMULATION_FILE_GRAPH_EDGE_RESPONSE_CAP,
+            max(
+                384,
+                int(
+                    round(
+                        max(1, len(compact_file_nodes))
+                        * SIMULATION_FILE_GRAPH_EDGE_RESPONSE_FACTOR
+                    )
+                ),
+            ),
+        ),
+    )
+    if len(compact_edges) > dynamic_edge_cap:
+        compact_edges = compact_edges[:dynamic_edge_cap]
+
+    compact_stats_raw = file_graph.get("stats", {})
+    compact_stats = (
+        dict(compact_stats_raw) if isinstance(compact_stats_raw, dict) else {}
+    )
+    compact_stats["file_count"] = int(len(compact_file_nodes))
+    compact_stats["edge_count"] = int(len(compact_edges))
+
+    return {
+        "record": str(file_graph.get("record", ETA_MU_FILE_GRAPH_RECORD)),
+        "generated_at": str(
+            file_graph.get("generated_at", datetime.now(timezone.utc).isoformat())
+        ),
+        "inbox": (
+            dict(file_graph.get("inbox", {}))
+            if isinstance(file_graph.get("inbox", {}), dict)
+            else {}
+        ),
+        "embed_layers": [
+            dict(row)
+            for row in file_graph.get("embed_layers", [])
+            if isinstance(row, dict)
+        ],
+        "organizer_presence": (
+            dict(file_graph.get("organizer_presence", {}))
+            if isinstance(file_graph.get("organizer_presence", {}), dict)
+            else {}
+        ),
+        "concept_presences": [
+            dict(row)
+            for row in file_graph.get("concept_presences", [])
+            if isinstance(row, dict)
+        ],
+        "field_nodes": compact_field_nodes,
+        "tag_nodes": compact_tag_nodes,
+        "file_nodes": compact_file_nodes,
+        "nodes": compact_nodes,
+        "edges": compact_edges,
+        "stats": compact_stats,
+    }
+
+
+def _file_graph_layout_cache_key(file_graph: dict[str, Any]) -> str:
+    file_nodes = file_graph.get("file_nodes", [])
+    edges = file_graph.get("edges", [])
+    file_count = len(file_nodes) if isinstance(file_nodes, list) else 0
+    edge_count = len(edges) if isinstance(edges, list) else 0
+
+    digest = hashlib.sha1()
+    if isinstance(file_nodes, list):
+        for node in file_nodes:
+            if not isinstance(node, dict):
+                continue
+            node_id = str(node.get("id", "")).strip()
+            layer_count = _safe_int(node.get("embed_layer_count", 0), 0)
+            has_collection = (
+                "1" if str(node.get("vecstore_collection", "")).strip() else "0"
+            )
+            embedding_links = node.get("embedding_links", [])
+            link_count = (
+                len(embedding_links) if isinstance(embedding_links, list) else 0
+            )
+            importance = round(
+                _clamp01(_safe_float(node.get("importance", 0.0), 0.0)), 4
+            )
+            usage_path = _file_node_usage_path(node)
+            dominant_field = str(node.get("dominant_field", "")).strip()
+            kind = str(node.get("kind", "")).strip().lower()
+            digest.update(
+                f"{node_id}|{usage_path}|{dominant_field}|{kind}|{layer_count}|{has_collection}|{link_count}|{importance}".encode(
+                    "utf-8"
+                )
+            )
+    if isinstance(edges, list):
+        for edge in edges[:256]:
+            if not isinstance(edge, dict):
+                continue
+            source_id = str(edge.get("source", "")).strip()
+            target_id = str(edge.get("target", "")).strip()
+            kind = str(edge.get("kind", "")).strip().lower()
+            weight = round(_clamp01(_safe_float(edge.get("weight", 0.0), 0.0)), 4)
+            digest.update(f"{source_id}|{target_id}|{kind}|{weight}".encode("utf-8"))
+    return f"{file_count}|{edge_count}|{digest.hexdigest()[:24]}"
+
+
+def _clone_prepared_file_graph(prepared_graph: dict[str, Any]) -> dict[str, Any]:
+    clone = dict(prepared_graph)
+    clone["inbox"] = (
+        dict(prepared_graph.get("inbox", {}))
+        if isinstance(prepared_graph.get("inbox", {}), dict)
+        else {}
+    )
+    clone["stats"] = (
+        dict(prepared_graph.get("stats", {}))
+        if isinstance(prepared_graph.get("stats", {}), dict)
+        else {}
+    )
+    clone["organizer_presence"] = (
+        dict(prepared_graph.get("organizer_presence", {}))
+        if isinstance(prepared_graph.get("organizer_presence", {}), dict)
+        else {}
+    )
+    for key in (
+        "embed_layers",
+        "concept_presences",
+        "field_nodes",
+        "tag_nodes",
+        "file_nodes",
+        "nodes",
+        "edges",
+        "embedding_particles",
+    ):
+        value = prepared_graph.get(key, [])
+        clone[key] = list(value) if isinstance(value, list) else []
+    return clone
+
+
+def _prepare_file_graph_for_simulation(
+    file_graph: dict[str, Any], *, now: float
+) -> tuple[dict[str, Any], list[dict[str, float]]]:
+    cache_key = _file_graph_layout_cache_key(file_graph)
+    now_monotonic = time.monotonic()
+    with _SIMULATION_LAYOUT_CACHE_LOCK:
+        cached_key = str(_SIMULATION_LAYOUT_CACHE.get("key", ""))
+        cache_age = now_monotonic - _safe_float(
+            _SIMULATION_LAYOUT_CACHE.get("prepared_monotonic", 0.0),
+            0.0,
+        )
+        cached_graph_raw = _SIMULATION_LAYOUT_CACHE.get("prepared_graph")
+        cached_points_raw = _SIMULATION_LAYOUT_CACHE.get("embedding_points", [])
+        if (
+            cache_key
+            and cache_key == cached_key
+            and cache_age <= SIMULATION_LAYOUT_CACHE_TTL_SECONDS
+            and isinstance(cached_graph_raw, dict)
+            and isinstance(cached_points_raw, list)
+        ):
+            return _clone_prepared_file_graph(cached_graph_raw), [
+                dict(row) for row in cached_points_raw if isinstance(row, dict)
+            ]
+
+    compact_graph = _compact_file_graph_for_simulation(file_graph)
+
+    embedding_points = _apply_file_graph_document_similarity_layout(
+        compact_graph, now=now
+    )
+    with _SIMULATION_LAYOUT_CACHE_LOCK:
+        _SIMULATION_LAYOUT_CACHE["key"] = cache_key
+        _SIMULATION_LAYOUT_CACHE["prepared_monotonic"] = now_monotonic
+        _SIMULATION_LAYOUT_CACHE["prepared_graph"] = compact_graph
+        _SIMULATION_LAYOUT_CACHE["embedding_points"] = [
+            dict(row) for row in embedding_points if isinstance(row, dict)
+        ]
+    return _clone_prepared_file_graph(compact_graph), [
+        dict(row) for row in embedding_points if isinstance(row, dict)
+    ]
+
+
+def _build_unified_nexus_graph(
+    file_graph: dict[str, Any] | None,
+    crawler_graph: dict[str, Any] | None,
+    *,
+    include_crawler_in_file_nodes: bool,
+) -> dict[str, Any] | None:
+    if not isinstance(file_graph, dict):
+        return file_graph if isinstance(file_graph, dict) else None
+
+    unified = dict(file_graph)
+    field_nodes = [
+        dict(row) for row in file_graph.get("field_nodes", []) if isinstance(row, dict)
+    ]
+    tag_nodes = [
+        dict(row) for row in file_graph.get("tag_nodes", []) if isinstance(row, dict)
+    ]
+    file_nodes = [
+        dict(row) for row in file_graph.get("file_nodes", []) if isinstance(row, dict)
+    ]
+
+    nodes_raw = file_graph.get("nodes", [])
+    if isinstance(nodes_raw, list) and nodes_raw:
+        nodes = [dict(row) for row in nodes_raw if isinstance(row, dict)]
+    else:
+        nodes = [*field_nodes, *tag_nodes, *file_nodes]
+
+    edges = [dict(row) for row in file_graph.get("edges", []) if isinstance(row, dict)]
+    stats = (
+        dict(file_graph.get("stats", {}))
+        if isinstance(file_graph.get("stats", {}), dict)
+        else {}
+    )
+
+    node_id_set: set[str] = {
+        str(row.get("id", "")).strip()
+        for row in nodes
+        if str(row.get("id", "")).strip()
+    }
+    file_node_id_set: set[str] = {
+        str(row.get("id", "")).strip()
+        for row in file_nodes
+        if str(row.get("id", "")).strip()
+    }
+
+    field_target_aliases: dict[str, str] = {}
+    for field_node in field_nodes:
+        field_id = str(field_node.get("id", "")).strip()
+        node_id = str(field_node.get("node_id", "")).strip()
+        source_tokens = [field_id, node_id]
+        for token in source_tokens:
+            if not token:
+                continue
+            presence_id = token
+            if token.startswith("field:"):
+                presence_id = token.split("field:", 1)[1].strip()
+            if presence_id:
+                canonical_field_id = field_id or f"field:{presence_id}"
+                field_target_aliases[f"crawler-field:{presence_id}"] = (
+                    canonical_field_id
+                )
+
+    crawler_rows = (
+        crawler_graph.get("crawler_nodes", [])
+        if isinstance(crawler_graph, dict)
+        and isinstance(crawler_graph.get("crawler_nodes", []), list)
+        else []
+    )
+    merged_crawler_nodes: list[dict[str, Any]] = [
+        dict(row) for row in unified.get("crawler_nodes", []) if isinstance(row, dict)
+    ]
+    merged_crawler_id_set: set[str] = {
+        str(row.get("id", "")).strip()
+        for row in merged_crawler_nodes
+        if str(row.get("id", "")).strip()
+    }
+
+    for row in crawler_rows:
+        if not isinstance(row, dict):
+            continue
+        node_id = str(row.get("id", "")).strip()
+        if not node_id:
+            continue
+        normalized = dict(row)
+        normalized["id"] = node_id
+        normalized["node_type"] = "crawler"
+        crawler_kind = str(
+            normalized.get("crawler_kind", normalized.get("kind", "url"))
+        ).strip()
+        normalized["crawler_kind"] = crawler_kind or "url"
+        if not str(normalized.get("kind", "")).strip():
+            normalized["kind"] = normalized["crawler_kind"]
+        normalized["x"] = round(_clamp01(_safe_float(normalized.get("x", 0.5), 0.5)), 4)
+        normalized["y"] = round(_clamp01(_safe_float(normalized.get("y", 0.5), 0.5)), 4)
+        normalized["importance"] = round(
+            _clamp01(_safe_float(normalized.get("importance", 0.28), 0.28)), 4
+        )
+        normalized["hue"] = int(_safe_float(normalized.get("hue", 198), 198.0))
+
+        if node_id not in node_id_set:
+            nodes.append(normalized)
+            node_id_set.add(node_id)
+        if include_crawler_in_file_nodes and node_id not in file_node_id_set:
+            file_nodes.append(normalized)
+            file_node_id_set.add(node_id)
+        if node_id not in merged_crawler_id_set:
+            merged_crawler_nodes.append(normalized)
+            merged_crawler_id_set.add(node_id)
+
+    seen_edges: set[tuple[str, str, str]] = set()
+    for row in edges:
+        source_id = str(row.get("source", "")).strip()
+        target_id = str(row.get("target", "")).strip()
+        kind = str(row.get("kind", "")).strip().lower()
+        if source_id and target_id:
+            seen_edges.add((source_id, target_id, kind))
+
+    crawler_edges = (
+        crawler_graph.get("edges", [])
+        if isinstance(crawler_graph, dict)
+        and isinstance(crawler_graph.get("edges", []), list)
+        else []
+    )
+    for row in crawler_edges:
+        if not isinstance(row, dict):
+            continue
+        source_id = str(row.get("source", "")).strip()
+        target_id = str(row.get("target", "")).strip()
+        if not source_id or not target_id:
+            continue
+        source_id = field_target_aliases.get(source_id, source_id)
+        target_id = field_target_aliases.get(target_id, target_id)
+        if source_id.startswith("crawler-field:"):
+            source_id = source_id.replace("crawler-field:", "field:", 1)
+        if target_id.startswith("crawler-field:"):
+            target_id = target_id.replace("crawler-field:", "field:", 1)
+        if source_id == target_id:
+            continue
+        if source_id not in node_id_set or target_id not in node_id_set:
+            continue
+        kind = str(row.get("kind", "hyperlink")).strip().lower() or "hyperlink"
+        edge_key = (source_id, target_id, kind)
+        if edge_key in seen_edges:
+            continue
+        seen_edges.add(edge_key)
+        edge_id = str(row.get("id", "")).strip()
+        if not edge_id:
+            edge_id = (
+                "nexus-crawler-edge:"
+                + sha1(f"{source_id}|{target_id}|{kind}".encode("utf-8")).hexdigest()[
+                    :18
+                ]
+            )
+        edges.append(
+            {
+                "id": edge_id,
+                "source": source_id,
+                "target": target_id,
+                "field": str(row.get("field", "")).strip(),
+                "kind": kind,
+                "weight": round(
+                    _clamp01(_safe_float(row.get("weight", 0.28), 0.28)), 4
+                ),
+            }
+        )
+
+    stats["crawler_nexus_count"] = len(merged_crawler_nodes)
+    stats["nexus_node_count"] = len(nodes)
+    stats["nexus_edge_count"] = len(edges)
+    if include_crawler_in_file_nodes:
+        stats["file_count"] = len(file_nodes)
+
+    unified["field_nodes"] = field_nodes
+    unified["tag_nodes"] = tag_nodes
+    unified["file_nodes"] = file_nodes
+    unified["nodes"] = nodes
+    unified["edges"] = edges
+    unified["crawler_nodes"] = merged_crawler_nodes
+    unified["stats"] = stats
+    return unified
+
+
 def _clean_tokens(text: str) -> list[str]:
     return [token for token in re.findall(r"[A-Za-z0-9_-]+", text.lower()) if token]
 
@@ -2539,15 +4785,21 @@ def _document_layout_tokens(node: dict[str, Any]) -> list[str]:
         values.extend(str(label) for label in labels)
     values.extend(
         [
-            str(node.get("summary", "")),
-            str(node.get("text_excerpt", "")),
-            str(node.get("source_rel_path", "")),
-            str(node.get("archived_rel_path", "")),
-            str(node.get("archive_rel_path", "")),
-            str(node.get("name", "")),
-            str(node.get("kind", "")),
-            str(node.get("dominant_field", "")),
-            str(node.get("vecstore_collection", "")),
+            _bounded_text(
+                node.get("summary", ""),
+                limit=SIMULATION_FILE_GRAPH_SUMMARY_CHARS,
+            ),
+            _bounded_text(
+                node.get("text_excerpt", ""),
+                limit=SIMULATION_FILE_GRAPH_EXCERPT_CHARS,
+            ),
+            _bounded_text(node.get("source_rel_path", ""), limit=160),
+            _bounded_text(node.get("archived_rel_path", ""), limit=160),
+            _bounded_text(node.get("archive_rel_path", ""), limit=160),
+            _bounded_text(node.get("name", ""), limit=160),
+            _bounded_text(node.get("kind", ""), limit=64),
+            _bounded_text(node.get("dominant_field", ""), limit=32),
+            _bounded_text(node.get("vecstore_collection", ""), limit=96),
         ]
     )
 
@@ -2706,13 +4958,30 @@ def _document_layout_similarity(
     union = max(1, len(left_set) + len(right_set) - overlap)
     token_jaccard = overlap / float(union)
 
-    same_field = (
-        1.0
-        if str(left_node.get("dominant_field", "")).strip()
-        and str(left_node.get("dominant_field", "")).strip()
-        == str(right_node.get("dominant_field", "")).strip()
-        else 0.0
-    )
+    left_field = str(left_node.get("dominant_field", "")).strip()
+    right_field = str(right_node.get("dominant_field", "")).strip()
+
+    # Strong attraction for same field
+    same_field = 1.0 if left_field and left_field == right_field else 0.0
+
+    # REPULSION: Strong penalty for unrelated fields
+    field_repulsion = 0.0
+    if left_field and right_field and left_field != right_field:
+        # Base repulsion for any different fields
+        field_repulsion = -0.35
+
+        # Enhanced repulsion for "opposite" philosophical concepts
+        opposite_pairs = [
+            ("f9", "f10"),  # good vs evil
+            ("f10", "f9"),  # evil vs good
+            ("f11", "f12"),  # right vs wrong
+            ("f12", "f11"),  # wrong vs right
+            ("f13", "f14"),  # dead vs living
+            ("f14", "f13"),  # living vs dead
+        ]
+        if (left_field, right_field) in opposite_pairs:
+            field_repulsion = -0.62  # Strong repulsion for opposites
+
     same_kind = (
         1.0
         if str(left_node.get("kind", "")).strip().lower()
@@ -2731,9 +5000,13 @@ def _document_layout_similarity(
         + (same_field * 0.12)
         + (same_kind * 0.06)
         + (same_collection * 0.04)
+        + field_repulsion  # Add repulsion penalty
     )
+
+    # Increased penalty threshold for unrelated nodes
     if token_jaccard < 0.05 and same_field <= 0.0 and same_kind <= 0.0:
-        score *= 0.45
+        score *= 0.25  # Reduced from 0.45 for stronger separation
+
     return _clamp01(score)
 
 
@@ -3080,58 +5353,62 @@ def _apply_file_graph_document_similarity_layout(
                 particle["x"] = _clamp01(_safe_float(particle.get("x", 0.5), 0.5) + vx)
                 particle["y"] = _clamp01(_safe_float(particle.get("y", 0.5), 0.5) + vy)
 
-        for entry in embedded_entries:
-            entry_index = int(entry.get("index", 0))
-            if entry_index < 0 or entry_index >= len(offsets):
-                continue
-            influence_x = 0.0
-            influence_y = 0.0
-            influence_radius = max(
-                0.08,
-                min(0.26, (_safe_float(entry.get("range", 0.03), 0.03) * 2.4) + 0.05),
-            )
-
-            for particle in particles:
-                dx = _safe_float(particle.get("x", 0.5), 0.5) - _safe_float(
-                    entry.get("x", 0.5), 0.5
-                )
-                dy = _safe_float(particle.get("y", 0.5), 0.5) - _safe_float(
-                    entry.get("y", 0.5), 0.5
-                )
-                distance = math.sqrt((dx * dx) + (dy * dy))
-                if distance > influence_radius:
+        if len(embedded_entries) > 1:
+            for entry in embedded_entries:
+                entry_index = int(entry.get("index", 0))
+                if entry_index < 0 or entry_index >= len(offsets):
                     continue
-                if distance <= 1e-8:
-                    continue
-
-                similarity = _semantic_vector_cosine(
-                    entry.get("vector", []),
-                    particle.get("vector", []),
+                influence_x = 0.0
+                influence_y = 0.0
+                influence_radius = max(
+                    0.08,
+                    min(
+                        0.26,
+                        (_safe_float(entry.get("range", 0.03), 0.03) * 2.4) + 0.05,
+                    ),
                 )
-                falloff = _clamp01(1.0 - (distance / influence_radius))
-                density_mix = 0.58 + (
-                    (
-                        _safe_float(entry.get("text_density"), 0.45)
-                        + _safe_float(particle.get("text_density"), 0.45)
+
+                for particle in particles:
+                    dx = _safe_float(particle.get("x", 0.5), 0.5) - _safe_float(
+                        entry.get("x", 0.5), 0.5
                     )
-                    * 0.24
-                )
-                strength = (
-                    (0.00016 + (abs(similarity) * 0.00052)) * falloff * density_mix
-                )
-                direction = 1.0 if similarity >= 0.0 else -1.0
-                influence_x += (dx / distance) * strength * direction
-                influence_y += (dy / distance) * strength * direction
+                    dy = _safe_float(particle.get("y", 0.5), 0.5) - _safe_float(
+                        entry.get("y", 0.5), 0.5
+                    )
+                    distance = math.sqrt((dx * dx) + (dy * dy))
+                    if distance > influence_radius:
+                        continue
+                    if distance <= 1e-8:
+                        continue
 
-            max_influence = 0.0032 + (
-                _safe_float(entry.get("importance", 0.2), 0.2) * 0.0048
-            )
-            offsets[entry_index][0] += max(
-                -max_influence, min(max_influence, influence_x)
-            )
-            offsets[entry_index][1] += max(
-                -max_influence, min(max_influence, influence_y)
-            )
+                    similarity = _semantic_vector_cosine(
+                        entry.get("vector", []),
+                        particle.get("vector", []),
+                    )
+                    falloff = _clamp01(1.0 - (distance / influence_radius))
+                    density_mix = 0.58 + (
+                        (
+                            _safe_float(entry.get("text_density"), 0.45)
+                            + _safe_float(particle.get("text_density"), 0.45)
+                        )
+                        * 0.24
+                    )
+                    strength = (
+                        (0.00016 + (abs(similarity) * 0.00052)) * falloff * density_mix
+                    )
+                    direction = 1.0 if similarity >= 0.0 else -1.0
+                    influence_x += (dx / distance) * strength * direction
+                    influence_y += (dy / distance) * strength * direction
+
+                max_influence = 0.0032 + (
+                    _safe_float(entry.get("importance", 0.2), 0.2) * 0.0048
+                )
+                offsets[entry_index][0] += max(
+                    -max_influence, min(max_influence, influence_x)
+                )
+                offsets[entry_index][1] += max(
+                    -max_influence, min(max_influence, influence_y)
+                )
 
         for particle in particles[:48]:
             hue = _semantic_vector_hue(list(particle.get("vector", [])))
@@ -3277,7 +5554,11 @@ def _build_backend_field_particles(
         return _clamp01(score)
 
     with _DAIMO_DYNAMICS_LOCK:
-        particle_cache = _DAIMO_DYNAMICS_CACHE.get("field_particles", {})
+        runtime = _DAIMO_DYNAMICS_CACHE.get("field_particles", {})
+        if not isinstance(runtime, dict):
+            runtime = {}
+        # Handle nested runtime structure: {'particles': {...}, 'surfaces': {...}}
+        particle_cache = runtime.get("particles", {})
         if not isinstance(particle_cache, dict):
             particle_cache = {}
 
@@ -3703,6 +5984,43 @@ def _build_backend_field_particles(
                     }
                 )
 
+        # RENDER CHAOS BUTTERFLIES - convert chaos particles to field particles
+        chaos_hue = 300.0  # Purple for chaos
+        for pid, particle_state in particle_cache.items():
+            if not isinstance(particle_state, dict):
+                continue
+            if not bool(particle_state.get("is_chaos_butterfly", False)):
+                continue
+
+            # Add to live_ids so they don't get cleaned up
+            live_ids.add(pid)
+
+            nx = _clamp01(_safe_float(particle_state.get("x", 0.5), 0.5))
+            ny = _clamp01(_safe_float(particle_state.get("y", 0.5), 0.5))
+            particle_size = _safe_float(particle_state.get("size", 0.5), 0.5)
+
+            # Chaos butterflies have distinct purple color with high saturation
+            r_raw, g_raw, b_raw = colorsys.hsv_to_rgb(
+                (chaos_hue % 360.0) / 360.0,
+                0.85,  # High saturation
+                0.92,  # High brightness
+            )
+
+            field_particles.append(
+                {
+                    "id": pid,
+                    "presence_id": "chaos_butterfly",
+                    "presence_role": "chaos-agent",
+                    "particle_mode": "noise-spreader",
+                    "x": round(nx, 5),
+                    "y": round(ny, 5),
+                    "size": round(particle_size, 5),
+                    "r": round(_clamp01(r_raw), 5),
+                    "g": round(_clamp01(g_raw), 5),
+                    "b": round(_clamp01(b_raw), 5),
+                }
+            )
+
         stale_before = now_mono - 180.0
         for pid in list(particle_cache.keys()):
             if pid in live_ids:
@@ -3714,7 +6032,9 @@ def _build_backend_field_particles(
             if ts_value < stale_before:
                 particle_cache.pop(pid, None)
 
-        _DAIMO_DYNAMICS_CACHE["field_particles"] = particle_cache
+        # Preserve nested runtime structure when saving back
+        runtime["particles"] = particle_cache
+        _DAIMO_DYNAMICS_CACHE["field_particles"] = runtime
 
     field_particles.sort(
         key=lambda row: (
@@ -4094,6 +6414,755 @@ def build_weaver_field_graph(part_root: Path, vault_root: Path) -> dict[str, Any
     return snapshot
 
 
+def _build_nooi_field_cells(
+    field_particles: list[dict[str, Any]],
+    *,
+    grid_cols: int = 18,
+    grid_rows: int = 12,
+) -> dict[str, Any]:
+    cols = max(6, min(36, int(grid_cols)))
+    rows = max(4, min(24, int(grid_rows)))
+    cell_w = 1.0 / float(cols)
+    cell_h = 1.0 / float(rows)
+
+    cell_map: dict[str, dict[str, Any]] = {}
+    for particle in field_particles if isinstance(field_particles, list) else []:
+        if not isinstance(particle, dict):
+            continue
+        x = _clamp01(_safe_float(particle.get("x", 0.5), 0.5))
+        y = _clamp01(_safe_float(particle.get("y", 0.5), 0.5))
+        col = max(0, min(cols - 1, int(x * cols)))
+        row = max(0, min(rows - 1, int(y * rows)))
+        key = f"{col}:{row}"
+        cell = cell_map.get(key)
+        if not isinstance(cell, dict):
+            cell = {
+                "col": col,
+                "row": row,
+                "occupancy": 0,
+                "sum_vx": 0.0,
+                "sum_vy": 0.0,
+                "sum_influence": 0.0,
+                "sum_message": 0.0,
+                "sum_route": 0.0,
+                "presence_counts": {},
+            }
+            cell_map[key] = cell
+
+        vx = _safe_float(particle.get("vx", 0.0), 0.0)
+        vy = _safe_float(particle.get("vy", 0.0), 0.0)
+        influence = _safe_float(particle.get("influence_power", -1.0), -1.0)
+        if influence < 0.0:
+            influence = _clamp01(
+                (_safe_float(particle.get("message_probability", 0.0), 0.0) * 0.56)
+                + (
+                    _clamp01(abs(_safe_float(particle.get("drift_score", 0.0), 0.0)))
+                    * 0.24
+                )
+                + (_safe_float(particle.get("route_probability", 0.0), 0.0) * 0.2)
+            )
+
+        presence_id = str(particle.get("presence_id", "")).strip()
+        presence_counts = cell.get("presence_counts", {})
+        if not isinstance(presence_counts, dict):
+            presence_counts = {}
+        if presence_id:
+            presence_counts[presence_id] = (
+                _safe_int(presence_counts.get(presence_id, 0), 0) + 1
+            )
+        cell["presence_counts"] = presence_counts
+
+        cell["occupancy"] = _safe_int(cell.get("occupancy", 0), 0) + 1
+        cell["sum_vx"] = _safe_float(cell.get("sum_vx", 0.0), 0.0) + vx
+        cell["sum_vy"] = _safe_float(cell.get("sum_vy", 0.0), 0.0) + vy
+        cell["sum_influence"] = _safe_float(
+            cell.get("sum_influence", 0.0), 0.0
+        ) + _clamp01(influence)
+        cell["sum_message"] = _safe_float(cell.get("sum_message", 0.0), 0.0) + _clamp01(
+            _safe_float(particle.get("message_probability", 0.0), 0.0)
+        )
+        cell["sum_route"] = _safe_float(cell.get("sum_route", 0.0), 0.0) + _clamp01(
+            _safe_float(particle.get("route_probability", 0.0), 0.0)
+        )
+
+    cells: list[dict[str, Any]] = []
+    max_influence = 0.0
+    vector_peak = 0.0
+    influence_total = 0.0
+
+    for cell in cell_map.values():
+        if not isinstance(cell, dict):
+            continue
+        occupancy = max(0, _safe_int(cell.get("occupancy", 0), 0))
+        if occupancy <= 0:
+            continue
+        avg_vx = _safe_float(cell.get("sum_vx", 0.0), 0.0) / float(occupancy)
+        avg_vy = _safe_float(cell.get("sum_vy", 0.0), 0.0) / float(occupancy)
+        vector_mag = math.sqrt((avg_vx * avg_vx) + (avg_vy * avg_vy))
+        avg_influence = _clamp01(
+            _safe_float(cell.get("sum_influence", 0.0), 0.0) / float(occupancy)
+        )
+        avg_message = _clamp01(
+            _safe_float(cell.get("sum_message", 0.0), 0.0) / float(occupancy)
+        )
+        avg_route = _clamp01(
+            _safe_float(cell.get("sum_route", 0.0), 0.0) / float(occupancy)
+        )
+        occupancy_ratio = _clamp01(occupancy / 12.0)
+        intensity = _clamp01(
+            (avg_influence * 0.58) + (occupancy_ratio * 0.24) + (avg_message * 0.18)
+        )
+
+        presence_counts = (
+            cell.get("presence_counts", {})
+            if isinstance(cell.get("presence_counts"), dict)
+            else {}
+        )
+        dominant_presence_id = ""
+        if presence_counts:
+            dominant_presence_id = max(
+                sorted(presence_counts.keys()),
+                key=lambda key: _safe_int(presence_counts.get(key, 0), 0),
+            )
+
+        col = max(0, min(cols - 1, _safe_int(cell.get("col", 0), 0)))
+        row = max(0, min(rows - 1, _safe_int(cell.get("row", 0), 0)))
+
+        cells.append(
+            {
+                "id": f"{col}:{row}",
+                "col": col,
+                "row": row,
+                "x": round((float(col) + 0.5) / float(cols), 6),
+                "y": round((float(row) + 0.5) / float(rows), 6),
+                "occupancy": occupancy,
+                "occupancy_ratio": round(occupancy_ratio, 6),
+                "influence": round(avg_influence, 6),
+                "intensity": round(intensity, 6),
+                "message": round(avg_message, 6),
+                "route": round(avg_route, 6),
+                "vx": round(avg_vx, 6),
+                "vy": round(avg_vy, 6),
+                "vector_magnitude": round(vector_mag, 6),
+                "dominant_presence_id": dominant_presence_id,
+            }
+        )
+        max_influence = max(max_influence, avg_influence)
+        vector_peak = max(vector_peak, vector_mag)
+        influence_total += avg_influence
+
+    cells.sort(
+        key=lambda row: (
+            -_safe_float(row.get("intensity", 0.0), 0.0),
+            -_safe_int(row.get("occupancy", 0), 0),
+            str(row.get("id", "")),
+        )
+    )
+
+    active_cell_count = len(cells)
+    return {
+        "record": "eta-mu.nooi-field.v1",
+        "schema_version": "nooi.field.v1",
+        "grid_cols": cols,
+        "grid_rows": rows,
+        "cell_width": round(cell_w, 6),
+        "cell_height": round(cell_h, 6),
+        "active_cells": active_cell_count,
+        "max_influence": round(max_influence, 6),
+        "mean_influence": round(
+            (influence_total / float(active_cell_count))
+            if active_cell_count > 0
+            else 0.0,
+            6,
+        ),
+        "vector_peak": round(vector_peak, 6),
+        "cells": cells,
+    }
+
+
+_RESOURCE_DAIMOI_TYPES: tuple[str, ...] = (
+    "cpu",
+    "ram",
+    "disk",
+    "network",
+    "gpu",
+    "npu",
+)
+_RESOURCE_DAIMOI_TYPE_ALIASES: dict[str, str] = {
+    "gpu1": "gpu",
+    "gpu2": "gpu",
+    "gpu_intel": "gpu",
+    "intel": "gpu",
+    "npu0": "npu",
+    "net": "network",
+    "netup": "network",
+    "netdown": "network",
+}
+_RESOURCE_DAIMOI_WALLET_FLOOR: dict[str, float] = {
+    "cpu": 6.0,
+    "ram": 6.0,
+    "disk": 4.0,
+    "network": 4.0,
+    "gpu": 5.0,
+    "npu": 5.0,
+}
+_RESOURCE_DAIMOI_WALLET_CAP: dict[str, float] = {
+    "cpu": 48.0,
+    "ram": 48.0,
+    "disk": 32.0,
+    "network": 32.0,
+    "gpu": 40.0,
+    "npu": 40.0,
+}
+_RESOURCE_DAIMOI_ACTION_BASE_COST = 0.00022
+_RESOURCE_DAIMOI_ACTION_COST_MAX = 0.0028
+_RESOURCE_DAIMOI_ACTION_SATISFIED_RATIO = 0.85
+
+
+def _canonical_resource_type(resource_type: str) -> str:
+    key = str(resource_type or "").strip().lower()
+    if not key:
+        return ""
+    if key in _RESOURCE_DAIMOI_TYPES:
+        return key
+    return str(_RESOURCE_DAIMOI_TYPE_ALIASES.get(key, "")).strip().lower()
+
+
+def _core_resource_type_from_presence_id(presence_id: str) -> str:
+    pid = str(presence_id or "").strip().lower()
+    prefix = "presence.core."
+    if not pid.startswith(prefix):
+        return ""
+    return _canonical_resource_type(pid[len(prefix) :])
+
+
+def _normalize_resource_wallet(
+    impact: dict[str, Any],
+) -> dict[str, float]:
+    wallet_raw = impact.get("resource_wallet", {})
+    wallet: dict[str, float] = {}
+    if isinstance(wallet_raw, dict):
+        for key, value in wallet_raw.items():
+            name_raw = str(key or "").strip().lower()
+            if not name_raw:
+                continue
+            amount = max(0.0, _safe_float(value, 0.0))
+            wallet[name_raw] = amount
+            canonical = _canonical_resource_type(name_raw)
+            if canonical:
+                wallet[canonical] = max(amount, wallet.get(canonical, 0.0))
+    impact["resource_wallet"] = wallet
+    return wallet
+
+
+def _presence_anchor_position(
+    presence_id: str,
+    impact: dict[str, Any],
+    *,
+    manifest_by_id: dict[str, dict[str, Any]],
+) -> tuple[float, float]:
+    x_value = impact.get("x")
+    y_value = impact.get("y")
+    if x_value is not None and y_value is not None:
+        return (
+            _clamp01(_safe_float(x_value, 0.5)),
+            _clamp01(_safe_float(y_value, 0.5)),
+        )
+
+    meta = manifest_by_id.get(presence_id, {})
+    if isinstance(meta, dict):
+        return (
+            _clamp01(
+                _safe_float(
+                    meta.get("x", _stable_ratio(f"{presence_id}|anchor", 3)),
+                    _stable_ratio(f"{presence_id}|anchor", 3),
+                )
+            ),
+            _clamp01(
+                _safe_float(
+                    meta.get("y", _stable_ratio(f"{presence_id}|anchor", 11)),
+                    _stable_ratio(f"{presence_id}|anchor", 11),
+                )
+            ),
+        )
+
+    return (
+        _clamp01(_stable_ratio(f"{presence_id}|anchor", 3)),
+        _clamp01(_stable_ratio(f"{presence_id}|anchor", 11)),
+    )
+
+
+def _resource_availability_ratio(
+    resource_type: str,
+    resource_heartbeat: dict[str, Any],
+) -> float:
+    kind = _canonical_resource_type(resource_type)
+    if not kind:
+        return 0.5
+
+    devices = (
+        resource_heartbeat.get("devices", {})
+        if isinstance(resource_heartbeat, dict)
+        else {}
+    )
+    if not isinstance(devices, dict):
+        devices = {}
+    monitor = (
+        resource_heartbeat.get("resource_monitor", {})
+        if isinstance(resource_heartbeat, dict)
+        else {}
+    )
+    if not isinstance(monitor, dict):
+        monitor = {}
+
+    usage_percent = 100.0
+    if kind == "cpu":
+        usage_percent = _safe_float(
+            (
+                devices.get("cpu", {}) if isinstance(devices.get("cpu"), dict) else {}
+            ).get("utilization", monitor.get("cpu_percent", 100.0)),
+            _safe_float(monitor.get("cpu_percent", 100.0), 100.0),
+        )
+    elif kind == "ram":
+        usage_percent = _safe_float(monitor.get("memory_percent", 100.0), 100.0)
+    elif kind == "disk":
+        usage_percent = _safe_float(monitor.get("disk_percent", 100.0), 100.0)
+    elif kind == "network":
+        usage_percent = _safe_float(monitor.get("network_percent", 100.0), 100.0)
+    elif kind == "gpu":
+        gpu1 = _safe_float(
+            (
+                devices.get("gpu1", {}) if isinstance(devices.get("gpu1"), dict) else {}
+            ).get("utilization", 100.0),
+            100.0,
+        )
+        gpu2 = _safe_float(
+            (
+                devices.get("gpu2", {}) if isinstance(devices.get("gpu2"), dict) else {}
+            ).get("utilization", 100.0),
+            100.0,
+        )
+        usage_percent = min(gpu1, gpu2)
+    elif kind == "npu":
+        usage_percent = _safe_float(
+            (
+                devices.get("npu0", {}) if isinstance(devices.get("npu0"), dict) else {}
+            ).get("utilization", 100.0),
+            100.0,
+        )
+
+    usage_clamped = max(0.0, min(100.0, usage_percent))
+    return _clamp01((100.0 - usage_clamped) / 100.0)
+
+
+def _resource_need_ratio(
+    impact: dict[str, Any],
+    resource_type: str,
+    *,
+    queue_ratio: float,
+) -> float:
+    kind = _canonical_resource_type(resource_type)
+    if not kind:
+        return 0.0
+    affected_by = impact.get("affected_by", {})
+    if not isinstance(affected_by, dict):
+        affected_by = {}
+
+    wallet = _normalize_resource_wallet(impact)
+    balance = max(0.0, _safe_float(wallet.get(kind, 0.0), 0.0))
+    floor = max(0.1, _safe_float(_RESOURCE_DAIMOI_WALLET_FLOOR.get(kind, 4.0), 4.0))
+    deficit_ratio = _clamp01((floor - balance) / floor)
+    base_need = _clamp01(_safe_float(affected_by.get("resource", 0.0), 0.0))
+    queue_push = _clamp01(_safe_float(queue_ratio, 0.0))
+    is_sub_sim = bool(
+        str(impact.get("presence_type", "")).strip() == "sub-sim"
+        or str(impact.get("id", "")).strip().startswith("presence.sim.")
+    )
+    sub_sim_boost = 0.22 if is_sub_sim else 0.0
+    return _clamp01(
+        (base_need * 0.34)
+        + (deficit_ratio * 0.46)
+        + (queue_push * 0.18)
+        + sub_sim_boost
+    )
+
+
+def _apply_resource_daimoi_emissions(
+    *,
+    field_particles: list[dict[str, Any]],
+    presence_impacts: list[dict[str, Any]],
+    resource_heartbeat: dict[str, Any],
+    queue_ratio: float,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "record": "eta-mu.resource-daimoi-flow.v1",
+        "schema_version": "resource.daimoi.flow.v1",
+        "emitter_rows": 0,
+        "delivered_packets": 0,
+        "total_transfer": 0.0,
+        "by_resource": {},
+        "recipients": [],
+        "queue_ratio": round(_clamp01(_safe_float(queue_ratio, 0.0)), 6),
+    }
+    if not isinstance(field_particles, list) or not isinstance(presence_impacts, list):
+        return summary
+
+    manifest_by_id = {
+        str(row.get("id", "")).strip(): row
+        for row in ENTITY_MANIFEST
+        if isinstance(row, dict) and str(row.get("id", "")).strip()
+    }
+
+    recipient_impacts: list[dict[str, Any]] = []
+    fallback_recipients: list[dict[str, Any]] = []
+    anchor_by_presence: dict[str, tuple[float, float]] = {}
+    for impact in presence_impacts:
+        if not isinstance(impact, dict):
+            continue
+        presence_id = str(impact.get("id", "")).strip()
+        if not presence_id:
+            continue
+        _normalize_resource_wallet(impact)
+        if _core_resource_type_from_presence_id(presence_id):
+            continue
+
+        anchor_by_presence[presence_id] = _presence_anchor_position(
+            presence_id,
+            impact,
+            manifest_by_id=manifest_by_id,
+        )
+        fallback_recipients.append(impact)
+        if str(
+            impact.get("presence_type", "")
+        ).strip() == "sub-sim" or presence_id.startswith("presence.sim."):
+            recipient_impacts.append(impact)
+
+    if not recipient_impacts:
+        recipient_impacts = fallback_recipients
+    if not recipient_impacts:
+        return summary
+
+    resource_totals: dict[str, float] = {key: 0.0 for key in _RESOURCE_DAIMOI_TYPES}
+    recipient_totals: dict[str, float] = {}
+    packet_count = 0
+    emitter_rows = 0
+
+    for row in field_particles:
+        if not isinstance(row, dict):
+            continue
+        if bool(row.get("is_nexus", False)):
+            continue
+        presence_id = str(row.get("presence_id", "")).strip()
+        resource_type = _core_resource_type_from_presence_id(presence_id)
+        if not resource_type:
+            continue
+        emitter_rows += 1
+
+        availability = _resource_availability_ratio(resource_type, resource_heartbeat)
+        influence_power = _clamp01(
+            _safe_float(
+                row.get(
+                    "influence_power",
+                    row.get("message_probability", 0.0),
+                ),
+                0.0,
+            )
+        )
+        route_probability = _clamp01(
+            _safe_float(row.get("route_probability", 0.5), 0.5)
+        )
+        drift_score = _clamp01(abs(_safe_float(row.get("drift_score", 0.0), 0.0)))
+        gravity_potential = max(
+            0.0, _safe_float(row.get("gravity_potential", 0.0), 0.0)
+        )
+        gravity_signal = _clamp01(gravity_potential / (gravity_potential + 1.0))
+        local_price = max(0.35, _safe_float(row.get("local_price", 1.0), 1.0))
+
+        emit_amount = (
+            0.0015
+            + (influence_power * 0.009)
+            + (route_probability * 0.005)
+            + (drift_score * 0.003)
+            + (gravity_signal * 0.002)
+        )
+        emit_amount *= 0.3 + (availability * 0.7)
+        emit_amount /= local_price
+        emit_amount = max(0.0, emit_amount)
+        if emit_amount <= 1e-7:
+            continue
+
+        px = _clamp01(_safe_float(row.get("x", 0.5), 0.5))
+        py = _clamp01(_safe_float(row.get("y", 0.5), 0.5))
+
+        best_target: dict[str, Any] | None = None
+        best_target_id = ""
+        best_score = -1.0
+        for impact in recipient_impacts:
+            target_id = str(impact.get("id", "")).strip()
+            if not target_id:
+                continue
+            need_ratio = _resource_need_ratio(
+                impact,
+                resource_type,
+                queue_ratio=queue_ratio,
+            )
+            ax, ay = anchor_by_presence.get(target_id, (0.5, 0.5))
+            distance = math.sqrt(((ax - px) * (ax - px)) + ((ay - py) * (ay - py)))
+            proximity = _clamp01(1.0 - min(1.0, distance / 1.15))
+            score = (need_ratio * 0.72) + (proximity * 0.28)
+            if score > best_score:
+                best_score = score
+                best_target = impact
+                best_target_id = target_id
+
+        if best_target is None or best_score <= 1e-8:
+            continue
+
+        target_wallet = _normalize_resource_wallet(best_target)
+        wallet_cap = max(
+            0.1,
+            _safe_float(_RESOURCE_DAIMOI_WALLET_CAP.get(resource_type, 32.0), 32.0),
+        )
+        prior_value = max(0.0, _safe_float(target_wallet.get(resource_type, 0.0), 0.0))
+        next_value = min(wallet_cap, prior_value + emit_amount)
+        credited = max(0.0, next_value - prior_value)
+        if credited <= 1e-8:
+            continue
+
+        target_wallet[resource_type] = round(next_value, 6)
+        best_target["resource_wallet"] = target_wallet
+
+        packet_count += 1
+        resource_totals[resource_type] = (
+            resource_totals.get(resource_type, 0.0) + credited
+        )
+        recipient_totals[best_target_id] = (
+            recipient_totals.get(best_target_id, 0.0) + credited
+        )
+
+        row["resource_daimoi"] = True
+        row["resource_type"] = resource_type
+        row["resource_emit_amount"] = round(credited, 6)
+        row["resource_target_presence_id"] = best_target_id
+        row["resource_availability"] = round(availability, 6)
+        row["top_job"] = "emit_resource_packet"
+        row["job_probabilities"] = {
+            "emit_resource_packet": round(0.74, 6),
+            "invoke_resource_probe": round(0.16, 6),
+            "deliver_message": round(0.10, 6),
+        }
+
+    summary["emitter_rows"] = int(emitter_rows)
+    summary["delivered_packets"] = int(packet_count)
+    summary["total_transfer"] = round(sum(resource_totals.values()), 6)
+    summary["by_resource"] = {
+        key: round(value, 6)
+        for key, value in sorted(resource_totals.items())
+        if value > 1e-8
+    }
+    summary["recipients"] = [
+        {
+            "presence_id": key,
+            "credited": round(value, 6),
+        }
+        for key, value in sorted(
+            recipient_totals.items(),
+            key=lambda item: (-_safe_float(item[1], 0.0), item[0]),
+        )[:16]
+    ]
+    return summary
+
+
+def _apply_resource_daimoi_action_consumption(
+    *,
+    field_particles: list[dict[str, Any]],
+    presence_impacts: list[dict[str, Any]],
+    queue_ratio: float,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "record": "eta-mu.resource-daimoi-consumption.v1",
+        "schema_version": "resource.daimoi.consumption.v1",
+        "action_packets": 0,
+        "blocked_packets": 0,
+        "consumed_total": 0.0,
+        "by_resource": {},
+        "starved_presences": [],
+        "active_presences": [],
+        "queue_ratio": round(_clamp01(_safe_float(queue_ratio, 0.0)), 6),
+    }
+    if not isinstance(field_particles, list) or not isinstance(presence_impacts, list):
+        return summary
+
+    impact_by_id: dict[str, dict[str, Any]] = {}
+    for impact in presence_impacts:
+        if not isinstance(impact, dict):
+            continue
+        presence_id = str(impact.get("id", "")).strip()
+        if not presence_id:
+            continue
+        _normalize_resource_wallet(impact)
+        impact_by_id[presence_id] = impact
+
+    if not impact_by_id:
+        return summary
+
+    queue_push = _clamp01(_safe_float(queue_ratio, 0.0))
+    consumed_by_resource: dict[str, float] = {
+        key: 0.0 for key in _RESOURCE_DAIMOI_TYPES
+    }
+    consumed_by_presence: dict[str, float] = {}
+    blocked_by_presence: dict[str, int] = {}
+    blocked_packets = 0
+    action_packets = 0
+
+    for row in field_particles:
+        if not isinstance(row, dict):
+            continue
+        presence_id = str(row.get("presence_id", "")).strip()
+        if not presence_id:
+            continue
+        if _core_resource_type_from_presence_id(presence_id):
+            continue
+
+        impact = impact_by_id.get(presence_id)
+        if not isinstance(impact, dict):
+            continue
+
+        wallet = _normalize_resource_wallet(impact)
+        focus_resource = _canonical_resource_type(
+            str(row.get("route_resource_focus", ""))
+        )
+        if not focus_resource:
+            focus_resource = _canonical_resource_type(str(row.get("resource_type", "")))
+        if not focus_resource:
+            if wallet:
+                focus_resource = max(
+                    _RESOURCE_DAIMOI_TYPES,
+                    key=lambda resource: max(
+                        0.0, _safe_float(wallet.get(resource, 0.0), 0.0)
+                    ),
+                )
+            else:
+                focus_resource = "cpu"
+
+        influence_power = _clamp01(
+            _safe_float(
+                row.get("influence_power", row.get("message_probability", 0.0)), 0.0
+            )
+        )
+        message_probability = _clamp01(
+            _safe_float(row.get("message_probability", 0.0), 0.0)
+        )
+        route_probability = _clamp01(
+            _safe_float(row.get("route_probability", 0.0), 0.0)
+        )
+        drift_signal = _clamp01(abs(_safe_float(row.get("drift_score", 0.0), 0.0)))
+        desired_cost = (
+            _RESOURCE_DAIMOI_ACTION_BASE_COST
+            + (influence_power * 0.00086)
+            + (message_probability * 0.00054)
+            + (route_probability * 0.00032)
+            + (drift_signal * 0.00024)
+            + (queue_push * 0.00028)
+        )
+        desired_cost = min(
+            _RESOURCE_DAIMOI_ACTION_COST_MAX,
+            max(_RESOURCE_DAIMOI_ACTION_BASE_COST, desired_cost),
+        )
+
+        available = max(0.0, _safe_float(wallet.get(focus_resource, 0.0), 0.0))
+        consumed = min(available, desired_cost)
+        remaining = max(0.0, available - consumed)
+        wallet[focus_resource] = round(remaining, 6)
+        impact["resource_wallet"] = wallet
+
+        row["resource_consume_type"] = focus_resource
+        row["resource_consume_amount"] = round(consumed, 6)
+        row["resource_action_cost"] = round(desired_cost, 6)
+        row["resource_balance_after"] = round(remaining, 6)
+
+        action_packets += 1
+        consumed_by_resource[focus_resource] = (
+            consumed_by_resource.get(focus_resource, 0.0) + consumed
+        )
+        consumed_by_presence[presence_id] = (
+            consumed_by_presence.get(presence_id, 0.0) + consumed
+        )
+
+        satisfied = desired_cost <= 1e-9 or consumed >= (
+            desired_cost * _RESOURCE_DAIMOI_ACTION_SATISFIED_RATIO
+        )
+        if not satisfied:
+            blocked_packets += 1
+            blocked_by_presence[presence_id] = (
+                blocked_by_presence.get(presence_id, 0) + 1
+            )
+            row["resource_action_blocked"] = True
+            row["top_job"] = "resource_starved"
+            row["message_probability"] = round(
+                _clamp01(_safe_float(row.get("message_probability", 0.0), 0.0) * 0.22),
+                6,
+            )
+            row["route_probability"] = round(
+                _clamp01(_safe_float(row.get("route_probability", 0.0), 0.0) * 0.32),
+                6,
+            )
+            row["influence_power"] = round(
+                _clamp01(_safe_float(row.get("influence_power", 0.0), 0.0) * 0.28),
+                6,
+            )
+            row["vx"] = round(_safe_float(row.get("vx", 0.0), 0.0) * 0.4, 6)
+            row["vy"] = round(_safe_float(row.get("vy", 0.0), 0.0) * 0.4, 6)
+            row["r"] = round(
+                _clamp01((_safe_float(row.get("r", 0.4), 0.4) * 0.78) + 0.16),
+                5,
+            )
+            row["g"] = round(
+                _clamp01(_safe_float(row.get("g", 0.4), 0.4) * 0.42),
+                5,
+            )
+            row["b"] = round(
+                _clamp01(_safe_float(row.get("b", 0.4), 0.4) * 0.42),
+                5,
+            )
+        else:
+            row["resource_action_blocked"] = False
+            top_job = str(row.get("top_job", "")).strip()
+            if top_job in {"", "observe"}:
+                row["top_job"] = "consume_resource_packet"
+
+    summary["action_packets"] = int(action_packets)
+    summary["blocked_packets"] = int(blocked_packets)
+    summary["consumed_total"] = round(sum(consumed_by_resource.values()), 6)
+    summary["by_resource"] = {
+        resource: round(amount, 6)
+        for resource, amount in sorted(consumed_by_resource.items())
+        if amount > 1e-8
+    }
+    summary["starved_presences"] = [
+        {
+            "presence_id": presence_id,
+            "blocked_packets": blocked,
+        }
+        for presence_id, blocked in sorted(
+            blocked_by_presence.items(),
+            key=lambda item: (-item[1], item[0]),
+        )[:16]
+    ]
+    summary["active_presences"] = [
+        {
+            "presence_id": presence_id,
+            "consumed": round(amount, 6),
+        }
+        for presence_id, amount in sorted(
+            consumed_by_presence.items(),
+            key=lambda item: (-_safe_float(item[1], 0.0), item[0]),
+        )[:16]
+        if amount > 1e-8
+    ]
+    return summary
+
+
 def build_simulation_state(
     catalog: dict[str, Any],
     myth_summary: dict[str, Any] | None = None,
@@ -4101,6 +7170,7 @@ def build_simulation_state(
     *,
     influence_snapshot: dict[str, Any] | None = None,
     queue_snapshot: dict[str, Any] | None = None,
+    docker_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     now = time.time()
     resource_budget_snapshot = _resource_monitor_snapshot()
@@ -4115,12 +7185,15 @@ def build_simulation_state(
         ),
         0.0,
     )
-    if budget_cpu >= 90.0:
-        sim_point_budget = max(256, int(MAX_SIM_POINTS * 0.55))
-    elif budget_cpu >= 78.0:
-        sim_point_budget = max(320, int(MAX_SIM_POINTS * 0.74))
-    else:
-        sim_point_budget = MAX_SIM_POINTS
+    sim_point_budget, sim_budget_slice = resolve_sim_point_budget_slice(
+        cpu_utilization=budget_cpu,
+        max_sim_points=MAX_SIM_POINTS,
+    )
+
+    queue_snapshot = queue_snapshot or {}
+    influence = influence_snapshot or _INFLUENCE_TRACKER.snapshot(
+        queue_snapshot=queue_snapshot
+    )
 
     points: list[dict[str, float]] = []
     embedding_particle_points_raw: list[dict[str, float]] = []
@@ -4130,12 +7203,52 @@ def build_simulation_state(
     items = catalog.get("items", [])
     file_graph = catalog.get("file_graph") if isinstance(catalog, dict) else None
     if isinstance(file_graph, dict):
-        file_graph = _json_deep_clone(file_graph)
-        embedding_particle_points_raw = _apply_file_graph_document_similarity_layout(
+        file_graph, embedding_particle_points_raw = _prepare_file_graph_for_simulation(
             file_graph,
             now=now,
         )
     crawler_graph = catalog.get("crawler_graph") if isinstance(catalog, dict) else None
+    file_graph, growth_guard = _apply_daimoi_growth_guard_to_file_graph(
+        file_graph=file_graph if isinstance(file_graph, dict) else None,
+        crawler_graph=crawler_graph if isinstance(crawler_graph, dict) else None,
+        item_count=len(items) if isinstance(items, list) else 0,
+        sim_point_budget=sim_point_budget,
+        queue_snapshot=queue_snapshot,
+        influence_snapshot=influence if isinstance(influence, dict) else {},
+        cpu_utilization=budget_cpu,
+    )
+    file_graph, projection_event = _project_file_graph_for_simulation(
+        file_graph=file_graph if isinstance(file_graph, dict) else None,
+        influence_snapshot=influence if isinstance(influence, dict) else {},
+    )
+    if isinstance(projection_event, dict):
+        guard_events = growth_guard.get("events", [])
+        if isinstance(guard_events, list):
+            guard_events = [dict(row) for row in guard_events if isinstance(row, dict)]
+        else:
+            guard_events = []
+        guard_events.append(dict(projection_event))
+        growth_guard["events"] = guard_events
+    unified_nexus_runtime_graph = _build_unified_nexus_graph(
+        file_graph=file_graph if isinstance(file_graph, dict) else None,
+        crawler_graph=crawler_graph if isinstance(crawler_graph, dict) else None,
+        include_crawler_in_file_nodes=True,
+    )
+    unified_nexus_output_graph = _build_unified_nexus_graph(
+        file_graph=file_graph if isinstance(file_graph, dict) else None,
+        crawler_graph=crawler_graph if isinstance(crawler_graph, dict) else None,
+        include_crawler_in_file_nodes=False,
+    )
+    runtime_file_graph = (
+        unified_nexus_runtime_graph
+        if isinstance(unified_nexus_runtime_graph, dict)
+        else (file_graph if isinstance(file_graph, dict) else None)
+    )
+    output_file_graph = (
+        unified_nexus_output_graph
+        if isinstance(unified_nexus_output_graph, dict)
+        else (file_graph if isinstance(file_graph, dict) else None)
+    )
     truth_state = catalog.get("truth_state") if isinstance(catalog, dict) else None
     logical_graph = catalog.get("logical_graph") if isinstance(catalog, dict) else None
     if not isinstance(logical_graph, dict):
@@ -4151,11 +7264,13 @@ def build_simulation_state(
         catalog if isinstance(catalog, dict) else {}, pain_field
     )
     graph_file_nodes = (
-        file_graph.get("file_nodes", []) if isinstance(file_graph, dict) else []
+        output_file_graph.get("file_nodes", [])
+        if isinstance(output_file_graph, dict)
+        else []
     )
     graph_crawler_nodes = (
-        crawler_graph.get("crawler_nodes", [])
-        if isinstance(crawler_graph, dict)
+        output_file_graph.get("crawler_nodes", [])
+        if isinstance(output_file_graph, dict)
         else []
     )
 
@@ -4361,11 +7476,6 @@ def build_simulation_state(
                 )
         except Exception:
             pass
-
-    queue_snapshot = queue_snapshot or {}
-    influence = influence_snapshot or _INFLUENCE_TRACKER.snapshot(
-        queue_snapshot=queue_snapshot
-    )
 
     clicks_recent = int(influence.get("clicks_45s", 0))
     file_changes_recent = int(influence.get("file_changes_120s", 0))
@@ -4648,6 +7758,32 @@ def build_simulation_state(
         if str(item.get("id", "")).strip()
     ][:4]
 
+    # Create core resource presences
+    core_resources = ["cpu", "ram", "disk", "network", "gpu", "npu"]
+    manager = get_presence_runtime_manager()
+    for resource in core_resources:
+        presence_id = f"presence.core.{resource}"
+        if presence_id not in {p["id"] for p in presence_impacts}:
+            meta = manifest_lookup.get(presence_id, {})
+            anchor_x = _clamp01(_safe_float(meta.get("x", 0.5), 0.5))
+            anchor_y = _clamp01(_safe_float(meta.get("y", 0.5), 0.5))
+            presence_impacts.append(
+                {
+                    "id": presence_id,
+                    "label": meta.get("en", f"Silent Core - {resource.upper()}"),
+                    "label_ja": meta.get("ja", ""),
+                    "presence_type": "core",
+                    "x": anchor_x,
+                    "y": anchor_y,
+                    "hue": _safe_float(meta.get("hue", 0), 0.0),
+                    "resource_wallet": {
+                        resource: 1000.0
+                    },  # Infinite source effectively
+                    "active_nexus_id": "",
+                    "pinned_node_ids": [],
+                }
+            )
+
     witness_thread_state = {
         "id": str(witness_meta.get("id", "witness_thread")),
         "en": str(witness_meta.get("en", "Witness Thread")),
@@ -4660,18 +7796,8 @@ def build_simulation_state(
         "file_pressure": round(file_ratio, 4),
         "linked_presences": linked_presence_ids,
         "lineage": lineage[:6],
-        "notes_en": str(
-            (witness_impact or {}).get(
-                "notes_en",
-                "Witness Thread binds touch and file drift into explicit continuity.",
-            )
-        ),
-        "notes_ja": str(
-            (witness_impact or {}).get(
-                "notes_ja",
-                "証人の糸は接触とファイルドリフトを明示的な連続性へ束ねる。",
-            )
-        ),
+        "notes_en": "",
+        "notes_ja": "",
     }
 
     fork_tax = dict(influence.get("fork_tax", {}))
@@ -4709,6 +7835,19 @@ def build_simulation_state(
         queue_ratio=queue_ratio,
         resource_ratio=resource_ratio,
     )
+    if isinstance(ds, dict):
+        ds["growth_guard"] = growth_guard
+        deployment_rows = growth_guard.get("daimoi", [])
+        if isinstance(deployment_rows, list) and deployment_rows:
+            daimo_rows = ds.get("daimoi", [])
+            if isinstance(daimo_rows, list):
+                daimo_rows.extend(
+                    [dict(row) for row in deployment_rows if isinstance(row, dict)]
+                )
+                ds["daimoi"] = daimo_rows
+            ds["active"] = bool(
+                ds.get("active", False) or growth_guard.get("active", False)
+            )
 
     compute_jobs_raw = influence.get("compute_jobs", [])
     compute_jobs = compute_jobs_raw if isinstance(compute_jobs_raw, list) else []
@@ -4720,13 +7859,62 @@ def build_simulation_state(
         _safe_float(influence.get("compute_jobs_180s", len(compute_jobs)), 0.0)
     )
 
-    field_particle_points_raw = _build_backend_field_particles(
-        file_graph=file_graph,
-        presence_impacts=presence_impacts,
-        resource_heartbeat=resource_heartbeat,
-        compute_jobs=compute_jobs,
-        now=now,
+    for presence in presence_impacts:
+        wallet = manager.get_state(presence["id"]).get("resource_wallet", {})
+        if wallet:
+            presence["resource_wallet"] = wallet
+
+    # Process resource economy cycle
+    if docker_snapshot:
+        sync_sub_sim_presences(presence_impacts, docker_snapshot)
+        process_resource_cycle(presence_impacts, now=now)
+
+    # Calculate daimoi particles (using presence_impacts which now has updated wallets)
+    particle_backend_mode = (
+        str(os.getenv("SIM_PARTICLE_BACKEND", "python") or "python").strip().lower()
     )
+    if particle_backend_mode in {"c", "cdb", "native", "double-buffer-c"}:
+        try:
+            from .c_double_buffer_backend import build_double_buffer_field_particles
+
+            field_particle_points_raw, daimoi_probabilistic = (
+                build_double_buffer_field_particles(
+                    file_graph=runtime_file_graph,
+                    presence_impacts=presence_impacts,
+                    resource_heartbeat=resource_heartbeat,
+                    compute_jobs=compute_jobs,
+                    queue_ratio=queue_ratio,
+                    now=now,
+                    entity_manifest=list(ENTITY_MANIFEST),
+                )
+            )
+        except Exception as exc:
+            field_particle_points_raw, daimoi_probabilistic = (
+                build_probabilistic_daimoi_particles(
+                    file_graph=runtime_file_graph,
+                    presence_impacts=presence_impacts,
+                    resource_heartbeat=resource_heartbeat,
+                    compute_jobs=compute_jobs,
+                    queue_ratio=queue_ratio,
+                    now=now,
+                )
+            )
+            if isinstance(daimoi_probabilistic, dict):
+                daimoi_probabilistic["backend"] = "python-fallback"
+                daimoi_probabilistic["backend_error"] = (
+                    f"{exc.__class__.__name__}:{exc}"
+                )
+    else:
+        field_particle_points_raw, daimoi_probabilistic = (
+            build_probabilistic_daimoi_particles(
+                file_graph=runtime_file_graph,
+                presence_impacts=presence_impacts,
+                resource_heartbeat=resource_heartbeat,
+                compute_jobs=compute_jobs,
+                queue_ratio=queue_ratio,
+                now=now,
+            )
+        )
 
     normalized_field_particles: list[dict[str, float | str]] = []
     for particle in field_particle_points_raw:
@@ -4734,20 +7922,96 @@ def build_simulation_state(
             continue
         x_norm = _clamp01(_safe_float(particle.get("x", 0.5), 0.5))
         y_norm = _clamp01(_safe_float(particle.get("y", 0.5), 0.5))
-        normalized_field_particles.append(
-            {
-                "id": str(particle.get("id", "")),
-                "presence_id": str(particle.get("presence_id", "")),
-                "presence_role": str(particle.get("presence_role", "neutral")),
-                "particle_mode": str(particle.get("particle_mode", "neutral")),
-                "x": round(x_norm, 5),
-                "y": round(y_norm, 5),
-                "size": round(max(0.6, _safe_float(particle.get("size", 1.0), 1.0)), 5),
-                "r": round(_clamp01(_safe_float(particle.get("r", 0.4), 0.4)), 5),
-                "g": round(_clamp01(_safe_float(particle.get("g", 0.4), 0.4)), 5),
-                "b": round(_clamp01(_safe_float(particle.get("b", 0.4), 0.4)), 5),
-            }
-        )
+        normalized_row: dict[str, Any] = {
+            "id": str(particle.get("id", "")),
+            "presence_id": str(particle.get("presence_id", "")),
+            "presence_role": str(particle.get("presence_role", "neutral")),
+            "particle_mode": str(particle.get("particle_mode", "neutral")),
+            "x": round(x_norm, 5),
+            "y": round(y_norm, 5),
+            "size": round(max(0.6, _safe_float(particle.get("size", 1.0), 1.0)), 5),
+            "r": round(_clamp01(_safe_float(particle.get("r", 0.4), 0.4)), 5),
+            "g": round(_clamp01(_safe_float(particle.get("g", 0.4), 0.4)), 5),
+            "b": round(_clamp01(_safe_float(particle.get("b", 0.4), 0.4)), 5),
+        }
+        for key in (
+            "record",
+            "schema_version",
+            "is_nexus",
+            "owner_presence_id",
+            "target_presence_id",
+            "top_job",
+            "package_entropy",
+            "message_probability",
+            "mass",
+            "radius",
+            "collision_count",
+            "source_node_id",
+            "graph_node_id",
+            "graph_distance_cost",
+            "gravity_potential",
+            "local_price",
+            "node_saturation",
+            "route_node_id",
+            "drift_score",
+            "drift_gravity_term",
+            "drift_cost_term",
+            "drift_gravity_delta",
+            "drift_gravity_delta_scalar",
+            "drift_cost_latency_term",
+            "drift_cost_congestion_term",
+            "drift_cost_semantic_term",
+            "drift_cost_upkeep_term",
+            "route_gravity_mode",
+            "route_resource_focus",
+            "route_resource_focus_weight",
+            "route_resource_focus_delta",
+            "route_resource_focus_contribution",
+            "route_probability",
+            "selected_edge_cost",
+            "selected_edge_health",
+            "selected_edge_affinity",
+            "selected_edge_saturation",
+            "selected_edge_upkeep_penalty",
+            "valve_pressure_term",
+            "valve_gravity_term",
+            "valve_affinity_term",
+            "valve_saturation_term",
+            "valve_health_term",
+            "valve_score_proxy",
+            "influence_power",
+            "vx",
+            "vy",
+        ):
+            if key in particle:
+                normalized_row[key] = particle.get(key)
+        for key in (
+            "job_probabilities",
+            "action_probabilities",
+            "behavior_actions",
+            "embedding_seed_preview",
+            "embedding_curr_preview",
+            "last_collision_matrix",
+        ):
+            value = particle.get(key)
+            if isinstance(value, (dict, list)):
+                normalized_row[key] = value
+        normalized_field_particles.append(normalized_row)
+
+    resource_daimoi = _apply_resource_daimoi_emissions(
+        field_particles=normalized_field_particles,
+        presence_impacts=presence_impacts,
+        resource_heartbeat=resource_heartbeat,
+        queue_ratio=queue_ratio,
+    )
+    resource_consumption = _apply_resource_daimoi_action_consumption(
+        field_particles=normalized_field_particles,
+        presence_impacts=presence_impacts,
+        queue_ratio=queue_ratio,
+    )
+    if isinstance(daimoi_probabilistic, dict):
+        daimoi_probabilistic["resource_daimoi"] = dict(resource_daimoi)
+        daimoi_probabilistic["resource_consumption"] = dict(resource_consumption)
 
     remaining_capacity = max(0, sim_point_budget - len(points))
     for particle in normalized_field_particles[:remaining_capacity]:
@@ -4763,6 +8027,14 @@ def build_simulation_state(
         )
 
     emitted_field_particles = normalized_field_particles
+    nooi_field = _build_nooi_field_cells(emitted_field_particles)
+
+    distributed_runtime = sync_presence_runtime_state(
+        field_particles=emitted_field_particles,
+        presence_impacts=presence_impacts,
+        queue_ratio=queue_ratio,
+        resource_ratio=resource_ratio,
+    )
 
     presence_dynamics = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -4770,6 +8042,7 @@ def build_simulation_state(
             "point_limit": int(sim_point_budget),
             "point_limit_max": int(MAX_SIM_POINTS),
             "cpu_utilization": round(resource_cpu_util, 2),
+            "slice_offload": sim_budget_slice,
         },
         "click_events": clicks_recent,
         "file_events": file_changes_recent,
@@ -4781,6 +8054,9 @@ def build_simulation_state(
         "compute_jobs": compute_jobs[:32],
         "field_particles_record": "ημ.field-particles.v1",
         "field_particles": emitted_field_particles,
+        "resource_daimoi": resource_daimoi,
+        "resource_consumption": resource_consumption,
+        "nooi_field": nooi_field,
         "river_flow": {
             "unit": "m3/s",
             "rate": river_flow_rate,
@@ -4790,6 +8066,34 @@ def build_simulation_state(
         "fork_tax": fork_tax,
         "witness_thread": witness_thread_state,
         "presence_impacts": presence_impacts,
+        "growth_guard": growth_guard,
+        "daimoi_probabilistic_record": str(
+            daimoi_probabilistic.get("record", "")
+            if isinstance(daimoi_probabilistic, dict)
+            else ""
+        ),
+        "daimoi_probabilistic": (
+            daimoi_probabilistic
+            if isinstance(daimoi_probabilistic, dict)
+            else {
+                "record": "ημ.daimoi-probabilistic.v1",
+                "schema_version": "daimoi.probabilistic.v1",
+                "active": 0,
+                "spawned": 0,
+                "collisions": 0,
+                "deflects": 0,
+                "diffuses": 0,
+                "handoffs": 0,
+                "deliveries": 0,
+                "job_triggers": {},
+                "mean_package_entropy": 0.0,
+                "mean_message_probability": 0.0,
+                "matrix_mean": {"ss": 0.0, "sc": 0.0, "cs": 0.0, "cc": 0.0},
+                "behavior_defaults": ["deflect", "diffuse"],
+            }
+        ),
+        "daimoi_behavior_defaults": ["deflect", "diffuse"],
+        "distributed_runtime": distributed_runtime,
     }
 
     default_truth_state = {
@@ -4813,8 +8117,8 @@ def build_simulation_state(
         "points": points,
         "embedding_particles": emitted_embedding_particles,
         "field_particles": emitted_field_particles,
-        "file_graph": file_graph
-        if isinstance(file_graph, dict)
+        "file_graph": output_file_graph
+        if isinstance(output_file_graph, dict)
         else {
             "record": ETA_MU_FILE_GRAPH_RECORD,
             "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -4879,4 +8183,57 @@ def build_simulation_state(
         "presence_dynamics": presence_dynamics,
         "myth": myth_summary or {},
         "world": world_summary or {},
+    }
+
+
+def build_simulation_delta(
+    previous_simulation: dict[str, Any] | None,
+    current_simulation: dict[str, Any] | None,
+) -> dict[str, Any]:
+    previous = previous_simulation if isinstance(previous_simulation, dict) else {}
+    current = current_simulation if isinstance(current_simulation, dict) else {}
+    changed_keys: list[str] = []
+    patch: dict[str, Any] = {}
+
+    for key in (
+        "timestamp",
+        "total",
+        "audio",
+        "image",
+        "video",
+        "points",
+        "field_particles",
+        "presence_dynamics",
+        "daimoi",
+        "pain_field",
+        "truth_state",
+        "projection",
+        "perspective",
+        "entities",
+        "echoes",
+        "myth",
+        "world",
+    ):
+        if previous.get(key) != current.get(key):
+            patch[key] = current.get(key)
+            changed_keys.append(key)
+
+    previous_fingerprint = simulation_fingerprint(previous)
+    current_fingerprint = simulation_fingerprint(current)
+    if not changed_keys and previous_fingerprint != current_fingerprint:
+        patch = {
+            "timestamp": current.get("timestamp"),
+            "presence_dynamics": current.get("presence_dynamics", {}),
+        }
+        changed_keys = ["timestamp", "presence_dynamics"]
+
+    return {
+        "record": "eta-mu.simulation-delta.v1",
+        "schema_version": "simulation.delta.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "previous_fingerprint": previous_fingerprint,
+        "current_fingerprint": current_fingerprint,
+        "changed_keys": changed_keys,
+        "has_changes": bool(changed_keys),
+        "patch": patch,
     }

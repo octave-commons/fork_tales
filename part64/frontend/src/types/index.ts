@@ -45,14 +45,89 @@ export interface SimPoint {
 export interface BackendFieldParticle {
   id: string;
   presence_id: string;
+  owner_presence_id?: string;
+  target_presence_id?: string;
   presence_role?: string;
-  particle_mode?: "neutral" | "role-bound";
+  particle_mode?:
+    | "neutral"
+    | "role-bound"
+    | "static-daimoi"
+    | "chaos-butterfly";
+  is_nexus?: boolean;
+  record?: string;
+  schema_version?: string;
   x: number;
   y: number;
   size: number;
+  mass?: number;
+  radius?: number;
   r: number;
   g: number;
   b: number;
+  message_probability?: number;
+  job_probabilities?: Record<string, number>;
+  action_probabilities?: {
+    deflect: number;
+    diffuse: number;
+  };
+  behavior_actions?: string[];
+  top_job?: string;
+  package_entropy?: number;
+  embedding_seed_preview?: number[];
+  embedding_curr_preview?: number[];
+  collision_count?: number;
+  source_node_id?: string;
+  graph_node_id?: string;
+  graph_distance_cost?: number;
+  gravity_potential?: number;
+  local_price?: number;
+  node_saturation?: number;
+  route_node_id?: string;
+  drift_score?: number;
+  drift_gravity_term?: number;
+  drift_cost_term?: number;
+  drift_gravity_delta?: number;
+  drift_gravity_delta_scalar?: number;
+  drift_cost_latency_term?: number;
+  drift_cost_congestion_term?: number;
+  drift_cost_semantic_term?: number;
+  drift_cost_upkeep_term?: number;
+  route_gravity_mode?: "scalar-gravity" | "resource-signature" | string;
+  route_resource_focus?: string;
+  route_resource_focus_weight?: number;
+  route_resource_focus_delta?: number;
+  route_resource_focus_contribution?: number;
+  route_probability?: number;
+  selected_edge_cost?: number;
+  selected_edge_health?: number;
+  selected_edge_affinity?: number;
+  selected_edge_saturation?: number;
+  selected_edge_upkeep_penalty?: number;
+  valve_pressure_term?: number;
+  valve_gravity_term?: number;
+  valve_affinity_term?: number;
+  valve_saturation_term?: number;
+  valve_health_term?: number;
+  valve_score_proxy?: number;
+  influence_power?: number;
+  resource_daimoi?: boolean;
+  resource_type?: string;
+  resource_emit_amount?: number;
+  resource_target_presence_id?: string;
+  resource_availability?: number;
+  resource_consume_type?: string;
+  resource_consume_amount?: number;
+  resource_action_cost?: number;
+  resource_balance_after?: number;
+  resource_action_blocked?: boolean;
+  vx?: number;
+  vy?: number;
+  last_collision_matrix?: {
+    ss?: number;
+    sc?: number;
+    cs?: number;
+    cc?: number;
+  };
 }
 
 export interface FileGraphEmbeddingParticle {
@@ -149,7 +224,7 @@ export interface FileGraphOrganizerPresence {
 export interface FileGraphNode {
   id: string;
   node_id: string;
-  node_type: "field" | "file" | "presence" | "tag";
+  node_type: "field" | "file" | "presence" | "tag" | "crawler";
   field?: string;
   tag?: string;
   label: string;
@@ -164,6 +239,12 @@ export interface FileGraphNode {
   source_rel_path?: string;
   archived_rel_path?: string;
   url?: string;
+  domain?: string;
+  title?: string;
+  status?: string;
+  content_type?: string;
+  compliance?: string;
+  crawler_kind?: string;
   dominant_field?: string;
   dominant_presence?: string;
   field_scores?: Record<string, number>;
@@ -197,6 +278,7 @@ export interface FileGraph {
   field_nodes: FileGraphNode[];
   tag_nodes?: FileGraphNode[];
   file_nodes: FileGraphNode[];
+  crawler_nodes?: FileGraphNode[];
   embed_layers?: FileGraphEmbedLayerSummary[];
   organizer_presence?: FileGraphOrganizerPresence;
   concept_presences?: FileGraphConceptPresence[];
@@ -217,6 +299,9 @@ export interface FileGraph {
     tag_edge_count?: number;
     tag_pair_edge_count?: number;
     docmeta_enriched_count?: number;
+    crawler_nexus_count?: number;
+    nexus_node_count?: number;
+    nexus_edge_count?: number;
     knowledge_entries: number;
   };
 }
@@ -778,6 +863,221 @@ export interface ResourceHeartbeatSnapshot {
   };
 }
 
+export interface PresenceRuntimeCounts {
+  presences: number;
+  active_writers: number;
+  leases_granted?: number;
+  paused: number;
+  paused_total?: number;
+  resumed: number;
+  presence_updates: number;
+  daimoi_updates: number;
+  handoffs: number;
+  deduped: number;
+  rate_limited: number;
+  compliance_blocked: number;
+  events_emitted: number;
+}
+
+export interface PresenceRuntimeSnapshot {
+  record: string;
+  schema_version: string;
+  enabled: boolean;
+  backend: string;
+  instance_id: string;
+  generated_at: string;
+  lease_ttl_ms?: number;
+  streams: {
+    bus: string;
+    inbox_template: string;
+  };
+  counts: PresenceRuntimeCounts;
+  fallback_reason?: string;
+}
+
+export interface MuseRuntimeMuseRow {
+  id: string;
+  label: string;
+  presence_type?: string;
+  created_at: string;
+  status: string;
+  anchor: {
+    x: number;
+    y: number;
+    zoom: number;
+    kind: string;
+  };
+  panel_id: string;
+  active_nexus_id: string;
+  pinned_node_ids: string[];
+  chat_history_count: number;
+  gpu_state?: {
+    status?: string;
+    claim_id?: string;
+    device?: string;
+    updated_at?: string;
+  };
+}
+
+export interface MuseRuntimeSnapshot {
+  record: string;
+  schema_version: string;
+  enabled: boolean;
+  backend: string;
+  generated_at: string;
+  muse_count: number;
+  event_seq: number;
+  muses: MuseRuntimeMuseRow[];
+}
+
+export interface MuseEvent {
+  record: string;
+  schema_version: string;
+  event_id: string;
+  seq: number;
+  kind: string;
+  status: string;
+  muse_id: string;
+  turn_id: string;
+  ts: string;
+  payload?: Record<string, unknown>;
+}
+
+export interface DaimoiProbabilisticSummary {
+  record: string;
+  schema_version: string;
+  active: number;
+  spawned: number;
+  collisions: number;
+  deflects: number;
+  diffuses: number;
+  handoffs: number;
+  deliveries: number;
+  job_triggers: Record<string, number>;
+  mean_package_entropy: number;
+  mean_message_probability: number;
+  mean_drift_score?: number;
+  mean_route_probability?: number;
+  mean_drift_gravity_term?: number;
+  mean_drift_cost_term?: number;
+  mean_drift_cost_upkeep_term?: number;
+  mean_selected_edge_health?: number;
+  mean_selected_edge_affinity?: number;
+  mean_selected_edge_saturation?: number;
+  mean_valve_score_proxy?: number;
+  mean_route_resource_focus_weight?: number;
+  mean_route_resource_focus_contribution?: number;
+  mean_influence_power?: number;
+  resource_routing_mode?: "scalar-gravity" | "resource-signature" | string;
+  resource_route_ratio?: number;
+  resource_types?: string[];
+  graph_runtime?: {
+    record?: string;
+    schema_version?: string;
+    node_count?: number;
+    edge_count?: number;
+    source_count?: number;
+    radius_cost?: number;
+    cost_weights?: {
+      latency?: number;
+      congestion?: number;
+      semantic?: number;
+    };
+    edge_cost_mean?: number;
+    edge_cost_max?: number;
+    edge_health_mean?: number;
+    edge_health_max?: number;
+    edge_health_min?: number;
+    edge_saturation_mean?: number;
+    edge_saturation_max?: number;
+    edge_affinity_mean?: number;
+    edge_upkeep_penalty_mean?: number;
+    global_saturation?: number;
+    gravity_mean?: number;
+    gravity_max?: number;
+    price_mean?: number;
+    price_max?: number;
+    valve_weights?: {
+      pressure?: number;
+      gravity?: number;
+      affinity?: number;
+      saturation?: number;
+      health?: number;
+    };
+    resource_types?: string[];
+    active_resource_types?: string[];
+    resource_gravity_peak_max?: number;
+    resource_gravity_peaks?: Record<string, number>;
+    top_nodes?: Array<{
+      node_id?: string;
+      gravity?: number;
+      local_price?: number;
+      distance_cost?: number;
+    }>;
+  };
+  graph_systems?: string[];
+  matrix_mean?: {
+    ss: number;
+    sc: number;
+    cs: number;
+    cc: number;
+  };
+  behavior_defaults?: string[];
+  resource_daimoi?: ResourceDaimoiSummary;
+  resource_consumption?: ResourceConsumptionSummary;
+}
+
+export interface SimulationGrowthEvent {
+  record: string;
+  schema_version: string;
+  kind: string;
+  status: string;
+  reason: string;
+  ts: string;
+  payload?: Record<string, unknown>;
+}
+
+export interface SimulationGrowthGuard {
+  record: string;
+  schema_version: string;
+  generated_at: string;
+  active: boolean;
+  mode: string;
+  thresholds?: {
+    watch: number;
+    critical: number;
+  };
+  pressure?: {
+    blend: number;
+    points: number;
+    files: number;
+    edges: number;
+    crawler: number;
+    queue: number;
+    resource: number;
+  };
+  capacity?: {
+    sim_point_budget: number;
+    target_file_nodes: number;
+    target_edges: number;
+  };
+  demand?: {
+    items: number;
+    file_nodes: number;
+    edges: number;
+    crawler_nodes: number;
+  };
+  action?: {
+    kind: string;
+    reason: string;
+    collapsed_file_nodes: number;
+    collapsed_edges: number;
+    clusters: number;
+  };
+  daimoi?: Array<Record<string, unknown>>;
+  events?: SimulationGrowthEvent[];
+}
+
 export interface PresenceDynamics {
   generated_at: string;
   click_events: number;
@@ -809,6 +1109,9 @@ export interface PresenceDynamics {
   }>;
   field_particles_record?: string;
   field_particles?: BackendFieldParticle[];
+  resource_daimoi?: ResourceDaimoiSummary;
+  resource_consumption?: ResourceConsumptionSummary;
+  nooi_field?: NooiFieldGrid;
   simulation_budget?: {
     point_limit: number;
     point_limit_max: number;
@@ -841,6 +1144,75 @@ export interface PresenceDynamics {
   fork_tax: ForkTaxState;
   witness_thread?: WitnessThreadState;
   presence_impacts: PresenceImpact[];
+  growth_guard?: SimulationGrowthGuard;
+  daimoi_probabilistic_record?: string;
+  daimoi_probabilistic?: DaimoiProbabilisticSummary;
+  daimoi_behavior_defaults?: string[];
+  distributed_runtime?: PresenceRuntimeSnapshot;
+}
+
+export interface ResourceDaimoiSummary {
+  record: string;
+  schema_version: string;
+  emitter_rows: number;
+  delivered_packets: number;
+  total_transfer: number;
+  by_resource: Record<string, number>;
+  recipients: Array<{
+    presence_id: string;
+    credited: number;
+  }>;
+  queue_ratio: number;
+}
+
+export interface ResourceConsumptionSummary {
+  record: string;
+  schema_version: string;
+  action_packets: number;
+  blocked_packets: number;
+  consumed_total: number;
+  by_resource: Record<string, number>;
+  starved_presences: Array<{
+    presence_id: string;
+    blocked_packets: number;
+  }>;
+  active_presences: Array<{
+    presence_id: string;
+    consumed: number;
+  }>;
+  queue_ratio: number;
+}
+
+export interface NooiFieldCell {
+  id: string;
+  col: number;
+  row: number;
+  x: number;
+  y: number;
+  occupancy: number;
+  occupancy_ratio: number;
+  influence: number;
+  intensity: number;
+  message: number;
+  route: number;
+  vx: number;
+  vy: number;
+  vector_magnitude: number;
+  dominant_presence_id?: string;
+}
+
+export interface NooiFieldGrid {
+  record: string;
+  schema_version: string;
+  grid_cols: number;
+  grid_rows: number;
+  cell_width: number;
+  cell_height: number;
+  active_cells: number;
+  max_influence: number;
+  mean_influence: number;
+  vector_peak: number;
+  cells: NooiFieldCell[];
 }
 
 export interface WitnessThreadLineageEntry {
@@ -861,6 +1233,48 @@ export interface WitnessThreadState {
   lineage: WitnessThreadLineageEntry[];
   notes_en: string;
   notes_ja: string;
+}
+
+export interface WitnessLineageRepo {
+  available: boolean;
+  root: string;
+  branch: string;
+  upstream: string;
+  remote: string;
+  remote_url: string;
+}
+
+export interface WitnessLineageCheckpoint {
+  branch: string;
+  upstream: string;
+  ahead: number;
+  behind: number;
+}
+
+export interface WitnessLineageWorkingTree {
+  dirty: boolean;
+  staged: number;
+  unstaged: number;
+  untracked: number;
+}
+
+export interface WitnessLineageDrift {
+  active: boolean;
+  code: string;
+  message: string;
+}
+
+export interface WitnessLineagePayload {
+  ok: boolean;
+  record: string;
+  generated_at: string;
+  repo: WitnessLineageRepo;
+  checkpoint: WitnessLineageCheckpoint;
+  working_tree: WitnessLineageWorkingTree;
+  latest_commit: string;
+  push_obligation: boolean;
+  push_obligation_unknown: boolean;
+  continuity_drift: WitnessLineageDrift;
 }
 
 export interface MixMeta {
@@ -1144,6 +1558,7 @@ export interface Catalog {
   }>;
   task_queue?: TaskQueueSnapshot;
   council?: CouncilSnapshot;
+  muse_runtime?: MuseRuntimeSnapshot;
   presence_runtime?: {
     generated_at: string;
     clicks_45s: number;
@@ -1234,9 +1649,23 @@ export interface VoicePack {
   generated_at: string;
 }
 
+export interface MuseWorkspaceContext {
+  pinnedFileNodeIds: string[];
+  searchQuery: string;
+  pinnedNexusSummaries: string[];
+}
+
 export interface ChatMessage {
   role: "user" | "assistant" | "system";
   text: string;
+  meta?: {
+    channel?: "ledger" | "llm" | "command";
+    model?: string;
+    fallback?: boolean;
+    source?: string;
+    presenceId?: string;
+    presenceName?: string;
+  };
 }
 
 export type PresenceRole =

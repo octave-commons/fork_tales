@@ -90,6 +90,24 @@ export const PANEL_ANCHOR_PRESETS: Record<string, PanelAnchorPreset> = {
     pinnedByDefault: true,
     anchorId: "witness_thread",
   },
+  "nexus.ui.chat.chaos": {
+    kind: "node",
+    worldSize: "m",
+    pinnedByDefault: true,
+    anchorId: "chaos",
+  },
+  "nexus.ui.chat.stability": {
+    kind: "node",
+    worldSize: "m",
+    pinnedByDefault: true,
+    anchorId: "stability",
+  },
+  "nexus.ui.chat.symetry": {
+    kind: "node",
+    worldSize: "m",
+    pinnedByDefault: true,
+    anchorId: "symetry",
+  },
   "nexus.ui.web_graph_weaver": {
     kind: "cluster",
     worldSize: "m",
@@ -139,6 +157,12 @@ export const PANEL_ANCHOR_PRESETS: Record<string, PanelAnchorPreset> = {
     kind: "region",
     worldSize: "xl",
     anchorId: "anchor_registry",
+  },
+  "nexus.ui.glass_viewport": {
+    kind: "region",
+    worldSize: "xl",
+    pinnedByDefault: true,
+    anchorId: "view_lens_keeper",
   },
 };
 

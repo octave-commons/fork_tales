@@ -32,8 +32,7 @@ export interface CoreLayerOption {
 export const CORE_LAYER_OPTIONS: CoreLayerOption[] = [
   { id: "presence", label: "Presence currents" },
   { id: "file-impact", label: "File influence" },
-  { id: "file-graph", label: "File graph" },
-  { id: "crawler-graph", label: "Crawler graph" },
+  { id: "file-graph", label: "Nexus graph" },
   { id: "truth-gate", label: "Truth gate" },
   { id: "logic", label: "Logic graph" },
   { id: "pain-field", label: "Pain field" },
@@ -41,12 +40,12 @@ export const CORE_LAYER_OPTIONS: CoreLayerOption[] = [
 
 export const DEFAULT_CORE_LAYER_VISIBILITY: Record<CoreLayerId, boolean> = {
   presence: true,
-  "file-impact": true,
+  "file-impact": false,
   "file-graph": true,
-  "crawler-graph": true,
-  "truth-gate": true,
-  logic: true,
-  "pain-field": true,
+  "crawler-graph": false,
+  "truth-gate": false,
+  logic: false,
+  "pain-field": false,
 };
 
 export const CORE_CAMERA_ZOOM_MIN = 0.6;

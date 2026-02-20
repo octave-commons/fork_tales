@@ -1,0 +1,2004 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Docker Simulation Dashboard</title>
+    <style>
+      :root {
+        --ink: #eef2ff;
+        --ink-muted: #b6c2e1;
+        --line: rgba(173, 191, 255, 0.28);
+        --line-strong: rgba(173, 191, 255, 0.44);
+        --surface-0: #0b1222;
+        --surface-1: rgba(20, 31, 56, 0.76);
+        --surface-2: rgba(16, 24, 46, 0.9);
+        --ok: #50e3a4;
+        --warn: #ffd479;
+        --bad: #ff7e9f;
+        --brand: #75d8ff;
+        --accent: #8dc2ff;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        color: var(--ink);
+        background:
+          radial-gradient(115% 130% at 100% 0%, rgba(117, 216, 255, 0.24), transparent 56%),
+          radial-gradient(90% 110% at 0% 100%, rgba(141, 194, 255, 0.22), transparent 58%),
+          var(--surface-0);
+        font-family: "Space Grotesk", "IBM Plex Sans", "Segoe UI", sans-serif;
+      }
+
+      a {
+        color: var(--brand);
+      }
+
+      .frame {
+        width: min(1200px, calc(100vw - 2rem));
+        margin: 1.25rem auto 2rem;
+      }
+
+      .hero,
+      .panel,
+      .simulation-card {
+        border: 1px solid var(--line);
+        background: var(--surface-1);
+        border-radius: 16px;
+        backdrop-filter: blur(10px);
+      }
+
+      .hero {
+        padding: 1rem 1.1rem;
+      }
+
+      .hero-top {
+        display: flex;
+        gap: 0.9rem;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .title {
+        margin: 0;
+        font-size: clamp(1.05rem, 2.5vw, 1.5rem);
+        letter-spacing: 0.015em;
+      }
+
+      .subtitle {
+        margin: 0.3rem 0 0;
+        color: var(--ink-muted);
+        font-size: 0.92rem;
+      }
+
+      .hero-actions {
+        display: inline-flex;
+        gap: 0.45rem;
+        align-items: center;
+      }
+
+      button {
+        border: 1px solid var(--line-strong);
+        color: var(--ink);
+        background: linear-gradient(160deg, rgba(117, 216, 255, 0.22), rgba(92, 141, 255, 0.16));
+        border-radius: 10px;
+        padding: 0.5rem 0.75rem;
+        cursor: pointer;
+        font-size: 0.83rem;
+      }
+
+      button:hover {
+        border-color: rgba(173, 191, 255, 0.64);
+      }
+
+      .pill {
+        border-radius: 999px;
+        border: 1px solid var(--line-strong);
+        padding: 0.28rem 0.55rem;
+        font-size: 0.72rem;
+        letter-spacing: 0.02em;
+        background: rgba(173, 191, 255, 0.08);
+      }
+
+      .pill-ok {
+        color: var(--ok);
+        border-color: rgba(80, 227, 164, 0.55);
+      }
+
+      .pill-warn {
+        color: var(--warn);
+        border-color: rgba(255, 212, 121, 0.55);
+      }
+
+      .pill-bad {
+        color: var(--bad);
+        border-color: rgba(255, 126, 159, 0.55);
+      }
+
+      .grid {
+        margin-top: 0.95rem;
+        display: grid;
+        gap: 0.8rem;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      }
+
+      .stat {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--surface-2);
+        padding: 0.72rem;
+      }
+
+      .stat .label {
+        color: var(--ink-muted);
+        font-size: 0.74rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .stat .value {
+        margin-top: 0.18rem;
+        font-size: 1.3rem;
+        font-weight: 700;
+      }
+
+      .row {
+        margin-top: 0.9rem;
+        display: grid;
+        gap: 0.8rem;
+        grid-template-columns: 1fr;
+      }
+
+      .panel {
+        padding: 0.85rem;
+      }
+
+      .panel h2 {
+        margin: 0;
+        font-size: 0.98rem;
+      }
+
+      .panel-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+      }
+
+      .panel-note {
+        margin: 0.42rem 0 0;
+        color: var(--ink-muted);
+        font-size: 0.8rem;
+      }
+
+      .chips {
+        margin-top: 0.65rem;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.45rem;
+      }
+
+      .chip {
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        padding: 0.24rem 0.54rem;
+        font-size: 0.73rem;
+        background: rgba(173, 191, 255, 0.08);
+      }
+
+      .simulation-list {
+        margin-top: 0.7rem;
+        display: grid;
+        gap: 0.65rem;
+      }
+
+      .simulation-card {
+        padding: 0.74rem;
+      }
+
+      .simulation-layout {
+        margin-top: 0.54rem;
+        display: grid;
+        gap: 0.72rem;
+        grid-template-columns: minmax(190px, 240px) 1fr;
+        align-items: start;
+      }
+
+      .simulation-preview {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        overflow: hidden;
+        background: rgba(2, 6, 16, 0.92);
+        min-height: 132px;
+      }
+
+      .simulation-preview-canvas {
+        width: 100%;
+        aspect-ratio: 16 / 10;
+        overflow: hidden;
+        position: relative;
+        background:
+          radial-gradient(140% 120% at 10% 10%, rgba(117, 216, 255, 0.12), transparent 55%),
+          radial-gradient(120% 140% at 100% 100%, rgba(141, 194, 255, 0.1), transparent 52%),
+          rgba(2, 6, 16, 0.96);
+      }
+
+      .simulation-preview-frame {
+        width: 456%;
+        height: 456%;
+        border: 0;
+        transform: scale(0.2193);
+        transform-origin: top left;
+        pointer-events: none;
+        background: #040916;
+      }
+
+      .simulation-preview-frame[data-preview-loaded="0"] {
+        display: none;
+      }
+
+      .simulation-preview-overlay {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 0.45rem;
+        padding: 0.32rem 0.42rem;
+        background: linear-gradient(180deg, transparent, rgba(2, 7, 20, 0.88));
+      }
+
+      .simulation-preview-label {
+        border-radius: 999px;
+        border: 1px solid rgba(173, 191, 255, 0.45);
+        background: rgba(173, 191, 255, 0.14);
+        padding: 0.12rem 0.46rem;
+        font-size: 0.68rem;
+        letter-spacing: 0.03em;
+        color: var(--ink-muted);
+      }
+
+      .simulation-preview-open {
+        color: var(--ink);
+        text-decoration: none;
+        border-radius: 999px;
+        border: 1px solid rgba(117, 216, 255, 0.5);
+        background: rgba(117, 216, 255, 0.18);
+        padding: 0.12rem 0.46rem;
+        font-size: 0.68rem;
+        letter-spacing: 0.03em;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      button.simulation-preview-open {
+        cursor: pointer;
+        font: inherit;
+      }
+
+      button.simulation-preview-open:disabled {
+        opacity: 0.65;
+        cursor: not-allowed;
+      }
+
+      .simulation-preview-empty {
+        width: 100%;
+        aspect-ratio: 16 / 10;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        padding: 0.5rem;
+        color: var(--ink-muted);
+        font-size: 0.74rem;
+      }
+
+      .simulation-detail {
+        min-width: 0;
+      }
+
+      .simulation-top {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 0.45rem;
+      }
+
+      .simulation-name {
+        font-size: 0.96rem;
+        font-weight: 700;
+      }
+
+      .simulation-meta {
+        color: var(--ink-muted);
+        font-size: 0.75rem;
+      }
+
+      .simulation-controls {
+        margin-top: 0.5rem;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        align-items: center;
+      }
+
+      .simulation-gate-link,
+      .simulation-control-button {
+        border-radius: 999px;
+        border: 1px solid var(--line-strong);
+        padding: 0.16rem 0.58rem;
+        font-size: 0.68rem;
+        letter-spacing: 0.03em;
+        text-decoration: none;
+        background: rgba(173, 191, 255, 0.1);
+        color: var(--ink);
+      }
+
+      .simulation-gate-link {
+        border-color: rgba(117, 216, 255, 0.45);
+        color: var(--brand);
+      }
+
+      .simulation-control-button {
+        cursor: pointer;
+      }
+
+      .simulation-control-button[data-action="stop"] {
+        border-color: rgba(255, 126, 159, 0.45);
+        color: var(--bad);
+        background: rgba(255, 126, 159, 0.14);
+      }
+
+      .simulation-control-button[data-action="start"] {
+        border-color: rgba(80, 227, 164, 0.45);
+        color: var(--ok);
+        background: rgba(80, 227, 164, 0.14);
+      }
+
+      .simulation-control-button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+
+      .kv {
+        margin-top: 0.48rem;
+        display: grid;
+        gap: 0.42rem;
+      }
+
+      .resource-block {
+        margin-top: 0.62rem;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: rgba(4, 10, 24, 0.72);
+        padding: 0.54rem;
+        display: grid;
+        gap: 0.44rem;
+      }
+
+      .resource-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.44rem;
+        flex-wrap: wrap;
+      }
+
+      .resource-title {
+        font-size: 0.74rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--ink-muted);
+      }
+
+      .resource-tag {
+        border-radius: 999px;
+        border: 1px solid var(--line-strong);
+        padding: 0.11rem 0.46rem;
+        font-size: 0.68rem;
+        letter-spacing: 0.03em;
+        color: var(--ink-muted);
+        background: rgba(173, 191, 255, 0.1);
+      }
+
+      .resource-tag-ok {
+        color: var(--ok);
+        border-color: rgba(80, 227, 164, 0.55);
+      }
+
+      .resource-tag-warn {
+        color: var(--warn);
+        border-color: rgba(255, 212, 121, 0.55);
+      }
+
+      .resource-tag-bad {
+        color: var(--bad);
+        border-color: rgba(255, 126, 159, 0.55);
+      }
+
+      .resource-row {
+        display: grid;
+        gap: 0.2rem;
+      }
+
+      .resource-row-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 0.44rem;
+        font-size: 0.73rem;
+      }
+
+      .resource-row-label {
+        color: var(--ink-muted);
+        letter-spacing: 0.03em;
+      }
+
+      .resource-row-value {
+        text-align: right;
+      }
+
+      .resource-meter {
+        height: 0.34rem;
+        border-radius: 999px;
+        background: rgba(173, 191, 255, 0.12);
+        overflow: hidden;
+      }
+
+      .resource-meter-fill {
+        height: 100%;
+        border-radius: inherit;
+        transition: width 220ms ease;
+      }
+
+      .resource-meter-ok {
+        background: linear-gradient(90deg, rgba(80, 227, 164, 0.58), rgba(80, 227, 164, 0.95));
+      }
+
+      .resource-meter-warn {
+        background: linear-gradient(90deg, rgba(255, 212, 121, 0.58), rgba(255, 212, 121, 0.95));
+      }
+
+      .resource-meter-bad {
+        background: linear-gradient(90deg, rgba(255, 126, 159, 0.56), rgba(255, 126, 159, 0.95));
+      }
+
+      .resource-meter-unbounded {
+        background: linear-gradient(90deg, rgba(173, 191, 255, 0.45), rgba(173, 191, 255, 0.65));
+      }
+
+      .kv-row {
+        display: flex;
+        gap: 0.4rem;
+        flex-wrap: wrap;
+        font-size: 0.78rem;
+      }
+
+      .kv-key {
+        color: var(--ink-muted);
+        min-width: 72px;
+      }
+
+      .empty {
+        margin-top: 0.7rem;
+        border: 1px dashed var(--line-strong);
+        border-radius: 12px;
+        padding: 0.85rem;
+        color: var(--ink-muted);
+        font-size: 0.84rem;
+      }
+
+      .meta-grid {
+        margin-top: 0.7rem;
+        display: grid;
+        gap: 0.68rem;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      }
+
+      .meta-box {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: rgba(4, 10, 24, 0.72);
+        padding: 0.62rem;
+      }
+
+      .meta-box h3 {
+        margin: 0;
+        font-size: 0.8rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--ink-muted);
+      }
+
+      .meta-list {
+        margin-top: 0.5rem;
+        display: grid;
+        gap: 0.46rem;
+      }
+
+      .meta-item {
+        border: 1px solid rgba(173, 191, 255, 0.24);
+        border-radius: 10px;
+        padding: 0.46rem;
+        background: rgba(11, 18, 34, 0.82);
+      }
+
+      .meta-item-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 0.4rem;
+        flex-wrap: wrap;
+        font-size: 0.72rem;
+      }
+
+      .meta-item-title {
+        font-size: 0.79rem;
+        font-weight: 600;
+      }
+
+      .meta-item-detail {
+        margin-top: 0.22rem;
+        font-size: 0.74rem;
+        color: var(--ink-muted);
+      }
+
+      .meta-form {
+        margin-top: 0.5rem;
+        display: grid;
+        gap: 0.42rem;
+      }
+
+      .meta-form-row {
+        display: grid;
+        gap: 0.42rem;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .meta-form input,
+      .meta-form select,
+      .meta-form textarea {
+        width: 100%;
+        border-radius: 8px;
+        border: 1px solid rgba(173, 191, 255, 0.34);
+        background: rgba(9, 14, 27, 0.88);
+        color: var(--ink);
+        font: inherit;
+        font-size: 0.78rem;
+        padding: 0.4rem 0.45rem;
+      }
+
+      .meta-form textarea {
+        min-height: 72px;
+        resize: vertical;
+      }
+
+      .meta-form button {
+        justify-self: start;
+      }
+
+      .meta-summary {
+        margin-top: 0.48rem;
+        font-size: 0.77rem;
+        color: var(--ink-muted);
+      }
+
+      .chip-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+        margin-top: 0.36rem;
+      }
+
+      .chart-list {
+        margin-top: 0.5rem;
+        display: grid;
+        gap: 0.55rem;
+      }
+
+      .chart-group {
+        border: 1px solid rgba(173, 191, 255, 0.24);
+        border-radius: 10px;
+        padding: 0.48rem;
+        background: rgba(11, 18, 34, 0.82);
+      }
+
+      .chart-group-title {
+        margin: 0 0 0.38rem;
+        font-size: 0.73rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--ink-muted);
+      }
+
+      .chart-row {
+        display: grid;
+        grid-template-columns: 66px 1fr 48px;
+        align-items: center;
+        gap: 0.36rem;
+        margin-top: 0.24rem;
+        font-size: 0.72rem;
+      }
+
+      .chart-run-label {
+        color: var(--ink-muted);
+      }
+
+      .chart-track {
+        height: 0.34rem;
+        border-radius: 999px;
+        background: rgba(173, 191, 255, 0.12);
+        overflow: hidden;
+      }
+
+      .chart-fill {
+        height: 100%;
+        border-radius: inherit;
+      }
+
+      .chart-fill-ok {
+        background: linear-gradient(90deg, rgba(80, 227, 164, 0.58), rgba(80, 227, 164, 0.95));
+      }
+
+      .chart-fill-warn {
+        background: linear-gradient(90deg, rgba(255, 212, 121, 0.58), rgba(255, 212, 121, 0.95));
+      }
+
+      .chart-fill-bad {
+        background: linear-gradient(90deg, rgba(255, 126, 159, 0.56), rgba(255, 126, 159, 0.95));
+      }
+
+      .chart-value {
+        text-align: right;
+      }
+
+      @media (max-width: 700px) {
+        .meta-form-row {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 900px) {
+        .simulation-layout {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 700px) {
+        .frame {
+          width: calc(100vw - 1rem);
+          margin-top: 0.65rem;
+        }
+      }
+
+      /* Portal Navigation */
+      .portal-nav {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.75rem 1rem;
+        background: rgba(13, 20, 38, 0.9);
+        border-bottom: 1px solid var(--line);
+        backdrop-filter: blur(12px);
+        position: sticky;
+        top: 0;
+        z-index: 100;
+      }
+      .portal-links { display: flex; gap: 1.5rem; }
+      .portal-link {
+        color: var(--ink-muted);
+        text-decoration: none;
+        font-size: 0.9rem;
+        font-weight: 500;
+        transition: color 0.2s;
+      }
+      .portal-link:hover, .portal-link.active { color: var(--brand); }
+      .portal-title {
+        font-size: 0.85rem;
+        color: var(--ink-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="portal-nav">
+      <div class="portal-links">
+        <a href="/dashboard/docker" class="portal-link active">Meta Operations</a>
+        <a href="/dashboard/bench" class="portal-link">Workbench</a>
+        <a href="/" class="portal-link">Runtime</a>
+      </div>
+      <div class="portal-title">Simulation Portal</div>
+    </nav>
+    <main class="frame">
+      <section class="hero">
+        <div class="hero-top">
+          <div>
+            <h1 class="title">Docker Simulation Dashboard</h1>
+            <p class="subtitle">Live view of running simulation containers, clusters, and cross-network awareness.</p>
+          </div>
+          <div class="hero-actions">
+            <span id="wsPill" class="pill">ws: connecting</span>
+            <button id="refreshButton" type="button">Refresh now</button>
+          </div>
+        </div>
+        <div class="grid" id="summaryGrid"></div>
+      </section>
+
+      <section class="row">
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Network Clusters</h2>
+            <span id="generatedAt" class="pill">awaiting data</span>
+          </div>
+          <p class="panel-note" id="sourceNote">Initializing Docker simulation source.</p>
+          <div id="clusterWrap" class="chips"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Simulation Fleet</h2>
+            <span id="fingerprintPill" class="pill">fingerprint: pending</span>
+          </div>
+          <div id="simulationList" class="simulation-list"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Meta Operations</h2>
+            <span id="metaPill" class="pill">meta: syncing</span>
+          </div>
+          <p class="panel-note" id="metaSummary">
+            Observe failures as signals, capture notes, queue objectives, and track training/evaluation runs.
+          </p>
+          <div class="meta-grid">
+            <section class="meta-box">
+              <h3>Failure Signals</h3>
+              <div id="failureList" class="meta-list"></div>
+            </section>
+
+            <section class="meta-box">
+              <h3>Capture Note</h3>
+              <form id="metaNoteForm" class="meta-form">
+                <div class="meta-form-row">
+                  <select id="metaNoteCategory">
+                    <option value="observation">observation</option>
+                    <option value="failure">failure</option>
+                    <option value="hypothesis">hypothesis</option>
+                    <option value="training">training</option>
+                    <option value="evaluation">evaluation</option>
+                  </select>
+                  <select id="metaNoteSeverity">
+                    <option value="info">info</option>
+                    <option value="watch">watch</option>
+                    <option value="warning">warning</option>
+                    <option value="critical">critical</option>
+                  </select>
+                </div>
+                <input id="metaNoteTarget" type="text" placeholder="target container or context" />
+                <input id="metaNoteTags" type="text" placeholder="tags (comma separated)" />
+                <textarea id="metaNoteText" placeholder="what happened, why it matters, and next step"></textarea>
+                <button type="submit">Save Note</button>
+              </form>
+            </section>
+
+            <section class="meta-box">
+              <h3>Queue Objective</h3>
+              <form id="metaObjectiveForm" class="meta-form">
+                <div class="meta-form-row">
+                  <select id="metaObjectiveType">
+                    <option value="stabilization">stabilization</option>
+                    <option value="training">training</option>
+                    <option value="evaluation">evaluation</option>
+                    <option value="dataset-curation">dataset-curation</option>
+                  </select>
+                  <select id="metaObjectivePriority">
+                    <option value="high">high</option>
+                    <option value="medium" selected>medium</option>
+                    <option value="low">low</option>
+                  </select>
+                </div>
+                <input id="metaObjectiveTarget" type="text" placeholder="target container or world" />
+                <textarea id="metaObjectiveText" placeholder="objective statement for queue execution"></textarea>
+                <button type="submit">Enqueue Objective</button>
+                <button id="exportStudyButton" type="button">Export Study Snapshot</button>
+              </form>
+            </section>
+
+            <section class="meta-box">
+              <h3>Track Run</h3>
+              <form id="metaRunForm" class="meta-form">
+                <div class="meta-form-row">
+                  <select id="metaRunType">
+                    <option value="training">training</option>
+                    <option value="evaluation">evaluation</option>
+                    <option value="dataset-curation">dataset-curation</option>
+                    <option value="benchmark">benchmark</option>
+                    <option value="analysis">analysis</option>
+                  </select>
+                  <select id="metaRunStatus">
+                    <option value="planned">planned</option>
+                    <option value="running">running</option>
+                    <option value="completed">completed</option>
+                    <option value="failed">failed</option>
+                  </select>
+                </div>
+                <input id="metaRunTitle" type="text" placeholder="run title" />
+                <div class="meta-form-row">
+                  <input id="metaRunModel" type="text" placeholder="model ref" />
+                  <input id="metaRunDataset" type="text" placeholder="dataset ref" />
+                </div>
+                <textarea id="metaRunNotes" placeholder="notes / outcome summary"></textarea>
+                <button type="submit">Save Run</button>
+              </form>
+            </section>
+
+            <section class="meta-box">
+              <h3>Recent Notes</h3>
+              <div id="metaNotesList" class="meta-list"></div>
+            </section>
+
+            <section class="meta-box">
+              <h3>Recent Runs</h3>
+              <div id="metaRunsList" class="meta-list"></div>
+              <div class="meta-summary" id="metaQueueSummary">queue: pending=0</div>
+              <div class="chip-row" id="metaSuggestionChips"></div>
+            </section>
+
+            <section class="meta-box">
+              <h3>Training Charts</h3>
+              <div id="trainingCharts" class="chart-list"></div>
+              <div class="meta-summary" id="trainingChartSummary">No training/evaluation metrics available yet.</div>
+            </section>
+
+            <section class="meta-box">
+              <h3>Resource Economy</h3>
+              <div class="meta-summary">
+                <span id="economyTotalCpu" class="chip">CPU: 0%</span>
+                <span id="economyTotalRam" class="chip">RAM: 0 MB</span>
+              </div>
+              <div id="economyList" class="meta-list" style="margin-top: 0.5rem"></div>
+            </section>
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <script>
+      const summaryGrid = document.getElementById("summaryGrid");
+      const clusterWrap = document.getElementById("clusterWrap");
+      const generatedAt = document.getElementById("generatedAt");
+      const sourceNote = document.getElementById("sourceNote");
+      const simulationList = document.getElementById("simulationList");
+      const wsPill = document.getElementById("wsPill");
+      const fingerprintPill = document.getElementById("fingerprintPill");
+      const refreshButton = document.getElementById("refreshButton");
+      const metaPill = document.getElementById("metaPill");
+      const metaSummary = document.getElementById("metaSummary");
+      const failureList = document.getElementById("failureList");
+      const metaNotesList = document.getElementById("metaNotesList");
+      const metaRunsList = document.getElementById("metaRunsList");
+      const metaQueueSummary = document.getElementById("metaQueueSummary");
+      const metaSuggestionChips = document.getElementById("metaSuggestionChips");
+      const trainingCharts = document.getElementById("trainingCharts");
+      const trainingChartSummary = document.getElementById("trainingChartSummary");
+      const economyList = document.getElementById("economyList");
+      const economyTotalCpu = document.getElementById("economyTotalCpu");
+      const economyTotalRam = document.getElementById("economyTotalRam");
+      const metaNoteForm = document.getElementById("metaNoteForm");
+      const metaObjectiveForm = document.getElementById("metaObjectiveForm");
+      const metaRunForm = document.getElementById("metaRunForm");
+      const exportStudyButton = document.getElementById("exportStudyButton");
+
+      let ws = null;
+      let reconnectTimer = null;
+      let lastFingerprint = "";
+      let wsConnected = false;
+      let reconnectDelayMs = 2200;
+      let snapshotRequestInFlight = false;
+      let metaRequestInFlight = false;
+
+      function safeText(value, fallback = "-") {
+        const text = String(value == null ? "" : value).trim();
+        return text || fallback;
+      }
+
+      function asNumber(value, fallback = 0) {
+        const numeric = Number(value);
+        return Number.isFinite(numeric) ? numeric : fallback;
+      }
+
+      function formatBytes(value) {
+        const bytes = asNumber(value, 0);
+        if (bytes <= 0) {
+          return "0 B";
+        }
+        const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+        const exponent = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+        const scaled = bytes / 1024 ** exponent;
+        const precision = scaled >= 10 || exponent === 0 ? 0 : 1;
+        return `${scaled.toFixed(precision)} ${units[exponent]}`;
+      }
+
+      function resourceStateFromRatio(ratio) {
+        if (!Number.isFinite(ratio) || ratio < 0) {
+          return "unbounded";
+        }
+        if (ratio >= 0.9) {
+          return "critical";
+        }
+        if (ratio >= 0.75) {
+          return "warning";
+        }
+        return "ok";
+      }
+
+      function stateTagClass(state) {
+        const normalized = String(state || "").toLowerCase();
+        if (normalized === "critical") {
+          return "resource-tag resource-tag-bad";
+        }
+        if (normalized === "warning") {
+          return "resource-tag resource-tag-warn";
+        }
+        if (normalized === "ok") {
+          return "resource-tag resource-tag-ok";
+        }
+        return "resource-tag";
+      }
+
+      function stateMeterClass(state) {
+        const normalized = String(state || "").toLowerCase();
+        if (normalized === "critical") {
+          return "resource-meter-fill resource-meter-bad";
+        }
+        if (normalized === "warning") {
+          return "resource-meter-fill resource-meter-warn";
+        }
+        if (normalized === "ok") {
+          return "resource-meter-fill resource-meter-ok";
+        }
+        return "resource-meter-fill resource-meter-unbounded";
+      }
+
+      function meterWidth(ratio) {
+        if (!Number.isFinite(ratio) || ratio <= 0) {
+          return "0%";
+        }
+        const width = Math.max(0, Math.min(100, ratio * 100));
+        return `${width.toFixed(1)}%`;
+      }
+
+      function splitCsv(value) {
+        return String(value || "")
+          .split(",")
+          .map((item) => item.trim())
+          .filter((item) => item.length > 0);
+      }
+
+      function asRate(value) {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) {
+          return null;
+        }
+        return Math.max(0, Math.min(1, numeric));
+      }
+
+      function chartFillClass(rate) {
+        if (!Number.isFinite(rate)) {
+          return "chart-fill chart-fill-bad";
+        }
+        if (rate >= 0.8) {
+          return "chart-fill chart-fill-ok";
+        }
+        if (rate >= 0.55) {
+          return "chart-fill chart-fill-warn";
+        }
+        return "chart-fill chart-fill-bad";
+      }
+
+      function chartWidth(rate) {
+        if (!Number.isFinite(rate) || rate <= 0) {
+          return "0%";
+        }
+        return `${Math.max(0, Math.min(100, rate * 100)).toFixed(1)}%`;
+      }
+
+      function metricFromRun(run, key) {
+        const metrics = run && typeof run.metrics === "object" ? run.metrics : {};
+        return asRate(metrics[key]);
+      }
+
+      function setMetaPill(kind, text) {
+        if (!metaPill) {
+          return;
+        }
+        if (kind === "ok") {
+          metaPill.className = "pill pill-ok";
+        } else if (kind === "warn") {
+          metaPill.className = "pill pill-warn";
+        } else {
+          metaPill.className = "pill pill-bad";
+        }
+        metaPill.textContent = text;
+      }
+
+      function lifecycleTagClass(stability) {
+        const normalized = String(stability || "").toLowerCase();
+        if (normalized === "failing") {
+          return "resource-tag resource-tag-bad";
+        }
+        if (normalized === "degraded") {
+          return "resource-tag resource-tag-warn";
+        }
+        return "resource-tag resource-tag-ok";
+      }
+
+      function escapeHtml(value) {
+        return String(value == null ? "" : value)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/\"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function normalizedPreviewUrl(rawUrl) {
+        const candidate = String(rawUrl || "").trim();
+        if (!candidate) {
+          return "";
+        }
+        try {
+          const parsed = new URL(candidate, window.location.origin);
+          if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+            return "";
+          }
+          return parsed.toString();
+        } catch {
+          return "";
+        }
+      }
+
+      function previewUrlForSimulation(simulation, endpoints) {
+        const route = simulation && typeof simulation.route === "object" ? simulation.route : {};
+        const routeId = String(route?.id || "").trim();
+        if (routeId) {
+          return normalizedPreviewUrl(`${window.location.origin}/sim/${encodeURIComponent(routeId)}/`);
+        }
+
+        for (const endpoint of endpoints) {
+          const kind = String(endpoint?.kind || "").trim().toLowerCase();
+          const url = normalizedPreviewUrl(endpoint?.url);
+          if (kind === "world" && url) {
+            return url;
+          }
+        }
+        const service = String(simulation?.service || "").trim().toLowerCase();
+        if (service === "eta-mu-system") {
+          return normalizedPreviewUrl(`${window.location.origin}/`);
+        }
+        return "";
+      }
+
+      function previewPaneHtml(previewUrl, simulationName) {
+        if (!previewUrl) {
+          return '<div class="simulation-preview-empty">preview unavailable for this container</div>';
+        }
+        const safeUrl = escapeHtml(previewUrl);
+        const safeTitle = escapeHtml(`${simulationName} live preview`);
+        return `
+          <div class="simulation-preview-canvas">
+            <iframe
+              class="simulation-preview-frame"
+              src="about:blank"
+              data-preview-loaded="0"
+              data-preview-url="${safeUrl}"
+              title="${safeTitle}"
+              loading="lazy"
+              sandbox="allow-same-origin allow-scripts"
+            ></iframe>
+            <div class="simulation-preview-empty">preview paused for stability (load on demand)</div>
+            <div class="simulation-preview-overlay">
+              <span class="simulation-preview-label">live preview</span>
+              <button class="simulation-preview-open" type="button" data-load-preview="1">load</button>
+              <a class="simulation-preview-open" href="${safeUrl}" target="_blank" rel="noreferrer">open</a>
+            </div>
+          </div>
+        `;
+      }
+
+      function toLocalTime(isoText) {
+        if (!isoText) {
+          return "-";
+        }
+        const date = new Date(String(isoText));
+        if (Number.isNaN(date.getTime())) {
+          return safeText(isoText);
+        }
+        return date.toLocaleString();
+      }
+
+      function toPillClass(payload) {
+        if (!payload) {
+          return "pill";
+        }
+        if (payload.stale || payload.error || payload.ok === false) {
+          return "pill pill-warn";
+        }
+        return "pill pill-ok";
+      }
+
+      function statusClass(stateText) {
+        const normalized = String(stateText || "").toLowerCase();
+        if (normalized === "running") {
+          return "pill pill-ok";
+        }
+        if (normalized === "paused" || normalized === "restarting") {
+          return "pill pill-warn";
+        }
+        return "pill pill-bad";
+      }
+
+      function renderSummary(payload) {
+        const summary = payload && typeof payload.summary === "object" ? payload.summary : {};
+        const running = asNumber(summary.running_simulations, 0);
+        const tracked = asNumber(summary.total_simulations, 0);
+        const strict = asNumber(summary.strict_simulations, 0);
+        const unconstrained = asNumber(summary.unconstrained_simulations, 0);
+        const totalCpuPercent = asNumber(summary.total_cpu_percent, 0);
+        const totalMemoryUsageBytes = asNumber(summary.total_memory_usage_bytes, 0);
+        const totalMemoryLimitBytes = asNumber(summary.total_memory_limit_bytes, 0);
+        const memorySummary =
+          totalMemoryLimitBytes > 0
+            ? `${formatBytes(totalMemoryUsageBytes)} / ${formatBytes(totalMemoryLimitBytes)}`
+            : `${formatBytes(totalMemoryUsageBytes)} (no cap)`;
+        const cards = [
+          {
+            label: "Running simulations",
+            value: running,
+          },
+          {
+            label: "Strict limit policy",
+            value: `${strict}/${tracked}`,
+          },
+          {
+            label: "Unbounded containers",
+            value: unconstrained,
+          },
+          {
+            label: "Network clusters",
+            value: asNumber(summary.network_clusters, 0),
+          },
+          {
+            label: "Aggregate CPU",
+            value: `${totalCpuPercent.toFixed(1)}%`,
+          },
+          {
+            label: "Aggregate memory",
+            value: memorySummary,
+          },
+          {
+            label: "Discovery mode",
+            value: safeText(payload?.source?.mode, "docker-socket"),
+          },
+        ];
+
+        summaryGrid.innerHTML = cards
+          .map(
+            (card) => `
+              <div class="stat">
+                <div class="label">${card.label}</div>
+                <div class="value">${card.value}</div>
+              </div>
+            `,
+          )
+          .join("");
+      }
+
+      function renderClusters(payload) {
+        const clusters = Array.isArray(payload?.clusters) ? payload.clusters : [];
+        if (clusters.length === 0) {
+          clusterWrap.innerHTML = '<div class="empty">No shared simulation network clusters detected.</div>';
+          return;
+        }
+
+        clusterWrap.innerHTML = clusters
+          .map((cluster) => {
+            const networkName = safeText(cluster.network, "network");
+            const count = Number(cluster.simulation_count || 0);
+            return `<span class="chip">${networkName} (${count})</span>`;
+          })
+          .join("");
+      }
+
+      function renderSimulations(payload) {
+        const simulations = Array.isArray(payload?.simulations) ? payload.simulations : [];
+        if (simulations.length === 0) {
+          simulationList.innerHTML = `
+            <div class="empty">
+              No simulation containers are currently visible. Add labels like
+              <code>io.fork_tales.simulation=true</code> and join network
+              <code>${safeText(payload?.discovery_contract?.network_hint, "eta-mu-sim-net")}</code> for automatic discovery.
+            </div>
+          `;
+          return;
+        }
+
+        simulationList.innerHTML = simulations
+          .map((simulation) => {
+            const endpoints = Array.isArray(simulation.endpoints) ? simulation.endpoints : [];
+            const simulationName = safeText(simulation.name, simulation.short_id);
+            const previewUrl = previewUrlForSimulation(simulation, endpoints);
+            const route = simulation && typeof simulation.route === "object" ? simulation.route : {};
+            const routeId = String(route?.id || "").trim();
+            const routeWorldPath = routeId ? `/sim/${encodeURIComponent(routeId)}/` : "";
+            const routeWeaverPath = routeId ? `/sim/${encodeURIComponent(routeId)}/weaver/` : "";
+            const endpointBits = [];
+            if (routeWorldPath) {
+              endpointBits.push(
+                `<a href="${routeWorldPath}" target="_blank" rel="noreferrer">world: ${routeWorldPath}</a>`,
+              );
+            }
+            if (routeWeaverPath) {
+              endpointBits.push(
+                `<a href="${routeWeaverPath}" target="_blank" rel="noreferrer">weaver: ${routeWeaverPath}</a>`,
+              );
+            }
+            if (!endpointBits.length && endpoints.length) {
+              endpoints.forEach((endpoint) => {
+                const kind = safeText(endpoint.kind, "endpoint");
+                const url = safeText(endpoint.url, "");
+                endpointBits.push(
+                  url
+                    ? `<a href="${url}" target="_blank" rel="noreferrer">${kind}: ${url}</a>`
+                    : `<span>${kind}</span>`,
+                );
+              });
+            }
+            const endpointHtml = endpointBits.length ? endpointBits.join(" · ") : "-";
+
+            const control = simulation && typeof simulation.control === "object" ? simulation.control : {};
+            const canStartStop = Boolean(control?.can_start_stop);
+            const controlReason = safeText(control?.reason, "");
+            const currentState = String(simulation?.state || "").trim().toLowerCase();
+            const desiredAction = currentState === "running" ? "stop" : "start";
+            const desiredLabel = desiredAction === "stop" ? "Stop" : "Start";
+            const peerNames = Array.isArray(simulation?.awareness?.peer_names)
+              ? simulation.awareness.peer_names.join(", ")
+              : "";
+            const networks = Array.isArray(simulation.networks) ? simulation.networks.join(", ") : "-";
+            const resources = simulation && typeof simulation.resources === "object" ? simulation.resources : {};
+            const usage = resources && typeof resources.usage === "object" ? resources.usage : {};
+            const limits = resources && typeof resources.limits === "object" ? resources.limits : {};
+            const pressure = resources && typeof resources.pressure === "object" ? resources.pressure : {};
+            const lifecycle = simulation && typeof simulation.lifecycle === "object" ? simulation.lifecycle : {};
+
+            const cpuPercent = asNumber(usage.cpu_percent, 0);
+            const cpuLimitCores = asNumber(limits.cpu_limit_cores, 0);
+            const cpuRatio = Number.isFinite(Number(pressure.cpu_ratio)) ? Number(pressure.cpu_ratio) : null;
+
+            const memoryUsageBytes = asNumber(usage.memory_usage_bytes, 0);
+            const memoryLimitBytes = asNumber(usage.memory_limit_bytes, 0);
+            const memoryRatio = Number.isFinite(Number(pressure.memory_ratio))
+              ? Number(pressure.memory_ratio)
+              : null;
+
+            const pidsCurrent = asNumber(usage.pids_current, 0);
+            const pidsLimit = asNumber(usage.pids_limit || limits.pids_limit, 0);
+            const pidsRatio = Number.isFinite(Number(pressure.pids_ratio)) ? Number(pressure.pids_ratio) : null;
+
+            const resourceState = safeText(pressure.state, "unbounded").toLowerCase();
+            const policyLabel = limits.strict
+              ? "tight limits"
+              : limits.constrained
+                ? "partial limits"
+                : "unbounded";
+
+            const cpuText =
+              cpuLimitCores > 0
+                ? `${cpuPercent.toFixed(1)}% (${(cpuPercent / 100).toFixed(2)} / ${cpuLimitCores.toFixed(2)} cores)`
+                : `${cpuPercent.toFixed(1)}% (no cap)`;
+            const memoryText =
+              memoryLimitBytes > 0
+                ? `${formatBytes(memoryUsageBytes)} / ${formatBytes(memoryLimitBytes)}`
+                : `${formatBytes(memoryUsageBytes)} (no cap)`;
+            const pidsText = pidsLimit > 0 ? `${Math.round(pidsCurrent)} / ${Math.round(pidsLimit)}` : `${Math.round(pidsCurrent)} (no cap)`;
+
+            const cpuState = resourceStateFromRatio(cpuRatio);
+            const memoryState = resourceStateFromRatio(memoryRatio);
+            const pidsState = resourceStateFromRatio(pidsRatio);
+            const lifeStability = safeText(lifecycle.stability, "healthy").toLowerCase();
+            const lifeSignals = Array.isArray(lifecycle.signals)
+              ? lifecycle.signals.map((item) => safeText(item, "")).filter((item) => item)
+              : [];
+            const healthStatus = safeText(lifecycle.health_status, "none");
+            const restartCount = Math.max(0, asNumber(lifecycle.restart_count, 0));
+            const oomKilled = Boolean(lifecycle.oom_killed);
+
+            return `
+              <article class="simulation-card">
+                <div class="simulation-top">
+                  <div class="simulation-name"><a href="/dashboard/profile?id=${simulation.id}" style="color:inherit; text-decoration:none; border-bottom:1px dashed var(--line-strong)">${simulationName}</a></div>
+                  <span class="${statusClass(simulation.state)}">${safeText(simulation.state, "unknown")}</span>
+                </div>
+                <div class="simulation-meta">${safeText(simulation.project, "no-project")} / ${safeText(simulation.service, "no-service")} / ${safeText(simulation.role, "simulation")}</div>
+                <div class="simulation-layout">
+                  <div class="simulation-preview">${previewPaneHtml(previewUrl, simulationName)}</div>
+                  <div class="simulation-detail">
+                    <div class="kv">
+                      <div class="kv-row"><span class="kv-key">status</span><span>${safeText(simulation.status, "-")}</span></div>
+                      <div class="kv-row"><span class="kv-key">endpoints</span><span>${endpointHtml}</span></div>
+                      <div class="kv-row"><span class="kv-key">networks</span><span>${networks}</span></div>
+                      <div class="kv-row"><span class="kv-key">peers</span><span>${peerNames || "none"}</span></div>
+                      <div class="kv-row"><span class="kv-key">created</span><span>${toLocalTime(simulation.created_at)}</span></div>
+                      <div class="kv-row"><span class="kv-key">lifecycle</span><span class="${lifecycleTagClass(lifeStability)}">${safeText(lifeStability, "healthy")}</span></div>
+                      <div class="kv-row"><span class="kv-key">health</span><span>${healthStatus} | restarts=${Math.round(restartCount)} | oom=${oomKilled ? "yes" : "no"}</span></div>
+                      <div class="kv-row"><span class="kv-key">signals</span><span>${lifeSignals.length ? lifeSignals.join(", ") : "none"}</span></div>
+                    </div>
+                    <div class="resource-block">
+                      <div class="resource-head">
+                        <span class="resource-title">Resource Budget</span>
+                        <span class="${stateTagClass(resourceState)}">${safeText(policyLabel, "policy")}</span>
+                      </div>
+                      <div class="resource-row">
+                        <div class="resource-row-top">
+                          <span class="resource-row-label">CPU</span>
+                          <span class="resource-row-value">${cpuText}</span>
+                        </div>
+                        <div class="resource-meter"><div class="${stateMeterClass(cpuState)}" style="width:${meterWidth(cpuRatio)}"></div></div>
+                      </div>
+                      <div class="resource-row">
+                        <div class="resource-row-top">
+                          <span class="resource-row-label">Memory</span>
+                          <span class="resource-row-value">${memoryText}</span>
+                        </div>
+                        <div class="resource-meter"><div class="${stateMeterClass(memoryState)}" style="width:${meterWidth(memoryRatio)}"></div></div>
+                      </div>
+                      <div class="resource-row">
+                        <div class="resource-row-top">
+                          <span class="resource-row-label">PIDs</span>
+                          <span class="resource-row-value">${pidsText}</span>
+                        </div>
+                        <div class="resource-meter"><div class="${stateMeterClass(pidsState)}" style="width:${meterWidth(pidsRatio)}"></div></div>
+                      </div>
+                      <div class="resource-row-top">
+                        <span class="resource-row-label">pressure</span>
+                        <span class="${stateTagClass(resourceState)}">${safeText(resourceState, "unbounded")}</span>
+                      </div>
+                    </div>
+                    <div class="simulation-controls">
+                      ${routeWorldPath
+                        ? `<a class="simulation-gate-link" href="${routeWorldPath}" target="_blank" rel="noreferrer">open via gate</a>`
+                        : "<span class=\"resource-tag\">route unavailable</span>"}
+                      <button
+                        type="button"
+                        class="simulation-control-button"
+                        data-sim-action="${desiredAction}"
+                        data-action="${desiredAction}"
+                        data-sim-id="${escapeHtml(String(simulation?.id || ""))}"
+                        data-sim-name="${escapeHtml(simulationName)}"
+                        ${canStartStop ? "" : "disabled"}
+                        title="${canStartStop ? `request ${desiredAction}` : escapeHtml(controlReason || "control blocked")}" 
+                      >${canStartStop ? desiredLabel : "Protected"}</button>
+                    </div>
+                  </div>
+                </div>
+              </article>
+            `;
+          })
+          .join("");
+      }
+
+      function renderFailureList(meta) {
+        const failing = Array.isArray(meta?.failures?.failing) ? meta.failures.failing : [];
+        const degraded = Array.isArray(meta?.failures?.degraded) ? meta.failures.degraded : [];
+        const rows = [...failing, ...degraded];
+        if (!rows.length) {
+          failureList.innerHTML = '<div class="empty">No failure or degraded signals detected.</div>';
+          return;
+        }
+
+        failureList.innerHTML = rows
+          .slice(0, 12)
+          .map((row) => {
+            const name = safeText(row?.name, row?.id || "simulation");
+            const stability = safeText(row?.stability, "degraded").toLowerCase();
+            const health = safeText(row?.health_status, "none");
+            const restarts = Math.max(0, asNumber(row?.restart_count, 0));
+            const pressure = safeText(row?.pressure_state, "ok");
+            const signals = Array.isArray(row?.signals) ? row.signals.join(", ") : "";
+            const oom = Boolean(row?.oom_killed);
+            return `
+              <article class="meta-item">
+                <div class="meta-item-top">
+                  <span class="meta-item-title">${name}</span>
+                  <span class="${lifecycleTagClass(stability)}">${stability}</span>
+                </div>
+                <div class="meta-item-detail">health=${health} | pressure=${pressure} | restarts=${Math.round(restarts)} | oom=${oom ? "yes" : "no"}</div>
+                <div class="meta-item-detail">${signals || "no explicit signals"}</div>
+              </article>
+            `;
+          })
+          .join("");
+      }
+
+      function renderMetaNotes(meta) {
+        const notes = Array.isArray(meta?.notes?.items) ? meta.notes.items : [];
+        if (!notes.length) {
+          metaNotesList.innerHTML = '<div class="empty">No notes yet. Capture one from live signals.</div>';
+          return;
+        }
+        metaNotesList.innerHTML = notes
+          .slice(0, 10)
+          .map((note) => {
+            const title = safeText(note.title || note.text, "note");
+            const ts = toLocalTime(note.ts || note.generated_at || "");
+            const category = safeText(note.category, "observation");
+            const severity = safeText(note.severity, "info");
+            const targets = Array.isArray(note.targets) ? note.targets.join(", ") : "";
+            return `
+              <article class="meta-item">
+                <div class="meta-item-top">
+                  <span class="meta-item-title">${escapeHtml(title)}</span>
+                  <span>${escapeHtml(ts)}</span>
+                </div>
+                <div class="meta-item-detail">${escapeHtml(category)} / ${escapeHtml(severity)} ${targets ? `| ${escapeHtml(targets)}` : ""}</div>
+              </article>
+            `;
+          })
+          .join("");
+      }
+
+      function renderMetaRuns(meta) {
+        const runs = Array.isArray(meta?.runs?.items) ? meta.runs.items : [];
+        if (!runs.length) {
+          metaRunsList.innerHTML = '<div class="empty">No tracked runs yet. Record training/eval runs here.</div>';
+          return;
+        }
+        metaRunsList.innerHTML = runs
+          .slice(0, 10)
+          .map((run) => {
+            const title = safeText(run.title, "run");
+            const ts = toLocalTime(run.ts || run.generated_at || "");
+            const runType = safeText(run.run_type, "analysis");
+            const status = safeText(run.status, "planned");
+            const modelRef = safeText(run.model_ref, "-");
+            const datasetRef = safeText(run.dataset_ref, "-");
+            return `
+              <article class="meta-item">
+                <div class="meta-item-top">
+                  <span class="meta-item-title">${escapeHtml(title)}</span>
+                  <span class="${lifecycleTagClass(status === "failed" ? "failing" : status === "running" ? "degraded" : "healthy")}">${escapeHtml(status)}</span>
+                </div>
+                <div class="meta-item-detail">${escapeHtml(runType)} | model=${escapeHtml(modelRef)} | data=${escapeHtml(datasetRef)}</div>
+                <div class="meta-item-detail">${escapeHtml(ts)}</div>
+              </article>
+            `;
+          })
+          .join("");
+      }
+
+      function renderTrainingCharts(meta) {
+        if (!trainingCharts || !trainingChartSummary) {
+          return;
+        }
+        const runs = Array.isArray(meta?.runs?.items) ? meta.runs.items : [];
+        const chartRuns = runs
+          .filter((run) => {
+            const runType = safeText(run?.run_type, "").toLowerCase();
+            return runType === "training" || runType === "evaluation" || runType === "benchmark";
+          })
+          .slice(0, 8);
+        if (!chartRuns.length) {
+          trainingCharts.innerHTML = '<div class="empty">No training/evaluation runs with metrics yet.</div>';
+          trainingChartSummary.textContent = "No training/evaluation metrics available yet.";
+          return;
+        }
+
+        const metricDefs = [
+          { key: "modality_accuracy", label: "Modality Accuracy" },
+          { key: "target_accuracy", label: "Target Accuracy" },
+          { key: "routed_accuracy", label: "Routed Daimoi Accuracy" },
+          { key: "requested_rate", label: "Requested Rate" },
+        ];
+
+        trainingCharts.innerHTML = metricDefs
+          .map((metric) => {
+            const rows = chartRuns
+              .map((run, index) => {
+                const rate = metricFromRun(run, metric.key);
+                if (!Number.isFinite(rate)) {
+                  return "";
+                }
+                const title = safeText(run?.title, `run-${index + 1}`).slice(0, 20);
+                return `
+                  <div class="chart-row">
+                    <span class="chart-run-label">${escapeHtml(title)}</span>
+                    <div class="chart-track"><div class="${chartFillClass(rate)}" style="width:${chartWidth(rate)}"></div></div>
+                    <span class="chart-value">${(rate * 100).toFixed(1)}%</span>
+                  </div>
+                `;
+              })
+              .filter((row) => row)
+              .join("");
+            if (!rows) {
+              return "";
+            }
+            return `
+              <article class="chart-group">
+                <h4 class="chart-group-title">${metric.label}</h4>
+                ${rows}
+              </article>
+            `;
+          })
+          .filter((item) => item)
+          .join("");
+
+        const latest = chartRuns[0] || {};
+        const latestTarget = metricFromRun(latest, "target_accuracy");
+        const latestRouted = metricFromRun(latest, "routed_accuracy");
+        const latestRounds = Number((latest?.metrics || {}).rounds || 0);
+        const latestSamples = Number((latest?.metrics || {}).samples || 0);
+        trainingChartSummary.textContent =
+          `Latest run: target=${Number.isFinite(latestTarget) ? (latestTarget * 100).toFixed(1) : "-"}% ` +
+          `routed=${Number.isFinite(latestRouted) ? (latestRouted * 100).toFixed(1) : "-"}% ` +
+          `rounds=${Number.isFinite(latestRounds) ? latestRounds : 0} samples=${Number.isFinite(latestSamples) ? latestSamples : 0}`;
+      }
+
+      function renderResourceEconomy(meta) {
+        if (!economyList || !economyTotalCpu || !economyTotalRam) return;
+        
+        // This relies on `simulation` state being passed in `meta` or fetched separately.
+        // The dashboard currently fetches `/api/meta/overview`.
+        // We need to inject economy data there or fetch `/api/simulation`.
+        // Let's assume we can attach `economy` to the meta payload in Python.
+        
+        const presences = Array.isArray(meta?.economy?.presences) ? meta.economy.presences : [];
+        if (!presences.length) {
+          economyList.innerHTML = '<div class="empty">No resource economy participants active.</div>';
+          economyTotalCpu.textContent = "CPU: -";
+          economyTotalRam.textContent = "RAM: -";
+          return;
+        }
+
+        let totalCpu = 0;
+        let totalRam = 0;
+
+        economyList.innerHTML = presences
+          .map((p) => {
+            const wallet = p.resource_wallet || {};
+            const cpu = asNumber(wallet.cpu, 0);
+            const ram = asNumber(wallet.ram, 0);
+            totalCpu += cpu;
+            totalRam += ram;
+            
+            const isCore = p.presence_type === "core";
+            const typeLabel = isCore ? "Core" : "Sub-Sim";
+            const name = safeText(p.label, p.id);
+            
+            // Visualize wallet balance
+            return `
+              <article class="meta-item">
+                <div class="meta-item-top">
+                  <span class="meta-item-title">${escapeHtml(name)}</span>
+                  <span class="chip">${typeLabel}</span>
+                </div>
+                <div class="meta-item-detail">
+                  CPU Credit: ${cpu.toFixed(2)} | RAM Credit: ${ram.toFixed(2)}
+                </div>
+                ${!isCore ? `<div class="meta-item-detail">Last Update: ${safeText(p.economy_last_update, "-")}</div>` : ""}
+              </article>
+            `;
+          })
+          .join("");
+
+        economyTotalCpu.textContent = `Total CPU Credit: ${totalCpu.toFixed(1)}`;
+        economyTotalRam.textContent = `Total RAM Credit: ${totalRam.toFixed(1)}`;
+      }
+
+      function renderMetaOverview(meta) {
+        if (!meta || typeof meta !== "object") {
+          return;
+        }
+        renderFailureList(meta);
+        renderMetaNotes(meta);
+        renderMetaRuns(meta);
+        renderTrainingCharts(meta);
+        renderResourceEconomy(meta);
+
+        const queuePending = Math.max(0, asNumber(meta?.queue?.pending_count, 0));
+        const queueEvents = Math.max(0, asNumber(meta?.queue?.event_count, 0));
+        const failingCount = Math.max(0, asNumber(meta?.failures?.failing_count, 0));
+        const degradedCount = Math.max(0, asNumber(meta?.failures?.degraded_count, 0));
+        const activeRuns = Math.max(0, asNumber(meta?.runs?.active_count, 0));
+        metaQueueSummary.textContent = `queue: pending=${queuePending} | events=${queueEvents} | active runs=${activeRuns}`;
+
+        const suggestions = Array.isArray(meta?.suggestions) ? meta.suggestions.slice(0, 4) : [];
+        metaSuggestionChips.innerHTML = suggestions.length
+          ? suggestions.map((item) => `<span class="chip">${escapeHtml(item)}</span>`).join("")
+          : '<span class="chip">no immediate recommendations</span>';
+
+        if (failingCount > 0) {
+          setMetaPill("bad", `meta: ${failingCount} failing`);
+        } else if (degradedCount > 0) {
+          setMetaPill("warn", `meta: ${degradedCount} degraded`);
+        } else {
+          setMetaPill("ok", "meta: stable");
+        }
+
+        metaSummary.textContent =
+          `Failures=${failingCount}, degraded=${degradedCount}, pending objectives=${queuePending}. ` +
+          "Use notes + objectives to turn instability into training/eval signal.";
+      }
+
+      async function fetchMetaOverview(forceRefresh = false) {
+        const suffix = forceRefresh ? "?notes_limit=12&runs_limit=12&refresh=true" : "?notes_limit=12&runs_limit=12";
+        const response = await fetch(`/api/meta/overview${suffix}`);
+        const payload = await response.json();
+        renderMetaOverview(payload);
+      }
+
+      async function postJson(url, payload) {
+        const response = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        return response.json();
+      }
+
+      function renderPayload(payload) {
+        renderSummary(payload);
+        renderClusters(payload);
+        renderSimulations(payload);
+        generatedAt.className = toPillClass(payload);
+        generatedAt.textContent = `updated ${toLocalTime(payload?.generated_at)}`;
+        const sourceError = safeText(payload?.source?.error, "");
+        const sourceMode = safeText(payload?.source?.mode, "docker-socket");
+        const stale = Boolean(payload?.stale);
+        sourceNote.textContent = sourceError
+          ? `Source ${sourceMode} reported ${sourceError}${stale ? " (showing cached snapshot)" : ""}.`
+          : `Source ${sourceMode} healthy. Label key: ${safeText(payload?.source?.label_key, "io.fork_tales.simulation")}.`;
+
+        const nextFingerprint = safeText(payload?.fingerprint, "pending");
+        const changed = nextFingerprint !== lastFingerprint;
+        if (changed) {
+          lastFingerprint = nextFingerprint;
+          fingerprintPill.className = "pill pill-ok";
+        } else {
+          fingerprintPill.className = "pill";
+        }
+        fingerprintPill.textContent = `fingerprint: ${nextFingerprint.slice(0, 12)}`;
+      }
+
+      async function fetchSnapshot(forceRefresh = false) {
+        const suffix = forceRefresh ? "?refresh=true" : "";
+        const response = await fetch(`/api/docker/simulations${suffix}`);
+        const payload = await response.json();
+        renderPayload(payload);
+      }
+
+      function scheduleReconnect() {
+        if (reconnectTimer) {
+          return;
+        }
+        reconnectTimer = window.setTimeout(() => {
+          reconnectTimer = null;
+          connectWebSocket();
+        }, reconnectDelayMs);
+      }
+
+      function connectWebSocket() {
+        if (ws) {
+          try {
+            ws.close();
+          } catch (_err) {
+            // ignore cleanup error
+          }
+          ws = null;
+        }
+        const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+        ws = new WebSocket(`${protocol}://${window.location.host}/ws?stream=docker`);
+
+        ws.addEventListener("open", () => {
+          wsConnected = true;
+          reconnectDelayMs = 2200;
+          wsPill.className = "pill pill-ok";
+          wsPill.textContent = "ws: connected";
+        });
+
+        ws.addEventListener("message", (event) => {
+          try {
+            const message = JSON.parse(String(event.data || "{}"));
+            if (message?.type === "docker_simulations") {
+              renderPayload(message.docker || {});
+            }
+          } catch (_err) {
+            // ignore malformed websocket events
+          }
+        });
+
+        ws.addEventListener("close", () => {
+          wsConnected = false;
+          reconnectDelayMs = Math.min(12000, Math.round(reconnectDelayMs * 1.35));
+          wsPill.className = "pill pill-warn";
+          wsPill.textContent = "ws: reconnecting";
+          scheduleReconnect();
+        });
+
+        ws.addEventListener("error", () => {
+          wsConnected = false;
+          wsPill.className = "pill pill-bad";
+          wsPill.textContent = "ws: fallback poll";
+        });
+      }
+
+      async function pollSnapshotFallback() {
+        if (wsConnected || snapshotRequestInFlight || document.hidden) {
+          return;
+        }
+        snapshotRequestInFlight = true;
+        try {
+          await fetchSnapshot(false);
+        } catch (_err) {
+          wsPill.className = "pill pill-bad";
+          wsPill.textContent = "poll failed";
+        } finally {
+          snapshotRequestInFlight = false;
+        }
+      }
+
+      async function pollMetaOverview() {
+        if (metaRequestInFlight || document.hidden) {
+          return;
+        }
+        metaRequestInFlight = true;
+        try {
+          await fetchMetaOverview(false);
+        } catch (_err) {
+          setMetaPill("warn", "meta: poll failed");
+        } finally {
+          metaRequestInFlight = false;
+        }
+      }
+
+      if (metaNoteForm) {
+        metaNoteForm.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const text = safeText(document.getElementById("metaNoteText")?.value || "", "");
+          if (!text) {
+            setMetaPill("warn", "meta: note text required");
+            return;
+          }
+          const payload = {
+            text,
+            category: safeText(document.getElementById("metaNoteCategory")?.value, "observation"),
+            severity: safeText(document.getElementById("metaNoteSeverity")?.value, "info"),
+            tags: splitCsv(document.getElementById("metaNoteTags")?.value || ""),
+            targets: splitCsv(document.getElementById("metaNoteTarget")?.value || ""),
+            owner: "Err",
+          };
+          try {
+            const result = await postJson("/api/meta/notes", payload);
+            if (result?.ok) {
+              document.getElementById("metaNoteText").value = "";
+              setMetaPill("ok", "meta: note saved");
+              fetchMetaOverview(true).catch(() => {
+                setMetaPill("warn", "meta: refresh pending");
+              });
+            } else {
+              setMetaPill("bad", `meta: ${safeText(result?.error, "note failed")}`);
+            }
+          } catch (_err) {
+            setMetaPill("bad", "meta: note request failed");
+          }
+        });
+      }
+
+      if (metaObjectiveForm) {
+        metaObjectiveForm.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const objective = safeText(document.getElementById("metaObjectiveText")?.value || "", "");
+          if (!objective) {
+            setMetaPill("warn", "meta: objective required");
+            return;
+          }
+          const payload = {
+            objective,
+            objective_type: safeText(document.getElementById("metaObjectiveType")?.value, "evaluation"),
+            priority: safeText(document.getElementById("metaObjectivePriority")?.value, "medium"),
+            target: safeText(document.getElementById("metaObjectiveTarget")?.value, ""),
+            owner: "Err",
+          };
+          try {
+            const result = await postJson("/api/meta/objective/enqueue", payload);
+            if (result?.ok) {
+              document.getElementById("metaObjectiveText").value = "";
+              setMetaPill("ok", "meta: objective queued");
+              fetchMetaOverview(true).catch(() => {
+                setMetaPill("warn", "meta: queue refresh pending");
+              });
+            } else {
+              setMetaPill("bad", `meta: ${safeText(result?.error, "queue failed")}`);
+            }
+          } catch (_err) {
+            setMetaPill("bad", "meta: objective request failed");
+          }
+        });
+      }
+
+      if (metaRunForm) {
+        metaRunForm.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const title = safeText(document.getElementById("metaRunTitle")?.value || "", "");
+          if (!title) {
+            setMetaPill("warn", "meta: run title required");
+            return;
+          }
+          const payload = {
+            run_type: safeText(document.getElementById("metaRunType")?.value, "training"),
+            status: safeText(document.getElementById("metaRunStatus")?.value, "planned"),
+            title,
+            model_ref: safeText(document.getElementById("metaRunModel")?.value, ""),
+            dataset_ref: safeText(document.getElementById("metaRunDataset")?.value, ""),
+            notes: safeText(document.getElementById("metaRunNotes")?.value, ""),
+            owner: "Err",
+          };
+          try {
+            const result = await postJson("/api/meta/runs", payload);
+            if (result?.ok) {
+              setMetaPill("ok", "meta: run saved");
+              fetchMetaOverview(true).catch(() => {
+                setMetaPill("warn", "meta: run refresh pending");
+              });
+            } else {
+              setMetaPill("bad", `meta: ${safeText(result?.error, "run save failed")}`);
+            }
+          } catch (_err) {
+            setMetaPill("bad", "meta: run request failed");
+          }
+        });
+      }
+
+      if (exportStudyButton) {
+        exportStudyButton.addEventListener("click", async () => {
+          const ts = new Date().toISOString();
+          try {
+            const result = await postJson("/api/study/export", {
+              label: `meta-dashboard-${ts}`,
+              owner: "Err",
+              include_truth: false,
+              refs: ["dashboard:meta-operations", "api:study/export"],
+            });
+            if (result?.ok) {
+              setMetaPill("ok", "meta: study snapshot exported");
+            } else {
+              setMetaPill("bad", "meta: study export failed");
+            }
+          } catch (_err) {
+            setMetaPill("bad", "meta: study export request failed");
+          }
+        });
+      }
+
+      if (simulationList) {
+        simulationList.addEventListener("click", async (event) => {
+          const previewTrigger = event.target instanceof HTMLElement
+            ? event.target.closest("button[data-load-preview]")
+            : null;
+          if (previewTrigger instanceof HTMLButtonElement) {
+            const previewCanvas = previewTrigger.closest(".simulation-preview-canvas");
+            if (!(previewCanvas instanceof HTMLElement)) {
+              return;
+            }
+            const previewFrame = previewCanvas.querySelector(".simulation-preview-frame");
+            if (!(previewFrame instanceof HTMLIFrameElement)) {
+              return;
+            }
+            const previewUrl = String(previewFrame.dataset.previewUrl || "").trim();
+            if (!previewUrl) {
+              return;
+            }
+
+            if (String(previewFrame.dataset.previewLoaded || "") !== "1") {
+              previewFrame.src = previewUrl;
+              previewFrame.dataset.previewLoaded = "1";
+            }
+            const placeholder = previewCanvas.querySelector(".simulation-preview-empty");
+            if (placeholder instanceof HTMLElement) {
+              placeholder.remove();
+            }
+            previewTrigger.disabled = true;
+            previewTrigger.textContent = "loaded";
+            return;
+          }
+
+          const trigger = event.target instanceof HTMLElement
+            ? event.target.closest("button[data-sim-action]")
+            : null;
+          if (!(trigger instanceof HTMLButtonElement)) {
+            return;
+          }
+
+          const action = safeText(trigger.dataset.simAction, "").toLowerCase();
+          const simulationId = safeText(trigger.dataset.simId, "");
+          const simulationName = safeText(trigger.dataset.simName, simulationId);
+          if (!simulationId || (action !== "start" && action !== "stop")) {
+            setMetaPill("warn", "meta: invalid simulation control request");
+            return;
+          }
+
+          if (action === "stop") {
+            const confirmed = window.confirm(`Stop simulation ${simulationName}?`);
+            if (!confirmed) {
+              return;
+            }
+          }
+
+          const originalText = trigger.textContent || "";
+          trigger.disabled = true;
+          trigger.textContent = action === "stop" ? "Stopping..." : "Starting...";
+          try {
+            const result = await postJson("/api/docker/simulations/control", {
+              id: simulationId,
+              action,
+            });
+            if (result?.ok) {
+              const afterState = safeText(result?.after_state, "unknown");
+              setMetaPill("ok", `meta: ${simulationName} ${action} ok (${afterState})`);
+              await Promise.all([
+                fetchSnapshot(true),
+                fetchMetaOverview(true),
+              ]);
+            } else {
+              const detail = safeText(result?.detail || result?.reason || result?.error, "control failed");
+              setMetaPill("bad", `meta: ${simulationName} ${action} failed (${detail})`);
+              await fetchSnapshot(true);
+            }
+          } catch (_err) {
+            setMetaPill("bad", `meta: ${simulationName} ${action} request failed`);
+          } finally {
+            trigger.disabled = false;
+            trigger.textContent = originalText;
+          }
+        });
+      }
+
+      refreshButton.addEventListener("click", () => {
+        fetchSnapshot(true).catch(() => {
+          wsPill.className = "pill pill-bad";
+          wsPill.textContent = "refresh failed";
+        });
+      });
+
+      window.setInterval(() => {
+        pollSnapshotFallback();
+      }, 15000);
+
+      window.setInterval(() => {
+        pollMetaOverview();
+      }, 14000);
+
+      fetchSnapshot(true).catch(() => {
+        wsPill.className = "pill pill-bad";
+        wsPill.textContent = "startup fetch failed";
+      });
+      fetchMetaOverview(true).catch(() => {
+        setMetaPill("bad", "meta: startup fetch failed");
+      });
+      connectWebSocket();
+    </script>
+  </body>
+</html>

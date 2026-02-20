@@ -1,0 +1,413 @@
+services:
+  eta-mu-local:
+    build:
+      context: .
+      dockerfile: Dockerfile.system
+    command:
+      [
+        "pm2-runtime",
+        "start",
+        "ecosystem.bench.config.cjs",
+        "--only",
+        "eta-mu-world,eta-mu-io,web-graph-weaver",
+      ]
+    environment:
+      CHROMA_HOST: chroma
+      CHROMA_PORT: "8000"
+      PYTHONUNBUFFERED: "1"
+      WEAVER_HOST: "0.0.0.0"
+      WEAVER_PORT: "8793"
+      OLLAMA_BASE_URL: "http://host.docker.internal:11435"
+      OLLAMA_MODEL: "qwen3-vl:4b-instruct"
+      OLLAMA_EMBED_MODEL: "nomic-embed-text"
+      OLLAMA_EMBED_FORCE_NOMIC: "1"
+      OLLAMA_EMBED_NUM_CTX: "512"
+      OLLAMA_EMBED_MAX_CHARS: "2400"
+      OPENVINO_EMBED_ENDPOINT: "http://host.docker.internal:18000/v1/embeddings"
+      OPENVINO_EMBED_MODEL: "nomic-embed-text"
+      OPENVINO_EMBED_DEVICE: "NPU"
+      OPENVINO_EMBED_TIMEOUT_SEC: "10"
+      OPENVINO_EMBED_MAX_CHARS: "2400"
+      ETA_MU_TEXT_EMBED_MODEL: "nomic-embed-text"
+      ETA_MU_IMAGE_EMBED_MODEL: "nomic-embed-text"
+      WEAVER_LLM_BASE_URL: "http://host.docker.internal:11435"
+      WEAVER_LLM_MODEL: "qwen3-vl:2b-instruct"
+      WEAVER_LLM_TIMEOUT_MS: "30000"
+      EMBEDDINGS_BACKEND: "ollama"
+      TEXT_GENERATION_BACKEND: "ollama"
+      TF_EMBED_HASH_BINS: "768"
+      SIMULATION_HTTP_CACHE_SECONDS: "0.5"
+      SIM_SLICE_OFFLOAD_MODE: "local"
+    labels:
+      io.fork_tales.simulation: "true"
+      io.fork_tales.simulation.role: "experiment"
+      io.fork_tales.simulation.track: "sim-slice-bench"
+      io.fork_tales.simulation.variant: "local"
+    depends_on:
+      - chroma
+      - ollama-loopback-proxy
+    ports:
+      - "18877:8787"
+      - "18993:8793"
+    cpus: "0.95"
+    mem_limit: "7000m"
+    memswap_limit: "7000m"
+    pids_limit: 176
+    volumes:
+      - .:/app
+      - eta_mu_local_world_state:/app/world_state
+      - ../.opencode/runtime:/app/.opencode/runtime:ro
+      - ../:/vault
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - eta-mu-sim-net
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/', timeout=6)",
+        ]
+      interval: 20s
+      timeout: 12s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  eta-mu-cdb:
+    build:
+      context: .
+      dockerfile: Dockerfile.system
+    command:
+      [
+        "pm2-runtime",
+        "start",
+        "ecosystem.bench.config.cjs",
+        "--only",
+        "eta-mu-world,eta-mu-io,web-graph-weaver",
+      ]
+    environment:
+      CHROMA_HOST: chroma
+      CHROMA_PORT: "8000"
+      PYTHONUNBUFFERED: "1"
+      WEAVER_HOST: "0.0.0.0"
+      WEAVER_PORT: "8793"
+      OLLAMA_BASE_URL: "http://host.docker.internal:11435"
+      OLLAMA_MODEL: "qwen3-vl:4b-instruct"
+      OLLAMA_EMBED_MODEL: "nomic-embed-text"
+      OLLAMA_EMBED_FORCE_NOMIC: "1"
+      OLLAMA_EMBED_NUM_CTX: "512"
+      OLLAMA_EMBED_MAX_CHARS: "2400"
+      OPENVINO_EMBED_ENDPOINT: "http://host.docker.internal:18000/v1/embeddings"
+      OPENVINO_EMBED_MODEL: "nomic-embed-text"
+      OPENVINO_EMBED_DEVICE: "NPU"
+      OPENVINO_EMBED_TIMEOUT_SEC: "10"
+      OPENVINO_EMBED_MAX_CHARS: "2400"
+      ETA_MU_TEXT_EMBED_MODEL: "nomic-embed-text"
+      ETA_MU_IMAGE_EMBED_MODEL: "nomic-embed-text"
+      WEAVER_LLM_BASE_URL: "http://host.docker.internal:11435"
+      WEAVER_LLM_MODEL: "qwen3-vl:2b-instruct"
+      WEAVER_LLM_TIMEOUT_MS: "30000"
+      EMBEDDINGS_BACKEND: "ollama"
+      TEXT_GENERATION_BACKEND: "ollama"
+      TF_EMBED_HASH_BINS: "768"
+      SIMULATION_HTTP_CACHE_SECONDS: "0.5"
+      SIM_SLICE_OFFLOAD_MODE: "local"
+      SIM_PARTICLE_BACKEND: "cdb"
+      MAX_SIM_POINTS: "640"
+      ETA_MU_MAX_GRAPH_FILES: "220"
+      WEAVER_GRAPH_NODE_LIMIT: "220"
+      WEAVER_GRAPH_EDGE_LIMIT: "420"
+      WEAVER_SEMANTIC_ANALYSIS_ENABLED: "0"
+      WEAVER_ACTIVE_SEARCH_ENABLED: "0"
+      SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD: "180"
+      SIMULATION_FILE_GRAPH_PROJECTION_EDGE_CAP_MAX: "280"
+    labels:
+      io.fork_tales.simulation: "true"
+      io.fork_tales.simulation.role: "experiment"
+      io.fork_tales.simulation.track: "sim-slice-bench"
+      io.fork_tales.simulation.variant: "cdb"
+    depends_on:
+      - chroma
+      - ollama-loopback-proxy
+    ports:
+      - "18880:8787"
+      - "18996:8793"
+    cpus: "3.00"
+    mem_limit: "24000m"
+    memswap_limit: "24000m"
+    pids_limit: 1024
+    volumes:
+      - .:/app
+      - eta_mu_cdb_world_state:/app/world_state
+      - ../.opencode/runtime:/app/.opencode/runtime:ro
+      - ../:/vault
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - eta-mu-sim-net
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/', timeout=6)",
+        ]
+      interval: 20s
+      timeout: 12s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  eta-mu-redis:
+    build:
+      context: .
+      dockerfile: Dockerfile.system
+    command:
+      [
+        "pm2-runtime",
+        "start",
+        "ecosystem.bench.config.cjs",
+        "--only",
+        "eta-mu-world,eta-mu-io,web-graph-weaver",
+      ]
+    environment:
+      CHROMA_HOST: chroma
+      CHROMA_PORT: "8000"
+      PYTHONUNBUFFERED: "1"
+      WEAVER_HOST: "0.0.0.0"
+      WEAVER_PORT: "8793"
+      OLLAMA_BASE_URL: "http://host.docker.internal:11435"
+      OLLAMA_MODEL: "qwen3-vl:4b-instruct"
+      OLLAMA_EMBED_MODEL: "nomic-embed-text"
+      OLLAMA_EMBED_FORCE_NOMIC: "1"
+      OLLAMA_EMBED_NUM_CTX: "512"
+      OLLAMA_EMBED_MAX_CHARS: "2400"
+      OPENVINO_EMBED_ENDPOINT: "http://host.docker.internal:18000/v1/embeddings"
+      OPENVINO_EMBED_MODEL: "nomic-embed-text"
+      OPENVINO_EMBED_DEVICE: "NPU"
+      OPENVINO_EMBED_TIMEOUT_SEC: "10"
+      OPENVINO_EMBED_MAX_CHARS: "2400"
+      ETA_MU_TEXT_EMBED_MODEL: "nomic-embed-text"
+      ETA_MU_IMAGE_EMBED_MODEL: "nomic-embed-text"
+      WEAVER_LLM_BASE_URL: "http://host.docker.internal:11435"
+      WEAVER_LLM_MODEL: "qwen3-vl:2b-instruct"
+      WEAVER_LLM_TIMEOUT_MS: "30000"
+      EMBEDDINGS_BACKEND: "ollama"
+      TEXT_GENERATION_BACKEND: "tensorflow"
+      TF_EMBED_HASH_BINS: "768"
+      SIM_SLICE_OFFLOAD_MODE: "redis"
+      SIM_SLICE_REDIS_HOST: "sim-slice-redis"
+      SIM_SLICE_REDIS_PORT: "6379"
+      SIM_SLICE_REDIS_JOBS_STREAM: "eta_mu:sim_slice_jobs"
+      SIM_SLICE_REDIS_REPLY_PREFIX: "eta_mu:sim_slice_reply"
+      SIM_SLICE_REDIS_TIMEOUT_MS: "160"
+      SIM_SLICE_REDIS_POLL_MS: "5"
+    labels:
+      io.fork_tales.simulation: "true"
+      io.fork_tales.simulation.role: "experiment"
+      io.fork_tales.simulation.track: "sim-slice-bench"
+      io.fork_tales.simulation.variant: "redis"
+    depends_on:
+      - chroma
+      - ollama-loopback-proxy
+      - sim-slice-redis
+      - sim-slice-worker-c
+    ports:
+      - "18878:8787"
+      - "18994:8793"
+    cpus: "1.05"
+    mem_limit: "3200m"
+    memswap_limit: "3200m"
+    pids_limit: 188
+    volumes:
+      - .:/app
+      - eta_mu_redis_world_state:/app/world_state
+      - ../.opencode/runtime:/app/.opencode/runtime:ro
+      - ../:/vault
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - eta-mu-sim-net
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/', timeout=6)",
+        ]
+      interval: 20s
+      timeout: 12s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  eta-mu-uds:
+    build:
+      context: .
+      dockerfile: Dockerfile.system
+    command:
+      [
+        "pm2-runtime",
+        "start",
+        "ecosystem.bench.config.cjs",
+        "--only",
+        "eta-mu-world,eta-mu-io,web-graph-weaver",
+      ]
+    environment:
+      CHROMA_HOST: chroma
+      CHROMA_PORT: "8000"
+      PYTHONUNBUFFERED: "1"
+      WEAVER_HOST: "0.0.0.0"
+      WEAVER_PORT: "8793"
+      OLLAMA_BASE_URL: "http://host.docker.internal:11435"
+      OLLAMA_MODEL: "qwen3-vl:4b-instruct"
+      OLLAMA_EMBED_MODEL: "nomic-embed-text"
+      OLLAMA_EMBED_FORCE_NOMIC: "1"
+      OLLAMA_EMBED_NUM_CTX: "512"
+      OLLAMA_EMBED_MAX_CHARS: "2400"
+      OPENVINO_EMBED_ENDPOINT: "http://host.docker.internal:18000/v1/embeddings"
+      OPENVINO_EMBED_MODEL: "nomic-embed-text"
+      OPENVINO_EMBED_DEVICE: "NPU"
+      OPENVINO_EMBED_TIMEOUT_SEC: "10"
+      OPENVINO_EMBED_MAX_CHARS: "2400"
+      ETA_MU_TEXT_EMBED_MODEL: "nomic-embed-text"
+      ETA_MU_IMAGE_EMBED_MODEL: "nomic-embed-text"
+      WEAVER_LLM_BASE_URL: "http://host.docker.internal:11435"
+      WEAVER_LLM_MODEL: "qwen3-vl:2b-instruct"
+      WEAVER_LLM_TIMEOUT_MS: "30000"
+      EMBEDDINGS_BACKEND: "ollama"
+      TEXT_GENERATION_BACKEND: "tensorflow"
+      TF_EMBED_HASH_BINS: "768"
+      SIM_SLICE_OFFLOAD_MODE: "uds"
+      SIM_SLICE_ASYNC: "1"
+      SIM_SLICE_ASYNC_STALE_MS: "60000"
+      SIM_SLICE_UDS_PATH: "/sim-socket/sim_slice.sock"
+      SIM_SLICE_UDS_TIMEOUT_MS: "40"
+    labels:
+      io.fork_tales.simulation: "true"
+      io.fork_tales.simulation.role: "experiment"
+      io.fork_tales.simulation.track: "sim-slice-bench"
+      io.fork_tales.simulation.variant: "uds"
+    depends_on:
+      - chroma
+      - ollama-loopback-proxy
+      - sim-slice-worker-uds
+    ports:
+      - "18879:8787"
+      - "18995:8793"
+    cpus: "1.00"
+    mem_limit: "3000m"
+    memswap_limit: "3000m"
+    pids_limit: 188
+    volumes:
+      - .:/app
+      - eta_mu_uds_world_state:/app/world_state
+      - sim_slice_socket:/sim-socket
+      - ../.opencode/runtime:/app/.opencode/runtime:ro
+      - ../:/vault
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - eta-mu-sim-net
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/', timeout=6)",
+        ]
+      interval: 20s
+      timeout: 12s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  sim-slice-worker-c:
+    build:
+      context: .
+      dockerfile: Dockerfile.sim-slice-worker
+    environment:
+      SIM_SLICE_REDIS_HOST: "sim-slice-redis"
+      SIM_SLICE_REDIS_PORT: "6379"
+      SIM_SLICE_REDIS_JOBS_STREAM: "eta_mu:sim_slice_jobs"
+      SIM_SLICE_WORKER_NAME: "c-budget-worker.v1"
+      SIM_SLICE_REPLY_TTL_SECONDS: "20"
+    cpus: "0.35"
+    mem_limit: "384m"
+    memswap_limit: "384m"
+    pids_limit: 96
+    depends_on:
+      - sim-slice-redis
+    networks:
+      - eta-mu-sim-net
+    restart: unless-stopped
+
+  sim-slice-worker-uds:
+    build:
+      context: .
+      dockerfile: Dockerfile.sim-slice-worker-uds
+    environment:
+      SIM_SLICE_UDS_PATH: "/sim-socket/sim_slice.sock"
+      SIM_SLICE_WORKER_NAME: "c-uds-worker.v1"
+    cpus: "0.30"
+    mem_limit: "320m"
+    memswap_limit: "320m"
+    pids_limit: 88
+    volumes:
+      - sim_slice_socket:/sim-socket
+    networks:
+      - eta-mu-sim-net
+    restart: unless-stopped
+
+  sim-slice-redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    cpus: "0.35"
+    mem_limit: "384m"
+    memswap_limit: "384m"
+    pids_limit: 96
+    networks:
+      - eta-mu-sim-net
+    restart: unless-stopped
+
+  chroma:
+    image: chromadb/chroma:latest
+    cpus: "1.00"
+    mem_limit: "1500m"
+    memswap_limit: "1500m"
+    pids_limit: 160
+    volumes:
+      - ./world_state/chroma_data:/chroma/chroma
+    environment:
+      IS_PERSISTENT: "TRUE"
+    networks:
+      - eta-mu-sim-net
+    restart: unless-stopped
+
+  ollama-loopback-proxy:
+    image: alpine/socat:latest
+    network_mode: host
+    command: ["-d", "-d", "TCP-LISTEN:11435,reuseaddr,fork", "TCP:127.0.0.1:11434"]
+    cpus: "0.20"
+    mem_limit: "128m"
+    memswap_limit: "128m"
+    pids_limit: 64
+    restart: unless-stopped
+
+volumes:
+  eta_mu_local_world_state:
+  eta_mu_cdb_world_state:
+  eta_mu_redis_world_state:
+  eta_mu_uds_world_state:
+  sim_slice_socket:
+
+networks:
+  eta-mu-sim-net:
+    name: eta-mu-sim-net
+    driver: bridge

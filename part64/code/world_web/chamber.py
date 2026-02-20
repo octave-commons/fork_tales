@@ -1789,6 +1789,199 @@ def build_drift_scan_payload(part_root: Path, vault_root: Path) -> dict[str, Any
     }
 
 
+def _run_git_command(
+    cwd: Path,
+    args: list[str],
+    *,
+    timeout_s: float = 2.5,
+) -> tuple[bool, str]:
+    try:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=str(cwd),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=max(0.5, float(timeout_s)),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False, ""
+
+    if proc.returncode != 0:
+        return False, (proc.stderr or proc.stdout or "").strip()
+    return True, (proc.stdout or "").strip()
+
+
+def build_witness_lineage_payload(part_root: Path) -> dict[str, Any]:
+    generated_at = datetime.now(timezone.utc).isoformat()
+
+    repo_root = ""
+    branch = ""
+    upstream = ""
+    remote = ""
+    remote_url = ""
+    ahead = 0
+    behind = 0
+    push_obligation_unknown = False
+    latest_commit = ""
+    staged = 0
+    unstaged = 0
+    untracked = 0
+
+    ok_repo, inside = _run_git_command(
+        part_root, ["rev-parse", "--is-inside-work-tree"]
+    )
+    if not ok_repo or inside.lower() != "true":
+        return {
+            "ok": True,
+            "record": "ημ.witness-lineage.v1",
+            "generated_at": generated_at,
+            "repo": {
+                "available": False,
+                "root": "",
+                "branch": "",
+                "upstream": "",
+                "remote": "",
+                "remote_url": "",
+            },
+            "checkpoint": {
+                "branch": "",
+                "upstream": "",
+                "ahead": 0,
+                "behind": 0,
+            },
+            "working_tree": {
+                "dirty": False,
+                "staged": 0,
+                "unstaged": 0,
+                "untracked": 0,
+            },
+            "latest_commit": "",
+            "push_obligation": False,
+            "push_obligation_unknown": True,
+            "continuity_drift": {
+                "active": True,
+                "code": "git_repo_unavailable",
+                "message": "runtime path is not inside a git repository",
+            },
+        }
+
+    ok_root, root_text = _run_git_command(part_root, ["rev-parse", "--show-toplevel"])
+    repo_root = root_text if ok_root else str(part_root.resolve())
+
+    ok_branch, branch_text = _run_git_command(
+        part_root, ["rev-parse", "--abbrev-ref", "HEAD"]
+    )
+    branch = branch_text if ok_branch else ""
+
+    ok_upstream, upstream_text = _run_git_command(
+        part_root,
+        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+    )
+    if ok_upstream:
+        upstream = upstream_text
+        remote = upstream.split("/", 1)[0] if "/" in upstream else ""
+
+    if upstream:
+        ok_ahead_behind, counts = _run_git_command(
+            part_root,
+            ["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
+        )
+        if ok_ahead_behind:
+            pieces = [piece for piece in counts.replace("\t", " ").split(" ") if piece]
+            if len(pieces) >= 2:
+                ahead = max(0, int(_safe_float(pieces[0], 0.0)))
+                behind = max(0, int(_safe_float(pieces[1], 0.0)))
+            else:
+                push_obligation_unknown = True
+        else:
+            push_obligation_unknown = True
+    else:
+        push_obligation_unknown = True
+
+    ok_status, status_output = _run_git_command(part_root, ["status", "--porcelain"])
+    if ok_status:
+        for raw in status_output.splitlines():
+            line = raw.rstrip("\n")
+            if not line:
+                continue
+            if line.startswith("??"):
+                untracked += 1
+                continue
+            staged_flag = line[0:1]
+            unstaged_flag = line[1:2]
+            if staged_flag and staged_flag not in {" ", "?"}:
+                staged += 1
+            if unstaged_flag and unstaged_flag not in {" ", "?"}:
+                unstaged += 1
+
+    ok_commit, commit_text = _run_git_command(
+        part_root,
+        ["log", "-1", "--pretty=%h %s"],
+    )
+    if ok_commit:
+        latest_commit = commit_text
+
+    if remote:
+        ok_remote_url, remote_url_text = _run_git_command(
+            part_root,
+            ["remote", "get-url", remote],
+        )
+        if ok_remote_url:
+            remote_url = remote_url_text
+
+    continuity_drift = {
+        "active": False,
+        "code": "ok",
+        "message": "witness continuity aligned with upstream lineage",
+    }
+    if not upstream:
+        continuity_drift = {
+            "active": True,
+            "code": "missing_upstream",
+            "message": "upstream tracking branch missing; push obligations cannot be verified",
+        }
+    elif behind > 0:
+        continuity_drift = {
+            "active": True,
+            "code": "behind_upstream",
+            "message": f"branch is behind upstream by {behind} commits",
+        }
+
+    dirty = (staged + unstaged + untracked) > 0
+    push_obligation = ahead > 0 and bool(upstream)
+
+    return {
+        "ok": True,
+        "record": "ημ.witness-lineage.v1",
+        "generated_at": generated_at,
+        "repo": {
+            "available": True,
+            "root": repo_root,
+            "branch": branch,
+            "upstream": upstream,
+            "remote": remote,
+            "remote_url": remote_url,
+        },
+        "checkpoint": {
+            "branch": branch,
+            "upstream": upstream,
+            "ahead": ahead,
+            "behind": behind,
+        },
+        "working_tree": {
+            "dirty": dirty,
+            "staged": staged,
+            "unstaged": unstaged,
+            "untracked": untracked,
+        },
+        "latest_commit": latest_commit,
+        "push_obligation": push_obligation,
+        "push_obligation_unknown": push_obligation_unknown,
+        "continuity_drift": continuity_drift,
+    }
+
+
 def _world_log_timestamp_value(raw: str) -> float:
     text = str(raw or "").strip()
     if not text:

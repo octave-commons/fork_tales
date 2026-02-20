@@ -1,6 +1,7 @@
 import {
   useState,
   useCallback,
+  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
@@ -17,8 +18,7 @@ import { CoreBackdrop } from "./components/App/CoreBackdrop";
 import { CoreControlPanel } from "./components/App/CoreControlPanel";
 import { CoreLayerManagerOverlay } from "./components/App/CoreLayerManagerOverlay";
 import { WorldPanelsViewport } from "./components/App/WorldPanelsViewport";
-import { ChatPanel } from "./components/Panels/Chat";
-import { PresenceCallDeck } from "./components/Panels/PresenceCallDeck";
+import { MusePresencePanel } from "./components/Panels/MusePresencePanel";
 import { ProjectionLedgerPanel } from "./components/Panels/ProjectionLedgerPanel";
 import {
   CORE_CAMERA_PITCH_MAX,
@@ -72,6 +72,11 @@ import {
   type CoreVisualTuning,
 } from "./app/coreSimulationConfig";
 import {
+  normalizeMusePresenceId,
+  normalizeMuseWorkspaceContext,
+  sameStringArray,
+} from "./app/museWorkspace";
+import {
   PANEL_ANCHOR_PRESETS,
   WORLD_PANEL_MARGIN,
   containsAnchorNoCoverZone,
@@ -87,13 +92,16 @@ import {
   type WorldPanelNexusEntry,
   type WorldPanelLayoutEntry,
 } from "./app/worldPanelLayout";
-import { runtimeBaseUrl } from "./runtime/endpoints";
+import { runtimeApiUrl, runtimeBaseUrl } from "./runtime/endpoints";
 import type {
+  ChatMessage,
   CouncilApiResponse,
   DriftScanPayload,
   EntityManifestItem,
   FileGraphConceptPresence,
   FileGraphNode,
+  MuseEvent,
+  MuseWorkspaceContext,
   NamedFieldItem,
   StudySnapshotPayload,
   TaskQueueSnapshot,
@@ -172,6 +180,7 @@ const PRESENCE_OPERATIONAL_ROLE_BY_ID: Record<string, string> = {
   mage_of_receipts: "image-captioning",
   anchor_registry: "council-orchestration",
   gates_of_truth: "compliance-gating",
+  view_lens_keeper: "camera-guidance",
   health_sentinel_gpu1: "compute-scheduler",
   health_sentinel_gpu0: "compute-scheduler",
   health_sentinel_npu0: "compute-scheduler",
@@ -180,7 +189,10 @@ const PRESENCE_OPERATIONAL_ROLE_BY_ID: Record<string, string> = {
 
 const PANEL_TOOL_HINTS: Record<string, string[]> = {
   "nexus.ui.command_center": ["call", "say", "webrtc"],
-  "nexus.ui.chat.witness_thread": ["chat", "voice", "intent"],
+  "nexus.ui.chat.witness_thread": ["ledger", "lineage", "particles"],
+  "nexus.ui.chat.chaos": ["chat", "nearby", "pin"],
+  "nexus.ui.chat.stability": ["chat", "nearby", "pin"],
+  "nexus.ui.chat.symetry": ["chat", "nearby", "pin"],
   "nexus.ui.web_graph_weaver": ["crawl", "queue", "graph"],
   "nexus.ui.inspiration_atlas": ["search", "curate", "seed"],
   "nexus.ui.entity_vitals": ["vitals", "telemetry", "watch"],
@@ -191,7 +203,31 @@ const PANEL_TOOL_HINTS: Record<string, string[]> = {
   "nexus.ui.omni_archive": ["catalog", "memories", "artifacts"],
   "nexus.ui.myth_commons": ["interact", "pray", "speak"],
   "nexus.ui.dedicated_views": ["overlay", "focus", "monitor"],
+  "nexus.ui.glass_viewport": ["glass", "camera", "pan"],
 };
+
+const COUNCIL_BOOST_STORAGE_KEY = "eta_mu.council_boosts.v1";
+const TERTIARY_PIN_STORAGE_KEY = "eta_mu.tertiary_pin.v1";
+const MUSE_WORKSPACE_STORAGE_KEY = "eta_mu.muse_workspace.v1";
+const INTERFACE_OPACITY_STORAGE_KEY = "eta_mu.interface_opacity.v1";
+const GLASS_VIEWPORT_PANEL_ID = "nexus.ui.glass_viewport";
+const INTERFACE_OPACITY_MIN = 0.38;
+const INTERFACE_OPACITY_MAX = 1;
+const FIXED_MUSE_PRESENCES = [
+  { id: "chaos", label: "Chaos" },
+  { id: "stability", label: "Stability" },
+  { id: "symetry", label: "Symetry" },
+] as const;
+
+const APP_WORKSPACE_NORMALIZE_OPTIONS = {
+  maxPinnedFileNodeIds: 48,
+  maxSearchQueryLength: 180,
+  maxPinnedNexusSummaries: 24,
+} as const;
+
+function isGlassPrimaryPanelId(panelId: string): boolean {
+  return panelId === GLASS_VIEWPORT_PANEL_ID || panelId === "nexus.ui.dedicated_views";
+}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -241,6 +277,77 @@ function stableUnitHash(seed: string): number {
   return (hash >>> 0) / 4294967295;
 }
 
+function museWorkspacePanelId(presenceId: string): string {
+  const normalized = normalizeMusePresenceId(presenceId || "witness_thread") || "witness_thread";
+  return `nexus.ui.chat.${normalized}`;
+}
+
+function toMuseSlug(raw: string): string {
+  const cleaned = String(raw || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_\s-]+/g, "")
+    .replace(/[\s-]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  if (!cleaned) {
+    return "";
+  }
+  if (/^[0-9]/.test(cleaned)) {
+    return `muse_${cleaned}`;
+  }
+  return cleaned;
+}
+
+function resolveRuntimeMediaUrl(rawUrl: string): string {
+  const trimmed = String(rawUrl || "").trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return trimmed;
+  }
+  if (trimmed.startsWith("/")) {
+    return runtimeApiUrl(trimmed);
+  }
+  return runtimeApiUrl(`/${trimmed.replace(/^\.+\//, "")}`);
+}
+
+function normalizeDeviceUtilization(raw: unknown): number {
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+  const scaled = value > 1 ? value / 100 : value;
+  return clamp(scaled, 0, 1);
+}
+
+function buildDeviceSurroundingNodes(simulation: {
+  presence_dynamics?: {
+    resource_heartbeat?: {
+      devices?: Record<string, { utilization?: number } | undefined>;
+    };
+  };
+} | null): Array<Record<string, unknown>> {
+  const devices = simulation?.presence_dynamics?.resource_heartbeat?.devices;
+  if (!devices || typeof devices !== "object") {
+    return [];
+  }
+  return Object.entries(devices)
+    .map(([deviceId, payload]) => {
+      const utilization = normalizeDeviceUtilization(payload?.utilization);
+      return {
+        id: `device:${deviceId}`,
+        kind: "device",
+        label: deviceId,
+        text: `${deviceId} utilization ${Math.round(utilization * 100)}%`,
+        utilization,
+        visibility: "public",
+      };
+    })
+    .slice(0, 6);
+}
+
 function DeferredPanelPlaceholder({ title }: { title: string }) {
   return (
     <div className="rounded-xl border border-[var(--line)] bg-[rgba(45,46,39,0.82)] px-4 py-5">
@@ -252,12 +359,54 @@ function DeferredPanelPlaceholder({ title }: { title: string }) {
 
 export default function App() {
   const [uiPerspective, setUiPerspective] = useState<UIPerspective>("hybrid");
-  const { catalog, simulation, projection, isConnected } = useWorldState(uiPerspective);
+  const { catalog, simulation, projection, museEvents, isConnected } = useWorldState(uiPerspective);
 
   const [overlayApi, setOverlayApi] = useState<OverlayApi | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
   const [voiceInputMeta, setVoiceInputMeta] = useState("voice input idle / 音声入力待機");
+  const [activeMusePresenceId, setActiveMusePresenceId] = useState("witness_thread");
+  const [museForgeLabel, setMuseForgeLabel] = useState("");
+  const [museForgeBusy, setMuseForgeBusy] = useState(false);
+  const [museWorkspaceContexts, setMuseWorkspaceContexts] = useState<Record<string, MuseWorkspaceContext>>(() => {
+    if (typeof window === "undefined") {
+      return {};
+    }
+    try {
+      const raw = window.localStorage.getItem(MUSE_WORKSPACE_STORAGE_KEY);
+      if (!raw) {
+        return {};
+      }
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const normalized: Record<string, MuseWorkspaceContext> = {};
+      Object.entries(parsed).forEach(([presenceId, value]) => {
+        const normalizedPresence = normalizeMusePresenceId(String(presenceId || ""));
+        if (!normalizedPresence || !value || typeof value !== "object") {
+          return;
+        }
+        const workspace = normalizeMuseWorkspaceContext(
+          value as Partial<MuseWorkspaceContext>,
+          APP_WORKSPACE_NORMALIZE_OPTIONS,
+        );
+        if (workspace.pinnedFileNodeIds.length <= 0 && workspace.searchQuery.trim().length <= 0) {
+          return;
+        }
+        normalized[normalizedPresence] = workspace;
+      });
+      return normalized;
+    } catch {
+      return {};
+    }
+  });
+  const [museWorkspaceBindings, setMuseWorkspaceBindings] = useState<Record<string, string[]>>(() => {
+    const seeded: Record<string, string[]> = {};
+    Object.entries(museWorkspaceContexts).forEach(([presenceId, workspace]) => {
+      if (workspace.pinnedFileNodeIds.length > 0) {
+        seeded[presenceId] = workspace.pinnedFileNodeIds;
+      }
+    });
+    return seeded;
+  });
   const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
   const [worldInteraction, setWorldInteraction] = useState<WorldInteractionResponse | null>(null);
   const [interactingPersonId, setInteractingPersonId] = useState<string | null>(null);
@@ -276,6 +425,8 @@ export default function App() {
     mode: "orbit" | "pan";
     startX: number;
     startY: number;
+    lastX: number;
+    lastY: number;
     startPitch: number;
     startYaw: number;
     startCamX: number;
@@ -291,13 +442,50 @@ export default function App() {
     shift: false,
   });
   const coreFlightVelocityRef = useRef({ x: 0, y: 0, z: 0 });
+  const corePointerFrameRef = useRef<number | null>(null);
+  const corePointerPendingRef = useRef({ dx: 0, dy: 0 });
+  const lastNudgePulseTsRef = useRef(0);
+  const processedMuseEventSeqRef = useRef(0);
+  const museAudioElementRef = useRef<HTMLAudioElement | null>(null);
 
   const [panelWorldBiases, setPanelWorldBiases] = useState<Record<string, { x: number; y: number }>>({});
   const [panelWindowStates, setPanelWindowStates] = useState<Record<string, PanelWindowState>>({});
-  const [panelCouncilBoosts, setPanelCouncilBoosts] = useState<Record<string, number>>({});
+  const [panelCouncilBoosts, setPanelCouncilBoosts] = useState<Record<string, number>>(() => {
+    if (typeof window === "undefined") {
+      return {};
+    }
+    try {
+      const raw = window.localStorage.getItem(COUNCIL_BOOST_STORAGE_KEY);
+      if (!raw) {
+        return {};
+      }
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const normalized: Record<string, number> = {};
+      Object.entries(parsed).forEach(([key, value]) => {
+        const score = Number(value);
+        if (!Number.isFinite(score) || score === 0) {
+          return;
+        }
+        normalized[key] = clamp(score, -6, 8);
+      });
+      return normalized;
+    } catch {
+      return {};
+    }
+  });
   const [selectedPanelId, setSelectedPanelId] = useState<string | null>(null);
   const [hoveredPanelId, setHoveredPanelId] = useState<string | null>(null);
-  const [tertiaryPinnedPanelId, setTertiaryPinnedPanelId] = useState<string | null>(null);
+  const [tertiaryPinnedPanelId, setTertiaryPinnedPanelId] = useState<string | null>(() => {
+    if (typeof window === "undefined") {
+      return null;
+    }
+    const raw = window.localStorage.getItem(TERTIARY_PIN_STORAGE_KEY);
+    if (!raw) {
+      return null;
+    }
+    const clean = raw.trim();
+    return clean.length > 0 ? clean : null;
+  });
   const [pinnedPanels, setPinnedPanels] = useState<Record<string, boolean>>(() =>
     defaultPinnedPanelMap(Object.keys(PANEL_ANCHOR_PRESETS)),
   );
@@ -307,6 +495,9 @@ export default function App() {
   const [coreCameraZoom, setCoreCameraZoom] = useState(1);
   const [coreCameraPitch, setCoreCameraPitch] = useState(0);
   const [coreCameraYaw, setCoreCameraYaw] = useState(0);
+  const deferredCoreCameraZoom = useDeferredValue(coreCameraZoom);
+  const deferredCoreCameraPitch = useDeferredValue(coreCameraPitch);
+  const deferredCoreCameraYaw = useDeferredValue(coreCameraYaw);
   const [coreCameraPosition, setCoreCameraPosition] = useState({ x: 0, y: 0, z: 0 });
   const [coreOverlayView, setCoreOverlayView] = useState<OverlayViewId>("omni");
   const [coreFlightEnabled, setCoreFlightEnabled] = useState(true);
@@ -315,9 +506,20 @@ export default function App() {
   const [coreOrbitSpeed, setCoreOrbitSpeed] = useState(0.58);
   const [coreOrbitPhase, setCoreOrbitPhase] = useState(0);
   const [coreSimulationTuning, setCoreSimulationTuning] = useState<CoreSimulationTuning>(DEFAULT_CORE_SIMULATION_TUNING);
+  const deferredCoreSimulationTuning = useDeferredValue(coreSimulationTuning);
   const [coreVisualTuning, setCoreVisualTuning] = useState<CoreVisualTuning>(DEFAULT_CORE_VISUAL_TUNING);
   const [coreLayerVisibility, setCoreLayerVisibility] = useState<Record<CoreLayerId, boolean>>(DEFAULT_CORE_LAYER_VISIBILITY);
   const [coreLayerManagerOpen, setCoreLayerManagerOpen] = useState(true);
+  const [interfaceOpacity, setInterfaceOpacity] = useState(() => {
+    if (typeof window === "undefined") {
+      return 1;
+    }
+    const raw = Number(window.localStorage.getItem(INTERFACE_OPACITY_STORAGE_KEY));
+    if (!Number.isFinite(raw)) {
+      return 1;
+    }
+    return clamp(raw, INTERFACE_OPACITY_MIN, INTERFACE_OPACITY_MAX);
+  });
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -339,6 +541,71 @@ export default function App() {
       window.removeEventListener("resize", handleResize);
     };
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (Object.keys(panelCouncilBoosts).length <= 0) {
+      window.localStorage.removeItem(COUNCIL_BOOST_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(
+      COUNCIL_BOOST_STORAGE_KEY,
+      JSON.stringify(panelCouncilBoosts),
+    );
+  }, [panelCouncilBoosts]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (!tertiaryPinnedPanelId) {
+      window.localStorage.removeItem(TERTIARY_PIN_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(TERTIARY_PIN_STORAGE_KEY, tertiaryPinnedPanelId);
+  }, [tertiaryPinnedPanelId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const payload: Record<string, MuseWorkspaceContext> = {};
+    Object.entries(museWorkspaceContexts).forEach(([presenceId, workspace]) => {
+      const normalizedPresence = normalizeMusePresenceId(presenceId);
+      if (!normalizedPresence) {
+        return;
+      }
+      const normalizedWorkspace = normalizeMuseWorkspaceContext(
+        workspace,
+        APP_WORKSPACE_NORMALIZE_OPTIONS,
+      );
+      if (
+        normalizedWorkspace.pinnedFileNodeIds.length <= 0
+        && normalizedWorkspace.searchQuery.trim().length <= 0
+      ) {
+        return;
+      }
+      payload[normalizedPresence] = normalizedWorkspace;
+    });
+    if (Object.keys(payload).length <= 0) {
+      window.localStorage.removeItem(MUSE_WORKSPACE_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(MUSE_WORKSPACE_STORAGE_KEY, JSON.stringify(payload));
+  }, [museWorkspaceContexts]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (Math.abs(interfaceOpacity - 1) < 0.0001) {
+      window.localStorage.removeItem(INTERFACE_OPACITY_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(INTERFACE_OPACITY_STORAGE_KEY, interfaceOpacity.toFixed(3));
+  }, [interfaceOpacity]);
 
   const dismissToast = useCallback((id: number) => {
     const timeoutId = toastTimeoutsRef.current.get(id);
@@ -455,62 +722,694 @@ export default function App() {
     }
   }, [recordedBlob]);
 
-  const handleSendVoice = useCallback(async () => {
-    const text = await handleTranscribe();
-    if (!text) {
-      return;
-    }
-
+  const emitChatMessage = useCallback((message: ChatMessage) => {
     window.dispatchEvent(
       new CustomEvent("chat-message", {
-        detail: { role: "user", text },
+        detail: message,
       }),
     );
+  }, []);
 
-    const baseUrl = runtimeBaseUrl();
-    try {
-      const response = await fetch(`${baseUrl}/api/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: [{ role: "user", text }] }),
-      });
-      const payload = (await response.json()) as { reply?: string };
-      const reply = String(payload.reply ?? "");
-
-      window.dispatchEvent(
-        new CustomEvent("chat-message", {
-          detail: { role: "assistant", text: reply },
-        }),
-      );
-
-      if (reply.includes("[[PULSE]]")) {
-        overlayApi?.pulseAt?.(0.5, 0.5, 1);
-      }
-      if (reply.includes("[[SING]]")) {
-        overlayApi?.singAll?.();
-      }
-    } catch {
-      window.dispatchEvent(
-        new CustomEvent("chat-message", {
-          detail: { role: "system", text: "voice chat request failed" },
-        }),
-      );
+  const emitUiToast = useCallback((title: string, body: string) => {
+    const cleanTitle = String(title || "Notice").trim() || "Notice";
+    const cleanBody = String(body || "").trim();
+    if (!cleanBody) {
+      return;
     }
-  }, [handleTranscribe, overlayApi]);
-
-  const emitSystemMessage = useCallback((text: string) => {
     window.dispatchEvent(
-      new CustomEvent("chat-message", {
+      new CustomEvent("ui:toast", {
         detail: {
-          role: "system",
-          text,
+          title: cleanTitle,
+          body: cleanBody,
         },
       }),
     );
   }, []);
 
+  const playMuseAudio = useCallback(async (rawUrl: string, label: string): Promise<boolean> => {
+    const resolvedUrl = resolveRuntimeMediaUrl(rawUrl);
+    if (!resolvedUrl) {
+      return false;
+    }
+    try {
+      const audio = museAudioElementRef.current ?? new Audio();
+      museAudioElementRef.current = audio;
+      audio.src = resolvedUrl;
+      audio.currentTime = 0;
+      await audio.play();
+      emitUiToast("Muse Audio", `playing ${label || "selected track"}`);
+      return true;
+    } catch {
+      emitUiToast("Muse Audio Ready", `queued ${label || "track"} (${resolvedUrl})`);
+      return false;
+    }
+  }, [emitUiToast]);
+
+  const openMuseImage = useCallback((rawUrl: string, label: string): boolean => {
+    const resolvedUrl = resolveRuntimeMediaUrl(rawUrl);
+    if (!resolvedUrl) {
+      return false;
+    }
+    try {
+      const opened = window.open(resolvedUrl, "_blank", "noopener,noreferrer");
+      if (opened) {
+        emitUiToast("Muse Image", `opened ${label || "selected image"}`);
+        return true;
+      }
+      emitUiToast("Muse Image Ready", `image selected: ${resolvedUrl}`);
+      return false;
+    } catch {
+      emitUiToast("Muse Image Ready", `image selected: ${resolvedUrl}`);
+      return false;
+    }
+  }, [emitUiToast]);
+
+  const handleCreateMuse = useCallback(async () => {
+    const label = String(museForgeLabel || "").trim();
+    if (!label || museForgeBusy) {
+      return;
+    }
+    const museId = toMuseSlug(label);
+    if (!museId) {
+      emitUiToast("Muse Create Failed", "Provide a valid muse label.");
+      return;
+    }
+
+    const anchor = {
+      x: clamp(0.14 + (stableUnitHash(`${museId}|x`) * 0.72), 0.08, 0.92),
+      y: clamp(0.16 + (stableUnitHash(`${museId}|y`) * 0.68), 0.08, 0.92),
+      zoom: 1,
+      kind: "ui-meta-create",
+    };
+
+    setMuseForgeBusy(true);
+    try {
+      const baseUrl = runtimeBaseUrl();
+      const response = await fetch(`${baseUrl}/api/muse/create`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          muse_id: museId,
+          label,
+          anchor,
+          user_intent_id: `ui-create:${museId}`,
+        }),
+      });
+      const payload = (await response.json()) as {
+        ok?: boolean;
+        error?: string;
+        muse?: { id?: string; label?: string };
+      };
+      if (!response.ok || !payload?.ok) {
+        throw new Error(String(payload?.error || `http_${response.status}`));
+      }
+
+      const createdId = String(payload?.muse?.id || museId).trim() || museId;
+      const createdLabel = String(payload?.muse?.label || label).trim() || label;
+      setActiveMusePresenceId(createdId);
+      setMuseForgeLabel("");
+      emitUiToast("Muse Created", `${createdLabel} is online as ${createdId}`);
+      emitChatMessage({
+        role: "assistant",
+        text: `muse created\nid=${createdId}\nlabel=${createdLabel}`,
+        meta: {
+          channel: "command",
+          source: "meta:/api/muse/create",
+          presenceId: createdId,
+          presenceName: createdLabel,
+        },
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "unknown_error";
+      emitUiToast("Muse Create Failed", reason);
+      emitChatMessage({
+        role: "assistant",
+        text: `muse create failed\nreason=${reason}`,
+        meta: {
+          channel: "command",
+          source: "meta:/api/muse/create",
+          presenceId: activeMusePresenceId,
+        },
+      });
+    } finally {
+      setMuseForgeBusy(false);
+    }
+  }, [activeMusePresenceId, emitChatMessage, emitUiToast, museForgeBusy, museForgeLabel]);
+
+  const buildMuseSurroundingNodes = useCallback((
+    musePresenceId: string,
+    workspace: MuseWorkspaceContext | null = null,
+  ): Array<Record<string, unknown>> => {
+    const normalizedMuse = normalizeMusePresenceId(musePresenceId || "witness_thread") || "witness_thread";
+    const graphNodes = (
+      simulation?.file_graph?.file_nodes
+      ?? catalog?.file_graph?.file_nodes
+      ?? []
+    ).filter((row): row is FileGraphNode => Boolean(row));
+
+    const nodeById = new Map<string, FileGraphNode>();
+    graphNodes.forEach((row) => {
+      const id = String(row.id || "").trim();
+      if (id && !nodeById.has(id)) {
+        nodeById.set(id, row);
+      }
+      const nodeId = String(row.node_id || "").trim();
+      if (nodeId && !nodeById.has(nodeId)) {
+        nodeById.set(nodeId, row);
+      }
+    });
+
+    const pinnedIds = (
+      workspace?.pinnedFileNodeIds
+      ?? museWorkspaceBindings[normalizedMuse]
+      ?? []
+    )
+      .map((item) => String(item || "").trim())
+      .filter((item, index, all) => item.length > 0 && all.indexOf(item) === index)
+      .slice(0, 16);
+
+    const pinnedRows = pinnedIds.map((nodeId) => {
+      const row = nodeById.get(nodeId);
+      const baseSeed = stableUnitHash(`${normalizedMuse}|${nodeId}`);
+      const x = clamp(Number(row?.x ?? (0.22 + (baseSeed * 0.56))), 0, 1);
+      const y = clamp(Number(row?.y ?? (0.24 + (stableUnitHash(`${normalizedMuse}|${nodeId}|y`) * 0.52))), 0, 1);
+      const label = String(row?.source_rel_path ?? row?.label ?? row?.name ?? nodeId).trim() || nodeId;
+      const text = String(row?.summary ?? row?.text_excerpt ?? label).trim() || label;
+      const sourceRelPath = String(row?.source_rel_path ?? "").trim();
+      const nodeUrl = String(row?.url ?? "").trim();
+      return {
+        id: nodeId,
+        kind: String(row?.kind ?? "resource"),
+        label,
+        text,
+        x,
+        y,
+        visibility: "private",
+        tags: [normalizedMuse, "workspace-pin"],
+        source_rel_path: sourceRelPath || undefined,
+        url: nodeUrl || (sourceRelPath ? `/library/${sourceRelPath.replace(/^\/+/, "")}` : undefined),
+      };
+    });
+
+    const nearbyRows = graphNodes
+      .filter((row) => {
+        const dominantPresence = normalizeMusePresenceId(String(row.dominant_presence ?? ""));
+        const conceptPresence = normalizeMusePresenceId(String(row.concept_presence_id ?? ""));
+        if (pinnedIds.includes(String(row.id || row.node_id || "").trim())) {
+          return false;
+        }
+        return dominantPresence === normalizedMuse || conceptPresence === normalizedMuse;
+      })
+      .sort((left, right) => {
+        const rightScore = Number(right.importance ?? 0) + Number(right.embed_layer_count ?? 0) * 0.18;
+        const leftScore = Number(left.importance ?? 0) + Number(left.embed_layer_count ?? 0) * 0.18;
+        return rightScore - leftScore;
+      })
+      .slice(0, 8)
+      .map((row) => {
+        const sourceRelPath = String(row.source_rel_path ?? "").trim();
+        const nodeUrl = String(row.url ?? "").trim();
+        return {
+          id: String(row.id ?? row.node_id ?? "").trim(),
+          kind: String(row.kind ?? "resource"),
+          label: String(row.source_rel_path ?? row.label ?? row.id ?? "resource").trim(),
+          text: String(row.summary ?? row.text_excerpt ?? row.label ?? row.id ?? "").trim(),
+          x: clamp(Number(row.x ?? 0.5), 0, 1),
+          y: clamp(Number(row.y ?? 0.5), 0, 1),
+          visibility: "public",
+          tags: [normalizedMuse, String(row.dominant_field ?? "field")],
+          source_rel_path: sourceRelPath || undefined,
+          url: nodeUrl || (sourceRelPath ? `/library/${sourceRelPath.replace(/^\/+/, "")}` : undefined),
+        };
+      })
+      .filter((row) => row.id.length > 0);
+
+    return [...pinnedRows, ...nearbyRows, ...buildDeviceSurroundingNodes(simulation)].slice(0, 36);
+  }, [catalog?.file_graph?.file_nodes, museWorkspaceBindings, simulation, simulation?.file_graph?.file_nodes]);
+
+  const emitWitnessChatReply = useCallback((
+    payload: {
+      reply?: unknown;
+      mode?: unknown;
+      model?: unknown;
+      trace?: unknown;
+      fallback?: unknown;
+      turn_id?: unknown;
+      muse?: unknown;
+      manifest?: unknown;
+      daimoi?: unknown;
+      field_deltas?: unknown;
+      gpu_claim?: unknown;
+      tool_results?: unknown;
+      media_actions?: unknown;
+      audio_actions?: unknown;
+    },
+    source: string,
+    requestedMusePresenceId?: string,
+  ) => {
+    const reply = String(payload.reply ?? "").trim();
+    const mode = String(payload.mode ?? "canonical").trim() || "canonical";
+    const model = String(payload.model ?? "").trim() || undefined;
+
+    const trace =
+      payload.trace && typeof payload.trace === "object"
+        ? (payload.trace as Record<string, unknown>)
+        : null;
+    const overlayTags = Array.isArray(trace?.overlay_tags)
+      ? trace.overlay_tags
+          .map((item) => String(item || "").trim())
+          .filter((item) => item.length > 0)
+      : [];
+    const failures = Array.isArray(trace?.failures)
+      ? trace.failures.filter((row) => row && typeof row === "object") as Array<Record<string, unknown>>
+      : [];
+    const entities = Array.isArray(trace?.entities)
+      ? trace.entities.filter((row) => row && typeof row === "object") as Array<Record<string, unknown>>
+      : [];
+    const muse = payload.muse && typeof payload.muse === "object"
+      ? payload.muse as Record<string, unknown>
+      : null;
+    const tracePresenceId = String(
+      muse?.id
+      ?? entities[0]?.presence_id
+      ?? requestedMusePresenceId
+      ?? activeMusePresenceId
+      ?? "witness_thread",
+    ).trim()
+      || "witness_thread";
+    const tracePresenceName = String(
+      muse?.label
+      ?? entities[0]?.presence_en
+      ?? tracePresenceId,
+    ).trim() || tracePresenceId;
+
+    const manifest = payload.manifest && typeof payload.manifest === "object"
+      ? payload.manifest as Record<string, unknown>
+      : null;
+    const explicitSelected = Array.isArray(manifest?.explicit_selected)
+      ? manifest.explicit_selected
+      : [];
+    const surroundSelected = Array.isArray(manifest?.surround_selected)
+      ? manifest.surround_selected
+      : [];
+    const daimoiRows = Array.isArray(payload.daimoi)
+      ? payload.daimoi.filter((row): row is Record<string, unknown> => Boolean(row && typeof row === "object"))
+      : [];
+    const fieldDeltas = Array.isArray(payload.field_deltas)
+      ? payload.field_deltas.filter((row): row is Record<string, unknown> => Boolean(row && typeof row === "object"))
+      : [];
+    const toolRows = Array.isArray(payload.tool_results)
+      ? payload.tool_results.filter((row): row is Record<string, unknown> => Boolean(row && typeof row === "object"))
+      : [];
+    const explicitMediaActions = Array.isArray(payload.media_actions)
+      ? payload.media_actions.filter((row): row is Record<string, unknown> => Boolean(row && typeof row === "object"))
+      : [];
+    const audioActions = Array.isArray(payload.audio_actions)
+      ? payload.audio_actions.filter((row): row is Record<string, unknown> => Boolean(row && typeof row === "object"))
+      : [];
+    const mediaActions = explicitMediaActions.length > 0 ? explicitMediaActions : audioActions;
+    const gpuClaim = payload.gpu_claim && typeof payload.gpu_claim === "object"
+      ? payload.gpu_claim as Record<string, unknown>
+      : null;
+    const gpuStatus = String(gpuClaim?.status ?? "").trim();
+
+    const fallback = typeof payload.fallback === "boolean"
+      ? payload.fallback
+      : (mode !== "ollama" || failures.length > 0);
+    const safeReply = reply || "[empty witness reply]";
+    emitChatMessage({
+      role: "assistant",
+      text: safeReply,
+      meta: {
+        channel: "llm",
+        model,
+        fallback,
+        source,
+        presenceId: tracePresenceId,
+        presenceName: tracePresenceName,
+      },
+    });
+
+    if (fallback) {
+      const failureCodes = failures
+        .slice(0, 3)
+        .map((row) => {
+          const presence = String(row.presence_id ?? "presence").trim() || "presence";
+          const code = String(row.error_code ?? "fallback").trim() || "fallback";
+          return `${presence}:${code}`;
+        })
+        .join(", ");
+      emitChatMessage({
+        role: "assistant",
+        text: `muse fallback active (mode=${mode}${failureCodes ? `, failures=${failureCodes}` : ""}).`,
+        meta: {
+          channel: "command",
+          source,
+          presenceId: tracePresenceId,
+          presenceName: tracePresenceName,
+        },
+      });
+    }
+
+    if (manifest || daimoiRows.length > 0 || fieldDeltas.length > 0 || gpuStatus || toolRows.length > 0) {
+      const turnId = String(payload.turn_id ?? "").trim() || "(none)";
+      emitChatMessage({
+        role: "assistant",
+        text: [
+          "muse turn signal",
+          `turn_id=${turnId}`,
+          `explicit=${explicitSelected.length}`,
+          `surrounding=${surroundSelected.length}`,
+          `daimoi=${daimoiRows.length}`,
+          `field_deltas=${fieldDeltas.length}`,
+          `gpu=${gpuStatus || "released"}`,
+          `tools=${toolRows.length}`,
+          `media=${mediaActions.length}`,
+        ].join("\n"),
+        meta: {
+          channel: "command",
+          source: `${source}:turn`,
+          presenceId: tracePresenceId,
+          presenceName: tracePresenceName,
+        },
+      });
+    }
+
+    fieldDeltas.slice(0, 8).forEach((delta, index) => {
+      const x = clamp(Number(delta.x ?? (0.18 + (stableUnitHash(`${tracePresenceId}|${index}`) * 0.64))), 0, 1);
+      const y = clamp(Number(delta.y ?? (0.16 + (stableUnitHash(`${tracePresenceId}|${index}|y`) * 0.68))), 0, 1);
+      const intensity = clamp(Number(delta.intensity ?? 0.48), 0, 1);
+      overlayApi?.pulseAt?.(x, y, 0.32 + (intensity * 0.94), tracePresenceId);
+    });
+
+    if (fieldDeltas.length === 0) {
+      daimoiRows.slice(0, 6).forEach((row, index) => {
+        const x = clamp(Number(row.x ?? (0.2 + (stableUnitHash(`${tracePresenceId}|daimon|${index}`) * 0.6))), 0, 1);
+        const y = clamp(Number(row.y ?? (0.18 + (stableUnitHash(`${tracePresenceId}|daimon|${index}|y`) * 0.62))), 0, 1);
+        const energy = clamp(Number(row.energy ?? 0.44), 0, 1);
+        overlayApi?.pulseAt?.(x, y, 0.3 + (energy * 0.82), tracePresenceId);
+      });
+    }
+
+    if (gpuStatus === "granted") {
+      overlayApi?.singAll?.();
+      const device = String(gpuClaim?.device ?? "gpu").trim() || "gpu";
+      emitUiToast("Muse GPU Claim", `${tracePresenceName} claimed ${device}`);
+    }
+    if (toolRows.length > 0) {
+      const toolNames = toolRows
+        .slice(0, 3)
+        .map((row) => String(row.tool ?? "tool").trim() || "tool")
+        .join(", ");
+      emitUiToast("Muse Tools", `${tracePresenceName} ran ${toolNames}`);
+    }
+
+    if (mediaActions.length > 0) {
+      const firstAction = mediaActions[0];
+      const status = String(firstAction.status ?? "unknown").trim() || "unknown";
+      const mediaKind = String(firstAction.media_kind ?? "media").trim() || "media";
+      const selectedLabel = String(firstAction.selected_label ?? "media target").trim() || "media target";
+      const selectedUrl = String(firstAction.selected_url ?? firstAction.url ?? "").trim();
+      emitChatMessage({
+        role: "assistant",
+        text: [
+          "muse media action",
+          `kind=${mediaKind}`,
+          `status=${status}`,
+          `label=${selectedLabel}`,
+          `url=${selectedUrl || "(none)"}`,
+        ].join("\n"),
+        meta: {
+          channel: "command",
+          source: `${source}:media`,
+          presenceId: tracePresenceId,
+          presenceName: tracePresenceName,
+        },
+      });
+    }
+
+    const requestedMedia = mediaActions.find(
+      (row) => String(row.status ?? "").trim() === "requested",
+    );
+    if (requestedMedia) {
+      const mediaKind = String(requestedMedia.media_kind ?? "audio").trim().toLowerCase();
+      const selectedUrl = String(requestedMedia.selected_url ?? requestedMedia.url ?? "").trim();
+      const selectedLabel = String(requestedMedia.selected_label ?? "media target").trim() || "media target";
+      if (selectedUrl) {
+        if (mediaKind === "image") {
+          openMuseImage(selectedUrl, selectedLabel);
+        } else {
+          void playMuseAudio(selectedUrl, selectedLabel);
+        }
+      }
+    }
+
+    if (safeReply.includes("[[PULSE]]") || overlayTags.includes("[[PULSE]]")) {
+      overlayApi?.pulseAt?.(0.5, 0.5, 1);
+    }
+    if (safeReply.includes("[[SING]]") || overlayTags.includes("[[SING]]")) {
+      overlayApi?.singAll?.();
+    }
+  }, [activeMusePresenceId, emitChatMessage, emitUiToast, openMuseImage, overlayApi, playMuseAudio]);
+
+  useEffect(() => {
+    if (!Array.isArray(museEvents) || museEvents.length <= 0) {
+      return;
+    }
+    const freshEvents = museEvents.filter(
+      (row: MuseEvent) => Number(row.seq ?? 0) > processedMuseEventSeqRef.current,
+    );
+    if (freshEvents.length <= 0) {
+      return;
+    }
+
+    let maxSeq = processedMuseEventSeqRef.current;
+    freshEvents.forEach((eventRow: MuseEvent) => {
+      const seq = Number(eventRow.seq ?? 0);
+      if (Number.isFinite(seq)) {
+        maxSeq = Math.max(maxSeq, seq);
+      }
+      const kind = String(eventRow.kind ?? "").trim();
+      const museId = String(eventRow.muse_id ?? "").trim() || "witness_thread";
+      const payload = eventRow.payload && typeof eventRow.payload === "object"
+        ? eventRow.payload as Record<string, unknown>
+        : {};
+
+      if (kind === "field.delta.applied") {
+        const x = clamp(0.16 + (stableUnitHash(`${museId}|${eventRow.turn_id}|${eventRow.seq}`) * 0.68), 0, 1);
+        const y = clamp(0.14 + (stableUnitHash(`${museId}|${eventRow.turn_id}|${eventRow.seq}|y`) * 0.72), 0, 1);
+        overlayApi?.pulseAt?.(x, y, 0.56, museId);
+      }
+
+      if (kind === "muse.gpu.claim.granted") {
+        overlayApi?.singAll?.();
+        const device = String(payload.device ?? "gpu").trim() || "gpu";
+        emitUiToast("Muse GPU Claim", `${museId} claimed ${device}`);
+      }
+
+      if (kind === "audio.play.requested") {
+        const label = String(payload.label ?? "audio track").trim() || "audio track";
+        const target = String(payload.target_node_id ?? "audio").trim() || "audio";
+        emitUiToast("Muse Audio Request", `${museId} requested ${label} (${target})`);
+      }
+
+      if (kind === "image.open.requested") {
+        const label = String(payload.label ?? "image").trim() || "image";
+        const target = String(payload.target_node_id ?? "image").trim() || "image";
+        emitUiToast("Muse Image Request", `${museId} requested ${label} (${target})`);
+      }
+
+      if (kind === "muse.turn.completed" && normalizeMusePresenceId(museId) === normalizeMusePresenceId(activeMusePresenceId)) {
+        const deltaCount = Number(payload.field_deltas ?? 0);
+        const daimonCount = Number(payload.daimoi ?? 0);
+        emitUiToast(
+          "Muse Turn Complete",
+          `${museId} emitted ${daimonCount} daimoi and ${deltaCount} field deltas`,
+        );
+      }
+
+      if (kind === "muse.rate_limited" && normalizeMusePresenceId(museId) === normalizeMusePresenceId(activeMusePresenceId)) {
+        emitUiToast("Muse Rate Limit", `${museId} hit turn budget; wait a moment.`);
+      }
+      if (kind === "muse.rejected" && normalizeMusePresenceId(museId) === normalizeMusePresenceId(activeMusePresenceId)) {
+        const reason = String(payload.reason ?? "rejected").trim() || "rejected";
+        emitUiToast("Muse Rejected", `${museId} blocked turn (${reason})`);
+      }
+    });
+
+    processedMuseEventSeqRef.current = maxSeq;
+  }, [activeMusePresenceId, emitUiToast, museEvents, overlayApi]);
+
+  const handleSendVoice = useCallback(async (musePresenceId: string, workspace: MuseWorkspaceContext) => {
+    const text = await handleTranscribe();
+    if (!text) {
+      return;
+    }
+
+    const resolvedMusePresenceId = String(musePresenceId || activeMusePresenceId || "witness_thread").trim()
+      || "witness_thread";
+    const surroundingNodes = buildMuseSurroundingNodes(resolvedMusePresenceId, workspace);
+    emitChatMessage({
+      role: "user",
+      text,
+      meta: {
+        channel: "llm",
+        source: "voice",
+        presenceId: resolvedMusePresenceId,
+      },
+    });
+
+    const baseUrl = runtimeBaseUrl();
+    try {
+      const response = await fetch(`${baseUrl}/api/muse/message`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          muse_id: resolvedMusePresenceId || "witness_thread",
+          multi_entity: true,
+          presence_ids: [resolvedMusePresenceId || "witness_thread"],
+          text,
+          mode: "stochastic",
+          token_budget: 2048,
+          graph_revision: simulation?.timestamp || catalog?.generated_at || "",
+          surrounding_nodes: surroundingNodes,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(`muse request failed (${response.status})`);
+      }
+      const payload = (await response.json()) as {
+        reply?: unknown;
+        mode?: unknown;
+        model?: unknown;
+        trace?: unknown;
+      };
+      emitWitnessChatReply(payload, "voice:/api/muse/message", resolvedMusePresenceId);
+    } catch {
+      emitChatMessage({
+        role: "assistant",
+        text: "voice chat request failed",
+        meta: {
+          channel: "command",
+          source: "voice:/api/muse/message",
+          presenceId: resolvedMusePresenceId,
+        },
+      });
+    }
+  }, [
+    activeMusePresenceId,
+    buildMuseSurroundingNodes,
+    catalog,
+    emitChatMessage,
+    emitWitnessChatReply,
+    handleTranscribe,
+    simulation,
+  ]);
+
+  const emitSystemMessage = useCallback((text: string) => {
+    emitChatMessage({
+      role: "assistant",
+      text,
+      meta: {
+        channel: "command",
+        source: "muse:system",
+        presenceId: activeMusePresenceId,
+      },
+    });
+  }, [activeMusePresenceId, emitChatMessage]);
+
   const handleOverlayInit = useCallback((api: unknown) => {
     setOverlayApi(api as OverlayApi);
+  }, []);
+
+  const handleMuseWorkspaceBindingsChange = useCallback((presenceId: string, fileNodeIds: string[]) => {
+    const normalizedPresence = normalizeMusePresenceId(String(presenceId || "").trim() || "witness_thread");
+    const normalizedIds = fileNodeIds
+      .map((item) => String(item || "").trim())
+      .filter((item, index, all) => item.length > 0 && all.indexOf(item) === index)
+      .slice(0, 48);
+    setMuseWorkspaceBindings((prev) => {
+      const prevIds = prev[normalizedPresence] ?? [];
+      if (prevIds.length === normalizedIds.length && prevIds.every((id, index) => id === normalizedIds[index])) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [normalizedPresence]: normalizedIds,
+      };
+    });
+    setMuseWorkspaceContexts((prev) => {
+      const currentWorkspace = normalizeMuseWorkspaceContext(
+        prev[normalizedPresence],
+        APP_WORKSPACE_NORMALIZE_OPTIONS,
+      );
+      if (sameStringArray(currentWorkspace.pinnedFileNodeIds, normalizedIds)) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [normalizedPresence]: {
+          ...currentWorkspace,
+          pinnedFileNodeIds: normalizedIds,
+        },
+      };
+    });
+
+    const baseUrl = runtimeBaseUrl();
+    void fetch(`${baseUrl}/api/muse/sync-pins`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        muse_id: normalizedPresence,
+        pinned_node_ids: normalizedIds,
+        reason: "ui.workspace.sync",
+      }),
+    }).catch(() => {
+      // keep local state even if backend sync fails
+    });
+  }, []);
+
+  const handleMuseWorkspaceContextChange = useCallback((
+    presenceId: string,
+    workspace: MuseWorkspaceContext,
+  ) => {
+    const normalizedPresence = normalizeMusePresenceId(String(presenceId || "").trim() || "witness_thread");
+    const normalizedWorkspace = normalizeMuseWorkspaceContext(
+      workspace,
+      APP_WORKSPACE_NORMALIZE_OPTIONS,
+    );
+    setMuseWorkspaceContexts((prev) => {
+      const currentWorkspace = normalizeMuseWorkspaceContext(
+        prev[normalizedPresence],
+        APP_WORKSPACE_NORMALIZE_OPTIONS,
+      );
+      const pinnedUnchanged = sameStringArray(
+        currentWorkspace.pinnedFileNodeIds,
+        normalizedWorkspace.pinnedFileNodeIds,
+      );
+      const searchUnchanged = currentWorkspace.searchQuery === normalizedWorkspace.searchQuery;
+      const summariesUnchanged = sameStringArray(
+        currentWorkspace.pinnedNexusSummaries,
+        normalizedWorkspace.pinnedNexusSummaries,
+      );
+      if (pinnedUnchanged && searchUnchanged && summariesUnchanged) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [normalizedPresence]: normalizedWorkspace,
+      };
+    });
+    setMuseWorkspaceBindings((prev) => {
+      const prevIds = prev[normalizedPresence] ?? [];
+      if (sameStringArray(prevIds, normalizedWorkspace.pinnedFileNodeIds)) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [normalizedPresence]: normalizedWorkspace.pinnedFileNodeIds,
+      };
+    });
   }, []);
 
   const {
@@ -622,24 +1521,34 @@ export default function App() {
     setCoreVisualTuning(DEFAULT_CORE_VISUAL_TUNING);
   }, []);
 
+  const setInterfaceOpacityDial = useCallback((value: number) => {
+    setInterfaceOpacity(clamp(value, INTERFACE_OPACITY_MIN, INTERFACE_OPACITY_MAX));
+  }, []);
+
+  const resetInterfaceOpacity = useCallback(() => {
+    setInterfaceOpacity(1);
+  }, []);
+
   const boostCoreVisibility = useCallback(() => {
     setCoreVisualTuning(HIGH_VISIBILITY_CORE_VISUAL_TUNING);
   }, []);
 
   const applyCoreLayerPreset = useCallback((nextView: OverlayViewId) => {
-    setCoreOverlayView(nextView);
+    const normalizedView: OverlayViewId = nextView === "crawler-graph" ? "file-graph" : nextView;
+    const nexusGraphView = normalizedView === "file-graph";
+    setCoreOverlayView(normalizedView);
     if (nextView === "omni") {
       setCoreLayerVisibility({ ...DEFAULT_CORE_LAYER_VISIBILITY });
       return;
     }
     setCoreLayerVisibility({
-      presence: nextView === "presence",
-      "file-impact": nextView === "file-impact",
-      "file-graph": nextView === "file-graph",
-      "crawler-graph": nextView === "crawler-graph",
-      "truth-gate": nextView === "truth-gate",
-      logic: nextView === "logic",
-      "pain-field": nextView === "pain-field",
+      presence: normalizedView === "presence" || nexusGraphView,
+      "file-impact": normalizedView === "file-impact",
+      "file-graph": nexusGraphView,
+      "crawler-graph": false,
+      "truth-gate": normalizedView === "truth-gate",
+      logic: normalizedView === "logic",
+      "pain-field": normalizedView === "pain-field",
     });
   }, []);
 
@@ -669,6 +1578,13 @@ export default function App() {
   );
 
   const togglePanelPin = useCallback((panelId: string) => {
+    if (panelId === GLASS_VIEWPORT_PANEL_ID) {
+      setPinnedPanels((prev) => ({
+        ...prev,
+        [panelId]: true,
+      }));
+      return;
+    }
     setPinnedPanels((prev) => ({
       ...prev,
       [panelId]: !prev[panelId],
@@ -728,12 +1644,50 @@ export default function App() {
 
   const resetCoreCamera = useCallback(() => {
     stopCameraFlight();
+    if (corePointerFrameRef.current !== null) {
+      window.cancelAnimationFrame(corePointerFrameRef.current);
+      corePointerFrameRef.current = null;
+    }
+    corePointerPendingRef.current = { dx: 0, dy: 0 };
     setCoreCameraZoom(1);
     setCoreCameraPitch(0);
     setCoreCameraYaw(0);
     setCoreCameraPosition({ x: 0, y: 0, z: 0 });
     coreFlightVelocityRef.current = { x: 0, y: 0, z: 0 };
   }, [stopCameraFlight]);
+
+  const nudgeCameraPan = useCallback((
+    xRatioDelta: number,
+    yRatioDelta: number,
+    sourcePanelId?: string,
+  ) => {
+    stopCameraFlight();
+    const dx = clamp(Number.isFinite(xRatioDelta) ? xRatioDelta : 0, -0.28, 0.28);
+    const dy = clamp(Number.isFinite(yRatioDelta) ? yRatioDelta : 0, -0.28, 0.28);
+    if (Math.abs(dx) < 1e-6 && Math.abs(dy) < 1e-6) {
+      return;
+    }
+
+    setCoreCameraPosition((prev) => ({
+      x: clamp(prev.x + (dx * 228), -CORE_CAMERA_X_LIMIT, CORE_CAMERA_X_LIMIT),
+      y: clamp(prev.y + (dy * 176), -CORE_CAMERA_Y_LIMIT, CORE_CAMERA_Y_LIMIT),
+      z: prev.z,
+    }));
+    setCoreCameraYaw((prev) =>
+      clamp(prev + (dx * 7.2), CORE_CAMERA_YAW_MIN, CORE_CAMERA_YAW_MAX),
+    );
+    setCoreCameraPitch((prev) =>
+      clamp(prev + (dy * 6.4), CORE_CAMERA_PITCH_MIN, CORE_CAMERA_PITCH_MAX),
+    );
+
+    const now = performance.now();
+    if (now - lastNudgePulseTsRef.current >= 48) {
+      const pulseX = clamp(0.5 + (dx * 0.92), 0.08, 0.92);
+      const pulseY = clamp(0.5 + (dy * 0.92), 0.08, 0.92);
+      overlayApi?.pulseAt?.(pulseX, pulseY, 0.74, sourcePanelId ?? "view_lens_keeper");
+      lastNudgePulseTsRef.current = now;
+    }
+  }, [overlayApi, stopCameraFlight]);
 
   const resolveOverlayAnchorRatio = useCallback(
     (anchor: WorldAnchorTarget, panelAnchorId?: string): { x: number; y: number; label?: string } | null => {
@@ -835,6 +1789,14 @@ export default function App() {
   }, [stopCameraFlight]);
 
   useEffect(() => {
+    return () => {
+      if (corePointerFrameRef.current !== null) {
+        window.cancelAnimationFrame(corePointerFrameRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (!coreOrbitEnabled) {
       setCoreOrbitPhase(0);
       return;
@@ -880,6 +1842,7 @@ export default function App() {
     }),
     [coreCameraPosition, coreOrbitOffset],
   );
+  const deferredCoreRenderedCameraPosition = useDeferredValue(coreRenderedCameraPosition);
 
   const coreCameraTransform = useMemo(
     () =>
@@ -898,6 +1861,8 @@ export default function App() {
       if (isTextEntryTarget(event.target)) {
         return;
       }
+      event.preventDefault();
+      stopCameraFlight();
       const mode = "pan";
       coreDragRef.current = {
         active: true,
@@ -905,43 +1870,97 @@ export default function App() {
         mode,
         startX: event.clientX,
         startY: event.clientY,
+        lastX: event.clientX,
+        lastY: event.clientY,
         startPitch: coreCameraPitch,
         startYaw: coreCameraYaw,
         startCamX: coreCameraPosition.x,
         startCamY: coreCameraPosition.y,
       };
+      corePointerPendingRef.current = { dx: 0, dy: 0 };
+      if (corePointerFrameRef.current !== null) {
+        window.cancelAnimationFrame(corePointerFrameRef.current);
+        corePointerFrameRef.current = null;
+      }
       event.currentTarget.setPointerCapture(event.pointerId);
     },
-    [coreCameraPitch, coreCameraPosition.x, coreCameraPosition.y, coreCameraYaw],
+    [coreCameraPitch, coreCameraPosition.x, coreCameraPosition.y, coreCameraYaw, stopCameraFlight],
   );
+
+  const flushCorePointerPending = useCallback(() => {
+    const pending = corePointerPendingRef.current;
+    corePointerPendingRef.current = { dx: 0, dy: 0 };
+    const activeDrag = coreDragRef.current;
+    if (!activeDrag || !activeDrag.active) {
+      return;
+    }
+    if (Math.abs(pending.dx) < 0.01 && Math.abs(pending.dy) < 0.01) {
+      return;
+    }
+    if (activeDrag.mode === "pan") {
+      setCoreCameraPosition((prev) => ({
+        x: clamp(prev.x + (pending.dx * 1.45), -CORE_CAMERA_X_LIMIT, CORE_CAMERA_X_LIMIT),
+        y: clamp(prev.y + (pending.dy * 1.45), -CORE_CAMERA_Y_LIMIT, CORE_CAMERA_Y_LIMIT),
+        z: prev.z,
+      }));
+      return;
+    }
+    setCoreCameraYaw((prev) =>
+      clamp(prev + (pending.dx * 0.08), CORE_CAMERA_YAW_MIN, CORE_CAMERA_YAW_MAX),
+    );
+    setCoreCameraPitch((prev) =>
+      clamp(prev + (pending.dy * 0.08), CORE_CAMERA_PITCH_MIN, CORE_CAMERA_PITCH_MAX),
+    );
+  }, []);
+
+  const scheduleCorePointerFlush = useCallback(() => {
+    if (corePointerFrameRef.current !== null) {
+      return;
+    }
+    corePointerFrameRef.current = window.requestAnimationFrame(() => {
+      corePointerFrameRef.current = null;
+      flushCorePointerPending();
+    });
+  }, [flushCorePointerPending]);
 
   const handleCorePointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = coreDragRef.current;
     if (!drag || !drag.active || drag.pointerId !== event.pointerId) {
       return;
     }
-    const dx = event.clientX - drag.startX;
-    const dy = event.clientY - drag.startY;
-    if (drag.mode === "pan") {
-      setCoreCameraPosition((prev) => ({
-        x: clamp(drag.startCamX + (dx * 0.9), -CORE_CAMERA_X_LIMIT, CORE_CAMERA_X_LIMIT),
-        y: clamp(drag.startCamY + (dy * 0.9), -CORE_CAMERA_Y_LIMIT, CORE_CAMERA_Y_LIMIT),
-        z: prev.z,
-      }));
+    event.preventDefault();
+    const dx = event.clientX - drag.lastX;
+    const dy = event.clientY - drag.lastY;
+    drag.lastX = event.clientX;
+    drag.lastY = event.clientY;
+    if (Math.abs(dx) < 0.1 && Math.abs(dy) < 0.1) {
       return;
     }
-    setCoreCameraYaw(clamp(drag.startYaw + (dx * 0.08), CORE_CAMERA_YAW_MIN, CORE_CAMERA_YAW_MAX));
-    setCoreCameraPitch(clamp(drag.startPitch + (dy * 0.08), CORE_CAMERA_PITCH_MIN, CORE_CAMERA_PITCH_MAX));
-  }, []);
+    corePointerPendingRef.current.dx += dx;
+    corePointerPendingRef.current.dy += dy;
+    if (corePointerFrameRef.current !== null) {
+      return;
+    }
+    flushCorePointerPending();
+    scheduleCorePointerFlush();
+  }, [flushCorePointerPending, scheduleCorePointerFlush]);
 
   const handleCorePointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = coreDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) {
       return;
     }
+    if (corePointerFrameRef.current !== null) {
+      window.cancelAnimationFrame(corePointerFrameRef.current);
+      corePointerFrameRef.current = null;
+    }
+    flushCorePointerPending();
+    corePointerPendingRef.current = { dx: 0, dy: 0 };
     coreDragRef.current = null;
-    event.currentTarget.releasePointerCapture(event.pointerId);
-  }, []);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, [flushCorePointerPending]);
 
   const applyCoreWheelDelta = useCallback((deltaY: number, shiftKey: boolean) => {
     if (shiftKey) {
@@ -1127,7 +2146,7 @@ export default function App() {
   );
 
   const handlePresenceSayCommand = useCallback(
-    async (text: string): Promise<boolean> => {
+    async (text: string, fallbackMusePresenceId = activeMusePresenceId): Promise<boolean> => {
       const trimmed = text.trim();
       if (!trimmed.toLowerCase().startsWith("/say")) {
         return false;
@@ -1135,34 +2154,62 @@ export default function App() {
 
       const args = trimmed.replace(/^\/say\s*/i, "");
       const [presenceIdRaw, ...rest] = args.split(/\s+/).filter((token) => token.length > 0);
-      const presence_id = presenceIdRaw || "witness_thread";
+      const presence_id = presenceIdRaw || fallbackMusePresenceId || "witness_thread";
       const messageText = rest.join(" ");
+      const surroundingNodes = buildMuseSurroundingNodes(presence_id, null);
 
       try {
         const baseUrl = runtimeBaseUrl();
-        const response = await fetch(`${baseUrl}/api/presence/say`, {
+        const response = await fetch(`${baseUrl}/api/muse/message`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            presence_id,
+            muse_id: presence_id,
             text: messageText,
+            mode: "deterministic",
+            token_budget: 1024,
+            graph_revision: simulation?.timestamp || catalog?.generated_at || "",
+            surrounding_nodes: surroundingNodes,
           }),
         });
+        if (!response.ok) {
+          throw new Error(`muse say request failed (${response.status})`);
+        }
         const payload = (await response.json()) as {
-          presence_name?: { en?: string };
-          rendered_text?: string;
-          say_intent?: { facts?: unknown[]; asks?: unknown[]; repairs?: unknown[] };
+          ok?: boolean;
+          turn_id?: string;
+          muse?: { label?: string };
+          reply?: string;
+          mode?: string;
+          model?: string;
+          fallback?: boolean;
+          daimoi?: unknown[];
+          field_deltas?: unknown[];
+          gpu_claim?: Record<string, unknown>;
+          tool_results?: unknown[];
+          manifest?: {
+            explicit_selected?: unknown[];
+            surround_selected?: unknown[];
+          };
         };
+        emitWitnessChatReply(payload, "command:/say", presence_id);
         emitSystemMessage(
-          `${payload?.presence_name?.en || presence_id} / say\n${payload?.rendered_text || "(no render)"}\n` +
-            `facts=${payload?.say_intent?.facts?.length || 0} asks=${payload?.say_intent?.asks?.length || 0} repairs=${payload?.say_intent?.repairs?.length || 0}`,
+          `${payload?.muse?.label || presence_id} / muse turn ${payload?.turn_id || ""}\n${payload?.reply || "(no reply)"}\n` +
+            `explicit=${payload?.manifest?.explicit_selected?.length || 0} surrounding=${payload?.manifest?.surround_selected?.length || 0}`,
         );
       } catch {
-        emitSystemMessage("presence say failed");
+        emitSystemMessage("muse say failed");
       }
       return true;
     },
-    [emitSystemMessage],
+    [
+      activeMusePresenceId,
+      buildMuseSurroundingNodes,
+      catalog?.generated_at,
+      emitSystemMessage,
+      emitWitnessChatReply,
+      simulation?.timestamp,
+    ],
   );
 
   const handleDriftCommand = useCallback(
@@ -1375,11 +2422,11 @@ export default function App() {
   );
 
   const handleChatCommand = useCallback(
-    async (text: string): Promise<boolean> => {
+    async (text: string, musePresenceId = activeMusePresenceId): Promise<boolean> => {
       if (await handleLedgerCommand(text)) {
         return true;
       }
-      if (await handlePresenceSayCommand(text)) {
+      if (await handlePresenceSayCommand(text, musePresenceId)) {
         return true;
       }
       if (await handleDriftCommand(text)) {
@@ -1394,6 +2441,7 @@ export default function App() {
       return false;
     },
     [
+      activeMusePresenceId,
       handleDriftCommand,
       handleLedgerCommand,
       handlePresenceSayCommand,
@@ -1401,6 +2449,72 @@ export default function App() {
       handleStudyCommand,
     ],
   );
+
+  const handleMuseWorkspaceSend = useCallback((text: string, musePresenceId: string, workspace: MuseWorkspaceContext) => {
+    const resolvedMusePresenceId = String(musePresenceId || activeMusePresenceId || "witness_thread").trim()
+      || "witness_thread";
+    setActiveMusePresenceId(resolvedMusePresenceId);
+    if (handleAutopilotUserInput(text)) {
+      return;
+    }
+    setIsThinking(true);
+    (async () => {
+      const consumed = await handleChatCommand(text, resolvedMusePresenceId);
+      if (consumed) {
+        return;
+      }
+
+      const baseUrl = runtimeBaseUrl();
+      const surroundingNodes = buildMuseSurroundingNodes(resolvedMusePresenceId, workspace);
+      const response = await fetch(`${baseUrl}/api/muse/message`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          muse_id: resolvedMusePresenceId || "witness_thread",
+          multi_entity: true,
+          presence_ids: [resolvedMusePresenceId || "witness_thread"],
+          text,
+          mode: "stochastic",
+          token_budget: 2048,
+          graph_revision: simulation?.timestamp || catalog?.generated_at || "",
+          surrounding_nodes: surroundingNodes,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(`muse request failed (${response.status})`);
+      }
+      const payload = (await response.json()) as {
+        reply?: unknown;
+        mode?: unknown;
+        model?: unknown;
+        trace?: unknown;
+      };
+      emitWitnessChatReply(payload, "chat:/api/muse/message", resolvedMusePresenceId);
+    })()
+      .catch(() => {
+        emitChatMessage({
+          role: "assistant",
+          text: "muse request failed",
+          meta: {
+            channel: "command",
+            source: "chat:/api/muse/message",
+            presenceId: resolvedMusePresenceId,
+          },
+        });
+      })
+      .finally(() => {
+        setIsThinking(false);
+      });
+  }, [
+    activeMusePresenceId,
+    catalog,
+    emitChatMessage,
+    emitWitnessChatReply,
+    handleAutopilotUserInput,
+    buildMuseSurroundingNodes,
+    handleChatCommand,
+    simulation,
+  ]);
 
   const handleWorldInteract = useCallback(async (personId: string, action: "speak" | "pray" | "sing") => {
     setInteractingPersonId(personId);
@@ -1687,8 +2801,8 @@ export default function App() {
   
   const handleWorldPanelDragEnd = useCallback((panelId: string, info: PanInfo) => {
     const panelScale = panelWorldScaleRef.current.get(panelId);
-    const fallbackPixelsPerWorldX = Math.max(140, viewportWidth * 0.34 * coreCameraZoom);
-    const fallbackPixelsPerWorldY = Math.max(110, Math.max(160, viewportHeight - 126) * 0.47 * coreCameraZoom);
+    const fallbackPixelsPerWorldX = Math.max(140, viewportWidth * 0.34 * deferredCoreCameraZoom);
+    const fallbackPixelsPerWorldY = Math.max(110, Math.max(160, viewportHeight - 126) * 0.47 * deferredCoreCameraZoom);
     const pixelsPerWorldX = Math.max(90, panelScale?.x ?? fallbackPixelsPerWorldX);
     const pixelsPerWorldY = Math.max(74, panelScale?.y ?? fallbackPixelsPerWorldY);
     const worldDeltaX = info.offset.x / pixelsPerWorldX;
@@ -1704,7 +2818,7 @@ export default function App() {
         },
       };
     });
-  }, [coreCameraZoom, viewportHeight, viewportWidth]);
+  }, [deferredCoreCameraZoom, viewportHeight, viewportWidth]);
 
   const dedicatedOverlayViews = useMemo(
     () => OVERLAY_VIEW_OPTIONS.filter((option) => option.id !== "omni"),
@@ -1742,15 +2856,11 @@ export default function App() {
     ];
 
   const activeChatLens = activeProjection?.chat_sessions?.[0] ?? null;
-  const chatLensState = projectionStateByElement.get("nexus.ui.chat.witness_thread") ?? null;
   const latestAutopilotEvent = autopilotEvents[0] ?? null;
+  const museRuntimeSnapshot = catalog?.muse_runtime ?? null;
+  const museForgePreviewId = toMuseSlug(museForgeLabel);
 
   const panelConfigs = useMemo<PanelConfig[]>(() => [
-    {
-      id: "nexus.ui.command_center",
-      fallbackSpan: 12,
-      render: () => <PresenceCallDeck catalog={catalog} simulation={simulation} />,
-    },
     {
       id: "nexus.ui.dedicated_views",
       fallbackSpan: 12,
@@ -1773,11 +2883,12 @@ export default function App() {
                   overlayViewLocked
                   compactHud
                   interactive={false}
-                  particleDensity={coreSimulationTuning.particleDensity}
-                  particleScale={coreSimulationTuning.particleScale}
-                  motionSpeed={coreSimulationTuning.motionSpeed}
-                  mouseInfluence={coreSimulationTuning.mouseInfluence}
-                  layerDepth={coreSimulationTuning.layerDepth}
+                  particleDensity={deferredCoreSimulationTuning.particleDensity}
+                  particleScale={deferredCoreSimulationTuning.particleScale}
+                  motionSpeed={deferredCoreSimulationTuning.motionSpeed}
+                  mouseInfluence={deferredCoreSimulationTuning.mouseInfluence}
+                  layerDepth={deferredCoreSimulationTuning.layerDepth}
+                  museWorkspaceBindings={museWorkspaceBindings}
                 />
               </section>
             ))}
@@ -1786,87 +2897,80 @@ export default function App() {
       ),
     },
     {
-      id: "nexus.ui.chat.witness_thread",
-      fallbackSpan: 6,
+      id: GLASS_VIEWPORT_PANEL_ID,
+      fallbackSpan: 12,
+      anchorKind: "region",
+      anchorId: "view_lens_keeper",
+      worldSize: "xl",
+      pinnedByDefault: true,
       render: () => (
-        <div className="space-y-4 h-full">
-          <div className="rounded-xl border border-[var(--line)] bg-[rgba(45,46,39,0.88)] px-4 py-3 text-sm text-muted">
-            Communication mode active: sound production controls are retired. Use Presence Call Deck for
-            WebRTC communication and this lane for text/voice messaging.
-          </div>
+        <div className="mt-0 rounded-xl border border-[rgba(131,188,227,0.34)] bg-[rgba(8,20,31,0.7)] p-3 h-full">
+          <p className="text-[11px] uppercase tracking-[0.12em] text-[#a6d6f5]">
+            Glass Viewport Presence
+          </p>
+          <p className="text-xs text-[#cfe6f7] mt-1">
+            This lane is managed through transparent glass mode for camera guidance and gentle map panning.
+          </p>
+          <p className="text-[11px] text-[#9ec7dd] mt-2">
+            Use the glass controls to let the view-lens keeper guide what you see in the simulation.
+          </p>
+        </div>
+      ),
+    },
+    ...FIXED_MUSE_PRESENCES.map((muse) => {
+      const panelId = museWorkspacePanelId(muse.id);
+      const panelState = projectionStateByElement.get(panelId) ?? null;
+      const panelSession =
+        activeProjection?.chat_sessions?.find(
+          (session) => normalizeMusePresenceId(String(session.presence ?? "")) === normalizeMusePresenceId(muse.id),
+        )
+        ?? null;
+      const boundCount = museWorkspaceBindings[normalizeMusePresenceId(muse.id)]?.length ?? 0;
 
-          {chatLensState ? (
-            <p className="text-xs text-muted font-mono">
-              chat-lens mass <code>{chatLensState.mass.toFixed(2)}</code> | priority
-              <code>{chatLensState.priority.toFixed(2)}</code> | reason
-              <code>{chatLensState.explain.dominant_field}</code>
-            </p>
-          ) : null}
-
+      return {
+        id: panelId,
+        fallbackSpan: 4,
+        anchorKind: "node" as const,
+        anchorId: muse.id,
+        worldSize: "m" as const,
+        render: () => (
           <div
             style={{
-              opacity: chatLensState ? projectionOpacity(chatLensState.opacity, 0.92) : 1,
-              transform: chatLensState
-                ? `scale(${(1 + chatLensState.pulse * 0.012).toFixed(3)})`
+              opacity: panelState ? projectionOpacity(panelState.opacity, 0.92) : 1,
+              transform: panelState
+                ? `scale(${(1 + panelState.pulse * 0.01).toFixed(3)})`
                 : undefined,
               transformOrigin: "center top",
               transition: "transform 200ms ease, opacity 200ms ease",
             }}
           >
-            <ChatPanel
-              onSend={(text) => {
-                if (handleAutopilotUserInput(text)) {
-                  return;
-                }
-                setIsThinking(true);
-                (async () => {
-                  const consumed = await handleChatCommand(text);
-                  if (consumed) {
-                    return;
-                  }
-
-                  const baseUrl = runtimeBaseUrl();
-                  const response = await fetch(`${baseUrl}/api/chat`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ messages: [{ role: "user", text }] }),
-                  });
-                  const payload = (await response.json()) as { reply?: string };
-                  const reply = String(payload.reply ?? "");
-                  window.dispatchEvent(
-                    new CustomEvent("chat-message", {
-                      detail: { role: "assistant", text: reply },
-                    }),
-                  );
-                  if (reply.includes("[[PULSE]]")) {
-                    overlayApi?.pulseAt?.(0.5, 0.5, 1.0);
-                  }
-                  if (reply.includes("[[SING]]")) {
-                    overlayApi?.singAll?.();
-                  }
-                })()
-                  .catch(() => {
-                    window.dispatchEvent(
-                      new CustomEvent("chat-message", {
-                        detail: { role: "system", text: "chat request failed" },
-                      }),
-                    );
-                  })
-                  .finally(() => {
-                    setIsThinking(false);
-                  });
-              }}
+            <MusePresencePanel
+              museId={muse.id}
+              onSend={handleMuseWorkspaceSend}
               onRecord={handleRecord}
               onTranscribe={handleTranscribe}
               onSendVoice={handleSendVoice}
               isRecording={isRecording}
               isThinking={isThinking}
               voiceInputMeta={voiceInputMeta}
+              catalog={catalog}
+              simulation={simulation}
+              workspaceContext={
+                museWorkspaceContexts[normalizeMusePresenceId(muse.id)]
+                ?? null
+              }
+              onWorkspaceContextChange={handleMuseWorkspaceContextChange}
+              onWorkspaceBindingsChange={handleMuseWorkspaceBindingsChange}
+              chatLensState={panelState}
+              activeChatSession={panelSession}
             />
+            <p className="mt-2 text-[10px] text-[#8db3ca]">
+              workspace binds <code>{boundCount}</code>
+            </p>
           </div>
-        </div>
-      ),
-    },
+        ),
+      } satisfies PanelConfig;
+    }),
     {
       id: "nexus.ui.web_graph_weaver",
       fallbackSpan: 6,
@@ -2071,12 +3175,12 @@ export default function App() {
     activeProjection,
     autopilotEvents,
     catalog,
-    chatLensState,
-    coreSimulationTuning,
+    deferredCoreSimulationTuning,
     dedicatedOverlayViews,
     deferredPanelsReady,
-    handleAutopilotUserInput,
-    handleChatCommand,
+    handleMuseWorkspaceBindingsChange,
+    handleMuseWorkspaceContextChange,
+    handleMuseWorkspaceSend,
     handleRecord,
     handleSendVoice,
     handleTranscribe,
@@ -2084,23 +3188,44 @@ export default function App() {
     interactingPersonId,
     isRecording,
     isThinking,
-    overlayApi,
+    museWorkspaceBindings,
+    museWorkspaceContexts,
+    projectionStateByElement,
     simulation,
     voiceInputMeta,
-    worldInteraction
+    worldInteraction,
   ]);
 
   const sortedPanels = useMemo<RankedPanel[]>(() => {
-    return panelConfigs
+    const panelDrafts = panelConfigs
       .filter((config) => config.id !== "nexus.ui.simulation_map")
       .map((config) => {
         const state = projectionStateByElement.get(config.id);
         const element = projectionElementById.get(config.id);
         const preset = PANEL_ANCHOR_PRESETS[config.id];
         const priority = state?.priority ?? 0.1;
+        return {
+          config,
+          state,
+          element,
+          preset,
+          priority,
+        };
+      });
+
+    const topOperationalPriority = panelDrafts.reduce((max, draft) => {
+      if (isGlassPrimaryPanelId(draft.config.id)) {
+        return max;
+      }
+      return Math.max(max, draft.priority);
+    }, 0);
+
+    const lowPriorityCycle = topOperationalPriority < 0.62;
+
+    return panelDrafts
+      .map((draft) => {
+        const { config, state, element, preset, priority } = draft;
         const councilBoost = panelCouncilBoosts[config.id] ?? 0;
-        const councilScore = clamp(priority + (councilBoost * 0.11), 0, 2);
-        const depth = Math.round(clamp(councilScore, 0, 1) * 160) + 24;
 
         const rawPresenceId = String(
           element?.presence
@@ -2116,8 +3241,21 @@ export default function App() {
         const particleDisposition: ParticleDisposition =
           presenceRole === "neutral" ? "neutral" : "role-bound";
         const particleCount = particleCountsByPresence[presenceId] ?? 0;
+        const glassPanel = isGlassPrimaryPanelId(config.id);
+        const glassPreferenceBoost = glassPanel
+          ? (presenceRole === "camera-guidance" ? 0.14 : 0.08)
+            + (lowPriorityCycle ? 0.19 : 0)
+            + (particleCount <= 2 ? 0.03 : 0)
+          : 0;
+        const councilScore = clamp(priority + glassPreferenceBoost + (councilBoost * 0.11), 0, 2);
+        const depth = Math.round(clamp(councilScore, 0, 1) * 160) + 24;
         const toolHints = PANEL_TOOL_HINTS[config.id] ?? ["inspect", "focus", "act"];
-        const councilReason = String(state?.explain?.reason_en ?? "Council rank follows live field and presence signal.");
+        const baseCouncilReason = String(
+          state?.explain?.reason_en ?? "Council rank follows live field and presence signal.",
+        );
+        const councilReason = glassPanel && glassPreferenceBoost > 0
+          ? `${baseCouncilReason} Glass lane preferred${lowPriorityCycle ? " during low-priority cycle." : "."}`
+          : baseCouncilReason;
 
         return {
           ...config,
@@ -2142,6 +3280,9 @@ export default function App() {
       .sort((left, right) => {
         if (right.councilScore !== left.councilScore) {
           return right.councilScore - left.councilScore;
+        }
+        if (isGlassPrimaryPanelId(right.id) !== isGlassPrimaryPanelId(left.id)) {
+          return Number(isGlassPrimaryPanelId(right.id)) - Number(isGlassPrimaryPanelId(left.id));
         }
         return right.priority - left.priority;
       });
@@ -2185,6 +3326,16 @@ export default function App() {
   }, [panelWindowStateById]);
 
   const minimizePanelWindow = useCallback((panelId: string) => {
+    if (panelId === GLASS_VIEWPORT_PANEL_ID) {
+      setPanelWindowStates((prev) => ({
+        ...prev,
+        [panelId]: {
+          open: true,
+          minimized: false,
+        },
+      }));
+      return;
+    }
     setPanelWindowStates((prev) => ({
       ...prev,
       [panelId]: {
@@ -2197,6 +3348,20 @@ export default function App() {
   }, []);
 
   const closePanelWindow = useCallback((panelId: string) => {
+    if (panelId === GLASS_VIEWPORT_PANEL_ID) {
+      setPanelWindowStates((prev) => ({
+        ...prev,
+        [panelId]: {
+          open: true,
+          minimized: false,
+        },
+      }));
+      setPinnedPanels((prev) => ({
+        ...prev,
+        [panelId]: true,
+      }));
+      return;
+    }
     setPanelWindowStates((prev) => ({
       ...prev,
       [panelId]: {
@@ -2509,15 +3674,15 @@ export default function App() {
     const stageHeight = Math.max(120, stageBottom - stageTop);
     const centerX = viewportWidth / 2;
     const centerY = stageTop + (stageHeight / 2);
-    const yaw = (coreCameraYaw * Math.PI / 180) * 0.72;
-    const pitch = (coreCameraPitch * Math.PI / 180) * 0.68;
+    const yaw = (deferredCoreCameraYaw * Math.PI / 180) * 0.72;
+    const pitch = (deferredCoreCameraPitch * Math.PI / 180) * 0.68;
     const cosYaw = Math.cos(yaw);
     const sinYaw = Math.sin(yaw);
     const cosPitch = Math.cos(pitch);
     const sinPitch = Math.sin(pitch);
-    const cameraOffsetX = coreRenderedCameraPosition.x / 660;
-    const cameraOffsetY = coreRenderedCameraPosition.y / 560;
-    const cameraOffsetZ = coreRenderedCameraPosition.z / 920;
+    const cameraOffsetX = deferredCoreRenderedCameraPosition.x / 660;
+    const cameraOffsetY = deferredCoreRenderedCameraPosition.y / 560;
+    const cameraOffsetZ = deferredCoreRenderedCameraPosition.z / 920;
 
     const anchorToWorldPoint = (anchor: WorldAnchorTarget) => ({
       x: (anchor.x - 0.5) * 2.25,
@@ -2537,8 +3702,8 @@ export default function App() {
       const perspective = clamp(1 / (1 + (z2 * 0.7)), 0.46, 1.9);
 
       return {
-        x: centerX + (x1 * viewportWidth * 0.34 * perspective * coreCameraZoom),
-        y: centerY + (y1 * stageHeight * 0.47 * perspective * coreCameraZoom),
+        x: centerX + (x1 * viewportWidth * 0.34 * perspective * deferredCoreCameraZoom),
+        y: centerY + (y1 * stageHeight * 0.47 * perspective * deferredCoreCameraZoom),
         perspective,
       };
     };
@@ -2566,7 +3731,7 @@ export default function App() {
         ? {
             x: overlayAnchor.x * viewportWidth,
             y: stageTop + (overlayAnchor.y * stageHeight),
-            perspective: clamp(0.96 + ((coreCameraZoom - 1) * 0.18), 0.72, 1.34),
+            perspective: clamp(0.96 + ((deferredCoreCameraZoom - 1) * 0.18), 0.72, 1.34),
           }
         : projectWorldPoint(anchorWorld.x, anchorWorld.y, anchorWorld.z);
       const side = preferredSideForAnchor(
@@ -2577,14 +3742,14 @@ export default function App() {
         viewportHeight,
         panelSideRef.current,
       );
-      const baseSize = panelSizeForWorld(panel.worldSize ?? "m", panel.priority, coreCameraZoom, speedNorm);
+      const baseSize = panelSizeForWorld(panel.worldSize ?? "m", panel.priority, deferredCoreCameraZoom, speedNorm);
       const size = {
         width: Math.round(Math.min(baseSize.width, Math.max(176, viewportWidth - (WORLD_PANEL_MARGIN * 2)))),
         height: Math.round(Math.min(baseSize.height, Math.max(120, stageBottom - stageTop - 8))),
         collapse: baseSize.collapse,
       };
-      const pixelsPerWorldX = Math.max(90, viewportWidth * 0.34 * projected.perspective * coreCameraZoom);
-      const pixelsPerWorldY = Math.max(74, stageHeight * 0.47 * projected.perspective * coreCameraZoom);
+      const pixelsPerWorldX = Math.max(90, viewportWidth * 0.34 * projected.perspective * deferredCoreCameraZoom);
+      const pixelsPerWorldY = Math.max(74, stageHeight * 0.47 * projected.perspective * deferredCoreCameraZoom);
       panelWorldScaleRef.current.set(panelId, { x: pixelsPerWorldX, y: pixelsPerWorldY });
       trackedScaleIds.add(panelId);
 
@@ -2725,10 +3890,10 @@ export default function App() {
 
     return entries;
   }, [
-    coreCameraPitch,
-    coreRenderedCameraPosition,
-    coreCameraYaw,
-    coreCameraZoom,
+    deferredCoreCameraPitch,
+    deferredCoreRenderedCameraPosition,
+    deferredCoreCameraYaw,
+    deferredCoreCameraZoom,
     hoveredPanelId,
     panelAnchorById,
     panelStateSpaceBiases,
@@ -2788,21 +3953,21 @@ export default function App() {
   ]);
 
   const galaxyLayerStyles = useMemo(() => {
-    const driftX = coreRenderedCameraPosition.x;
-    const driftY = coreRenderedCameraPosition.y;
-    const driftZ = coreRenderedCameraPosition.z;
+    const driftX = deferredCoreRenderedCameraPosition.x;
+    const driftY = deferredCoreRenderedCameraPosition.y;
+    const driftZ = deferredCoreRenderedCameraPosition.z;
     return {
       far: {
-        transform: `translate3d(${((-driftX * 0.07) + (coreCameraYaw * 1.4)).toFixed(1)}px, ${((-driftY * 0.05) + (coreCameraPitch * 1.3)).toFixed(1)}px, ${(driftZ * 0.04).toFixed(1)}px) scale(${(1 + (driftZ * 0.00018)).toFixed(3)})`,
+        transform: `translate3d(${((-driftX * 0.07) + (deferredCoreCameraYaw * 1.4)).toFixed(1)}px, ${((-driftY * 0.05) + (deferredCoreCameraPitch * 1.3)).toFixed(1)}px, ${(driftZ * 0.04).toFixed(1)}px) scale(${(1 + (driftZ * 0.00018)).toFixed(3)})`,
       },
       mid: {
-        transform: `translate3d(${((-driftX * 0.14) + (coreCameraYaw * 2.2)).toFixed(1)}px, ${((-driftY * 0.11) + (coreCameraPitch * 1.8)).toFixed(1)}px, ${(driftZ * 0.08).toFixed(1)}px) scale(${(1.04 + (driftZ * 0.00022)).toFixed(3)})`,
+        transform: `translate3d(${((-driftX * 0.14) + (deferredCoreCameraYaw * 2.2)).toFixed(1)}px, ${((-driftY * 0.11) + (deferredCoreCameraPitch * 1.8)).toFixed(1)}px, ${(driftZ * 0.08).toFixed(1)}px) scale(${(1.04 + (driftZ * 0.00022)).toFixed(3)})`,
       },
       near: {
-        transform: `translate3d(${((-driftX * 0.22) + (coreCameraYaw * 3.1)).toFixed(1)}px, ${((-driftY * 0.18) + (coreCameraPitch * 2.4)).toFixed(1)}px, ${(driftZ * 0.14).toFixed(1)}px) scale(${(1.1 + (driftZ * 0.00032)).toFixed(3)})`,
+        transform: `translate3d(${((-driftX * 0.22) + (deferredCoreCameraYaw * 3.1)).toFixed(1)}px, ${((-driftY * 0.18) + (deferredCoreCameraPitch * 2.4)).toFixed(1)}px, ${(driftZ * 0.14).toFixed(1)}px) scale(${(1.1 + (driftZ * 0.00032)).toFixed(3)})`,
       },
     };
-  }, [coreCameraPitch, coreCameraYaw, coreRenderedCameraPosition]);
+  }, [deferredCoreCameraPitch, deferredCoreCameraYaw, deferredCoreRenderedCameraPosition]);
 
   return (
     <>
@@ -2816,6 +3981,7 @@ export default function App() {
         coreSimulationTuning={coreSimulationTuning}
         coreVisualTuning={coreVisualTuning}
         coreLayerVisibility={coreLayerVisibility}
+        museWorkspaceBindings={museWorkspaceBindings}
         galaxyLayerStyles={galaxyLayerStyles}
         onOverlayInit={handleOverlayInit}
         onPointerDown={handleCorePointerDown}
@@ -2824,17 +3990,11 @@ export default function App() {
         onWheel={handleCoreWheel}
       />
 
-      <CoreLayerManagerOverlay
-        activeLayerCount={activeCoreLayerCount}
-        isOpen={coreLayerManagerOpen}
-        layerVisibility={coreLayerVisibility}
-        onToggleOpen={() => setCoreLayerManagerOpen((prev) => !prev)}
-        onSetAllLayers={setAllCoreLayers}
-        onSetLayerEnabled={setCoreLayerEnabled}
-      />
-
-      <main className="relative z-20 max-w-[1920px] mx-auto px-2 py-2 md:px-4 md:py-4 pb-20 transition-colors pointer-events-none">
-        <header className="mb-4 border-b border-[rgba(166,205,235,0.32)] pb-3 flex flex-col gap-2 bg-[rgba(8,14,22,0.66)] backdrop-blur-[4px] rounded-xl px-3 shadow-[0_12px_30px_rgba(2,8,14,0.34)] pointer-events-auto">
+      <main
+        className="relative z-20 w-full px-1 py-2 md:px-2 md:py-4 pb-20 transition-colors pointer-events-none"
+        style={{ opacity: interfaceOpacity }}
+      >
+        <header className="mb-4 border-b border-[rgba(166,205,235,0.28)] pb-3 flex flex-col gap-2 bg-[rgba(8,14,22,0.18)] rounded-xl px-3 shadow-[0_6px_16px_rgba(2,8,14,0.16)] pointer-events-auto">
           <div className="flex justify-between items-center">
             <h1 className="text-2xl font-bold tracking-tight text-ink flex items-center gap-3">
               <span className="opacity-50">ημ</span>
@@ -2851,12 +4011,20 @@ export default function App() {
               )}
             </div>
           </div>
+        </header>
+
+        <aside className="pointer-events-auto fixed inset-x-2 bottom-20 z-[74] max-h-[46vh] overflow-y-auto rounded-xl border border-[rgba(137,198,235,0.36)] bg-[linear-gradient(180deg,rgba(7,17,27,0.92),rgba(6,15,24,0.96))] p-3 shadow-[0_12px_30px_rgba(0,6,12,0.46)] lg:inset-x-auto lg:bottom-4 lg:right-2 lg:top-24 lg:w-[23rem] lg:max-h-[calc(100vh-8rem)]">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <p className="text-[11px] uppercase tracking-[0.12em] text-[#a3d3ef]">Simulation Controls</p>
+            <p className="text-[10px] text-[#beddf0]">ui opacity <code>{Math.round(interfaceOpacity * 100)}%</code></p>
+          </div>
 
           <CoreControlPanel
             projectionPerspective={projectionPerspective}
             autopilotEnabled={autopilotEnabled}
             autopilotStatus={autopilotStatus}
             autopilotSummary={autopilotSummary}
+            interfaceOpacity={interfaceOpacity}
             coreCameraZoom={coreCameraZoom}
             coreCameraPitch={coreCameraPitch}
             coreCameraYaw={coreCameraYaw}
@@ -2880,6 +4048,8 @@ export default function App() {
             onNudgeCoreZoom={nudgeCoreZoom}
             onResetCoreCamera={resetCoreCamera}
             onSelectPerspective={setUiPerspective}
+            onSetInterfaceOpacity={setInterfaceOpacityDial}
+            onResetInterfaceOpacity={resetInterfaceOpacity}
             onBoostCoreVisibility={boostCoreVisibility}
             onResetCoreVisualTuning={resetCoreVisualTuning}
             onSetCoreVisualDial={setCoreVisualDial}
@@ -2887,7 +4057,56 @@ export default function App() {
             onSetCoreSimulationDial={setCoreSimulationDial}
             onSetCoreOrbitSpeed={(value) => setCoreOrbitSpeed(clamp(value, CORE_ORBIT_SPEED_MIN, CORE_ORBIT_SPEED_MAX))}
           />
-        </header>
+
+          <div className="mt-3">
+            <CoreLayerManagerOverlay
+              inline
+              activeLayerCount={activeCoreLayerCount}
+              isOpen={coreLayerManagerOpen}
+              layerVisibility={coreLayerVisibility}
+              onToggleOpen={() => setCoreLayerManagerOpen((prev) => !prev)}
+              onSetAllLayers={setAllCoreLayers}
+              onSetLayerEnabled={setCoreLayerEnabled}
+            />
+          </div>
+
+          <div className="mt-3 rounded-lg border border-[rgba(106,203,242,0.3)] bg-[rgba(8,19,29,0.38)] px-3 py-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-[11px] uppercase tracking-[0.12em] text-[#9ec7dd]">Muse Forge</p>
+              <p className="text-[10px] text-[#b8d9ef]">
+                runtime: <code>{museRuntimeSnapshot?.muse_count ?? 0}</code> muses | seq <code>{museRuntimeSnapshot?.event_seq ?? 0}</code>
+              </p>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <input
+                type="text"
+                value={museForgeLabel}
+                onChange={(event) => setMuseForgeLabel(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void handleCreateMuse();
+                  }
+                }}
+                placeholder="create muse label (e.g. Archive Witness)"
+                className="min-w-[220px] flex-1 rounded-md border border-[rgba(106,203,242,0.34)] bg-[rgba(10,23,34,0.86)] px-3 py-1.5 text-xs text-[#e6f5ff]"
+              />
+              <button
+                type="button"
+                disabled={museForgeBusy || !museForgePreviewId}
+                onClick={() => {
+                  void handleCreateMuse();
+                }}
+                className="rounded-md border border-[rgba(166,226,46,0.45)] bg-[rgba(166,226,46,0.16)] px-3 py-1.5 text-xs font-semibold text-[#e9ffd3] disabled:opacity-45"
+              >
+                {museForgeBusy ? "creating..." : "Create Muse"}
+              </button>
+            </div>
+            <p className="mt-1 text-[10px] text-[#9fc4dd]">
+              next id: <code>{museForgePreviewId || "(type label)"}</code>
+            </p>
+          </div>
+        </aside>
 
         <WorldPanelsViewport
           viewportWidth={viewportWidth}
@@ -2911,6 +4130,7 @@ export default function App() {
           onAdjustPanelCouncilRank={adjustPanelCouncilRank}
           onPinPanelToTertiary={pinPanelToTertiary}
           onFlyCameraToAnchor={flyCameraToAnchor}
+          onNudgeCameraPan={nudgeCameraPan}
           onWorldPanelDragEnd={handleWorldPanelDragEnd}
         />
 

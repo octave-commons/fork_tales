@@ -1,0 +1,555 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Simulation Benchmarking & Management</title>
+    <style>
+      :root {
+        --ink: #eef2ff;
+        --ink-muted: #b6c2e1;
+        --line: rgba(173, 191, 255, 0.28);
+        --line-strong: rgba(173, 191, 255, 0.44);
+        --surface-0: #0b1222;
+        --surface-1: rgba(20, 31, 56, 0.76);
+        --surface-2: rgba(16, 24, 46, 0.9);
+        --ok: #50e3a4;
+        --warn: #ffd479;
+        --bad: #ff7e9f;
+        --brand: #75d8ff;
+        --accent: #8dc2ff;
+      }
+
+      * { box-sizing: border-box; }
+
+      html, body {
+        margin: 0;
+        min-height: 100%;
+        color: var(--ink);
+        background: radial-gradient(115% 130% at 100% 0%, rgba(117, 216, 255, 0.18), transparent 56%), var(--surface-0);
+        font-family: "Space Grotesk", "SF Mono", "Menlo", monospace;
+      }
+
+      .frame {
+        width: min(1300px, calc(100vw - 2rem));
+        margin: 1.5rem auto;
+        display: grid;
+        gap: 1.5rem;
+        grid-template-columns: 320px 1fr;
+      }
+
+      header {
+        grid-column: 1 / -1;
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 1rem;
+      }
+
+      h1 { margin: 0; font-size: 1.5rem; letter-spacing: 0.02em; }
+      h2 { font-size: 1.1rem; margin: 0 0 1rem; color: var(--accent); text-transform: uppercase; letter-spacing: 0.1em; }
+
+      .card {
+        background: var(--surface-1);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 1.25rem;
+        backdrop-filter: blur(8px);
+      }
+
+      .presets-list, .instances-list {
+        display: grid;
+        gap: 0.75rem;
+      }
+
+      .preset-item, .instance-item {
+        background: var(--surface-2);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 0.75rem;
+      }
+
+      .preset-item h3 { margin: 0 0 0.4rem; font-size: 0.95rem; }
+      .preset-desc { font-size: 0.8rem; color: var(--ink-muted); margin-bottom: 0.75rem; line-height: 1.4; }
+
+      .instance-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .instance-info { min-width: 0; }
+      .instance-name { font-weight: 700; font-size: 0.9rem; }
+      .instance-meta { font-size: 0.75rem; color: var(--ink-muted); margin-top: 0.2rem; }
+
+      button {
+        cursor: pointer;
+        border: 1px solid var(--line-strong);
+        background: rgba(117, 216, 255, 0.12);
+        color: var(--ink);
+        padding: 0.4rem 0.8rem;
+        border-radius: 6px;
+        font-size: 0.8rem;
+        transition: all 0.2s;
+      }
+      button:hover:not(:disabled) { background: rgba(117, 216, 255, 0.25); border-color: var(--brand); }
+      button:disabled { opacity: 0.4; cursor: not-allowed; }
+      button.danger { border-color: rgba(255, 126, 159, 0.4); color: var(--bad); }
+      button.danger:hover { background: rgba(255, 126, 159, 0.15); }
+
+      .bench-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1rem;
+        margin-top: 1rem;
+      }
+
+      select {
+        background: var(--surface-0);
+        color: var(--ink);
+        border: 1px solid var(--line);
+        padding: 0.4rem;
+        border-radius: 4px;
+        width: 100%;
+        margin-bottom: 0.5rem;
+      }
+
+      .console {
+        background: #000;
+        color: #50e344;
+        font-family: ui-monospace, monospace;
+        padding: 1rem;
+        border-radius: 8px;
+        height: 300px;
+        overflow-y: auto;
+        font-size: 0.85rem;
+        border: 1px solid #333;
+        margin-top: 1rem;
+        white-space: pre-wrap;
+      }
+
+      .pill {
+        display: inline-block;
+        padding: 0.15rem 0.45rem;
+        border-radius: 99px;
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        font-weight: 700;
+        background: rgba(255,255,255,0.1);
+      }
+      .pill-cdb { color: #75d8ff; border: 1px solid rgba(117, 216, 255, 0.4); }
+      .pill-python { color: #ffd479; border: 1px solid rgba(255, 212, 121, 0.4); }
+
+      .results-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 1rem;
+        font-size: 0.85rem;
+      }
+      .results-table th, .results-table td {
+        padding: 0.6rem;
+        text-align: left;
+        border-bottom: 1px solid var(--line);
+      }
+      .results-table th { color: var(--accent); font-weight: 600; }
+
+      .hw-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 1rem;
+        margin-top: 1rem;
+      }
+
+      .core-grid {
+        display: grid;
+        grid-template-columns: repeat(11, 1fr);
+        gap: 4px;
+        margin-top: 0.5rem;
+      }
+      .core-bar-container {
+        height: 30px;
+        background: rgba(255,255,255,0.05);
+        border-radius: 2px;
+        position: relative;
+        display: flex;
+        flex-direction: column-reverse;
+      }
+      .core-bar-fill {
+        width: 100%;
+        background: var(--brand);
+        transition: height 0.3s;
+      }
+
+      .hw-card {
+        background: rgba(0,0,0,0.2);
+        border: 1px solid var(--line);
+        padding: 0.75rem;
+        border-radius: 8px;
+      }
+      .hw-val { font-size: 1.1rem; font-weight: 700; margin: 0.25rem 0; }
+      .hw-label { font-size: 0.7rem; color: var(--ink-muted); text-transform: uppercase; }
+
+      @media (max-width: 900px) {
+        .frame { grid-template-columns: 1fr; }
+      }
+
+      /* Portal Navigation */
+      .portal-nav {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.75rem 1rem;
+        background: rgba(13, 20, 38, 0.9);
+        border-bottom: 1px solid var(--line);
+        backdrop-filter: blur(12px);
+        position: sticky;
+        top: 0;
+        z-index: 100;
+      }
+      .portal-links { display: flex; gap: 1.5rem; }
+      .portal-link {
+        color: var(--ink-muted);
+        text-decoration: none;
+        font-size: 0.9rem;
+        font-weight: 500;
+        transition: color 0.2s;
+      }
+      .portal-link:hover, .portal-link.active { color: var(--brand); }
+      .portal-title {
+        font-size: 0.85rem;
+        color: var(--ink-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="portal-nav">
+      <div class="portal-links">
+        <a href="/dashboard/docker" class="portal-link">Meta Operations</a>
+        <a href="/dashboard/bench" class="portal-link active">Workbench</a>
+        <a href="/" class="portal-link">Runtime</a>
+      </div>
+      <div class="portal-title">Simulation Portal</div>
+    </nav>
+    <div class="frame">
+      <header>
+        <h1>Simulation Workbench</h1>
+        <div id="statusPill" class="pill">System Active</div>
+      </header>
+
+      <aside class="card">
+        <h2>Presets</h2>
+        <div id="presetsList" class="presets-list">
+          <p class="preset-desc">Loading available configurations...</p>
+        </div>
+      </aside>
+
+      <main style="display: flex; flex-direction: column; gap: 1.5rem;">
+        <section class="card">
+          <h2>Active Instances</h2>
+          <div id="instancesList" class="instances-list">
+            <p class="preset-desc">Scanning for active simulations...</p>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Hardware Telemetry</h2>
+          <div class="hw-grid">
+            <div class="hw-card">
+              <div class="hw-label">CPU Aggregate</div>
+              <div id="cpuAggVal" class="hw-val">- %</div>
+              <div class="hw-label">Per Core Load (22 cores)</div>
+              <div id="coreGrid" class="core-grid"></div>
+            </div>
+            <div class="hw-card">
+              <div class="hw-label">NVIDIA GPU</div>
+              <div id="nvGpuVal" class="hw-val">- %</div>
+              <div class="hw-label">Memory</div>
+              <div id="nvMemVal" class="hw-val">- %</div>
+              <div class="hw-label">Temp</div>
+              <div id="nvTempVal" class="hw-val">- °C</div>
+            </div>
+            <div class="hw-card">
+              <div class="hw-label">Intel GPU</div>
+              <div id="intelGpuFreq" class="hw-val">- MHz</div>
+              <div class="hw-label">Status</div>
+              <div id="intelGpuStatus" class="hw-val">Scanning</div>
+            </div>
+            <div class="hw-card">
+              <div class="hw-label">Intel NPU</div>
+              <div id="npuUtilVal" class="hw-val">- %</div>
+              <div class="hw-label">Frequency</div>
+              <div id="npuFreqVal" class="hw-val">- MHz</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Run Benchmark</h2>
+          <p class="preset-desc">Compare performance between two active instances.</p>
+          <div class="bench-grid">
+            <div>
+              <label>Baseline Instance</label>
+              <select id="baselineSelect"></select>
+            </div>
+            <div>
+              <label>Experiment Instance</label>
+              <select id="experimentSelect"></select>
+            </div>
+          </div>
+          <div style="margin-top: 1rem; display: flex; gap: 1rem; align-items: center;">
+            <button id="runBenchBtn" disabled>Start Comparison</button>
+            <div id="benchLoader" style="display: none;">Running... this may take 20-60 seconds.</div>
+          </div>
+          
+          <div id="benchResults" style="display: none;">
+            <table class="results-table">
+              <thead>
+                <tr>
+                  <th>Variant</th>
+                  <th>Mean Latency</th>
+                  <th>Median</th>
+                  <th>P95</th>
+                  <th>Efficiency</th>
+                </tr>
+              </thead>
+              <tbody id="resultsBody"></tbody>
+            </table>
+            <div id="benchSummary" style="margin-top: 1rem; font-weight: bold; color: var(--ok);"></div>
+          </div>
+
+          <div id="console" class="console">Ready for benchmarking. Select instances above.</div>
+        </section>
+      </main>
+    </div>
+
+    <script>
+      const presetsList = document.getElementById('presetsList');
+      const instancesList = document.getElementById('instancesList');
+      const baselineSelect = document.getElementById('baselineSelect');
+      const experimentSelect = document.getElementById('experimentSelect');
+      const runBenchBtn = document.getElementById('runBenchBtn');
+      const consoleDiv = document.getElementById('console');
+      const resultsBody = document.getElementById('resultsBody');
+      const benchResults = document.getElementById('benchResults');
+      const benchSummary = document.getElementById('benchSummary');
+      
+      // HW Telemetry elements
+      const coreGrid = document.getElementById('coreGrid');
+      const cpuAggVal = document.getElementById('cpuAggVal');
+      const nvGpuVal = document.getElementById('nvGpuVal');
+      const nvMemVal = document.getElementById('nvMemVal');
+      const nvTempVal = document.getElementById('nvTempVal');
+      const intelGpuFreq = document.getElementById('intelGpuFreq');
+      const intelGpuStatus = document.getElementById('intelGpuStatus');
+      const npuUtilVal = document.getElementById('npuUtilVal');
+      const npuFreqVal = document.getElementById('npuFreqVal');
+
+      let instances = [];
+
+      function log(msg) {
+        const time = new Date().toLocaleTimeString();
+        consoleDiv.textContent += `[${time}] ${msg}\n`;
+        consoleDiv.scrollTop = consoleDiv.scrollHeight;
+      }
+
+      async function loadPresets() {
+        try {
+          const resp = await fetch('/api/simulation/presets');
+          const data = await resp.json();
+          presetsList.innerHTML = data.presets.map(p => `
+            <div class="preset-item">
+              <h3>${p.name}</h3>
+              <div class="preset-desc">${p.description}</div>
+              <div style="display:flex; justify-content: space-between; align-items: center;">
+                <span class="pill pill-${p.backend}">${p.backend}</span>
+                <button onclick="spawnInstance('${p.id}')">Launch</button>
+              </div>
+            </div>
+          `).join('');
+        } catch (e) {
+          log(`Error loading presets: ${e.message}`);
+        }
+      }
+
+      async function loadInstances() {
+        try {
+          const resp = await fetch('/api/simulation/instances');
+          instances = await resp.json();
+          
+          instancesList.innerHTML = instances.length ? instances.map(i => `
+            <div class="instance-item">
+              <div class="instance-info">
+                <div class="instance-name">${i.name}</div>
+                <div class="instance-meta">
+                  Port: ${i.port || 'N/A'} | Backend: ${i.backend} | Status: ${i.status}
+                </div>
+              </div>
+              <div style="display:flex; gap:0.5rem">
+                <a href="/dashboard/profile?id=${i.id}" class="pill" style="text-decoration:none; color:inherit; border:1px solid var(--line-strong)">Profile</a>
+                <button class="danger" onclick="stopInstance('${i.id}')">Stop</button>
+              </div>
+            </div>
+          `).join('') : '<p class="preset-desc">No active dynamic instances found.</p>';
+
+          const options = instances
+            .filter(i => i.port)
+            .map(i => `<option value="http://127.0.0.1:${i.port}/api/simulation">${i.name} (:8787 -> :${i.port})</option>`)
+            .join('');
+          
+          baselineSelect.innerHTML = options;
+          experimentSelect.innerHTML = options;
+          
+          runBenchBtn.disabled = instances.filter(i => i.port).length < 2;
+        } catch (e) {
+          log(`Error loading instances: ${e.message}`);
+        }
+      }
+
+      async function updateHardwareStats() {
+        try {
+          const resp = await fetch('/api/resource/heartbeat');
+          const data = await resp.json();
+          const d = data.heartbeat.devices;
+          
+          // CPU
+          cpuAggVal.textContent = `${d.cpu.utilization.toFixed(1)} %`;
+          if (d.cpu.per_core) {
+            coreGrid.innerHTML = d.cpu.per_core.map(load => `
+              <div class="core-bar-container" title="${load}%">
+                <div class="core-bar-fill" style="height: ${load}%"></div>
+              </div>
+            `).join('');
+          }
+          
+          // NVIDIA
+          nvGpuVal.textContent = `${d.gpu1.utilization.toFixed(1)} %`;
+          nvMemVal.textContent = `${d.gpu1.memory.toFixed(1)} %`;
+          nvTempVal.textContent = `${d.gpu1.temperature.toFixed(0)} °C`;
+          
+          // Intel GPU
+          intelGpuFreq.textContent = d.gpu_intel.current_freq_mhz ? `${d.gpu_intel.current_freq_mhz} MHz` : 'N/A';
+          intelGpuStatus.textContent = d.gpu_intel.status || 'Active';
+          
+          // NPU
+          npuUtilVal.textContent = `${d.npu0.utilization.toFixed(1)} %`;
+          npuFreqVal.textContent = d.npu0.current_freq_mhz ? `${d.npu0.current_freq_mhz} MHz` : 'N/A';
+          
+        } catch (e) {
+          console.error("HW fetch error", e);
+        }
+      }
+
+      async function spawnInstance(presetId) {
+        log(`Spawning instance for preset: ${presetId}...`);
+        try {
+          const resp = await fetch('/api/simulation/instances/spawn', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ preset_id: presetId })
+          });
+          const res = await resp.json();
+          if (res.ok) {
+            log(`Successfully spawned ${res.name} on port ${res.port}`);
+            setTimeout(loadInstances, 2000);
+          } else {
+            log(`Spawn failed: ${res.error}`);
+          }
+        } catch (e) {
+          log(`Spawn error: ${e.message}`);
+        }
+      }
+
+      async function stopInstance(instanceId) {
+        log(`Stopping instance ${instanceId}...`);
+        try {
+          const resp = await fetch(`/api/simulation/instances/${instanceId}`, { method: 'DELETE' });
+          const res = await resp.json();
+          if (res.ok) {
+            log(`Instance stopped.`);
+            loadInstances();
+          }
+        } catch (e) {
+          log(`Error stopping instance: ${e.message}`);
+        }
+      }
+
+      runBenchBtn.onclick = async () => {
+        const baseline = baselineSelect.value;
+        const experiment = experimentSelect.value;
+        if (baseline === experiment) {
+          alert("Please select different instances for comparison.");
+          return;
+        }
+
+        log(`Starting benchmark comparison...`);
+        log(`Baseline: ${baseline}`);
+        log(`Experiment: ${experiment}`);
+        
+        runBenchBtn.disabled = true;
+        document.getElementById('benchLoader').style.display = 'inline';
+        benchResults.style.display = 'none';
+
+        try {
+          const resp = await fetch('/api/simulation/benchmark', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+              baseline_url: baseline,
+              offload_url: experiment,
+              requests: 10,
+              warmup: 2
+            })
+          });
+          const data = await resp.json();
+          
+          if (data.ok) {
+            log(`Benchmark completed.`);
+            renderResults(data);
+          } else {
+            log(`Benchmark failed: ${data.error}`);
+          }
+        } catch (e) {
+          log(`Benchmark error: ${e.message}`);
+        } finally {
+          runBenchBtn.disabled = false;
+          document.getElementById('benchLoader').style.display = 'none';
+        }
+      };
+
+      function renderResults(data) {
+        const b = data.baseline;
+        const o = data.offload;
+        
+        const maxLatency = Math.max(b.mean_ms, o.mean_ms);
+        
+        const row = (s, label) => `
+          <tr>
+            <td><strong>${label}</strong></td>
+            <td>${s.mean_ms.toFixed(2)}ms</td>
+            <td>${s.median_ms.toFixed(2)}ms</td>
+            <td>${s.p95_ms.toFixed(2)}ms</td>
+            <td>
+              <div class="latency-bar-container">
+                <div class="latency-bar" style="width: ${(s.mean_ms / maxLatency * 100).toFixed(0)}%"></div>
+              </div>
+            </td>
+          </tr>
+        `;
+        
+        resultsBody.innerHTML = row(b, 'Baseline') + row(o, 'Experiment');
+        benchSummary.textContent = data.delta_text;
+        benchResults.style.display = 'block';
+        log(data.delta_text);
+      }
+
+      loadPresets();
+      loadInstances();
+      updateHardwareStats();
+      setInterval(loadInstances, 10000);
+      setInterval(updateHardwareStats, 2000);
+    </script>
+  </body>
+</html>

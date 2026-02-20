@@ -32,9 +32,12 @@ from .constants import (
     _STUDY_SNAPSHOT_LOCK,
     _STUDY_SNAPSHOT_CACHE,
     PRESENCE_ACCOUNT_RECORD,
+    SIMULATION_METADATA_RECORD,
     IMAGE_COMMENT_RECORD,
     _PRESENCE_ACCOUNTS_LOCK,
     _PRESENCE_ACCOUNTS_CACHE,
+    _SIMULATION_METADATA_LOCK,
+    _SIMULATION_METADATA_CACHE,
     _IMAGE_COMMENTS_LOCK,
     _IMAGE_COMMENTS_CACHE,
 )
@@ -47,6 +50,7 @@ from .paths import (
     _eta_mu_registry_path,
     _study_snapshot_log_path,
     _presence_accounts_log_path,
+    _simulation_metadata_log_path,
     _image_comments_log_path,
 )
 
@@ -1047,6 +1051,154 @@ def _append_eta_mu_docmeta_record(vault_root: Path, record: dict[str, Any]) -> N
         _ETA_MU_DOCMETA_CACHE["path"] = ""
         _ETA_MU_DOCMETA_CACHE["mtime_ns"] = 0
         _ETA_MU_DOCMETA_CACHE["entries"] = []
+
+
+def _load_simulation_metadata_entries(vault_root: Path) -> list[dict[str, Any]]:
+    path = _simulation_metadata_log_path(vault_root)
+    if not path.exists() or not path.is_file():
+        return []
+    try:
+        stat = path.stat()
+    except OSError:
+        return []
+
+    with _SIMULATION_METADATA_LOCK:
+        cached_path = str(_SIMULATION_METADATA_CACHE.get("path", ""))
+        cached_mtime = int(_SIMULATION_METADATA_CACHE.get("mtime_ns", 0))
+        if cached_path == str(path) and cached_mtime == int(stat.st_mtime_ns):
+            return [
+                dict(item) for item in _SIMULATION_METADATA_CACHE.get("entries", [])
+            ]
+
+        rows: list[dict[str, Any]] = []
+        for raw in path.read_text("utf-8").splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except (ValueError, json.JSONDecodeError):
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+
+        rows.sort(key=lambda row: str(row.get("updated_at", row.get("time", ""))))
+        _SIMULATION_METADATA_CACHE["path"] = str(path)
+        _SIMULATION_METADATA_CACHE["mtime_ns"] = int(stat.st_mtime_ns)
+        _SIMULATION_METADATA_CACHE["entries"] = [dict(item) for item in rows]
+        return [dict(item) for item in rows]
+
+
+def _append_simulation_metadata_record(
+    vault_root: Path, record: dict[str, Any]
+) -> None:
+    path = _simulation_metadata_log_path(vault_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(record, ensure_ascii=False)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(line + "\n")
+    with _SIMULATION_METADATA_LOCK:
+        _SIMULATION_METADATA_CACHE["path"] = ""
+        _SIMULATION_METADATA_CACHE["mtime_ns"] = 0
+        _SIMULATION_METADATA_CACHE["entries"] = []
+
+
+def _simulation_metadata_state(vault_root: Path) -> dict[str, dict[str, Any]]:
+    from .constants import SIMULATION_METADATA_RECORD
+
+    state: dict[str, dict[str, Any]] = {}
+    for row in _load_simulation_metadata_entries(vault_root):
+        if str(row.get("record", "")).strip() != SIMULATION_METADATA_RECORD:
+            continue
+        presence_id = str(row.get("presence_id", "")).strip()
+        if not presence_id:
+            continue
+        state[presence_id] = dict(row)
+    return state
+
+
+def _upsert_simulation_metadata(
+    vault_root: Path,
+    *,
+    presence_id: str,
+    label: str,
+    description: str,
+    tags: list[str] | None = None,
+    process_info: dict[str, Any] | None = None,
+    benchmark_results: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    from .constants import SIMULATION_METADATA_RECORD, PRESENCE_ACCOUNT_RECORD
+
+    chosen_id = str(presence_id or "").strip()
+    if not chosen_id:
+        return {"ok": False, "error": "missing presence_id"}
+
+    now = datetime.now(timezone.utc).isoformat()
+    state = _simulation_metadata_state(vault_root)
+    existing = state.get(chosen_id, {})
+    clean_tags = [str(item).strip() for item in (tags or []) if str(item).strip()]
+
+    # Merge process info and benchmark results with existing if not provided
+    final_process = (
+        process_info if process_info is not None else existing.get("process_info", {})
+    )
+    final_benchmark = (
+        benchmark_results
+        if benchmark_results is not None
+        else existing.get("benchmark_results", {})
+    )
+
+    record = {
+        "record": SIMULATION_METADATA_RECORD,
+        "presence_id": chosen_id,
+        "label": str(label or existing.get("label") or chosen_id),
+        "description": str(description or existing.get("description") or ""),
+        "tags": clean_tags or list(existing.get("tags", [])),
+        "process_info": final_process,
+        "benchmark_results": final_benchmark,
+        "created_at": str(existing.get("created_at") or now),
+        "updated_at": now,
+        "time": now,
+    }
+    _append_simulation_metadata_record(vault_root, record)
+
+    # Sync to Presence Account for field embedding
+    # We map 'description' to 'bio' and 'label' to 'display_name'
+    account_result = _upsert_presence_account(
+        vault_root,
+        presence_id=chosen_id,
+        display_name=record["label"],
+        handle=chosen_id,
+        avatar=str(existing.get("avatar", "")),  # Preserve existing avatar
+        bio=record["description"],
+        tags=record["tags"],
+    )
+
+    return {
+        "ok": True,
+        "record": "ημ.simulation-metadata.upsert.v1",
+        "entry": record,
+        "account_sync": account_result.get("ok", False),
+    }
+
+
+def _list_simulation_metadata(vault_root: Path, *, limit: int = 64) -> dict[str, Any]:
+    state = _simulation_metadata_state(vault_root)
+    rows = sorted(
+        state.values(),
+        key=lambda row: str(row.get("updated_at", "")),
+        reverse=True,
+    )
+    bounded = max(1, min(500, int(limit)))
+    selected = rows[:bounded]
+    return {
+        "ok": True,
+        "record": "ημ.simulation-metadata.list.v1",
+        "path": str(_simulation_metadata_log_path(vault_root)),
+        "total": len(rows),
+        "count": len(selected),
+        "entries": selected,
+    }
 
 
 def _load_presence_account_entries(vault_root: Path) -> list[dict[str, Any]]:

@@ -7,7 +7,7 @@ services:
       [
         "pm2-runtime",
         "start",
-        "ecosystem.config.cjs",
+        "ecosystem.bench.config.cjs",
         "--only",
         "eta-mu-world,eta-mu-io,web-graph-weaver",
       ]
@@ -36,26 +36,42 @@ services:
       EMBEDDINGS_BACKEND: "ollama"
       TEXT_GENERATION_BACKEND: "tensorflow"
       TF_EMBED_HASH_BINS: "768"
+      DOCKER_SIMULATION_LABEL_KEY: "io.fork_tales.simulation"
+      DOCKER_SIMULATION_ROLE_LABEL_KEY: "io.fork_tales.simulation.role"
+      DOCKER_SIMULATION_NAME_HINTS: "eta-mu,muse-song,sim-slice,simulation,experiment"
+      DOCKER_SIMULATION_NETWORK_HINT: "eta-mu-sim-net"
+      DOCKER_SIMULATION_WS_REFRESH_SECONDS: "2.5"
+      DOCKER_SIMULATION_WS_HEARTBEAT_SECONDS: "18"
+    labels:
+      io.fork_tales.simulation: "true"
+      io.fork_tales.simulation.role: "world-runtime"
+      io.fork_tales.simulation.track: "core"
     depends_on:
       - chroma
       - ollama-loopback-proxy
     ports:
-      - "8787:8787"
-      - "8793:8793"
+      - "${ETA_MU_WEAVER_PORT:-8793}:8793"
+    cpus: "1.60"
+    mem_limit: "12000m"
+    memswap_limit: "12000m"
+    pids_limit: 220
     volumes:
       - .:/app
       - ./world_state:/app/world_state
       - ../.opencode/runtime:/app/.opencode/runtime:ro
       - ../:/vault
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - eta-mu-sim-net
     healthcheck:
       test:
         [
           "CMD",
           "python3",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/api/catalog', timeout=8)",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/', timeout=6)",
         ]
       interval: 20s
       timeout: 12s
@@ -63,16 +79,47 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  eta-mu-gateway:
+    image: nginx:1.27-alpine
+    depends_on:
+      - eta-mu-system
+    ports:
+      - "${ETA_MU_GATEWAY_PORT:-8787}:80"
+    cpus: "0.35"
+    mem_limit: "256m"
+    memswap_limit: "256m"
+    pids_limit: 72
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - eta-mu-sim-net
+    restart: unless-stopped
+
   chroma:
     image: chromadb/chroma:latest
+    cpus: "1.20"
+    mem_limit: "1600m"
+    memswap_limit: "1600m"
+    pids_limit: 180
     volumes:
       - ./world_state/chroma_data:/chroma/chroma
     environment:
       IS_PERSISTENT: "TRUE"
+    networks:
+      - eta-mu-sim-net
     restart: unless-stopped
 
   ollama-loopback-proxy:
     image: alpine/socat:latest
     network_mode: host
     command: ["-d", "-d", "TCP-LISTEN:11435,reuseaddr,fork", "TCP:127.0.0.1:11434"]
+    cpus: "0.20"
+    mem_limit: "128m"
+    memswap_limit: "128m"
+    pids_limit: 64
     restart: unless-stopped
+
+networks:
+  eta-mu-sim-net:
+    name: eta-mu-sim-net
+    driver: bridge

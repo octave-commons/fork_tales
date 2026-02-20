@@ -35,6 +35,8 @@ Priority order when making decisions:
 
 Run from repository root unless noted.
 
+For runtime bring-up, prefer Docker unless a task explicitly requires PM2.
+
 ### Root scripts
 
 - `npm run live`
@@ -50,17 +52,19 @@ Run from repository root unless noted.
 - Lint: `npm run lint`
 - Preview built app: `npm run preview`
 
-### Python runtime (`part64`)
+### Docker runtime (`part64`) - preferred
+
+- Start stack: `docker compose up --build`
+- Stop stack: `docker compose down`
+- Service status: `docker compose ps`
+
+### Local PM2 runtime (`part64`) - fallback
 
 - Start world server: `python -m code.world_pm2 start --host 127.0.0.1 --port 8787`
 - PM2 status: `python -m code.world_pm2 status`
 - PM2 restart: `python -m code.world_pm2 restart`
 - PM2 stop: `python -m code.world_pm2 stop`
 - Dashboard server: `python -m code.world_web --part-root ./ --vault-root .. --host 127.0.0.1 --port 8791`
-
-### Docker runtime (optional)
-
-- `docker compose up --build`
 
 ## 5) Test commands
 

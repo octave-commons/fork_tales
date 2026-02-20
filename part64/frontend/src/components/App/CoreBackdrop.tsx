@@ -27,6 +27,7 @@ interface Props {
   coreSimulationTuning: CoreSimulationTuning;
   coreVisualTuning: CoreVisualTuning;
   coreLayerVisibility: Record<CoreLayerId, boolean>;
+  museWorkspaceBindings: Record<string, string[]>;
   galaxyLayerStyles: GalaxyLayerStyles;
   onOverlayInit: (api: unknown) => void;
   onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
@@ -45,6 +46,7 @@ export function CoreBackdrop({
   coreSimulationTuning,
   coreVisualTuning,
   coreLayerVisibility,
+  museWorkspaceBindings,
   galaxyLayerStyles,
   onOverlayInit,
   onPointerDown,
@@ -55,10 +57,10 @@ export function CoreBackdrop({
   return (
     <div
       className="simulation-core-backdrop"
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerCancel={onPointerUp}
+      onPointerDownCapture={onPointerDown}
+      onPointerMoveCapture={onPointerMove}
+      onPointerUpCapture={onPointerUp}
+      onPointerCancelCapture={onPointerUp}
       onWheel={onWheel}
     >
       <div className="simulation-galaxy-layer simulation-galaxy-layer-far" style={galaxyLayerStyles.far} />
@@ -82,6 +84,7 @@ export function CoreBackdrop({
           layerDepth={coreSimulationTuning.layerDepth}
           backgroundWash={coreVisualTuning.backgroundWash}
           layerVisibility={coreLayerVisibility}
+          museWorkspaceBindings={museWorkspaceBindings}
           className="simulation-core-canvas"
         />
       </div>

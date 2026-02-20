@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { runtimeApiUrl, runtimeWebSocketUrl } from '../runtime/endpoints';
 import type {
   Catalog,
+  MuseEvent,
   SimulationState,
   MixMeta,
   UIProjectionBundle,
@@ -13,7 +14,35 @@ interface WorldState {
   simulation: SimulationState | null;
   mixMeta: MixMeta | null;
   projection: UIProjectionBundle | null;
+  museEvents: MuseEvent[];
   isConnected: boolean;
+}
+
+function mergeSimulationPatch(
+  previous: SimulationState | null,
+  patch: Partial<SimulationState>,
+): SimulationState | null {
+  if (!patch || typeof patch !== 'object') {
+    return previous;
+  }
+  if (!previous) {
+    if (patch.timestamp && patch.total !== undefined && patch.points) {
+      return patch as SimulationState;
+    }
+    return previous;
+  }
+
+  const next: SimulationState = {
+    ...previous,
+    ...patch,
+  };
+  if (patch.presence_dynamics && previous.presence_dynamics) {
+    next.presence_dynamics = {
+      ...previous.presence_dynamics,
+      ...patch.presence_dynamics,
+    };
+  }
+  return next;
 }
 
 export function useWorldState(perspective: UIPerspective = 'hybrid') {
@@ -22,6 +51,7 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
     simulation: null,
     mixMeta: null,
     projection: null,
+    museEvents: [],
     isConnected: false,
   });
 
@@ -86,6 +116,36 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
             mixMeta: msg.mix,
             ...(msg.catalog?.ui_projection ? { projection: msg.catalog.ui_projection } : {}),
           });
+        } else if (msg.type === 'muse_events') {
+          const incoming = Array.isArray(msg.events)
+            ? msg.events.filter((row: unknown): row is MuseEvent => {
+                if (!row || typeof row !== 'object') {
+                  return false;
+                }
+                const eventId = String((row as MuseEvent).event_id ?? '').trim();
+                const kind = String((row as MuseEvent).kind ?? '').trim();
+                return eventId.length > 0 && kind.length > 0;
+              })
+            : [];
+          if (incoming.length > 0) {
+            setState((prev) => {
+              const seen = new Set(prev.museEvents.map((row) => String(row.event_id || '').trim()));
+              const merged = [...prev.museEvents];
+              incoming.forEach((row: MuseEvent) => {
+                const id = String(row.event_id || '').trim();
+                if (!id || seen.has(id)) {
+                  return;
+                }
+                seen.add(id);
+                merged.push(row);
+              });
+              merged.sort((left, right) => Number(left.seq ?? 0) - Number(right.seq ?? 0));
+              return {
+                ...prev,
+                museEvents: merged.slice(-320),
+              };
+            });
+          }
         } else if (msg.type === 'simulation') {
           enqueueStatePatch({
             simulation: msg.simulation,
@@ -93,6 +153,24 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
               ? { projection: msg.projection ?? msg.simulation?.projection }
               : {}),
           });
+        } else if (msg.type === 'simulation_delta') {
+          const deltaPatch = msg?.delta?.patch;
+          if (deltaPatch && typeof deltaPatch === 'object') {
+            setState((prev) => {
+              const nextSimulation = mergeSimulationPatch(
+                prev.simulation,
+                deltaPatch as Partial<SimulationState>,
+              );
+              const projectionPatch = (
+                deltaPatch as { projection?: UIProjectionBundle | null }
+              ).projection;
+              return {
+                ...prev,
+                ...(nextSimulation ? { simulation: nextSimulation } : {}),
+                ...(projectionPatch ? { projection: projectionPatch } : {}),
+              };
+            });
+          }
         }
       } catch (err) {
         console.error('WS parse error', err);

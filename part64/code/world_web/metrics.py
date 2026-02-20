@@ -11,6 +11,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    import psutil  # type: ignore
+except Exception:
+    psutil = None
+
 from .constants import (
     RESOURCE_LOG_TAIL_MAX_BYTES,
     RESOURCE_LOG_TAIL_MAX_LINES,
@@ -81,6 +86,52 @@ def _parse_proc_meminfo_mb() -> tuple[float, float]:
     except OSError:
         return 0.0, 0.0
     return (total_kb / 1024.0), (available_kb / 1024.0)
+
+
+def _cpu_percent_per_core_snapshot(
+    *,
+    cpu_count: int,
+    fallback_utilization: float,
+) -> list[float]:
+    if psutil is not None:
+        try:
+            return [
+                max(0.0, min(100.0, _safe_float(value, 0.0)))
+                for value in psutil.cpu_percent(percpu=True)
+            ]
+        except Exception:
+            pass
+
+    stat_path = Path("/proc/stat")
+    if stat_path.exists() and stat_path.is_file():
+        rows: list[float] = []
+        try:
+            for raw_line in stat_path.read_text("utf-8").splitlines():
+                line = raw_line.strip()
+                if not line.startswith("cpu"):
+                    continue
+                prefix, _, remainder = line.partition(" ")
+                if prefix == "cpu":
+                    continue
+                if not prefix[3:].isdigit():
+                    continue
+                tokens = [token for token in remainder.split(" ") if token]
+                if len(tokens) < 4:
+                    continue
+                values = [max(0.0, _safe_float(token, 0.0)) for token in tokens[:8]]
+                total = sum(values)
+                idle = values[3] + (values[4] if len(values) > 4 else 0.0)
+                if total <= 0.0:
+                    rows.append(0.0)
+                    continue
+                rows.append(max(0.0, min(100.0, ((total - idle) / total) * 100.0)))
+            if rows:
+                return rows
+        except Exception:
+            pass
+
+    approx = max(0.0, min(100.0, _safe_float(fallback_utilization, 0.0)))
+    return [approx for _ in range(max(1, int(cpu_count)))]
 
 
 def _tail_text_lines(
@@ -266,9 +317,12 @@ def _infer_eta_mu_field_scores(
         scores["f1"] += 0.42
         scores["f6"] += 0.08
     elif kind_key == "text":
-        scores["f6"] += 0.46
-        scores["f3"] += 0.2
-        scores["f7"] += 0.12
+        # Rebalanced: spread text file bias across multiple fields
+        # instead of overwhelming f6 (mage_of_receipts)
+        scores["f3"] += 0.18  # coherence/focus - generic docs
+        scores["f6"] += 0.14  # creative synthesis - reduced from 0.46
+        scores["f7"] += 0.12  # truth/contract - spec/docs
+        scores["f8"] += 0.08  # runtime/ops - config/scripts
     else:
         scores["f4"] += 0.24
         scores["f8"] += 0.18
@@ -278,11 +332,59 @@ def _infer_eta_mu_field_scores(
         scores["f5"] += 0.24
         scores["f4"] += 0.12
     if rel_lower.endswith(".lisp"):
-        scores["f6"] += 0.24
-        scores["f7"] += 0.1
+        # Lisp files: contracts/truth (f7) + creative (f6)
+        scores["f7"] += 0.22
+        scores["f6"] += 0.14
     if rel_lower.endswith(".md") or rel_lower.endswith(".txt"):
-        scores["f6"] += 0.18
-        scores["f3"] += 0.1
+        # Markdown: spread between coherence (f3) and truth (f7)
+        scores["f3"] += 0.14
+        scores["f7"] += 0.12
+
+    # Path-based routing hints for better distribution
+    if "/test" in rel_lower or "/tests" in rel_lower or rel_lower.startswith("test_"):
+        scores["f7"] += 0.16  # validation/truth
+    if (
+        "/ops" in rel_lower
+        or "/deploy" in rel_lower
+        or ".yml" in rel_lower
+        or ".yaml" in rel_lower
+    ):
+        scores["f8"] += 0.18  # runtime/ops
+    if "/docs" in rel_lower or "readme" in rel_lower or "guide" in rel_lower:
+        scores["f3"] += 0.12  # coherence/reference
+    if "/.git" in rel_lower or ".gitmodules" in rel_lower or ".gitignore" in rel_lower:
+        scores["f8"] += 0.20  # ops/process
+    if "receipt" in rel_lower or "ledger" in rel_lower or "contract" in rel_lower:
+        scores["f7"] += 0.18  # truth/contracts
+    if "audit" in rel_lower or "review" in rel_lower:
+        scores["f2"] += 0.14  # witness/thread
+    if "wip" in rel_lower or "draft" in rel_lower or "tmp" in rel_lower:
+        scores["f4"] += 0.16  # drift/delta
+    if "spec" in rel_lower or "specs" in rel_lower or "design" in rel_lower:
+        scores["f3"] += 0.14  # coherence/focus
+    if (
+        "story" in rel_lower
+        or "lyric" in rel_lower
+        or "song" in rel_lower
+        or "creative" in rel_lower
+    ):
+        scores["f6"] += 0.16  # creative synthesis
+
+    # Philosophical concept routing hints
+    if "ethic" in rel_lower or "moral" in rel_lower or "virtue" in rel_lower:
+        scores["f9"] += 0.20  # good/virtue
+    if "corrupt" in rel_lower or "sin" in rel_lower or "wicked" in rel_lower:
+        scores["f10"] += 0.20  # evil/corruption
+    if "justice" in rel_lower or "law" in rel_lower or "right" in rel_lower:
+        scores["f11"] += 0.18  # right/justice
+    if "wrong" in rel_lower or "error" in rel_lower or "false" in rel_lower:
+        scores["f12"] += 0.18  # wrong/error
+    if "death" in rel_lower or "mortal" in rel_lower or "legacy" in rel_lower:
+        scores["f13"] += 0.20  # dead/finality
+    if "life" in rel_lower or "bio" in rel_lower or "vital" in rel_lower:
+        scores["f14"] += 0.20  # living/vitality
+    if "chaos" in rel_lower or "random" in rel_lower or "noise" in rel_lower:
+        scores["f15"] += 0.24  # chaos/unpredictability
 
     combined = f"{rel_path} {text_excerpt}"
     tokens = _clean_tokens(combined)
@@ -429,6 +531,65 @@ def _resource_auto_text_order(
     return deduped
 
 
+_NPU_LAST_BUSY_US = 0
+_NPU_LAST_CHECK_TIME = 0.0
+_NPU_LOCK = threading.Lock()
+
+
+def _collect_npu_metrics() -> dict[str, Any]:
+    global _NPU_LAST_BUSY_US, _NPU_LAST_CHECK_TIME
+    npu_base = Path("/sys/devices/pci0000:00/0000:00:0b.0")
+    if not npu_base.exists():
+        return {}
+
+    try:
+        busy_raw = npu_base.joinpath("npu_busy_time_us").read_text().strip()
+        freq_cur = npu_base.joinpath("npu_current_frequency_mhz").read_text().strip()
+        freq_max = npu_base.joinpath("npu_max_frequency_mhz").read_text().strip()
+        mem_raw = npu_base.joinpath("npu_memory_utilization").read_text().strip()
+
+        busy_us = _safe_int(busy_raw, 0)
+        now = time.time()
+
+        utilization = 0.0
+        with _NPU_LOCK:
+            if _NPU_LAST_CHECK_TIME > 0:
+                dt = now - _NPU_LAST_CHECK_TIME
+                dbusy = busy_us - _NPU_LAST_BUSY_US
+                if dt > 0:
+                    # utilization = (busy_us delta / elapsed_us) * 100
+                    utilization = (dbusy / (dt * 1_000_000.0)) * 100.0
+
+            _NPU_LAST_BUSY_US = busy_us
+            _NPU_LAST_CHECK_TIME = now
+
+        return {
+            "utilization": round(_clamp01(utilization / 100.0) * 100.0, 2),
+            "busy_time_us": busy_us,
+            "current_freq_mhz": _safe_int(freq_cur, 0),
+            "max_freq_mhz": _safe_int(freq_max, 0),
+            "memory_bytes": _safe_int(mem_raw, 0),
+        }
+    except Exception:
+        return {}
+
+
+def _collect_intel_gpu_metrics() -> dict[str, Any]:
+    intel_base = Path("/sys/class/drm/card1")  # Based on discovery
+    if not intel_base.exists():
+        return {}
+
+    try:
+        freq_cur = intel_base.joinpath("gt_cur_freq_mhz").read_text().strip()
+        freq_max = intel_base.joinpath("gt_max_freq_mhz").read_text().strip()
+        return {
+            "current_freq_mhz": _safe_int(freq_cur, 0),
+            "max_freq_mhz": _safe_int(freq_max, 0),
+        }
+    except Exception:
+        return {}
+
+
 def _resource_monitor_snapshot(part_root: Path | None = None) -> dict[str, Any]:
     now_monotonic = time.monotonic()
     part_key = str(part_root.resolve()) if isinstance(part_root, Path) else ""
@@ -452,6 +613,10 @@ def _resource_monitor_snapshot(part_root: Path | None = None) -> dict[str, Any]:
     except OSError:
         load_1m, load_5m, load_15m = (0.0, 0.0, 0.0)
     cpu_utilization = _clamp01(load_1m / max(1, cpu_count)) * 100.0
+    cpu_per_core = _cpu_percent_per_core_snapshot(
+        cpu_count=cpu_count,
+        fallback_utilization=cpu_utilization,
+    )
 
     memory_total_mb, memory_available_mb = _parse_proc_meminfo_mb()
     memory_pressure = 0.0
@@ -504,9 +669,18 @@ def _resource_monitor_snapshot(part_root: Path | None = None) -> dict[str, Any]:
     npu_temperature = _safe_env_metric("ETA_MU_NPU0_TEMP", 0.0)
 
     log_watch = _resource_log_watch(part_root=part_root)
+    intel_gpu = _collect_intel_gpu_metrics()
+    npu_metrics = _collect_npu_metrics()
+
+    effective_npu_utilization = max(
+        0.0,
+        min(100.0, _safe_float(npu_metrics.get("utilization"), npu_utilization)),
+    )
+
     devices = {
         "cpu": {
             "utilization": round(cpu_utilization, 2),
+            "per_core": [round(c, 2) for c in cpu_per_core],
             "load_avg": {
                 "m1": round(load_1m, 3),
                 "m5": round(load_5m, 3),
@@ -518,6 +692,7 @@ def _resource_monitor_snapshot(part_root: Path | None = None) -> dict[str, Any]:
             ),
         },
         "gpu1": {
+            "name": "NVIDIA",
             "utilization": round(max(0.0, min(100.0, gpu1_utilization)), 2),
             "memory": round(max(0.0, min(100.0, gpu1_memory)), 2),
             "temperature": round(max(0.0, gpu1_temperature), 2),
@@ -525,21 +700,39 @@ def _resource_monitor_snapshot(part_root: Path | None = None) -> dict[str, Any]:
                 gpu1_utilization, watch_threshold=76.0, hot_threshold=93.0
             ),
         },
-        "gpu2": {
+        "gpu_intel": {
+            "name": "Intel",
             "utilization": round(max(0.0, min(100.0, gpu2_utilization)), 2),
             "memory": round(max(0.0, min(100.0, gpu2_memory)), 2),
             "temperature": round(max(0.0, gpu2_temperature), 2),
+            "current_freq_mhz": intel_gpu.get("current_freq_mhz"),
+            "max_freq_mhz": intel_gpu.get("max_freq_mhz"),
+            "status": _status_from_utilization(
+                gpu2_utilization, watch_threshold=76.0, hot_threshold=93.0
+            ),
+        },
+        "gpu2": {
+            "name": "Intel (Legacy Alias)",
+            "utilization": round(max(0.0, min(100.0, gpu2_utilization)), 2),
+            "memory": round(max(0.0, min(100.0, gpu2_memory)), 2),
+            "temperature": round(max(0.0, gpu2_temperature), 2),
+            "current_freq_mhz": intel_gpu.get("current_freq_mhz"),
+            "max_freq_mhz": intel_gpu.get("max_freq_mhz"),
             "status": _status_from_utilization(
                 gpu2_utilization, watch_threshold=76.0, hot_threshold=93.0
             ),
         },
         "npu0": {
-            "utilization": round(max(0.0, min(100.0, npu_utilization)), 2),
+            "name": "Intel NPU",
+            "utilization": round(effective_npu_utilization, 2),
+            "busy_time_us": npu_metrics.get("busy_time_us"),
+            "current_freq_mhz": npu_metrics.get("current_freq_mhz"),
+            "memory_bytes": npu_metrics.get("memory_bytes"),
             "queue_depth": int(max(0.0, npu_queue_depth)),
             "temperature": round(max(0.0, npu_temperature), 2),
             "device": openvino_device,
             "status": _status_from_utilization(
-                npu_utilization, watch_threshold=78.0, hot_threshold=95.0
+                effective_npu_utilization, watch_threshold=78.0, hot_threshold=95.0
             ),
         },
     }

@@ -6,24 +6,83 @@ Contents:
 - Lyrics (EN/JP) + dialog + Gates of Truth announcement
 - Append-only constraints update + world map note
 - Deterministic receipt generator + regression test
-- PM2 daemon config + browser world view server
+- Docker-first runtime + browser world view server (PM2 fallback)
 
 Run the determinism test:
 - `python -m code.tests.test_sonify_determinism`
 
-Run the PM2/browser integration tests:
+Run the world runtime integration tests:
 - `python -m code.tests.test_world_web_pm2`
 
-Run world as PM2 daemon and open in browser:
-- `python -m code.world_pm2 start --host 127.0.0.1 --port 8787`
-
-Run in Docker (world + IO + web graph weaver + Chroma):
+Run in Docker (preferred; world + IO + web graph weaver + Chroma):
 - `docker compose up --build`
-- Runtime: `http://127.0.0.1:8787/`
-- Catalog: `http://127.0.0.1:8787/api/catalog`
-- WebSocket: `ws://127.0.0.1:8787/ws`
-- Weaver status: `http://127.0.0.1:8793/api/weaver/status`
+- If ports are already in use, run: `ETA_MU_GATEWAY_PORT=18887 ETA_MU_WEAVER_PORT=18997 docker compose up --build`
+- Runtime (nginx gateway): `http://127.0.0.1:8787/`
+- Catalog (gateway): `http://127.0.0.1:8787/api/catalog`
+- Docker simulation dashboard: `http://127.0.0.1:8787/dashboard/docker`
+- Simulation Workbench & Benchmarking: `http://127.0.0.1:8787/dashboard/bench`
+- Simulation Profile Portal: `http://127.0.0.1:8787/dashboard/profile?id=<sim_id>`
+- Docker simulation API: `http://127.0.0.1:8787/api/docker/simulations`
+- WebSocket (gateway): `ws://127.0.0.1:8787/ws`
+- Weaver status (direct): `http://127.0.0.1:8793/api/weaver/status`
+- Weaver status (via gateway): `http://127.0.0.1:8787/weaver/api/weaver/status`
 - Optional TTS proxy target: set `TTS_BASE_URL` (default `http://127.0.0.1:8788` inside container)
+
+**For detailed operational instructions, see [SIMULATION_WORKFLOW.md](SIMULATION_WORKFLOW.md).**
+
+Docker simulation discovery contract for experiment stacks:
+- Add labels to each simulation runtime container:
+  - `io.fork_tales.simulation=true`
+  - `io.fork_tales.simulation.role=experiment`
+- Attach simulation containers to network: `eta-mu-sim-net`
+- Dashboard auto-discovers running simulations by labels first, then runtime-name fallback.
+- Dashboard surfaces per-container CPU, memory, and PID telemetry from Docker stats.
+- For tight resource control, define per-service limits in compose:
+  - `cpus`
+  - `mem_limit` + `memswap_limit`
+  - `pids_limit`
+- Meta cognition API surface for operating unstable experiments:
+  - `GET /api/meta/overview`
+  - `GET|POST /api/meta/notes`
+  - `GET|POST /api/meta/runs`
+  - `POST /api/meta/objective/enqueue`
+
+Muse song lab (parallel tuned simulations for play-song behavior):
+- Start 3 tuned runtimes (`baseline`, `chaos`, `stability`) + shared Chroma:
+  - `python scripts/muse_song_lab_ctl.py start`
+- Start only selected runtimes to reduce load further:
+  - `python scripts/muse_song_lab_ctl.py start --runtimes baseline,chaos`
+- Inspect runtime + resource status:
+  - `python scripts/muse_song_lab_ctl.py status`
+- Endpoints:
+  - baseline: `http://127.0.0.1:19877/`
+  - chaos-tuned: `http://127.0.0.1:19878/`
+  - stability-tuned: `http://127.0.0.1:19879/`
+- Run cross-runtime task comparison:
+  - `python scripts/muse_song_lab_ctl.py bench --regimen world_state/muse_song_training_regime.json`
+- Built-in command probes now include simple modality commands:
+  - `Play Music` (expects audio selection)
+  - `Open Image` (expects image selection)
+- Override/extend task battery by editing:
+  - `world_state/muse_song_training_regime.json`
+- Stop lab stack:
+  - `python scripts/muse_song_lab_ctl.py stop`
+
+Semantic routing training circumstances (concept-seed presences + classifier baseline):
+- Circumstances file (images + text seeds + classifier + noise policy):
+  - `world_state/muse_semantic_training_circumstances.json`
+- Run iterative training/eval cycle against runtime (creates muse if missing, updates workspace pins, emits report):
+  - `python scripts/muse_semantic_training_lab.py --runtime http://127.0.0.1:8787`
+- Or run across selected song-lab runtimes:
+  - `python scripts/muse_song_lab_ctl.py train --runtimes baseline,chaos,stability`
+- Output report artifact (default):
+  - `../.opencode/runtime/muse_semantic_training.latest.json`
+- The script posts aggregate metrics to `POST /api/meta/runs` by default.
+- Docker simulation dashboard now visualizes these metrics in **Training Charts** under Meta Operations:
+  - `http://127.0.0.1:8787/dashboard/docker`
+
+Run world as local PM2 daemon (legacy fallback) and open in browser:
+- `python -m code.world_pm2 start --host 127.0.0.1 --port 8787`
 
 Run complete real-time dashboard across all parts:
 - `python -m code.world_web --part-root ./ --vault-root .. --host 127.0.0.1 --port 8791`
@@ -63,7 +122,7 @@ Electron client (sandboxed renderer):
 - Launch built desktop client: `npm run electron:preview`
 - Override runtime endpoints when needed:
   - `WORLD_RUNTIME_URL=http://127.0.0.1:8787 WEAVER_RUNTIME_URL=http://127.0.0.1:8793 npm run electron:start`
-- PM2 controls (from `part64/frontend`):
+- Electron PM2 controls (from `part64/frontend`):
   - `npm run pm2:electron:start`
   - `npm run pm2:electron:status`
   - `npm run pm2:electron:stop`
@@ -100,7 +159,7 @@ Embedding provider options (GPU/NPU experimental routing):
 - Hybrid auto mode (prefer NPU, then fallback):
   - `POST /api/embeddings/provider/options` with `{"preset":"hybrid_auto"}`
 
-Useful PM2 controls:
+Useful local PM2 controls (fallback runtime path):
 - `python -m code.world_pm2 status`
 - `python -m code.world_pm2 restart`
 - `python -m code.world_pm2 stop`

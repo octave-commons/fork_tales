@@ -9,7 +9,11 @@ protocol: presence.v1
 skills_required:
   - skill.muse.failure-forecasting
   - skill.muse.second-order-effects
-tags: [presence, muse, council, stability]
+  - skill.simulation.ops
+  - skill.meta.cognitive-loop
+  - skill.dev.docker-engineering
+  - skill.lith.lang
+tags: [presence, muse, council, stability, meta, docker, lith]
 ---
 
 # Muse - Stability

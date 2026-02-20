@@ -114,8 +114,17 @@ def _file_graph_moves_path(vault_root: Path) -> Path:
 
 
 def _presence_accounts_log_path(vault_root: Path) -> Path:
+    from .constants import PRESENCE_ACCOUNTS_LOG_REL
+
     base = vault_root.resolve()
     return (base / PRESENCE_ACCOUNTS_LOG_REL).resolve()
+
+
+def _simulation_metadata_log_path(vault_root: Path) -> Path:
+    from .constants import SIMULATION_METADATA_LOG_REL
+
+    base = vault_root.resolve()
+    return (base / SIMULATION_METADATA_LOG_REL).resolve()
 
 
 def _image_comments_log_path(vault_root: Path) -> Path:
@@ -194,8 +203,19 @@ def _part_label(part_root: Path, manifest: dict[str, Any]) -> str:
 
 
 def _locate_receipts_log(vault_root: Path, part_root: Path) -> Path | None:
+    vault_base = vault_root.resolve()
+    part_base = part_root.resolve()
+    bases = [vault_base, part_base]
+
+    cwd_base = Path.cwd().resolve()
+    if any(
+        cwd_base == base or cwd_base in base.parents or base in cwd_base.parents
+        for base in bases
+    ):
+        bases.append(cwd_base)
+
     candidates: list[Path] = []
-    for base in [vault_root.resolve(), part_root.resolve(), Path.cwd().resolve()]:
+    for base in bases:
         candidates.append(base / "receipts.log")
         for parent in base.parents:
             candidates.append(parent / "receipts.log")

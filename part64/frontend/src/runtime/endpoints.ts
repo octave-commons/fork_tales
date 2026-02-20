@@ -27,7 +27,7 @@ function uniqueValues(values: string[]): string[] {
   return output;
 }
 
-function normalizeHttpOrigin(value: unknown): string {
+function normalizeHttpBase(value: unknown): string {
   if (typeof value !== "string") {
     return "";
   }
@@ -40,10 +40,45 @@ function normalizeHttpOrigin(value: unknown): string {
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       return "";
     }
-    return parsed.origin;
+    parsed.search = "";
+    parsed.hash = "";
+    const path = parsed.pathname.replace(/\/+$/, "");
+    return path ? `${parsed.origin}${path}` : parsed.origin;
   } catch {
     return "";
   }
+}
+
+function joinBasePath(base: string, path: string): string {
+  const parsed = new URL(base);
+  const [pathWithHash, queryPart] = path.split("?", 2);
+  const [cleanPathPart, hashPart] = pathWithHash.split("#", 2);
+  const basePath = parsed.pathname.replace(/\/+$/, "");
+  const normalizedPath = cleanPathPart.startsWith("/")
+    ? cleanPathPart
+    : `/${cleanPathPart}`;
+  const normalizedTail = normalizedPath.replace(/^\/+/, "");
+  if (!normalizedTail) {
+    parsed.pathname = basePath || "/";
+  } else if (basePath) {
+    parsed.pathname = `${basePath}/${normalizedTail}`;
+  } else {
+    parsed.pathname = `/${normalizedTail}`;
+  }
+  parsed.search = queryPart ? `?${queryPart}` : "";
+  parsed.hash = hashPart ? `#${hashPart}` : "";
+  return parsed.toString();
+}
+
+function runtimeGatewayPrefixFromLocation(): string {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  const match = /^\/sim\/([A-Za-z0-9._-]+)/.exec(window.location.pathname || "");
+  if (!match || !match[1]) {
+    return "";
+  }
+  return `/sim/${match[1]}`;
 }
 
 function originWithPort(origin: string, port: string): string {
@@ -67,12 +102,12 @@ function runtimeBridgeConfig(): RuntimeBridgeConfig {
 }
 
 export function runtimeBaseUrl(): string {
-  const bridgeBase = normalizeHttpOrigin(runtimeBridgeConfig().worldBaseUrl);
+  const bridgeBase = normalizeHttpBase(runtimeBridgeConfig().worldBaseUrl);
   if (bridgeBase) {
     return bridgeBase;
   }
 
-  const envBase = normalizeHttpOrigin(import.meta.env.VITE_RUNTIME_BASE_URL);
+  const envBase = normalizeHttpBase(import.meta.env.VITE_RUNTIME_BASE_URL);
   if (envBase) {
     return envBase;
   }
@@ -89,6 +124,11 @@ export function runtimeBaseUrl(): string {
     return DEV_WORLD_ORIGIN;
   }
 
+  const gatewayPrefix = runtimeGatewayPrefixFromLocation();
+  if (gatewayPrefix) {
+    return `${window.location.origin}${gatewayPrefix}`;
+  }
+
   return "";
 }
 
@@ -98,7 +138,7 @@ export function runtimeApiUrl(path: string): string {
   if (!base) {
     return normalizedPath;
   }
-  return new URL(normalizedPath, `${base}/`).toString();
+  return joinBasePath(base, normalizedPath);
 }
 
 export function runtimeWebSocketUrl(path: string): string {
@@ -107,7 +147,7 @@ export function runtimeWebSocketUrl(path: string): string {
   if (base) {
     const wsBase = new URL(base);
     wsBase.protocol = wsBase.protocol === "https:" ? "wss:" : "ws:";
-    return new URL(normalizedPath, wsBase).toString();
+    return joinBasePath(wsBase.toString(), normalizedPath);
   }
 
   const protocol =
@@ -117,9 +157,10 @@ export function runtimeWebSocketUrl(path: string): string {
 }
 
 export function runtimeWeaverBaseCandidates(): string[] {
-  const bridgeWeaverBase = normalizeHttpOrigin(runtimeBridgeConfig().weaverBaseUrl);
-  const envWeaverBase = normalizeHttpOrigin(import.meta.env.VITE_WEAVER_BASE_URL);
+  const bridgeWeaverBase = normalizeHttpBase(runtimeBridgeConfig().weaverBaseUrl);
+  const envWeaverBase = normalizeHttpBase(import.meta.env.VITE_WEAVER_BASE_URL);
   const worldBase = runtimeBaseUrl();
+  const prefixedWeaverBase = worldBase ? joinBasePath(worldBase, "/weaver") : "";
 
   const inferredFromWorld = worldBase ? originWithPort(worldBase, "8793") : "";
   const inferredFromLocation =
@@ -128,6 +169,7 @@ export function runtimeWeaverBaseCandidates(): string[] {
       : "";
 
   return uniqueValues([
+    prefixedWeaverBase,
     bridgeWeaverBase,
     envWeaverBase,
     inferredFromWorld,

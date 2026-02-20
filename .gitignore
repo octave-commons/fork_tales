@@ -44,3 +44,15 @@ tmp/
 # State dumps
 *.sexp
 Π_v2_export/
+
+# Generated runtime/state data (non code/documentation)
+.opencode/runtime/*.jsonl
+part64/world_state/*.json
+part64/world_state/*.jsonl
+part64/world_state/*.log
+part64/world_state/chroma_data/
+part64/world_state/tts_cache/
+
+# Frontend build outputs
+part64/frontend/dist/
+part64/frontend/dist-ssr/

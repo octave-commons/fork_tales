@@ -4,6 +4,7 @@ import argparse
 import base64
 import hashlib
 import json
+import math
 import mimetypes
 import os
 import shutil
@@ -48,6 +49,7 @@ from .chamber import (
     TaskQueue,
     _load_study_snapshot_events,
     _study_snapshot_log_path,
+    build_witness_lineage_payload,
     build_world_log_payload,
     build_pi_archive_payload,
     build_drift_scan_payload,
@@ -88,8 +90,24 @@ from .db import (
     _load_myth_tracker_class,
     _normalize_embedding_vector,
     _upsert_presence_account,
+    _upsert_simulation_metadata,
+    _list_simulation_metadata,
+)
+from .docker_runtime import (
+    DOCKER_SIMULATION_WS_HEARTBEAT_SECONDS,
+    DOCKER_SIMULATION_WS_REFRESH_SECONDS,
+    collect_docker_simulation_snapshot,
+    control_simulation_container,
 )
 from .metrics import _INFLUENCE_TRACKER, _safe_float, _resource_monitor_snapshot
+from .meta_ops import (
+    build_meta_overview,
+    create_meta_note,
+    create_meta_run,
+    list_meta_notes,
+    list_meta_runs,
+)
+from .muse_runtime import get_muse_runtime_manager
 from .paths import _ensure_receipts_log_path
 from .projection import (
     attach_ui_projection,
@@ -98,6 +116,7 @@ from .projection import (
     projection_perspective_options,
 )
 from .simulation import (
+    build_simulation_delta,
     build_mix_stream,
     build_named_field_overlays,
     build_simulation_state,
@@ -130,6 +149,663 @@ _RUNTIME_CATALOG_SUBPROCESS_TIMEOUT_SECONDS = max(
 _RUNTIME_CATALOG_SUBPROCESS_ENABLED = str(
     os.getenv("RUNTIME_CATALOG_SUBPROCESS_ENABLED", "1") or "1"
 ).strip().lower() not in {"0", "false", "no", "off"}
+_SIMULATION_HTTP_CACHE_SECONDS = max(
+    0.0,
+    float(os.getenv("SIMULATION_HTTP_CACHE_SECONDS", "5.0") or "5.0"),
+)
+_SIMULATION_HTTP_STALE_FALLBACK_SECONDS = max(
+    _SIMULATION_HTTP_CACHE_SECONDS,
+    float(os.getenv("SIMULATION_HTTP_STALE_FALLBACK_SECONDS", "12.0") or "12.0"),
+)
+_SIMULATION_HTTP_BUILD_WAIT_SECONDS = max(
+    0.0,
+    float(os.getenv("SIMULATION_HTTP_BUILD_WAIT_SECONDS", "12.0") or "12.0"),
+)
+_SIMULATION_HTTP_WARMUP_ENABLED = str(
+    os.getenv("SIMULATION_HTTP_WARMUP_ENABLED", "0") or "0"
+).strip().lower() not in {"0", "false", "no", "off"}
+_SIMULATION_HTTP_WARMUP_DELAY_SECONDS = max(
+    0.0,
+    float(os.getenv("SIMULATION_HTTP_WARMUP_DELAY_SECONDS", "2.0") or "2.0"),
+)
+_SIMULATION_HTTP_WARMUP_TIMEOUT_SECONDS = max(
+    6.0,
+    float(os.getenv("SIMULATION_HTTP_WARMUP_TIMEOUT_SECONDS", "90.0") or "90.0"),
+)
+_SIMULATION_HTTP_WARMUP_RETRY_SECONDS = max(
+    1.0,
+    float(os.getenv("SIMULATION_HTTP_WARMUP_RETRY_SECONDS", "15.0") or "15.0"),
+)
+_SIMULATION_HTTP_WARMUP_MAX_ATTEMPTS = max(
+    1,
+    int(float(os.getenv("SIMULATION_HTTP_WARMUP_MAX_ATTEMPTS", "2") or "2")),
+)
+_SIMULATION_HTTP_DISK_CACHE_ENABLED = str(
+    os.getenv("SIMULATION_HTTP_DISK_CACHE_ENABLED", "1") or "1"
+).strip().lower() not in {"0", "false", "no", "off"}
+_SIMULATION_HTTP_DISK_CACHE_SECONDS = max(
+    0.0,
+    float(os.getenv("SIMULATION_HTTP_DISK_CACHE_SECONDS", "900.0") or "900.0"),
+)
+_SIMULATION_HTTP_DISK_COLD_START_SECONDS = max(
+    0.0,
+    float(os.getenv("SIMULATION_HTTP_DISK_COLD_START_SECONDS", "180.0") or "180.0"),
+)
+_SIMULATION_HTTP_FAILURE_COOLDOWN_SECONDS = max(
+    0.0,
+    float(os.getenv("SIMULATION_HTTP_FAILURE_COOLDOWN_SECONDS", "45.0") or "45.0"),
+)
+_SIMULATION_HTTP_FAILURE_STREAK_RESET_SECONDS = max(
+    _SIMULATION_HTTP_FAILURE_COOLDOWN_SECONDS,
+    float(
+        os.getenv("SIMULATION_HTTP_FAILURE_STREAK_RESET_SECONDS", "300.0") or "300.0"
+    ),
+)
+_SIMULATION_HTTP_TRIM_ENABLED = str(
+    os.getenv("SIMULATION_HTTP_TRIM_ENABLED", "1") or "1"
+).strip().lower() not in {"0", "false", "no", "off"}
+_SIMULATION_HTTP_MAX_ITEMS = max(
+    128,
+    int(float(os.getenv("SIMULATION_HTTP_MAX_ITEMS", "640") or "640")),
+)
+_SIMULATION_HTTP_MAX_FILE_NODES = max(
+    128,
+    int(float(os.getenv("SIMULATION_HTTP_MAX_FILE_NODES", "360") or "360")),
+)
+_SIMULATION_HTTP_MAX_FILE_EDGES = max(
+    256,
+    int(float(os.getenv("SIMULATION_HTTP_MAX_FILE_EDGES", "900") or "900")),
+)
+_SIMULATION_HTTP_MAX_FIELD_NODES = max(
+    64,
+    int(float(os.getenv("SIMULATION_HTTP_MAX_FIELD_NODES", "120") or "120")),
+)
+_SIMULATION_HTTP_MAX_TAG_NODES = max(
+    64,
+    int(float(os.getenv("SIMULATION_HTTP_MAX_TAG_NODES", "180") or "180")),
+)
+_SIMULATION_HTTP_MAX_RENDER_NODES = max(
+    256,
+    int(float(os.getenv("SIMULATION_HTTP_MAX_RENDER_NODES", "640") or "640")),
+)
+_SIMULATION_HTTP_MAX_CRAWLER_NODES = max(
+    96,
+    int(float(os.getenv("SIMULATION_HTTP_MAX_CRAWLER_NODES", "280") or "280")),
+)
+_SIMULATION_HTTP_MAX_CRAWLER_EDGES = max(
+    128,
+    int(float(os.getenv("SIMULATION_HTTP_MAX_CRAWLER_EDGES", "700") or "700")),
+)
+_SIMULATION_HTTP_MAX_CRAWLER_FIELD_NODES = max(
+    32,
+    int(float(os.getenv("SIMULATION_HTTP_MAX_CRAWLER_FIELD_NODES", "96") or "96")),
+)
+_SIMULATION_HTTP_CACHE_LOCK = threading.Lock()
+_SIMULATION_HTTP_BUILD_LOCK = threading.Lock()
+_SIMULATION_HTTP_CACHE: dict[str, Any] = {
+    "key": "",
+    "prepared_monotonic": 0.0,
+    "body": b"",
+}
+_SIMULATION_HTTP_FAILURE_LOCK = threading.Lock()
+_SIMULATION_HTTP_FAILURE_STATE: dict[str, Any] = {
+    "last_failure_monotonic": 0.0,
+    "last_error": "",
+    "streak": 0,
+}
+_SERVER_BOOT_MONOTONIC = time.monotonic()
+
+_RUNTIME_WS_CLIENT_LOCK = threading.Lock()
+_RUNTIME_WS_CLIENT_COUNT = 0
+_RUNTIME_WS_MAX_CLIENTS = max(
+    2,
+    int(float(os.getenv("RUNTIME_WS_MAX_CLIENTS", "12") or "12")),
+)
+_RUNTIME_GUARD_CPU_UTILIZATION_CRITICAL = max(
+    40.0,
+    min(
+        99.0,
+        float(os.getenv("RUNTIME_GUARD_CPU_UTILIZATION_CRITICAL", "92") or "92"),
+    ),
+)
+_RUNTIME_GUARD_MEMORY_PRESSURE_CRITICAL = max(
+    0.45,
+    min(
+        0.99,
+        float(os.getenv("RUNTIME_GUARD_MEMORY_PRESSURE_CRITICAL", "0.9") or "0.9"),
+    ),
+)
+_RUNTIME_GUARD_LOG_ERROR_RATIO_CRITICAL = max(
+    0.1,
+    min(
+        1.0,
+        float(os.getenv("RUNTIME_GUARD_LOG_ERROR_RATIO_CRITICAL", "0.55") or "0.55"),
+    ),
+)
+_RUNTIME_GUARD_INTERVAL_SCALE = max(
+    1.0,
+    float(os.getenv("RUNTIME_GUARD_INTERVAL_SCALE", "3.0") or "3.0"),
+)
+_RUNTIME_GUARD_SKIP_SIMULATION_ON_CRITICAL = str(
+    os.getenv("RUNTIME_GUARD_SKIP_SIMULATION_ON_CRITICAL", "1") or "1"
+).strip().lower() not in {"0", "false", "no", "off"}
+_RUNTIME_GUARD_HEARTBEAT_SECONDS = max(
+    1.0,
+    float(os.getenv("RUNTIME_GUARD_HEARTBEAT_SECONDS", "4.5") or "4.5"),
+)
+
+
+def _runtime_ws_client_snapshot() -> dict[str, int]:
+    with _RUNTIME_WS_CLIENT_LOCK:
+        return {
+            "active_clients": int(_RUNTIME_WS_CLIENT_COUNT),
+            "max_clients": int(_RUNTIME_WS_MAX_CLIENTS),
+        }
+
+
+def _runtime_ws_try_acquire_client_slot() -> bool:
+    global _RUNTIME_WS_CLIENT_COUNT
+    with _RUNTIME_WS_CLIENT_LOCK:
+        if _RUNTIME_WS_CLIENT_COUNT >= _RUNTIME_WS_MAX_CLIENTS:
+            return False
+        _RUNTIME_WS_CLIENT_COUNT += 1
+    return True
+
+
+def _runtime_ws_release_client_slot() -> None:
+    global _RUNTIME_WS_CLIENT_COUNT
+    with _RUNTIME_WS_CLIENT_LOCK:
+        _RUNTIME_WS_CLIENT_COUNT = max(0, _RUNTIME_WS_CLIENT_COUNT - 1)
+
+
+def _runtime_guard_state(resource_snapshot: dict[str, Any]) -> dict[str, Any]:
+    snapshot = resource_snapshot if isinstance(resource_snapshot, dict) else {}
+    devices = (
+        snapshot.get("devices", {}) if isinstance(snapshot.get("devices"), dict) else {}
+    )
+    cpu = devices.get("cpu", {}) if isinstance(devices.get("cpu"), dict) else {}
+    log_watch = (
+        snapshot.get("log_watch", {})
+        if isinstance(snapshot.get("log_watch"), dict)
+        else {}
+    )
+
+    cpu_utilization = _safe_float(cpu.get("utilization", 0.0), 0.0)
+    memory_pressure = _safe_float(cpu.get("memory_pressure", 0.0), 0.0)
+    error_ratio = _safe_float(log_watch.get("error_ratio", 0.0), 0.0)
+    hot_devices = [
+        str(item).strip()
+        for item in snapshot.get("hot_devices", [])
+        if str(item).strip()
+    ]
+
+    reasons: list[str] = []
+    mode = "normal"
+
+    if cpu_utilization >= _RUNTIME_GUARD_CPU_UTILIZATION_CRITICAL:
+        mode = "critical"
+        reasons.append("cpu_hot")
+    if memory_pressure >= _RUNTIME_GUARD_MEMORY_PRESSURE_CRITICAL:
+        mode = "critical"
+        reasons.append("memory_pressure_high")
+    if error_ratio >= _RUNTIME_GUARD_LOG_ERROR_RATIO_CRITICAL:
+        mode = "critical"
+        reasons.append("runtime_log_error_ratio_high")
+
+    if mode == "normal":
+        if hot_devices:
+            mode = "degraded"
+            reasons.append("hot_devices")
+        if error_ratio >= (_RUNTIME_GUARD_LOG_ERROR_RATIO_CRITICAL * 0.65):
+            mode = "degraded"
+            reasons.append("runtime_log_warning_ratio")
+        if cpu_utilization >= (_RUNTIME_GUARD_CPU_UTILIZATION_CRITICAL * 0.84):
+            mode = "degraded"
+            reasons.append("cpu_watch")
+        if memory_pressure >= (_RUNTIME_GUARD_MEMORY_PRESSURE_CRITICAL * 0.85):
+            mode = "degraded"
+            reasons.append("memory_pressure_watch")
+
+    return {
+        "mode": mode,
+        "reasons": reasons,
+        "cpu_utilization": round(cpu_utilization, 2),
+        "memory_pressure": round(memory_pressure, 4),
+        "log_error_ratio": round(error_ratio, 4),
+        "hot_devices": hot_devices,
+        "critical_thresholds": {
+            "cpu_utilization": _RUNTIME_GUARD_CPU_UTILIZATION_CRITICAL,
+            "memory_pressure": _RUNTIME_GUARD_MEMORY_PRESSURE_CRITICAL,
+            "log_error_ratio": _RUNTIME_GUARD_LOG_ERROR_RATIO_CRITICAL,
+        },
+    }
+
+
+def _runtime_health_payload(part_root: Path) -> dict[str, Any]:
+    resource_snapshot = _resource_monitor_snapshot(part_root=part_root)
+    guard = _runtime_guard_state(resource_snapshot)
+    ws = _runtime_ws_client_snapshot()
+    return {
+        "ok": True,
+        "record": "eta-mu.runtime-health.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "guard": guard,
+        "websocket": ws,
+        "degraded": str(guard.get("mode", "normal")) != "normal",
+    }
+
+
+def _json_compact(payload: Any) -> str:
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _simulation_http_cache_key(
+    *,
+    perspective: str,
+    catalog: dict[str, Any],
+    queue_snapshot: dict[str, Any],
+    influence_snapshot: dict[str, Any],
+) -> str:
+    file_graph = catalog.get("file_graph", {}) if isinstance(catalog, dict) else {}
+    crawler_graph = (
+        catalog.get("crawler_graph", {}) if isinstance(catalog, dict) else {}
+    )
+    file_stats = file_graph.get("stats", {}) if isinstance(file_graph, dict) else {}
+    crawler_stats = (
+        crawler_graph.get("stats", {}) if isinstance(crawler_graph, dict) else {}
+    )
+
+    file_count = int(_safe_float(file_stats.get("file_count", 0), 0.0))
+    file_edge_count = int(_safe_float(file_stats.get("edge_count", 0), 0.0))
+    crawler_count = int(_safe_float(crawler_stats.get("crawler_count", 0), 0.0))
+    crawler_edge_count = int(_safe_float(crawler_stats.get("edge_count", 0), 0.0))
+
+    if file_count <= 0:
+        file_nodes = (
+            file_graph.get("file_nodes", []) if isinstance(file_graph, dict) else []
+        )
+        if isinstance(file_nodes, list):
+            file_count = len(file_nodes)
+    if file_edge_count <= 0:
+        file_edges = file_graph.get("edges", []) if isinstance(file_graph, dict) else []
+        if isinstance(file_edges, list):
+            file_edge_count = len(file_edges)
+    if crawler_count <= 0:
+        crawler_nodes = (
+            crawler_graph.get("crawler_nodes", [])
+            if isinstance(crawler_graph, dict)
+            else []
+        )
+        if isinstance(crawler_nodes, list):
+            crawler_count = len(crawler_nodes)
+    if crawler_edge_count <= 0:
+        crawler_edges = (
+            crawler_graph.get("edges", []) if isinstance(crawler_graph, dict) else []
+        )
+        if isinstance(crawler_edges, list):
+            crawler_edge_count = len(crawler_edges)
+
+    fingerprint = (
+        f"{max(0, file_count)}:{max(0, file_edge_count)}:"
+        f"{max(0, crawler_count)}:{max(0, crawler_edge_count)}"
+    )
+    if fingerprint == "0:0:0:0":
+        file_graph_generated_at = (
+            str(file_graph.get("generated_at", "")).strip()
+            if isinstance(file_graph, dict)
+            else ""
+        )
+        crawler_generated_at = (
+            str(crawler_graph.get("generated_at", "")).strip()
+            if isinstance(crawler_graph, dict)
+            else ""
+        )
+        fingerprint = f"ts:{file_graph_generated_at}:{crawler_generated_at}"
+
+    del queue_snapshot
+    del influence_snapshot
+    return f"{perspective}|{fingerprint}|simulation"
+
+
+def _simulation_http_cache_store(cache_key: str, body: bytes) -> None:
+    if not cache_key:
+        return
+    if not isinstance(body, (bytes, bytearray)):
+        return
+    body_bytes = bytes(body)
+    if not body_bytes:
+        return
+    with _SIMULATION_HTTP_CACHE_LOCK:
+        _SIMULATION_HTTP_CACHE["key"] = cache_key
+        _SIMULATION_HTTP_CACHE["prepared_monotonic"] = time.monotonic()
+        _SIMULATION_HTTP_CACHE["body"] = body_bytes
+
+
+def _simulation_http_cached_body(
+    *,
+    cache_key: str = "",
+    perspective: str = "",
+    max_age_seconds: float,
+    require_exact_key: bool = False,
+) -> bytes | None:
+    if max_age_seconds <= 0.0:
+        return None
+
+    requested_key = str(cache_key or "").strip()
+    requested_perspective = str(perspective or "").strip()
+    with _SIMULATION_HTTP_CACHE_LOCK:
+        cached_key = str(_SIMULATION_HTTP_CACHE.get("key", "") or "").strip()
+        cached_body = _SIMULATION_HTTP_CACHE.get("body", b"")
+        cached_age = time.monotonic() - _safe_float(
+            _SIMULATION_HTTP_CACHE.get("prepared_monotonic", 0.0),
+            0.0,
+        )
+
+    if not cached_key:
+        return None
+    if cached_age < 0.0 or cached_age > max_age_seconds:
+        return None
+    if not isinstance(cached_body, (bytes, bytearray)) or not cached_body:
+        return None
+
+    if require_exact_key:
+        if not requested_key or requested_key != cached_key:
+            return None
+    elif requested_perspective and not cached_key.startswith(
+        f"{requested_perspective}|"
+    ):
+        return None
+
+    return bytes(cached_body)
+
+
+def _simulation_http_wait_for_exact_cache(
+    *,
+    cache_key: str,
+    perspective: str,
+    max_wait_seconds: float,
+    poll_seconds: float = 0.05,
+) -> bytes | None:
+    wait_window = max(0.0, _safe_float(max_wait_seconds, 0.0))
+    if wait_window <= 0.0:
+        return None
+
+    poll_interval = max(0.01, _safe_float(poll_seconds, 0.05))
+    deadline = time.monotonic() + wait_window
+    max_cache_age = max(
+        _SIMULATION_HTTP_CACHE_SECONDS,
+        _SIMULATION_HTTP_STALE_FALLBACK_SECONDS,
+        wait_window,
+    )
+
+    while True:
+        cached_body = _simulation_http_cached_body(
+            cache_key=cache_key,
+            perspective=perspective,
+            max_age_seconds=max_cache_age,
+            require_exact_key=True,
+        )
+        if cached_body is not None:
+            return cached_body
+
+        now_monotonic = time.monotonic()
+        if now_monotonic >= deadline:
+            return None
+        time.sleep(min(poll_interval, max(0.0, deadline - now_monotonic)))
+
+
+def _simulation_http_is_cold_start() -> bool:
+    if _SIMULATION_HTTP_DISK_COLD_START_SECONDS <= 0.0:
+        return False
+    uptime = time.monotonic() - _SERVER_BOOT_MONOTONIC
+    return 0.0 <= uptime <= _SIMULATION_HTTP_DISK_COLD_START_SECONDS
+
+
+def _simulation_http_failure_backoff_snapshot() -> tuple[float, str, int]:
+    cooldown = max(0.0, _safe_float(_SIMULATION_HTTP_FAILURE_COOLDOWN_SECONDS, 0.0))
+    if cooldown <= 0.0:
+        return (0.0, "", 0)
+
+    with _SIMULATION_HTTP_FAILURE_LOCK:
+        last_failure = _safe_float(
+            _SIMULATION_HTTP_FAILURE_STATE.get("last_failure_monotonic", 0.0),
+            0.0,
+        )
+        streak = max(
+            0, int(_safe_float(_SIMULATION_HTTP_FAILURE_STATE.get("streak", 0), 0.0))
+        )
+        error_name = str(
+            _SIMULATION_HTTP_FAILURE_STATE.get("last_error", "") or ""
+        ).strip()
+
+    if last_failure <= 0.0:
+        return (0.0, "", 0)
+
+    age = time.monotonic() - last_failure
+    if age < 0.0:
+        age = 0.0
+    remaining = max(0.0, cooldown - age)
+    return (remaining, error_name, streak)
+
+
+def _simulation_http_failure_record(error_name: str) -> None:
+    now_monotonic = time.monotonic()
+    reset_window = max(
+        0.0,
+        _safe_float(_SIMULATION_HTTP_FAILURE_STREAK_RESET_SECONDS, 0.0),
+    )
+    with _SIMULATION_HTTP_FAILURE_LOCK:
+        previous_failure = _safe_float(
+            _SIMULATION_HTTP_FAILURE_STATE.get("last_failure_monotonic", 0.0),
+            0.0,
+        )
+        streak = int(_safe_float(_SIMULATION_HTTP_FAILURE_STATE.get("streak", 0), 0.0))
+        if previous_failure > 0.0 and reset_window > 0.0:
+            if (now_monotonic - previous_failure) > reset_window:
+                streak = 0
+        _SIMULATION_HTTP_FAILURE_STATE["streak"] = max(0, streak) + 1
+        _SIMULATION_HTTP_FAILURE_STATE["last_failure_monotonic"] = now_monotonic
+        _SIMULATION_HTTP_FAILURE_STATE["last_error"] = (
+            str(error_name or "Exception").strip() or "Exception"
+        )
+
+
+def _simulation_http_failure_clear() -> None:
+    with _SIMULATION_HTTP_FAILURE_LOCK:
+        _SIMULATION_HTTP_FAILURE_STATE["last_failure_monotonic"] = 0.0
+        _SIMULATION_HTTP_FAILURE_STATE["last_error"] = ""
+        _SIMULATION_HTTP_FAILURE_STATE["streak"] = 0
+
+
+def _simulation_http_slice_rows(value: Any, *, max_rows: int) -> list[Any]:
+    rows = value if isinstance(value, list) else []
+    if max_rows <= 0 or len(rows) <= max_rows:
+        return list(rows)
+    return list(rows[:max_rows])
+
+
+def _simulation_http_trim_catalog(catalog: dict[str, Any]) -> dict[str, Any]:
+    if not _SIMULATION_HTTP_TRIM_ENABLED:
+        return catalog
+    if not isinstance(catalog, dict):
+        return {}
+
+    trimmed = dict(catalog)
+
+    items = catalog.get("items", [])
+    if isinstance(items, list) and len(items) > _SIMULATION_HTTP_MAX_ITEMS:
+        trimmed["items"] = list(items[:_SIMULATION_HTTP_MAX_ITEMS])
+
+    file_graph = catalog.get("file_graph") if isinstance(catalog, dict) else None
+    if isinstance(file_graph, dict):
+        compact_file_graph = dict(file_graph)
+        compact_file_graph["file_nodes"] = _simulation_http_slice_rows(
+            file_graph.get("file_nodes", []),
+            max_rows=_SIMULATION_HTTP_MAX_FILE_NODES,
+        )
+        compact_file_graph["field_nodes"] = _simulation_http_slice_rows(
+            file_graph.get("field_nodes", []),
+            max_rows=_SIMULATION_HTTP_MAX_FIELD_NODES,
+        )
+        compact_file_graph["tag_nodes"] = _simulation_http_slice_rows(
+            file_graph.get("tag_nodes", []),
+            max_rows=_SIMULATION_HTTP_MAX_TAG_NODES,
+        )
+        compact_file_graph["nodes"] = _simulation_http_slice_rows(
+            file_graph.get("nodes", []),
+            max_rows=_SIMULATION_HTTP_MAX_RENDER_NODES,
+        )
+        compact_file_graph["edges"] = _simulation_http_slice_rows(
+            file_graph.get("edges", []),
+            max_rows=_SIMULATION_HTTP_MAX_FILE_EDGES,
+        )
+
+        compact_stats = (
+            dict(file_graph.get("stats", {}))
+            if isinstance(file_graph.get("stats", {}), dict)
+            else {}
+        )
+        compact_stats["file_count"] = len(compact_file_graph.get("file_nodes", []))
+        compact_stats["edge_count"] = len(compact_file_graph.get("edges", []))
+        compact_file_graph["stats"] = compact_stats
+        trimmed["file_graph"] = compact_file_graph
+
+    crawler_graph = catalog.get("crawler_graph") if isinstance(catalog, dict) else None
+    if isinstance(crawler_graph, dict):
+        compact_crawler_graph = dict(crawler_graph)
+        compact_crawler_graph["crawler_nodes"] = _simulation_http_slice_rows(
+            crawler_graph.get("crawler_nodes", []),
+            max_rows=_SIMULATION_HTTP_MAX_CRAWLER_NODES,
+        )
+        compact_crawler_graph["field_nodes"] = _simulation_http_slice_rows(
+            crawler_graph.get("field_nodes", []),
+            max_rows=_SIMULATION_HTTP_MAX_CRAWLER_FIELD_NODES,
+        )
+        compact_crawler_graph["nodes"] = _simulation_http_slice_rows(
+            crawler_graph.get("nodes", []),
+            max_rows=max(
+                _SIMULATION_HTTP_MAX_CRAWLER_NODES,
+                _SIMULATION_HTTP_MAX_CRAWLER_FIELD_NODES,
+            ),
+        )
+        compact_crawler_graph["edges"] = _simulation_http_slice_rows(
+            crawler_graph.get("edges", []),
+            max_rows=_SIMULATION_HTTP_MAX_CRAWLER_EDGES,
+        )
+        compact_crawler_stats = (
+            dict(crawler_graph.get("stats", {}))
+            if isinstance(crawler_graph.get("stats", {}), dict)
+            else {}
+        )
+        compact_crawler_stats["crawler_count"] = len(
+            compact_crawler_graph.get("crawler_nodes", [])
+        )
+        compact_crawler_stats["edge_count"] = len(
+            compact_crawler_graph.get("edges", [])
+        )
+        compact_crawler_graph["stats"] = compact_crawler_stats
+        trimmed["crawler_graph"] = compact_crawler_graph
+
+    return trimmed
+
+
+def _schedule_simulation_http_warmup(*, host: str, port: int) -> None:
+    if not _SIMULATION_HTTP_WARMUP_ENABLED:
+        return
+    if int(port) <= 0:
+        return
+
+    warm_host = "127.0.0.1"
+    if str(host).strip() in {"127.0.0.1", "localhost"}:
+        warm_host = str(host).strip()
+    warm_url = (
+        f"http://{warm_host}:{int(port)}/api/simulation"
+        f"?perspective={PROJECTION_DEFAULT_PERSPECTIVE}"
+    )
+
+    def _warm() -> None:
+        delay = _SIMULATION_HTTP_WARMUP_DELAY_SECONDS
+        if delay > 0.0:
+            time.sleep(delay)
+        for attempt in range(_SIMULATION_HTTP_WARMUP_MAX_ATTEMPTS):
+            try:
+                req = Request(warm_url, method="GET")
+                with urlopen(
+                    req, timeout=_SIMULATION_HTTP_WARMUP_TIMEOUT_SECONDS
+                ) as resp:
+                    resp.read(1)
+                    if int(getattr(resp, "status", 0)) >= 200:
+                        return
+            except Exception:
+                pass
+            if attempt + 1 < _SIMULATION_HTTP_WARMUP_MAX_ATTEMPTS:
+                time.sleep(_SIMULATION_HTTP_WARMUP_RETRY_SECONDS)
+
+    threading.Thread(target=_warm, daemon=True, name="simulation-http-warmup").start()
+
+
+def _simulation_http_disk_cache_path(part_root: Path, perspective: str) -> Path:
+    key = str(perspective or PROJECTION_DEFAULT_PERSPECTIVE).strip().lower()
+    safe = "".join(ch if (ch.isalnum() or ch in {"-", "_"}) else "_" for ch in key)
+    safe = safe.strip("_") or PROJECTION_DEFAULT_PERSPECTIVE
+    return (part_root / "world_state" / f"simulation_http_cache_{safe}.json").resolve()
+
+
+def _simulation_http_disk_cache_load(
+    part_root: Path,
+    *,
+    perspective: str,
+    max_age_seconds: float,
+) -> bytes | None:
+    if not _SIMULATION_HTTP_DISK_CACHE_ENABLED:
+        return None
+    cache_age_limit = max(0.0, _safe_float(max_age_seconds, 0.0))
+    if cache_age_limit <= 0.0:
+        return None
+
+    cache_path = _simulation_http_disk_cache_path(part_root, perspective)
+    try:
+        if not cache_path.exists() or not cache_path.is_file():
+            return None
+        stat = cache_path.stat()
+        age = time.time() - float(stat.st_mtime)
+        if age < 0.0 or age > cache_age_limit:
+            return None
+        payload = cache_path.read_bytes()
+        if not payload:
+            return None
+        return payload
+    except Exception:
+        return None
+
+
+def _simulation_http_disk_cache_store(
+    part_root: Path,
+    *,
+    perspective: str,
+    body: bytes,
+) -> None:
+    if not _SIMULATION_HTTP_DISK_CACHE_ENABLED:
+        return
+    if not isinstance(body, (bytes, bytearray)):
+        return
+    payload = bytes(body)
+    if not payload:
+        return
+
+    cache_path = _simulation_http_disk_cache_path(part_root, perspective)
+    tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path.write_bytes(payload)
+        tmp_path.replace(cache_path)
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 _RUNTIME_CATALOG_SUBPROCESS_SCRIPT = (
     "import json,sys;"
     "from pathlib import Path;"
@@ -584,6 +1260,38 @@ def _safe_bool_query(value: str, default: bool = False) -> bool:
     return default
 
 
+def _docker_simulation_identifier_set(row: dict[str, Any]) -> set[str]:
+    values: set[str] = set()
+    direct_keys = ("id", "short_id", "name", "service")
+    for key in direct_keys:
+        clean = str(row.get(key, "") or "").strip().lower()
+        if clean:
+            values.add(clean)
+
+    route = row.get("route", {}) if isinstance(row.get("route"), dict) else {}
+    route_id = str(route.get("id", "") or "").strip().lower()
+    if route_id:
+        values.add(route_id)
+
+    return values
+
+
+def _find_docker_simulation_row(
+    snapshot: dict[str, Any],
+    identifier: str,
+) -> dict[str, Any] | None:
+    lookup = str(identifier or "").strip().lower()
+    if not lookup:
+        return None
+    rows = snapshot.get("simulations", []) if isinstance(snapshot, dict) else []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if lookup in _docker_simulation_identifier_set(row):
+            return row
+    return None
+
+
 def _project_vector(embedding: list[float] | None) -> list[float]:
     if not isinstance(embedding, list) or not embedding:
         return [0.0, 0.0, 0.0]
@@ -665,13 +1373,13 @@ class WorldHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, payload: dict[str, Any], status: int = HTTPStatus.OK) -> None:
         self._send_bytes(
-            json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            _json_compact(payload).encode("utf-8"),
             "application/json; charset=utf-8",
             status=status,
         )
 
     def _send_ws_event(self, payload: dict[str, Any]) -> None:
-        frame = websocket_frame_text(json.dumps(payload, ensure_ascii=False))
+        frame = websocket_frame_text(_json_compact(payload))
         self.connection.sendall(frame)
 
     def _read_json_body(self) -> dict[str, Any] | None:
@@ -696,6 +1404,80 @@ class WorldHandler(BaseHTTPRequestHandler):
         if length <= 0:
             return b""
         return self.rfile.read(length)
+
+    def _muse_manager(self) -> Any:
+        return get_muse_runtime_manager()
+
+    def _muse_tool_callback(self, *, tool_name: str) -> dict[str, Any]:
+        clean_tool = str(tool_name or "").strip().lower()
+        if clean_tool == "study_snapshot":
+            payload = build_study_snapshot(
+                self.part_root,
+                self.vault_root,
+                queue_snapshot=self.task_queue.snapshot(include_pending=True),
+                council_snapshot=self.council_chamber.snapshot(
+                    include_decisions=True,
+                    limit=16,
+                ),
+                drift_payload=build_drift_scan_payload(self.part_root, self.vault_root),
+                truth_gate_blocked=None,
+                resource_snapshot=_resource_monitor_snapshot(part_root=self.part_root),
+            )
+            return {
+                "ok": True,
+                "summary": "study snapshot generated",
+                "record": str(payload.get("record", "")),
+            }
+        if clean_tool == "drift_scan":
+            payload = build_drift_scan_payload(self.part_root, self.vault_root)
+            return {
+                "ok": True,
+                "summary": "drift scan generated",
+                "blocked_gates": len(payload.get("blocked_gates", [])),
+            }
+        if clean_tool == "push_truth_dry_run":
+            payload = build_push_truth_dry_run_payload(self.part_root, self.vault_root)
+            gate = payload.get("gate", {}) if isinstance(payload, dict) else {}
+            return {
+                "ok": True,
+                "summary": "push-truth dry run generated",
+                "blocked": bool(gate.get("blocked", False))
+                if isinstance(gate, dict)
+                else False,
+            }
+        return {"ok": False, "error": "unsupported_tool"}
+
+    def _muse_reply_builder(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        context_block: str,
+        mode: str,
+        muse_id: str = "",
+        turn_id: str = "",
+    ) -> dict[str, Any]:
+        del turn_id
+        model_mode = (
+            "canonical" if str(mode).strip().lower() == "deterministic" else "ollama"
+        )
+        clean_muse_id = str(muse_id or "").strip() or "witness_thread"
+        response = build_chat_reply(
+            messages=[
+                {"role": "system", "text": context_block},
+                *messages,
+            ],
+            mode=model_mode,
+            context=build_world_payload(self.part_root),
+            multi_entity=True,
+            presence_ids=[clean_muse_id],
+        )
+        if not isinstance(response, dict):
+            return {"reply": "", "mode": "canonical", "model": None}
+        return {
+            "reply": str(response.get("reply", "") or "").strip(),
+            "mode": str(response.get("mode", model_mode) or model_mode),
+            "model": response.get("model"),
+        }
 
     def _collect_catalog_fast(self) -> dict[str, Any]:
         return collect_catalog(
@@ -821,6 +1603,7 @@ class WorldHandler(BaseHTTPRequestHandler):
         self,
         *,
         perspective: str = PROJECTION_DEFAULT_PERSPECTIVE,
+        include_projection: bool = True,
     ) -> tuple[
         dict[str, Any],
         dict[str, Any],
@@ -844,13 +1627,16 @@ class WorldHandler(BaseHTTPRequestHandler):
             part_root=self.part_root,
         )
         catalog["presence_runtime"] = influence_snapshot
+        muse_runtime = self._muse_manager().snapshot()
+        catalog["muse_runtime"] = muse_runtime
 
-        attach_ui_projection(
-            catalog,
-            perspective=perspective,
-            queue_snapshot=queue_snapshot,
-            influence_snapshot=influence_snapshot,
-        )
+        if include_projection:
+            attach_ui_projection(
+                catalog,
+                perspective=perspective,
+                queue_snapshot=queue_snapshot,
+                influence_snapshot=influence_snapshot,
+            )
         return (
             catalog,
             queue_snapshot,
@@ -867,28 +1653,31 @@ class WorldHandler(BaseHTTPRequestHandler):
         *,
         perspective: str = PROJECTION_DEFAULT_PERSPECTIVE,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
+        simulation_catalog = _simulation_http_trim_catalog(catalog)
         try:
-            myth_summary = self.myth_tracker.snapshot(catalog)
+            myth_summary = self.myth_tracker.snapshot(simulation_catalog)
         except Exception:
             myth_summary = {}
         try:
             world_summary = self.life_tracker.snapshot(
-                catalog,
+                simulation_catalog,
                 myth_summary,
                 ENTITY_MANIFEST,
             )
         except Exception:
             world_summary = {}
 
+        docker_snapshot = collect_docker_simulation_snapshot()
         simulation = build_simulation_state(
-            catalog,
+            simulation_catalog,
             myth_summary,
             world_summary,
             influence_snapshot=influence_snapshot,
             queue_snapshot=queue_snapshot,
+            docker_snapshot=docker_snapshot,
         )
         projection = build_ui_projection(
-            catalog,
+            simulation_catalog,
             simulation,
             perspective=perspective,
             queue_snapshot=queue_snapshot,
@@ -897,6 +1686,110 @@ class WorldHandler(BaseHTTPRequestHandler):
         simulation["projection"] = projection
         simulation["perspective"] = perspective
         return simulation, projection
+
+    def _handle_docker_websocket(self) -> None:
+        ws_key = str(self.headers.get("Sec-WebSocket-Key", "")).strip()
+        if not ws_key:
+            self._send_bytes(
+                b"missing websocket key",
+                "text/plain; charset=utf-8",
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+
+        if not _runtime_ws_try_acquire_client_slot():
+            self._send_json(
+                {
+                    "ok": False,
+                    "error": "websocket_capacity_reached",
+                    "record": "eta-mu.runtime-health.v1",
+                    "websocket": _runtime_ws_client_snapshot(),
+                },
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+
+        try:
+            self.send_response(HTTPStatus.SWITCHING_PROTOCOLS)
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Sec-WebSocket-Accept", websocket_accept_value(ws_key))
+            self.end_headers()
+        except (
+            BrokenPipeError,
+            ConnectionResetError,
+            ConnectionAbortedError,
+            OSError,
+        ):
+            _runtime_ws_release_client_slot()
+            return
+
+        self.connection.settimeout(1.0)
+        last_docker_refresh = time.monotonic()
+        last_docker_broadcast = last_docker_refresh
+        last_docker_fingerprint = ""
+
+        try:
+            try:
+                docker_snapshot = collect_docker_simulation_snapshot(force_refresh=True)
+                last_docker_fingerprint = str(
+                    docker_snapshot.get("fingerprint", "") or ""
+                )
+                self._send_ws_event(
+                    {
+                        "type": "docker_simulations",
+                        "docker": docker_snapshot,
+                    }
+                )
+            except Exception as exc:
+                self._send_ws_event(
+                    {
+                        "type": "docker_simulations_error",
+                        "error": exc.__class__.__name__,
+                    }
+                )
+
+            while True:
+                now_monotonic = time.monotonic()
+                if (
+                    now_monotonic - last_docker_refresh
+                    >= DOCKER_SIMULATION_WS_REFRESH_SECONDS
+                ):
+                    docker_snapshot = collect_docker_simulation_snapshot()
+                    docker_fingerprint = str(
+                        docker_snapshot.get("fingerprint", "") or ""
+                    )
+                    docker_changed = docker_fingerprint != last_docker_fingerprint
+                    docker_heartbeat_due = (
+                        now_monotonic - last_docker_broadcast
+                        >= DOCKER_SIMULATION_WS_HEARTBEAT_SECONDS
+                    )
+                    if docker_changed or docker_heartbeat_due:
+                        self._send_ws_event(
+                            {
+                                "type": "docker_simulations",
+                                "docker": docker_snapshot,
+                            }
+                        )
+                        last_docker_broadcast = now_monotonic
+                        last_docker_fingerprint = docker_fingerprint
+                    last_docker_refresh = now_monotonic
+
+                try:
+                    chunk = self.connection.recv(2)
+                    if not chunk:
+                        break
+                except socket.timeout:
+                    continue
+        except (
+            BrokenPipeError,
+            ConnectionResetError,
+            ConnectionAbortedError,
+            OSError,
+        ):
+            pass
+        finally:
+            _runtime_ws_release_client_slot()
 
     def _handle_websocket(self, *, perspective: str) -> None:
         ws_key = str(self.headers.get("Sec-WebSocket-Key", "")).strip()
@@ -908,30 +1801,74 @@ class WorldHandler(BaseHTTPRequestHandler):
             )
             return
 
-        self.send_response(HTTPStatus.SWITCHING_PROTOCOLS)
-        self.send_header("Upgrade", "websocket")
-        self.send_header("Connection", "Upgrade")
-        self.send_header("Sec-WebSocket-Accept", websocket_accept_value(ws_key))
-        self.end_headers()
+        if not _runtime_ws_try_acquire_client_slot():
+            self._send_json(
+                {
+                    "ok": False,
+                    "error": "websocket_capacity_reached",
+                    "record": "eta-mu.runtime-health.v1",
+                    "websocket": _runtime_ws_client_snapshot(),
+                },
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+
+        try:
+            self.send_response(HTTPStatus.SWITCHING_PROTOCOLS)
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Sec-WebSocket-Accept", websocket_accept_value(ws_key))
+            self.end_headers()
+        except (
+            BrokenPipeError,
+            ConnectionResetError,
+            ConnectionAbortedError,
+            OSError,
+        ):
+            _runtime_ws_release_client_slot()
+            return
 
         perspective_key = normalize_projection_perspective(perspective)
         self.connection.settimeout(1.0)
         catalog: dict[str, Any] = {}
         queue_snapshot: dict[str, Any] = {}
         influence_snapshot: dict[str, Any] = {}
+        last_simulation_for_delta: dict[str, Any] | None = None
+        muse_event_seq = 0
+        last_docker_fingerprint = ""
 
         try:
             catalog, queue_snapshot, _, influence_snapshot, _ = self._runtime_catalog(
                 perspective=perspective_key,
+                include_projection=False,
             )
+            catalog_payload = _simulation_http_trim_catalog(catalog)
             _, mix_meta = build_mix_stream(catalog, self.vault_root)
             self._send_ws_event(
                 {
                     "type": "catalog",
-                    "catalog": catalog,
+                    "catalog": catalog_payload,
                     "mix": mix_meta,
                 }
             )
+            muse_bootstrap_events = self._muse_manager().list_events(
+                since_seq=0,
+                limit=96,
+            )
+            if muse_bootstrap_events:
+                muse_event_seq = max(
+                    int(row.get("seq", 0))
+                    for row in muse_bootstrap_events
+                    if isinstance(row, dict)
+                )
+                self._send_ws_event(
+                    {
+                        "type": "muse_events",
+                        "events": muse_bootstrap_events,
+                        "since_seq": 0,
+                        "next_seq": muse_event_seq,
+                    }
+                )
 
             simulation, projection = self._runtime_simulation(
                 catalog,
@@ -946,6 +1883,16 @@ class WorldHandler(BaseHTTPRequestHandler):
                     "projection": projection,
                 }
             )
+            last_simulation_for_delta = simulation
+
+            docker_snapshot = collect_docker_simulation_snapshot()
+            self._send_ws_event(
+                {
+                    "type": "docker_simulations",
+                    "docker": docker_snapshot,
+                }
+            )
+            last_docker_fingerprint = str(docker_snapshot.get("fingerprint", "") or "")
         except Exception:
             try:
                 self._send_ws_event(
@@ -955,53 +1902,162 @@ class WorldHandler(BaseHTTPRequestHandler):
                     }
                 )
             except Exception:
+                _runtime_ws_release_client_slot()
                 return
+            _runtime_ws_release_client_slot()
             return
 
         last_catalog_refresh = time.monotonic()
         last_catalog_broadcast = last_catalog_refresh
         last_sim_tick = last_catalog_refresh
+        last_docker_refresh = last_catalog_refresh
+        last_docker_broadcast = last_catalog_refresh
+        last_runtime_guard_broadcast = last_catalog_refresh
+        runtime_guard: dict[str, Any] = {
+            "mode": "normal",
+            "reasons": [],
+        }
 
-        while True:
-            now_monotonic = time.monotonic()
-            try:
+        try:
+            while True:
+                now_monotonic = time.monotonic()
                 if now_monotonic - last_catalog_refresh >= CATALOG_REFRESH_SECONDS:
                     catalog, queue_snapshot, _, influence_snapshot, _ = (
                         self._runtime_catalog(
                             perspective=perspective_key,
+                            include_projection=False,
                         )
                     )
                     last_catalog_refresh = now_monotonic
 
                 if (
-                    now_monotonic - last_catalog_broadcast
-                    >= CATALOG_BROADCAST_HEARTBEAT_SECONDS
+                    now_monotonic - last_runtime_guard_broadcast
+                    >= _RUNTIME_GUARD_HEARTBEAT_SECONDS
                 ):
+                    runtime_health = _runtime_health_payload(self.part_root)
+                    runtime_guard = runtime_health.get("guard", {})
+                    self._send_ws_event(
+                        {
+                            "type": "runtime_health",
+                            "runtime": runtime_health,
+                        }
+                    )
+                    last_runtime_guard_broadcast = now_monotonic
+
+                guard_mode = str(runtime_guard.get("mode", "normal") or "normal")
+                load_scale = 1.0
+                if guard_mode == "critical":
+                    load_scale = _RUNTIME_GUARD_INTERVAL_SCALE
+                elif guard_mode == "degraded":
+                    load_scale = max(1.0, _RUNTIME_GUARD_INTERVAL_SCALE * 0.6)
+
+                catalog_broadcast_interval = (
+                    CATALOG_BROADCAST_HEARTBEAT_SECONDS * load_scale
+                )
+                sim_tick_interval = SIM_TICK_SECONDS * load_scale
+                docker_refresh_interval = (
+                    DOCKER_SIMULATION_WS_REFRESH_SECONDS * load_scale
+                )
+                simulation_guard_skip = (
+                    _RUNTIME_GUARD_SKIP_SIMULATION_ON_CRITICAL
+                    and guard_mode == "critical"
+                )
+
+                if now_monotonic - last_catalog_broadcast >= catalog_broadcast_interval:
+                    catalog_payload = _simulation_http_trim_catalog(catalog)
                     _, mix_meta = build_mix_stream(catalog, self.vault_root)
                     self._send_ws_event(
                         {
                             "type": "catalog",
-                            "catalog": catalog,
+                            "catalog": catalog_payload,
                             "mix": mix_meta,
                         }
                     )
                     last_catalog_broadcast = now_monotonic
 
-                if now_monotonic - last_sim_tick >= SIM_TICK_SECONDS:
-                    simulation, projection = self._runtime_simulation(
-                        catalog,
-                        queue_snapshot,
-                        influence_snapshot,
-                        perspective=perspective_key,
+                if now_monotonic - last_sim_tick >= sim_tick_interval:
+                    if simulation_guard_skip:
+                        self._send_ws_event(
+                            {
+                                "type": "simulation_guard",
+                                "record": "eta-mu.simulation-guard.v1",
+                                "mode": guard_mode,
+                                "reasons": runtime_guard.get("reasons", []),
+                                "skipped": True,
+                                "interval_scale": load_scale,
+                            }
+                        )
+                    else:
+                        simulation, projection = self._runtime_simulation(
+                            catalog,
+                            queue_snapshot,
+                            influence_snapshot,
+                            perspective=perspective_key,
+                        )
+                        self._send_ws_event(
+                            {
+                                "type": "simulation",
+                                "simulation": simulation,
+                                "projection": projection,
+                            }
+                        )
+                        delta = build_simulation_delta(
+                            last_simulation_for_delta,
+                            simulation,
+                        )
+                        if bool(delta.get("has_changes", False)):
+                            self._send_ws_event(
+                                {
+                                    "type": "simulation_delta",
+                                    "delta": delta,
+                                }
+                            )
+                        last_simulation_for_delta = simulation
+
+                    previous_muse_seq = muse_event_seq
+                    muse_events = self._muse_manager().list_events(
+                        since_seq=previous_muse_seq,
+                        limit=96,
                     )
-                    self._send_ws_event(
-                        {
-                            "type": "simulation",
-                            "simulation": simulation,
-                            "projection": projection,
-                        }
-                    )
+                    if muse_events:
+                        muse_event_seq = max(
+                            previous_muse_seq,
+                            max(
+                                int(row.get("seq", 0))
+                                for row in muse_events
+                                if isinstance(row, dict)
+                            ),
+                        )
+                        self._send_ws_event(
+                            {
+                                "type": "muse_events",
+                                "events": muse_events,
+                                "since_seq": previous_muse_seq,
+                                "next_seq": muse_event_seq,
+                            }
+                        )
                     last_sim_tick = now_monotonic
+
+                if now_monotonic - last_docker_refresh >= docker_refresh_interval:
+                    docker_snapshot = collect_docker_simulation_snapshot()
+                    docker_fingerprint = str(
+                        docker_snapshot.get("fingerprint", "") or ""
+                    )
+                    docker_changed = docker_fingerprint != last_docker_fingerprint
+                    docker_heartbeat_due = (
+                        now_monotonic - last_docker_broadcast
+                        >= DOCKER_SIMULATION_WS_HEARTBEAT_SECONDS
+                    )
+                    if docker_changed or docker_heartbeat_due:
+                        self._send_ws_event(
+                            {
+                                "type": "docker_simulations",
+                                "docker": docker_snapshot,
+                            }
+                        )
+                        last_docker_broadcast = now_monotonic
+                        last_docker_fingerprint = docker_fingerprint
+                    last_docker_refresh = now_monotonic
 
                 try:
                     chunk = self.connection.recv(2)
@@ -1009,13 +2065,15 @@ class WorldHandler(BaseHTTPRequestHandler):
                         break
                 except socket.timeout:
                     continue
-            except (
-                BrokenPipeError,
-                ConnectionResetError,
-                ConnectionAbortedError,
-                OSError,
-            ):
-                break
+        except (
+            BrokenPipeError,
+            ConnectionResetError,
+            ConnectionAbortedError,
+            OSError,
+        ):
+            pass
+        finally:
+            _runtime_ws_release_client_slot()
 
     def do_OPTIONS(self) -> None:  # noqa: N802
         self.send_response(HTTPStatus.NO_CONTENT)
@@ -1029,6 +2087,11 @@ class WorldHandler(BaseHTTPRequestHandler):
         params = parse_qs(parsed.query)
 
         if parsed.path == "/ws":
+            stream = str(params.get("stream", [""])[0] or "").strip().lower()
+            if stream in {"docker", "meta", "simulations"}:
+                self._handle_docker_websocket()
+                return
+
             perspective = normalize_projection_perspective(
                 str(
                     params.get(
@@ -1074,6 +2137,7 @@ class WorldHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/mix":
             catalog, _, _, _, _ = self._runtime_catalog(
                 perspective=PROJECTION_DEFAULT_PERSPECTIVE,
+                include_projection=False,
             )
             _, mix_meta = build_mix_stream(catalog, self.vault_root)
             self._send_json(mix_meta)
@@ -1265,6 +2329,26 @@ class WorldHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if parsed.path == "/api/simulation/presets":
+            presets_path = self.part_root / "world_state" / "sim_presets.json"
+            if presets_path.exists():
+                self._send_bytes(presets_path.read_bytes(), "application/json")
+            else:
+                self._send_json({"presets": []})
+            return
+
+        if parsed.path == "/api/simulation/instances":
+            try:
+                res = subprocess.check_output(
+                    [sys.executable, "scripts/sim_manager.py", "list-active"],
+                    cwd=self.part_root,
+                    text=True,
+                )
+                self._send_bytes(res.encode("utf-8"), "application/json")
+            except Exception as exc:
+                self._send_json({"ok": False, "error": str(exc)})
+            return
+
         if parsed.path == "/api/catalog":
             perspective = normalize_projection_perspective(
                 str(
@@ -1277,6 +2361,208 @@ class WorldHandler(BaseHTTPRequestHandler):
             )
             catalog, _, _, _, _ = self._runtime_catalog(perspective=perspective)
             self._send_json(catalog)
+            return
+
+        if parsed.path == "/api/docker/simulations":
+            refresh = _safe_bool_query(
+                str(params.get("refresh", ["false"])[0] or "false"),
+                default=False,
+            )
+            self._send_json(collect_docker_simulation_snapshot(force_refresh=refresh))
+            return
+
+        if parsed.path == "/api/runtime/health":
+            self._send_json(_runtime_health_payload(self.part_root))
+            return
+
+        if parsed.path == "/api/meta/notes":
+            limit = max(
+                1,
+                min(
+                    256,
+                    int(_safe_float(str(params.get("limit", ["24"])[0] or "24"), 24.0)),
+                ),
+            )
+            tag = str(params.get("tag", [""])[0] or "").strip()
+            target = str(params.get("target", [""])[0] or "").strip()
+            category = str(params.get("category", [""])[0] or "").strip()
+            severity = str(params.get("severity", [""])[0] or "").strip()
+            self._send_json(
+                list_meta_notes(
+                    self.vault_root,
+                    limit=limit,
+                    tag=tag,
+                    target=target,
+                    category=category,
+                    severity=severity,
+                )
+            )
+            return
+
+        if parsed.path == "/api/meta/runs":
+            limit = max(
+                1,
+                min(
+                    256,
+                    int(_safe_float(str(params.get("limit", ["24"])[0] or "24"), 24.0)),
+                ),
+            )
+            run_type = str(params.get("run_type", [""])[0] or "").strip()
+            status = str(params.get("status", [""])[0] or "").strip()
+            target = str(params.get("target", [""])[0] or "").strip()
+            self._send_json(
+                list_meta_runs(
+                    self.vault_root,
+                    limit=limit,
+                    run_type=run_type,
+                    status=status,
+                    target=target,
+                )
+            )
+            return
+
+        if parsed.path == "/api/simulation/metadata":
+            if self.command == "POST":
+                req = self._read_json_body() or {}
+                result = _upsert_simulation_metadata(
+                    self.vault_root,
+                    presence_id=str(req.get("presence_id", "") or "").strip(),
+                    label=str(req.get("label", "") or "").strip(),
+                    description=str(req.get("description", "") or "").strip(),
+                    tags=[
+                        str(item).strip()
+                        for item in req.get("tags", [])
+                        if str(item).strip()
+                    ],
+                    process_info=req.get("process_info"),
+                    benchmark_results=req.get("benchmark_results"),
+                )
+                status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST
+                self._send_json(result, status=status)
+                return
+
+            # GET
+            limit_raw = params.get("limit", ["64"])[0]
+            try:
+                limit = int(limit_raw)
+            except (ValueError, TypeError):
+                limit = 64
+            self._send_json(_list_simulation_metadata(self.vault_root, limit=limit))
+            return
+
+        if parsed.path == "/api/meta/overview":
+            notes_limit = max(
+                1,
+                min(
+                    128,
+                    int(
+                        _safe_float(
+                            str(params.get("notes_limit", ["12"])[0] or "12"),
+                            12.0,
+                        )
+                    ),
+                ),
+            )
+            runs_limit = max(
+                1,
+                min(
+                    128,
+                    int(
+                        _safe_float(
+                            str(params.get("runs_limit", ["12"])[0] or "12"),
+                            12.0,
+                        )
+                    ),
+                ),
+            )
+            refresh = _safe_bool_query(
+                str(params.get("refresh", ["false"])[0] or "false"),
+                default=False,
+            )
+            docker_snapshot = collect_docker_simulation_snapshot(force_refresh=refresh)
+            queue_snapshot = self.task_queue.snapshot(include_pending=True)
+            self._send_json(
+                build_meta_overview(
+                    self.vault_root,
+                    docker_snapshot=docker_snapshot,
+                    queue_snapshot=queue_snapshot,
+                    notes_limit=notes_limit,
+                    runs_limit=runs_limit,
+                )
+            )
+            return
+
+        if parsed.path == "/api/muse/runtime":
+            manager = self._muse_manager()
+            self._send_json({"ok": True, "runtime": manager.snapshot()})
+            return
+
+        if parsed.path == "/api/muse/events":
+            manager = self._muse_manager()
+            muse_id = str(params.get("muse_id", [""])[0] or "").strip()
+            since_seq = max(
+                0,
+                int(
+                    _safe_float(
+                        str(params.get("since_seq", ["0"])[0] or "0"),
+                        0.0,
+                    )
+                ),
+            )
+            limit = max(
+                1,
+                min(
+                    512,
+                    int(
+                        _safe_float(
+                            str(params.get("limit", ["96"])[0] or "96"),
+                            96.0,
+                        )
+                    ),
+                ),
+            )
+            events = manager.list_events(
+                muse_id=muse_id,
+                since_seq=since_seq,
+                limit=limit,
+            )
+            next_seq = since_seq
+            if events:
+                next_seq = max(
+                    int(row.get("seq", since_seq))
+                    for row in events
+                    if isinstance(row, dict)
+                )
+            self._send_json(
+                {
+                    "ok": True,
+                    "record": "eta-mu.muse-event-page.v1",
+                    "muse_id": muse_id,
+                    "since_seq": since_seq,
+                    "next_seq": next_seq,
+                    "events": events,
+                }
+            )
+            return
+
+        if parsed.path == "/api/muse/context":
+            manager = self._muse_manager()
+            muse_id = str(params.get("muse_id", [""])[0] or "").strip()
+            turn_id = str(params.get("turn_id", [""])[0] or "").strip()
+            if not muse_id or not turn_id:
+                self._send_json(
+                    {"ok": False, "error": "muse_id_and_turn_id_required"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            manifest = manager.get_context_manifest(muse_id, turn_id)
+            if not isinstance(manifest, dict):
+                self._send_json(
+                    {"ok": False, "error": "context_manifest_not_found"},
+                    status=HTTPStatus.NOT_FOUND,
+                )
+                return
+            self._send_json({"ok": True, "manifest": manifest})
             return
 
         if parsed.path == "/api/zips":
@@ -1319,6 +2605,7 @@ class WorldHandler(BaseHTTPRequestHandler):
             )
             catalog, queue_snapshot, _, influence_snapshot, _ = self._runtime_catalog(
                 perspective=perspective,
+                include_projection=False,
             )
             simulation, projection = self._runtime_simulation(
                 catalog,
@@ -1437,6 +2724,10 @@ class WorldHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if parsed.path == "/api/witness/lineage":
+            self._send_json(build_witness_lineage_payload(self.part_root))
+            return
+
         if parsed.path == "/api/resource/heartbeat":
             heartbeat = _resource_monitor_snapshot(part_root=self.part_root)
             _INFLUENCE_TRACKER.record_resource_heartbeat(
@@ -1519,22 +2810,250 @@ class WorldHandler(BaseHTTPRequestHandler):
                     or PROJECTION_DEFAULT_PERSPECTIVE
                 )
             )
-            catalog, queue_snapshot, _, influence_snapshot, _ = self._runtime_catalog(
-                perspective=perspective,
-            )
-            simulation, projection = self._runtime_simulation(
-                catalog,
-                queue_snapshot,
-                influence_snapshot,
-                perspective=perspective,
-            )
-            simulation["projection"] = projection
-            self._send_json(simulation)
+            cache_key = ""
+            try:
+                warm_cached_body = _simulation_http_cached_body(
+                    perspective=perspective,
+                    max_age_seconds=_SIMULATION_HTTP_CACHE_SECONDS,
+                )
+                if warm_cached_body is not None:
+                    self._send_bytes(
+                        warm_cached_body,
+                        "application/json; charset=utf-8",
+                    )
+                    return
+
+                if _simulation_http_is_cold_start():
+                    cold_disk_body = _simulation_http_disk_cache_load(
+                        self.part_root,
+                        perspective=perspective,
+                        max_age_seconds=max(
+                            _SIMULATION_HTTP_STALE_FALLBACK_SECONDS,
+                            _SIMULATION_HTTP_DISK_CACHE_SECONDS,
+                        ),
+                    )
+                    if cold_disk_body is not None:
+                        _simulation_http_cache_store(
+                            f"{perspective}|disk-cold-start|simulation",
+                            cold_disk_body,
+                        )
+                        self._send_bytes(
+                            cold_disk_body,
+                            "application/json; charset=utf-8",
+                            extra_headers={
+                                "X-Eta-Mu-Simulation-Fallback": "disk-cache-cold-start",
+                            },
+                        )
+                        return
+
+                catalog, queue_snapshot, _, influence_snapshot, _ = (
+                    self._runtime_catalog(
+                        perspective=perspective,
+                        include_projection=False,
+                    )
+                )
+                cache_key = _simulation_http_cache_key(
+                    perspective=perspective,
+                    catalog=catalog,
+                    queue_snapshot=queue_snapshot,
+                    influence_snapshot=influence_snapshot,
+                )
+                cached_body = _simulation_http_cached_body(
+                    cache_key=cache_key,
+                    perspective=perspective,
+                    max_age_seconds=_SIMULATION_HTTP_CACHE_SECONDS,
+                    require_exact_key=True,
+                )
+                if cached_body is not None:
+                    self._send_bytes(
+                        cached_body,
+                        "application/json; charset=utf-8",
+                    )
+                    return
+
+                disk_cached_body = _simulation_http_disk_cache_load(
+                    self.part_root,
+                    perspective=perspective,
+                    max_age_seconds=max(
+                        _SIMULATION_HTTP_STALE_FALLBACK_SECONDS,
+                        _SIMULATION_HTTP_DISK_CACHE_SECONDS,
+                    ),
+                )
+                if disk_cached_body is not None:
+                    _simulation_http_cache_store(cache_key, disk_cached_body)
+                    self._send_bytes(
+                        disk_cached_body,
+                        "application/json; charset=utf-8",
+                        extra_headers={
+                            "X-Eta-Mu-Simulation-Fallback": "disk-cache",
+                        },
+                    )
+                    return
+
+                backoff_remaining, backoff_error, backoff_streak = (
+                    _simulation_http_failure_backoff_snapshot()
+                )
+                if backoff_remaining > 0.0:
+                    stale_body = _simulation_http_cached_body(
+                        perspective=perspective,
+                        max_age_seconds=_SIMULATION_HTTP_STALE_FALLBACK_SECONDS,
+                    )
+                    if stale_body is None:
+                        stale_body = _simulation_http_disk_cache_load(
+                            self.part_root,
+                            perspective=perspective,
+                            max_age_seconds=max(
+                                _SIMULATION_HTTP_STALE_FALLBACK_SECONDS,
+                                _SIMULATION_HTTP_DISK_CACHE_SECONDS,
+                            ),
+                        )
+                        if stale_body is not None:
+                            _simulation_http_cache_store(cache_key, stale_body)
+                    if stale_body is not None:
+                        self._send_bytes(
+                            stale_body,
+                            "application/json; charset=utf-8",
+                            extra_headers={
+                                "X-Eta-Mu-Simulation-Fallback": "failure-backoff",
+                                "X-Eta-Mu-Simulation-Error": backoff_error
+                                or "build_failure",
+                                "X-Eta-Mu-Simulation-Backoff-Seconds": str(
+                                    max(1, int(math.ceil(backoff_remaining)))
+                                ),
+                                "X-Eta-Mu-Simulation-Backoff-Streak": str(
+                                    max(0, int(backoff_streak))
+                                ),
+                            },
+                        )
+                        return
+
+                lock_acquired = _SIMULATION_HTTP_BUILD_LOCK.acquire(blocking=False)
+                if not lock_acquired:
+                    inflight_body = _simulation_http_wait_for_exact_cache(
+                        cache_key=cache_key,
+                        perspective=perspective,
+                        max_wait_seconds=_SIMULATION_HTTP_BUILD_WAIT_SECONDS,
+                    )
+                    if inflight_body is not None:
+                        self._send_bytes(
+                            inflight_body,
+                            "application/json; charset=utf-8",
+                            extra_headers={
+                                "X-Eta-Mu-Simulation-Fallback": "inflight-cache",
+                            },
+                        )
+                        return
+
+                    stale_body = _simulation_http_cached_body(
+                        perspective=perspective,
+                        max_age_seconds=_SIMULATION_HTTP_STALE_FALLBACK_SECONDS,
+                    )
+                    if stale_body is not None:
+                        self._send_bytes(
+                            stale_body,
+                            "application/json; charset=utf-8",
+                            extra_headers={
+                                "X-Eta-Mu-Simulation-Fallback": "stale-cache",
+                                "X-Eta-Mu-Simulation-Error": "build_inflight",
+                            },
+                        )
+                        return
+
+                    _SIMULATION_HTTP_BUILD_LOCK.acquire()
+                    lock_acquired = True
+
+                try:
+                    cached_body = _simulation_http_cached_body(
+                        cache_key=cache_key,
+                        perspective=perspective,
+                        max_age_seconds=_SIMULATION_HTTP_CACHE_SECONDS,
+                        require_exact_key=True,
+                    )
+                    if cached_body is not None:
+                        self._send_bytes(
+                            cached_body,
+                            "application/json; charset=utf-8",
+                            extra_headers={
+                                "X-Eta-Mu-Simulation-Fallback": "inflight-cache",
+                            },
+                        )
+                        return
+
+                    simulation, projection = self._runtime_simulation(
+                        catalog,
+                        queue_snapshot,
+                        influence_snapshot,
+                        perspective=perspective,
+                    )
+                    simulation["projection"] = projection
+                    response_body = _json_compact(simulation).encode("utf-8")
+                    _simulation_http_cache_store(cache_key, response_body)
+                    _simulation_http_disk_cache_store(
+                        self.part_root,
+                        perspective=perspective,
+                        body=response_body,
+                    )
+                    _simulation_http_failure_clear()
+                    self._send_bytes(
+                        response_body,
+                        "application/json; charset=utf-8",
+                    )
+                finally:
+                    if lock_acquired:
+                        _SIMULATION_HTTP_BUILD_LOCK.release()
+            except Exception as exc:
+                _simulation_http_failure_record(exc.__class__.__name__)
+                stale_body = _simulation_http_cached_body(
+                    perspective=perspective,
+                    max_age_seconds=_SIMULATION_HTTP_STALE_FALLBACK_SECONDS,
+                )
+                if stale_body is not None:
+                    self._send_bytes(
+                        stale_body,
+                        "application/json; charset=utf-8",
+                        extra_headers={
+                            "X-Eta-Mu-Simulation-Fallback": "stale-cache",
+                            "X-Eta-Mu-Simulation-Error": exc.__class__.__name__,
+                        },
+                    )
+                    return
+
+                disk_stale_body = _simulation_http_disk_cache_load(
+                    self.part_root,
+                    perspective=perspective,
+                    max_age_seconds=max(
+                        _SIMULATION_HTTP_STALE_FALLBACK_SECONDS,
+                        _SIMULATION_HTTP_DISK_CACHE_SECONDS,
+                    ),
+                )
+                if disk_stale_body is not None:
+                    _simulation_http_cache_store(cache_key, disk_stale_body)
+                    self._send_bytes(
+                        disk_stale_body,
+                        "application/json; charset=utf-8",
+                        extra_headers={
+                            "X-Eta-Mu-Simulation-Fallback": "disk-cache",
+                            "X-Eta-Mu-Simulation-Error": exc.__class__.__name__,
+                        },
+                    )
+                    return
+
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error": "simulation_unavailable",
+                        "record": "eta-mu.simulation.error.v1",
+                        "perspective": perspective,
+                        "detail": exc.__class__.__name__,
+                    },
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                )
             return
 
         if parsed.path == "/stream/mix.wav":
             catalog, _, _, _, _ = self._runtime_catalog(
                 perspective=PROJECTION_DEFAULT_PERSPECTIVE,
+                include_projection=False,
             )
             wav_bytes, _ = build_mix_stream(catalog, self.vault_root)
             if wav_bytes:
@@ -1608,6 +3127,37 @@ class WorldHandler(BaseHTTPRequestHandler):
             self._send_bytes(body, "text/html; charset=utf-8")
             return
 
+        if parsed.path in {
+            "/dashboard/docker",
+            "/dashboard/docker-simulations",
+            "/dashboard/bench",
+            "/dashboard/profile",
+        }:
+            dashboard_filename = (
+                "simulation_bench_dashboard.html"
+                if parsed.path == "/dashboard/bench"
+                else "simulation_profile.html"
+                if parsed.path == "/dashboard/profile"
+                else "docker_simulations_dashboard.html"
+            )
+            dashboard_path = (
+                self.part_root / "code" / "static" / dashboard_filename
+            ).resolve()
+            if dashboard_path.exists() and dashboard_path.is_file():
+                self._send_bytes(
+                    dashboard_path.read_bytes(),
+                    "text/html; charset=utf-8",
+                )
+            else:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error": "dashboard_not_found",
+                    },
+                    status=HTTPStatus.NOT_FOUND,
+                )
+            return
+
         # Optional static frontend assets when served from part64 runtime directly.
         dist_root = (self.part_root / "frontend" / "dist").resolve()
         if parsed.path != "/":
@@ -1630,8 +3180,261 @@ class WorldHandler(BaseHTTPRequestHandler):
             status=HTTPStatus.NOT_FOUND,
         )
 
+    def do_DELETE(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/simulation/instances/"):
+            instance_id = parsed.path.split("/")[-1]
+            try:
+                res = subprocess.check_output(
+                    [sys.executable, "scripts/sim_manager.py", "stop", instance_id],
+                    cwd=self.part_root,
+                    text=True,
+                )
+                self._send_bytes(res.encode("utf-8"), "application/json")
+            except Exception as exc:
+                self._send_json({"ok": False, "error": str(exc)})
+            return
+
+        self._send_json(
+            {"ok": False, "error": "method not allowed"},
+            status=HTTPStatus.METHOD_NOT_ALLOWED,
+        )
+
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+
+        if parsed.path == "/api/docker/simulations/control":
+            req = self._read_json_body() or {}
+            target_id = str(
+                req.get("id", "") or req.get("identifier", "") or ""
+            ).strip()
+            action = str(req.get("action", "") or "").strip().lower()
+            stop_timeout_seconds = max(
+                2.0,
+                min(
+                    45.0,
+                    _safe_float(req.get("stop_timeout_seconds", 12.0), 12.0),
+                ),
+            )
+
+            if not target_id:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error": "simulation_id_required",
+                    },
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+
+            if action not in {"start", "stop"}:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error": "unsupported_action",
+                        "allowed_actions": ["start", "stop"],
+                    },
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+
+            snapshot = collect_docker_simulation_snapshot(force_refresh=True)
+            simulation = _find_docker_simulation_row(snapshot, target_id)
+            if simulation is None:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error": "simulation_not_found",
+                        "id": target_id,
+                    },
+                    status=HTTPStatus.NOT_FOUND,
+                )
+                return
+
+            control = (
+                simulation.get("control", {})
+                if isinstance(simulation.get("control"), dict)
+                else {}
+            )
+            can_start_stop = bool(control.get("can_start_stop", False))
+            if not can_start_stop:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error": "simulation_control_blocked",
+                        "reason": str(
+                            control.get("reason", "control_protected")
+                            or "control_protected"
+                        ),
+                        "simulation": simulation,
+                    },
+                    status=HTTPStatus.FORBIDDEN,
+                )
+                return
+
+            simulation_id = str(simulation.get("id", "") or "").strip()
+            if not simulation_id:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error": "simulation_missing_id",
+                    },
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+
+            before_state = str(simulation.get("state", "") or "").strip().lower()
+            ok, control_error = control_simulation_container(
+                simulation_id,
+                action=action,
+                stop_timeout_seconds=stop_timeout_seconds,
+            )
+            if not ok:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error": "simulation_control_failed",
+                        "detail": control_error,
+                        "action": action,
+                        "id": simulation_id,
+                        "before_state": before_state,
+                    },
+                    status=HTTPStatus.BAD_GATEWAY,
+                )
+                return
+
+            refreshed = collect_docker_simulation_snapshot(force_refresh=True)
+            refreshed_sim = _find_docker_simulation_row(refreshed, simulation_id)
+            after_state = (
+                str(refreshed_sim.get("state", "") or "").strip().lower()
+                if isinstance(refreshed_sim, dict)
+                else ""
+            )
+            self._send_json(
+                {
+                    "ok": True,
+                    "action": action,
+                    "id": simulation_id,
+                    "before_state": before_state,
+                    "after_state": after_state,
+                    "detail": control_error,
+                    "simulation": refreshed_sim
+                    if isinstance(refreshed_sim, dict)
+                    else simulation,
+                }
+            )
+            return
+
+        if parsed.path == "/api/simulation/instances/spawn":
+            req = self._read_json_body() or {}
+            preset_id = str(req.get("preset_id", "")).strip()
+            # Dynamic port allocation (simple range for bench)
+            # Check active ones first to avoid collisions
+            port = 18900
+            try:
+                active_res = subprocess.check_output(
+                    [sys.executable, "scripts/sim_manager.py", "list-active"],
+                    cwd=self.part_root,
+                    text=True,
+                )
+                active = json.loads(active_res)
+                used_ports = {i.get("port") for i in active if i.get("port")}
+                while port in used_ports and port < 18950:
+                    port += 1
+
+                res = subprocess.check_output(
+                    [
+                        sys.executable,
+                        "scripts/sim_manager.py",
+                        "spawn",
+                        "--preset",
+                        preset_id,
+                        "--port",
+                        str(port),
+                    ],
+                    cwd=self.part_root,
+                    text=True,
+                )
+                self._send_bytes(res.encode("utf-8"), "application/json")
+            except Exception as exc:
+                self._send_json({"ok": False, "error": str(exc)})
+            return
+
+        if parsed.path == "/api/simulation/benchmark":
+            req = self._read_json_body() or {}
+
+            def _rewrite_benchmark_url(raw_url: str) -> str:
+                url_value = str(raw_url or "").strip()
+                if not url_value:
+                    return ""
+                parsed_url = urlparse(url_value)
+                host = str(parsed_url.hostname or "").strip().lower()
+                port = parsed_url.port
+                if host not in {"127.0.0.1", "localhost"}:
+                    return url_value
+                service_map = {
+                    18877: ("eta-mu-local", 8787),
+                    18880: ("eta-mu-cdb", 8787),
+                    18878: ("eta-mu-redis", 8787),
+                    18879: ("eta-mu-uds", 8787),
+                }
+                service_target = service_map.get(int(port or 0))
+                if service_target is None:
+                    return url_value
+                service_host, service_port = service_target
+                scheme = str(parsed_url.scheme or "http")
+                path = str(parsed_url.path or "/")
+                query = f"?{parsed_url.query}" if parsed_url.query else ""
+                return f"{scheme}://{service_host}:{service_port}{path}{query}"
+
+            baseline_url = _rewrite_benchmark_url(
+                str(req.get("baseline_url", "")).strip()
+            )
+            offload_url = _rewrite_benchmark_url(
+                str(req.get("offload_url", "")).strip()
+            )
+            requests = int(req.get("requests", 10))
+            warmup = int(req.get("warmup", 2))
+            try:
+                timeout_seconds = float(req.get("timeout_seconds", 60.0))
+            except Exception:
+                timeout_seconds = 60.0
+            timeout_seconds = max(10.0, min(180.0, timeout_seconds))
+
+            try:
+                # Run bench_sim_compare.py
+                cmd = [
+                    sys.executable,
+                    "scripts/bench_sim_compare.py",
+                    "--baseline-url",
+                    baseline_url,
+                    "--offload-url",
+                    offload_url,
+                    "--requests",
+                    str(requests),
+                    "--warmup",
+                    str(warmup),
+                    "--timeout",
+                    str(timeout_seconds),
+                    "--retries",
+                    "2",
+                    "--json",
+                ]
+                res = subprocess.run(
+                    cmd,
+                    cwd=self.part_root,
+                    capture_output=True,
+                    text=True,
+                    timeout=int(max(120.0, timeout_seconds * 3.0)),
+                )
+                if res.returncode == 0:
+                    self._send_bytes(res.stdout.encode("utf-8"), "application/json")
+                else:
+                    self._send_json({"ok": False, "error": res.stderr or res.stdout})
+
+            except Exception as exc:
+                self._send_json({"ok": False, "error": str(exc)})
+            return
 
         if parsed.path == "/api/eta-mu-ledger":
             req = self._read_json_body() or {}
@@ -2242,6 +4045,180 @@ class WorldHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if parsed.path == "/api/muse/create":
+            req = self._read_json_body() or {}
+            manager = self._muse_manager()
+            payload = manager.create_muse(
+                muse_id=str(req.get("muse_id", "") or "").strip(),
+                label=str(req.get("label", "") or "").strip(),
+                anchor=req.get("anchor")
+                if isinstance(req.get("anchor"), dict)
+                else None,
+                user_intent_id=str(req.get("user_intent_id", "") or "").strip(),
+            )
+            status = (
+                HTTPStatus.OK
+                if bool(payload.get("ok", False))
+                else HTTPStatus.BAD_REQUEST
+            )
+            self._send_json(payload, status=status)
+            return
+
+        if parsed.path == "/api/muse/pause":
+            req = self._read_json_body() or {}
+            manager = self._muse_manager()
+            muse_id = str(req.get("muse_id", "") or "").strip()
+            paused = _safe_bool_query(
+                str(req.get("paused", "true") or "true"), default=True
+            )
+            payload = manager.set_pause(
+                muse_id,
+                paused=paused,
+                reason=str(req.get("reason", "") or "").strip(),
+                user_intent_id=str(req.get("user_intent_id", "") or "").strip(),
+            )
+            if not bool(payload.get("ok", False)):
+                error = str(payload.get("error", ""))
+                status = (
+                    HTTPStatus.NOT_FOUND
+                    if error == "muse_not_found"
+                    else HTTPStatus.BAD_REQUEST
+                )
+                self._send_json(payload, status=status)
+                return
+            self._send_json(payload)
+            return
+
+        if parsed.path == "/api/muse/pin":
+            req = self._read_json_body() or {}
+            manager = self._muse_manager()
+            payload = manager.pin_node(
+                str(req.get("muse_id", "") or "").strip(),
+                node_id=str(req.get("node_id", "") or "").strip(),
+                user_intent_id=str(req.get("user_intent_id", "") or "").strip(),
+                reason=str(req.get("reason", "") or "").strip(),
+            )
+            if not bool(payload.get("ok", False)):
+                error = str(payload.get("error", ""))
+                status = (
+                    HTTPStatus.NOT_FOUND
+                    if error == "muse_not_found"
+                    else HTTPStatus.BAD_REQUEST
+                )
+                self._send_json(payload, status=status)
+                return
+            self._send_json(payload)
+            return
+
+        if parsed.path == "/api/muse/unpin":
+            req = self._read_json_body() or {}
+            manager = self._muse_manager()
+            payload = manager.unpin_node(
+                str(req.get("muse_id", "") or "").strip(),
+                node_id=str(req.get("node_id", "") or "").strip(),
+                user_intent_id=str(req.get("user_intent_id", "") or "").strip(),
+            )
+            if not bool(payload.get("ok", False)):
+                error = str(payload.get("error", ""))
+                status = (
+                    HTTPStatus.NOT_FOUND
+                    if error == "muse_not_found"
+                    else HTTPStatus.BAD_REQUEST
+                )
+                self._send_json(payload, status=status)
+                return
+            self._send_json(payload)
+            return
+
+        if parsed.path == "/api/muse/bind-nexus":
+            req = self._read_json_body() or {}
+            manager = self._muse_manager()
+            payload = manager.bind_nexus(
+                str(req.get("muse_id", "") or "").strip(),
+                nexus_id=str(req.get("nexus_id", "") or "").strip(),
+                reason=str(req.get("reason", "") or "").strip(),
+                user_intent_id=str(req.get("user_intent_id", "") or "").strip(),
+            )
+            if not bool(payload.get("ok", False)):
+                error = str(payload.get("error", ""))
+                status = (
+                    HTTPStatus.NOT_FOUND
+                    if error == "muse_not_found"
+                    else HTTPStatus.BAD_REQUEST
+                )
+                self._send_json(payload, status=status)
+                return
+            self._send_json(payload)
+            return
+
+        if parsed.path == "/api/muse/sync-pins":
+            req = self._read_json_body() or {}
+            manager = self._muse_manager()
+            pinned_node_ids = req.get("pinned_node_ids", [])
+            payload = manager.sync_workspace_pins(
+                str(req.get("muse_id", "") or "").strip(),
+                pinned_node_ids=pinned_node_ids
+                if isinstance(pinned_node_ids, list)
+                else [],
+                reason=str(req.get("reason", "") or "").strip(),
+                user_intent_id=str(req.get("user_intent_id", "") or "").strip(),
+            )
+            if not bool(payload.get("ok", False)):
+                error = str(payload.get("error", ""))
+                status = (
+                    HTTPStatus.NOT_FOUND
+                    if error == "muse_not_found"
+                    else HTTPStatus.BAD_REQUEST
+                )
+                self._send_json(payload, status=status)
+                return
+            self._send_json(payload)
+            return
+
+        if parsed.path == "/api/muse/message":
+            req = self._read_json_body() or {}
+            manager = self._muse_manager()
+            catalog = self._runtime_catalog_base()
+            graph_revision = str(
+                req.get("graph_revision", catalog.get("generated_at", ""))
+                or catalog.get("generated_at", "")
+            ).strip()
+            idempotency_key = str(
+                req.get("idempotency_key", self.headers.get("Idempotency-Key", ""))
+                or ""
+            ).strip()
+            surrounding_nodes = req.get("surrounding_nodes", [])
+            payload = manager.send_message(
+                muse_id=str(req.get("muse_id", "") or "").strip(),
+                text=str(req.get("text", "") or "").strip(),
+                mode=str(req.get("mode", "stochastic") or "stochastic").strip(),
+                token_budget=max(
+                    320,
+                    min(
+                        8192,
+                        int(
+                            _safe_float(
+                                str(req.get("token_budget", 2048) or 2048), 2048.0
+                            )
+                        ),
+                    ),
+                ),
+                idempotency_key=idempotency_key,
+                graph_revision=graph_revision,
+                surrounding_nodes=surrounding_nodes
+                if isinstance(surrounding_nodes, list)
+                else [],
+                tool_callback=self._muse_tool_callback,
+                reply_builder=self._muse_reply_builder,
+                seed=str(req.get("seed", "") or "").strip(),
+            )
+            if not bool(payload.get("ok", False)):
+                status_code = int(payload.get("status_code", HTTPStatus.BAD_REQUEST))
+                self._send_json(payload, status=status_code)
+                return
+            self._send_json(payload)
+            return
+
         if parsed.path == "/api/chat":
             req = self._read_json_body() or {}
             messages_raw = req.get("messages", [])
@@ -2352,6 +4329,7 @@ class WorldHandler(BaseHTTPRequestHandler):
             presence_id = str(req.get("presence_id", "") or "").strip()
             catalog, queue_snapshot, _, _, _ = self._runtime_catalog(
                 perspective=PROJECTION_DEFAULT_PERSPECTIVE,
+                include_projection=False,
             )
             catalog["presence_runtime"] = _INFLUENCE_TRACKER.snapshot(
                 queue_snapshot=queue_snapshot,
@@ -2535,6 +4513,112 @@ class WorldHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if parsed.path == "/api/meta/notes":
+            req = self._read_json_body() or {}
+            result = create_meta_note(
+                self.vault_root,
+                text=str(req.get("text", "") or ""),
+                owner=str(req.get("owner", "Err") or "Err"),
+                title=str(req.get("title", "") or ""),
+                tags=req.get("tags", []),
+                targets=req.get("targets", []),
+                severity=str(req.get("severity", "info") or "info"),
+                category=str(req.get("category", "observation") or "observation"),
+                context=req.get("context", {}),
+            )
+            status = (
+                HTTPStatus.OK
+                if bool(result.get("ok", False))
+                else HTTPStatus.BAD_REQUEST
+            )
+            self._send_json(result, status=status)
+            return
+
+        if parsed.path == "/api/meta/runs":
+            req = self._read_json_body() or {}
+            result = create_meta_run(
+                self.vault_root,
+                run_type=str(req.get("run_type", "") or ""),
+                title=str(req.get("title", "") or ""),
+                owner=str(req.get("owner", "Err") or "Err"),
+                status=str(req.get("status", "planned") or "planned"),
+                objective=str(req.get("objective", "") or ""),
+                model_ref=str(req.get("model_ref", "") or ""),
+                dataset_ref=str(req.get("dataset_ref", "") or ""),
+                notes=str(req.get("notes", "") or ""),
+                tags=req.get("tags", []),
+                targets=req.get("targets", []),
+                metrics=req.get("metrics", {}),
+                links=req.get("links", []),
+            )
+            status = (
+                HTTPStatus.OK
+                if bool(result.get("ok", False))
+                else HTTPStatus.BAD_REQUEST
+            )
+            self._send_json(result, status=status)
+            return
+
+        if parsed.path == "/api/meta/objective/enqueue":
+            req = self._read_json_body() or {}
+            objective_text = str(req.get("objective", "") or "").strip()
+            if not objective_text:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error": "missing_objective",
+                        "required": ["objective"],
+                    },
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+
+            objective_type = str(
+                req.get("objective_type", "evaluation") or "evaluation"
+            )
+            objective_type = objective_type.strip().lower() or "evaluation"
+            target = str(req.get("target", "") or "").strip()
+            priority = str(req.get("priority", "medium") or "medium").strip().lower()
+            owner = str(req.get("owner", "Err") or "Err").strip() or "Err"
+            refs_raw = req.get("refs", [])
+            refs = (
+                [str(item).strip() for item in refs_raw if str(item).strip()]
+                if isinstance(refs_raw, list)
+                else []
+            )
+            metadata_raw = req.get("metadata", {})
+            metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
+
+            payload = {
+                "objective": objective_text,
+                "objective_type": objective_type,
+                "target": target,
+                "priority": priority,
+                "metadata": metadata,
+                "created_via": "api/meta/objective/enqueue",
+            }
+            dedupe_key = str(req.get("dedupe_key", "") or "").strip()
+            if not dedupe_key:
+                dedupe_key = (
+                    f"meta-objective:{objective_type}:{target}:{objective_text}"
+                )
+
+            self._send_json(
+                self.task_queue.enqueue(
+                    kind="meta-objective",
+                    payload=payload,
+                    dedupe_key=dedupe_key,
+                    owner=owner,
+                    dod="meta objective queued with persisted log and receipt",
+                    refs=[
+                        "api:meta/objective/enqueue",
+                        "dashboard:meta-operations",
+                        *refs,
+                    ],
+                )
+            )
+            return
+
         if parsed.path == "/api/task/enqueue":
             req = self._read_json_body() or {}
             kind = str(req.get("kind", "runtime-task") or "runtime-task").strip()
@@ -2707,6 +4791,7 @@ def serve(
     handler_class = make_handler(part_root, vault_root, host, port)
     server = ThreadingHTTPServer((host, port), handler_class)
     print(f"Starting server on {host}:{port}")
+    _schedule_simulation_http_warmup(host=host, port=port)
     server.serve_forever()
 
 

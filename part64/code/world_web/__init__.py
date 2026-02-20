@@ -99,6 +99,7 @@ from .chamber import (
     CouncilChamber,
     TaskQueue,
     build_drift_scan_payload,
+    build_witness_lineage_payload,
     build_world_log_payload,
     build_push_truth_dry_run_payload,
     build_study_snapshot,
@@ -142,6 +143,7 @@ from .projection import (
     projection_perspective_options,
 )
 from .simulation import (
+    build_simulation_delta,
     build_simulation_state,
     build_mix_stream,
     _file_id_for_path,
@@ -151,6 +153,18 @@ from .simulation import (
     _materialize_heat_values,
     _stable_entity_id,
     _normalize_path_for_file_id,
+)
+from .presence_runtime import (
+    InMemoryPresenceStorage,
+    PresenceRuntimeManager,
+    get_presence_runtime_manager,
+    reset_presence_runtime_state_for_tests,
+    sync_presence_runtime_state,
+)
+from .muse_runtime import (
+    MuseRuntimeManager,
+    get_muse_runtime_manager,
+    reset_muse_runtime_state_for_tests,
 )
 from .server import (
     main,

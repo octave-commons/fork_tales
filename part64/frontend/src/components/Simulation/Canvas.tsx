@@ -5,6 +5,7 @@ import type {
   FileGraph,
   CrawlerGraph,
   TruthState,
+  BackendFieldParticle,
 } from "../../types";
 import { runtimeBaseUrl } from "../../runtime/endpoints";
 import { GalaxyModelDock } from "./GalaxyModelDock";
@@ -26,6 +27,7 @@ interface Props {
   layerDepth?: number;
   backgroundWash?: number;
   layerVisibility?: OverlayLayerVisibility;
+  museWorkspaceBindings?: Record<string, string[]>;
   className?: string;
 }
 
@@ -76,6 +78,15 @@ interface GraphNodeVisualSpec {
   shape: GraphNodeShape;
   liftBoost: number;
   glowBoost: number;
+}
+
+interface FileGraphRenderEdge {
+  id: string;
+  source: string;
+  target: string;
+  field: string;
+  kind: string;
+  weight: number;
 }
 
 interface EditorPreviewState {
@@ -304,6 +315,159 @@ function presenceDisplayName(
   return normalized;
 }
 
+function normalizePresenceKey(raw: string): string {
+  return raw.trim().toLowerCase().replace(/[\s-]+/g, "_");
+}
+
+function canonicalPresenceId(raw: string): string {
+  const value = String(raw || "").trim();
+  if (!value) {
+    return "";
+  }
+  if (value.startsWith("field:")) {
+    return value.slice("field:".length).trim();
+  }
+  return value;
+}
+
+function stablePresenceRatio(seed: string, salt: number): number {
+  const key = `${seed}|${salt}`;
+  let hash = 2166136261;
+  for (let index = 0; index < key.length; index += 1) {
+    hash ^= key.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) / 4294967295;
+}
+
+function presenceHueFromId(rawPresenceId: string): number {
+  const presenceId = canonicalPresenceId(rawPresenceId);
+  if (!presenceId) {
+    return 198;
+  }
+  return Math.round(stablePresenceRatio(presenceId, 7) * 360) % 360;
+}
+
+function spreadPresenceAnchors(forms: Array<any>): Array<any> {
+  if (forms.length <= 0) {
+    return [];
+  }
+
+  const positioned = forms.map((row, index) => {
+    const presenceId = canonicalPresenceId(String(row?.id ?? ""));
+    const fallbackAngle = stablePresenceRatio(presenceId || `presence-${index}`, 3) * Math.PI * 2;
+    const fallbackRadius = 0.24 + (stablePresenceRatio(presenceId || `presence-${index}`, 11) * 0.4);
+    const fallbackX = 0.5 + Math.cos(fallbackAngle) * fallbackRadius;
+    const fallbackY = 0.5 + Math.sin(fallbackAngle) * fallbackRadius;
+    const baseX = clamp01(Number(row?.x ?? fallbackX));
+    const baseY = clamp01(Number(row?.y ?? fallbackY));
+    const expandedX = clamp01(0.5 + (baseX - 0.5) * 1.46);
+    const expandedY = clamp01(0.5 + (baseY - 0.5) * 1.46);
+    return {
+      ...row,
+      id: presenceId || String(row?.id ?? `presence-${index}`),
+      x: expandedX,
+      y: expandedY,
+      spreadBaseX: expandedX,
+      spreadBaseY: expandedY,
+      hue: Number.isFinite(Number(row?.hue))
+        ? Number(row?.hue)
+        : presenceHueFromId(presenceId || String(row?.id ?? "")),
+    };
+  });
+
+  const count = positioned.length;
+  const minSpacing = count >= 26 ? 0.1 : count >= 18 ? 0.11 : 0.12;
+  const minX = 0.06;
+  const maxX = 0.94;
+  const minY = 0.08;
+  const maxY = 0.92;
+
+  for (let iter = 0; iter < 20; iter += 1) {
+    for (let left = 0; left < positioned.length; left += 1) {
+      for (let right = left + 1; right < positioned.length; right += 1) {
+        const leftRow = positioned[left];
+        const rightRow = positioned[right];
+        const dx = rightRow.x - leftRow.x;
+        const dy = rightRow.y - leftRow.y;
+        const distance = Math.hypot(dx, dy);
+        if (distance >= minSpacing) {
+          continue;
+        }
+        const unitX = distance > 0.0001
+          ? dx / distance
+          : Math.cos((left + 1) * 0.73 + (right + 1) * 0.29);
+        const unitY = distance > 0.0001
+          ? dy / distance
+          : Math.sin((left + 1) * 0.61 + (right + 1) * 0.41);
+        const push = (minSpacing - distance) * 0.5;
+        leftRow.x = clamp01(leftRow.x - unitX * push);
+        leftRow.y = clamp01(leftRow.y - unitY * push);
+        rightRow.x = clamp01(rightRow.x + unitX * push);
+        rightRow.y = clamp01(rightRow.y + unitY * push);
+      }
+    }
+    for (const row of positioned) {
+      row.x = Math.min(maxX, Math.max(minX, row.x + (row.spreadBaseX - row.x) * 0.02));
+      row.y = Math.min(maxY, Math.max(minY, row.y + (row.spreadBaseY - row.y) * 0.02));
+    }
+  }
+
+  return positioned.map((row) => {
+    const cleaned = { ...row };
+    delete (cleaned as any).spreadBaseX;
+    delete (cleaned as any).spreadBaseY;
+    return {
+      ...cleaned,
+      x: Math.min(maxX, Math.max(minX, Number(cleaned.x ?? 0.5))),
+      y: Math.min(maxY, Math.max(minY, Number(cleaned.y ?? 0.5))),
+    };
+  });
+}
+
+function shortPresenceIdLabel(raw: string): string {
+  const value = raw.trim();
+  if (!value) {
+    return "presence";
+  }
+  const tail = value.includes(".") ? value.split(".").slice(-1)[0] : value;
+  return tail.length > 18 ? `${tail.slice(0, 17)}~` : tail;
+}
+
+function resourceDaimoiHue(resourceType: string): number {
+  const key = String(resourceType || "").trim().toLowerCase();
+  if (key === "cpu") return 36;
+  if (key === "ram") return 182;
+  if (key === "disk") return 122;
+  if (key === "network") return 214;
+  if (key === "gpu") return 284;
+  if (key === "npu") return 332;
+  return 48;
+}
+
+function normalizeWorkspaceBindingMap(
+  raw: Record<string, string[]> | null | undefined,
+): Record<string, string[]> {
+  if (!raw || typeof raw !== "object") {
+    return {};
+  }
+  const normalized: Record<string, string[]> = {};
+  Object.entries(raw).forEach(([presenceId, nodeIds]) => {
+    const key = normalizePresenceKey(String(presenceId || ""));
+    if (!key || !Array.isArray(nodeIds)) {
+      return;
+    }
+    const normalizedIds = nodeIds
+      .map((item) => String(item || "").trim())
+      .filter((item, index, all) => item.length > 0 && all.indexOf(item) === index)
+      .slice(0, 36);
+    if (normalizedIds.length > 0) {
+      normalized[key] = normalizedIds;
+    }
+  });
+  return normalized;
+}
+
 function normalizeComputeJobInsightRows(payload: unknown): ComputeJobInsightRow[] {
   if (!Array.isArray(payload)) {
     return [];
@@ -449,13 +613,8 @@ export const OVERLAY_VIEW_OPTIONS: OverlayViewOption[] = [
   },
   {
     id: "file-graph",
-    label: "File Graph",
-    description: "File categories, links, and embed layers.",
-  },
-  {
-    id: "crawler-graph",
-    label: "Crawler Graph",
-    description: "Crawler topology and web-domain structure.",
+    label: "Nexus Graph",
+    description: "Unified nexus topology from file and crawler sources.",
   },
   {
     id: "truth-gate",
@@ -856,6 +1015,238 @@ function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
+function thinFileGraphEdgesForRendering(
+  edges: any[],
+  nodeById: Map<string, any>,
+  fileNodeCount: number,
+  selectedNodeId: string,
+): FileGraphRenderEdge[] {
+  const normalized: FileGraphRenderEdge[] = [];
+  for (let index = 0; index < edges.length; index++) {
+    const raw = edges[index] as any;
+    const source = String(raw?.source ?? "").trim();
+    const target = String(raw?.target ?? "").trim();
+    if (!source || !target || source === target) {
+      continue;
+    }
+    if (!nodeById.has(source) || !nodeById.has(target)) {
+      continue;
+    }
+    normalized.push({
+      id: String(raw?.id ?? `edge:${source}:${target}:${index}`),
+      source,
+      target,
+      field: String(raw?.field ?? "").trim(),
+      kind: String(raw?.kind ?? "relates").trim().toLowerCase() || "relates",
+      weight: clamp01(Number(raw?.weight ?? 0.2)),
+    });
+  }
+
+  if (normalized.length <= 340) {
+    return normalized;
+  }
+
+  const targetDegree = new Map<string, number>();
+  for (let index = 0; index < normalized.length; index++) {
+    const target = normalized[index].target;
+    targetDegree.set(target, (targetDegree.get(target) ?? 0) + 1);
+  }
+
+  const globalCap = Math.max(220, Math.min(860, Math.round(fileNodeCount * 1.55)));
+  const selectedReserve = selectedNodeId
+    ? Math.max(26, Math.min(120, Math.round(globalCap * 0.24)))
+    : 0;
+  const perSourceCap = 4;
+  const perSourceCategorizeCap = 1;
+  const perFieldHubCap = Math.max(26, Math.min(92, Math.round(fileNodeCount * 0.13)));
+  const perConceptHubCap = Math.max(24, Math.min(120, Math.round(fileNodeCount * 0.16)));
+  const tagMemberCap = Math.max(46, Math.min(240, Math.round(fileNodeCount * 0.5)));
+  const tagPairCap = Math.max(18, Math.min(110, Math.round(fileNodeCount * 0.24)));
+
+  const kindPriority = (kind: string): number => {
+    if (kind === "spawns_presence") {
+      return 1.22;
+    }
+    if (kind === "organized_by_presence") {
+      return 1.06;
+    }
+    if (kind === "categorizes") {
+      return 0.94;
+    }
+    if (kind === "labeled_as") {
+      return 0.66;
+    }
+    if (kind === "relates_tag") {
+      return 0.44;
+    }
+    return 0.58;
+  };
+
+  type ScoredEdge = {
+    row: FileGraphRenderEdge;
+    score: number;
+    selected: boolean;
+  };
+
+  const scored: ScoredEdge[] = normalized.map((row) => {
+    const sourceNode = nodeById.get(row.source);
+    const targetNode = nodeById.get(row.target);
+    const sourceImportance = clamp01(Number(sourceNode?.importance ?? 0.2));
+    const targetImportance = clamp01(
+      Number(
+        targetNode?.importance
+          ?? (String(targetNode?.presence_kind ?? "") === "concept" ? 0.72 : 0.22),
+      ),
+    );
+    const isSelected =
+      selectedNodeId.length > 0
+      && (row.source === selectedNodeId || row.target === selectedNodeId);
+    const selectedBoost = isSelected ? 2.9 : 0;
+    const hubPenalty = row.kind === "categorizes"
+      ? 1 / (1 + (Math.max(0, (targetDegree.get(row.target) ?? 1) - 1) * 0.018))
+      : 1;
+    const score =
+      ((row.weight * 1.46)
+      + kindPriority(row.kind)
+      + (sourceImportance * 0.58)
+      + (targetImportance * 0.28)
+      + selectedBoost)
+      * hubPenalty;
+    return {
+      row,
+      score,
+      selected: isSelected,
+    };
+  });
+
+  scored.sort((left, right) => {
+    if (right.score !== left.score) {
+      return right.score - left.score;
+    }
+    if (left.row.kind !== right.row.kind) {
+      return left.row.kind.localeCompare(right.row.kind);
+    }
+    return left.row.id.localeCompare(right.row.id);
+  });
+
+  const picked: FileGraphRenderEdge[] = [];
+  const seen = new Set<string>();
+  const sourceCount = new Map<string, number>();
+  const sourceCategorizeCount = new Map<string, number>();
+  const fieldTargetCount = new Map<string, number>();
+  const conceptTargetCount = new Map<string, number>();
+  let pickedTagMemberEdges = 0;
+  let pickedTagPairEdges = 0;
+
+  const tryPick = (entry: ScoredEdge, forceSelected: boolean): boolean => {
+    const row = entry.row;
+    const key = `${row.source}|${row.target}|${row.kind}`;
+    if (seen.has(key)) {
+      return false;
+    }
+
+    if (!forceSelected && picked.length >= globalCap) {
+      return false;
+    }
+
+    const sourceLimit = forceSelected ? perSourceCap + 4 : perSourceCap;
+    const sourceHitCount = sourceCount.get(row.source) ?? 0;
+    if (sourceHitCount >= sourceLimit) {
+      return false;
+    }
+
+    if (row.kind === "categorizes") {
+      const categorizeLimit = forceSelected
+        ? perSourceCategorizeCap + 1
+        : perSourceCategorizeCap;
+      const categorizeHits = sourceCategorizeCount.get(row.source) ?? 0;
+      if (categorizeHits >= categorizeLimit) {
+        return false;
+      }
+      if (row.target.startsWith("field:")) {
+        const fieldLimit = forceSelected ? perFieldHubCap + 18 : perFieldHubCap;
+        const targetHits = fieldTargetCount.get(row.target) ?? 0;
+        if (targetHits >= fieldLimit) {
+          return false;
+        }
+      }
+    }
+
+    if (row.kind === "organized_by_presence" && row.target.startsWith("presence:concept:")) {
+      const conceptLimit = forceSelected ? perConceptHubCap + 24 : perConceptHubCap;
+      const conceptHits = conceptTargetCount.get(row.target) ?? 0;
+      if (conceptHits >= conceptLimit) {
+        return false;
+      }
+    }
+
+    if (row.kind === "labeled_as") {
+      const memberLimit = forceSelected ? tagMemberCap + 24 : tagMemberCap;
+      if (pickedTagMemberEdges >= memberLimit) {
+        return false;
+      }
+    }
+
+    if (row.kind === "relates_tag") {
+      const pairLimit = forceSelected ? tagPairCap + 12 : tagPairCap;
+      if (pickedTagPairEdges >= pairLimit) {
+        return false;
+      }
+    }
+
+    seen.add(key);
+    sourceCount.set(row.source, sourceHitCount + 1);
+    if (row.kind === "categorizes") {
+      sourceCategorizeCount.set(
+        row.source,
+        (sourceCategorizeCount.get(row.source) ?? 0) + 1,
+      );
+      if (row.target.startsWith("field:")) {
+        fieldTargetCount.set(row.target, (fieldTargetCount.get(row.target) ?? 0) + 1);
+      }
+    }
+    if (row.kind === "organized_by_presence" && row.target.startsWith("presence:concept:")) {
+      conceptTargetCount.set(row.target, (conceptTargetCount.get(row.target) ?? 0) + 1);
+    }
+    if (row.kind === "labeled_as") {
+      pickedTagMemberEdges += 1;
+    }
+    if (row.kind === "relates_tag") {
+      pickedTagPairEdges += 1;
+    }
+    picked.push(row);
+    return true;
+  };
+
+  if (selectedNodeId) {
+    let reserved = 0;
+    for (let index = 0; index < scored.length; index++) {
+      const row = scored[index];
+      if (!row.selected) {
+        continue;
+      }
+      if (reserved >= selectedReserve) {
+        break;
+      }
+      if (tryPick(row, true)) {
+        reserved += 1;
+      }
+    }
+  }
+
+  for (let index = 0; index < scored.length; index++) {
+    if (picked.length >= globalCap) {
+      break;
+    }
+    tryPick(scored[index], false);
+  }
+
+  if (picked.length <= 0) {
+    return normalized.slice(0, globalCap);
+  }
+  return picked;
+}
+
 function clampValue(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) {
     return min;
@@ -1144,6 +1535,53 @@ function openUrlForGraphNode(node: any, nodeKind: "file" | "crawler"): string {
   return "";
 }
 
+interface OverlayParticleFlags {
+  particleMode: string;
+  isCdbParticle: boolean;
+  isChaosParticle: boolean;
+  isStaticParticle: boolean;
+  isNexusParticle: boolean;
+  isSmartDaimoi: boolean;
+  isResourceEmitter: boolean;
+  isTransferParticle: boolean;
+  routeNodeId: string;
+  graphNodeId: string;
+}
+
+function resolveOverlayParticleFlags(row: BackendFieldParticle): OverlayParticleFlags {
+  const rowId = String((row as any)?.id ?? "");
+  const rowRecord = String((row as any)?.record ?? "");
+  const rowSchema = String((row as any)?.schema_version ?? "");
+  const particleMode = String((row as any)?.particle_mode ?? "").trim();
+  const presenceRole = String((row as any)?.presence_role ?? "").trim().toLowerCase();
+  const routeNodeId = String((row as any)?.route_node_id ?? "").trim();
+  const graphNodeId = String((row as any)?.graph_node_id ?? "").trim();
+  const topJob = String((row as any)?.top_job ?? "").trim();
+  const isCdbParticle = rowId.startsWith("cdb:") || rowRecord.includes(".cdb.") || rowSchema.includes(".cdb.");
+  const isChaosParticle = particleMode === "chaos-butterfly";
+  const isStaticParticle = particleMode === "static-daimoi";
+  const isNexusParticle = Boolean((row as any)?.is_nexus) || isStaticParticle || presenceRole === "nexus-passive";
+  const isSmartDaimoi = !isNexusParticle;
+  const isResourceEmitter = Boolean((row as any)?.resource_daimoi) || topJob === "emit_resource_packet";
+  const isTransferParticle = (
+    routeNodeId.length > 0
+    && graphNodeId.length > 0
+    && routeNodeId !== graphNodeId
+  );
+  return {
+    particleMode,
+    isCdbParticle,
+    isChaosParticle,
+    isStaticParticle,
+    isNexusParticle,
+    isSmartDaimoi,
+    isResourceEmitter,
+    isTransferParticle,
+    routeNodeId,
+    graphNodeId,
+  };
+}
+
 export function SimulationCanvas({
   simulation,
   catalog,
@@ -1161,6 +1599,7 @@ export function SimulationCanvas({
   layerDepth = 1,
   backgroundWash = 0.58,
   layerVisibility,
+  museWorkspaceBindings = {},
   className = "",
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -1169,6 +1608,9 @@ export function SimulationCanvas({
   const containerRef = useRef<HTMLDivElement>(null);
   const simulationRef = useRef<SimulationState | null>(simulation);
   const catalogRef = useRef<Catalog | null>(catalog);
+  const museWorkspaceBindingsRef = useRef<Record<string, string[]>>(
+    normalizeWorkspaceBindingMap(museWorkspaceBindings),
+  );
   const particleDensityRef = useRef(clampValue(particleDensity, 0.08, 1));
   const particleScaleRef = useRef(clampValue(particleScale, 0.5, 1.9));
   const motionSpeedRef = useRef(clampValue(motionSpeed, 0.25, 2.2));
@@ -1195,7 +1637,13 @@ export function SimulationCanvas({
   const [modelDockOpen, setModelDockOpen] = useState(false);
   const [computeJobFilter, setComputeJobFilter] = useState<ComputeJobFilter>("all");
   const [computePanelCollapsed, setComputePanelCollapsed] = useState(false);
-  const renderParticleField = !(!interactive && compactHud);
+  const renderParticleField = false;
+  const renderRichOverlayParticles = true;
+
+  const resolveFieldParticleRows = useCallback((state: SimulationState | null): BackendFieldParticle[] => {
+    const directRows = state?.presence_dynamics?.field_particles ?? state?.field_particles;
+    return Array.isArray(directRows) ? (directRows as BackendFieldParticle[]) : [];
+  }, []);
 
   const computeJobInsights = useMemo(() => {
     const simulationRows = normalizeComputeJobInsightRows(simulation?.presence_dynamics?.compute_jobs);
@@ -1436,6 +1884,10 @@ export function SimulationCanvas({
   useEffect(() => {
     catalogRef.current = catalog;
   }, [catalog]);
+
+  useEffect(() => {
+    museWorkspaceBindingsRef.current = normalizeWorkspaceBindingMap(museWorkspaceBindings);
+  }, [museWorkspaceBindings]);
 
   useEffect(() => {
     particleDensityRef.current = clampValue(particleDensity, 0.08, 1);
@@ -2007,9 +2459,23 @@ export function SimulationCanvas({
     rafId = requestAnimationFrame(draw);
 
     (canvas as any).__updateSim = (state: SimulationState) => {
-      const points = state.points || [];
+      const overlayRows = renderRichOverlayParticles
+        ? (
+            (Array.isArray(state.presence_dynamics?.field_particles)
+              ? state.presence_dynamics?.field_particles
+              : null)
+            ??
+            (Array.isArray(state.field_particles)
+              ? state.field_particles
+              : [])
+          )
+        : [];
+      const hasOverlayParticles = overlayRows.length > 0;
+      const points = hasOverlayParticles ? [] : (state.points || []);
       const sourceCount = points.length;
-      const desiredAmbient = Math.max(72, Math.round(96 + particleDensityRef.current * 220));
+      const desiredAmbient = hasOverlayParticles
+        ? 0
+        : Math.max(72, Math.round(96 + particleDensityRef.current * 220));
       if (desiredAmbient !== ambientCount) {
         ambientCount = desiredAmbient;
         ambientDirty = true;
@@ -2061,6 +2527,24 @@ export function SimulationCanvas({
       const forkTaxBalance = state.presence_dynamics?.fork_tax?.balance;
       const witnessContinuity = state.presence_dynamics?.witness_thread?.continuity_index;
       const witnessTrace = state.presence_dynamics?.witness_thread?.lineage?.[0]?.ref;
+      const probabilisticSummary = state.presence_dynamics?.daimoi_probabilistic;
+      const graphRuntimeSummary = probabilisticSummary?.graph_runtime;
+      const nooiField = state.presence_dynamics?.nooi_field;
+      const resourceDaimoiSummary = state.presence_dynamics?.resource_daimoi ?? probabilisticSummary?.resource_daimoi;
+      const resourceConsumptionSummary = state.presence_dynamics?.resource_consumption ?? probabilisticSummary?.resource_consumption;
+      const routeMean = Number(probabilisticSummary?.mean_route_probability ?? Number.NaN);
+      const driftMean = Number(probabilisticSummary?.mean_drift_score ?? Number.NaN);
+      const influenceMean = Number(probabilisticSummary?.mean_influence_power ?? Number.NaN);
+      const priceMean = Number(graphRuntimeSummary?.price_mean ?? Number.NaN);
+      const nooiCells = Number(nooiField?.active_cells ?? Number.NaN);
+      const nooiInfluenceMean = Number(nooiField?.mean_influence ?? Number.NaN);
+      const resourcePackets = Number(resourceDaimoiSummary?.delivered_packets ?? Number.NaN);
+      const resourceTransfer = Number(resourceDaimoiSummary?.total_transfer ?? Number.NaN);
+      const resourceConsumed = Number(resourceConsumptionSummary?.consumed_total ?? Number.NaN);
+      const resourceBlocked = Number(resourceConsumptionSummary?.blocked_packets ?? Number.NaN);
+      const resourceStarved = Number.isFinite(resourceBlocked)
+        ? Math.max(0, Math.round(resourceBlocked))
+        : Number.NaN;
       const truthState = state.truth_state ?? catalogRef.current?.truth_state;
       const truthClaim = truthState?.claim;
       const truthStatus = String(truthClaim?.status ?? "undecided");
@@ -2079,12 +2563,43 @@ export function SimulationCanvas({
       );
       const fileGraph = state.file_graph ?? catalogRef.current?.file_graph;
       const inboxPending = fileGraph?.inbox?.pending_count;
-      const particleLabel = sourceCount > dynamicCount ? `${dynamicCount}/${sourceCount}` : `${dynamicCount}`;
+      const particleLabel = hasOverlayParticles
+        ? `field:${overlayRows.length}`
+        : (sourceCount > dynamicCount ? `${dynamicCount}/${sourceCount}` : `${dynamicCount}`);
       const ambientLabel = ambientCount > 0 ? ` +${ambientCount} haze` : "";
       if (metaRef.current) {
         const inboxLabel = inboxPending !== undefined ? ` | inbox: ${inboxPending}` : "";
         const truthLabel = truthState
           ? ` | truth: ${truthStatus} k=${truthKappa.toFixed(2)}`
+          : "";
+        const graphRuntimeLabel = Number.isFinite(routeMean) || Number.isFinite(driftMean) || Number.isFinite(priceMean)
+          ? (
+              " | graph:" +
+              `${Number.isFinite(routeMean) ? ` route ${Math.round(clamp01(routeMean) * 100)}%` : ""}` +
+              `${Number.isFinite(driftMean) ? ` drift ${driftMean >= 0 ? "+" : ""}${clampValue(driftMean, -1, 1).toFixed(2)}` : ""}` +
+              `${Number.isFinite(influenceMean) ? ` infl ${clamp01(Math.max(0, influenceMean)).toFixed(2)}` : ""}` +
+              `${Number.isFinite(priceMean) ? ` price ${Math.max(0, priceMean).toFixed(2)}` : ""}`
+            )
+          : "";
+        const nooiLabel = Number.isFinite(nooiCells) || Number.isFinite(nooiInfluenceMean)
+          ? (
+              " | nooi:" +
+              `${Number.isFinite(nooiCells) ? ` cells ${Math.max(0, Math.round(nooiCells))}` : ""}` +
+              `${Number.isFinite(nooiInfluenceMean) ? ` infl ${clamp01(Math.max(0, nooiInfluenceMean)).toFixed(2)}` : ""}`
+            )
+          : "";
+        const resourceLabel = Number.isFinite(resourcePackets)
+          || Number.isFinite(resourceTransfer)
+          || Number.isFinite(resourceConsumed)
+          || Number.isFinite(resourceBlocked)
+          ? (
+              " | resource:" +
+              `${Number.isFinite(resourcePackets) ? ` packets ${Math.max(0, Math.round(resourcePackets))}` : ""}` +
+              `${Number.isFinite(resourceTransfer) ? ` transfer ${Math.max(0, resourceTransfer).toFixed(2)}` : ""}` +
+              `${Number.isFinite(resourceConsumed) ? ` consume ${Math.max(0, resourceConsumed).toFixed(2)}` : ""}` +
+              `${Number.isFinite(resourceBlocked) ? ` blocked ${Math.max(0, Math.round(resourceBlocked))}` : ""}` +
+              `${Number.isFinite(resourceStarved) ? ` starved ${Math.max(0, Math.round(resourceStarved))}` : ""}`
+            )
           : "";
         if (flowRate !== undefined || forkTaxBalance !== undefined) {
           metaRef.current.textContent =
@@ -2102,7 +2617,10 @@ export function SimulationCanvas({
             "%" +
             (witnessTrace ? " [" + witnessTrace + "]" : "") +
             inboxLabel +
-            truthLabel;
+            truthLabel +
+            graphRuntimeLabel +
+            nooiLabel +
+            resourceLabel;
         } else {
           metaRef.current.textContent =
             "sim particles: " +
@@ -2111,7 +2629,10 @@ export function SimulationCanvas({
             " | audio: " +
             state.audio +
             inboxLabel +
-            truthLabel;
+            truthLabel +
+            graphRuntimeLabel +
+            nooiLabel +
+            resourceLabel;
         }
       }
     };
@@ -2128,7 +2649,7 @@ export function SimulationCanvas({
       gl.deleteShader(vs);
       gl.deleteShader(fs);
     };
-  }, [renderParticleField]);
+  }, []);
 
   useEffect(() => {
     if(simulation && canvasRef.current) (canvasRef.current as any).__updateSim?.(simulation);
@@ -2152,6 +2673,7 @@ export function SimulationCanvas({
     if(!ctx) return;
 
     let rafId = 0;
+    let lastPaintTs = 0;
     let canvasWidth = 0;
     let canvasHeight = 0;
     const HEX_SIZE = 24;
@@ -2178,28 +2700,282 @@ export function SimulationCanvas({
       nodeKind: "file" | "crawler";
       resourceKind: GraphNodeResourceKind;
     }> = [];
+    let particleTelemetryHits: Array<{
+      x: number;
+      y: number;
+      radiusNorm: number;
+      graphNodeId: string;
+      routeNodeId: string;
+    }> = [];
+    const overlayMotionByParticleId = new Map<string, {
+      xNorm: number;
+      yNorm: number;
+      vx: number;
+      vy: number;
+      seenAtSec: number;
+    }>();
+    let overlayMotionLastFrameTs = 0;
+    let overlayMotionDtSec = 1 / 60;
+    let overlayMotionNowSec = 0;
 
-    const resolveNamedForms = () => catalogRef.current?.entity_manifest || fallbackNamedForms;
+    const resolveParticleRenderMotion = (
+      row: BackendFieldParticle,
+      fallbackId: string,
+      isNexusParticle: boolean,
+    ) => {
+      const baseX = clamp01(Number(row?.x ?? 0.5));
+      const baseY = clamp01(Number(row?.y ?? 0.5));
+      const rawVx = Number((row as any)?.vx ?? 0);
+      const rawVy = Number((row as any)?.vy ?? 0);
+      const particleId = String(row?.id ?? "").trim() || fallbackId;
+      const anchorBlend = isNexusParticle ? 0.2 : 0.1;
+      const velocityBlend = 0.55;
+      const velocityGain = isNexusParticle
+        ? (6 + motionSpeedRef.current * 8)
+        : (22 + motionSpeedRef.current * 20);
+
+      let state = overlayMotionByParticleId.get(particleId);
+      if (!state) {
+        state = {
+          xNorm: baseX,
+          yNorm: baseY,
+          vx: rawVx,
+          vy: rawVy,
+          seenAtSec: overlayMotionNowSec,
+        };
+        overlayMotionByParticleId.set(particleId, state);
+      } else {
+        state.xNorm += (baseX - state.xNorm) * anchorBlend;
+        state.yNorm += (baseY - state.yNorm) * anchorBlend;
+        state.vx += (rawVx - state.vx) * velocityBlend;
+        state.vy += (rawVy - state.vy) * velocityBlend;
+        state.xNorm = clamp01(state.xNorm + (state.vx * overlayMotionDtSec * velocityGain));
+        state.yNorm = clamp01(state.yNorm + (state.vy * overlayMotionDtSec * velocityGain));
+
+        if (state.xNorm <= 0.001 || state.xNorm >= 0.999) {
+          state.vx *= -0.62;
+        }
+        if (state.yNorm <= 0.001 || state.yNorm >= 0.999) {
+          state.vy *= -0.62;
+        }
+      }
+
+      state.seenAtSec = overlayMotionNowSec;
+      return {
+        xNorm: state.xNorm,
+        yNorm: state.yNorm,
+        vx: state.vx,
+        vy: state.vy,
+        speed: Math.hypot(state.vx, state.vy),
+      };
+    };
+
+    const resolveNamedForms = (): Array<any> => {
+        const fromCatalog = Array.isArray(catalogRef.current?.entity_manifest)
+            ? (catalogRef.current?.entity_manifest as Array<any>)
+            : [];
+        const baseManifest = fromCatalog.length > 0 ? fromCatalog : fallbackNamedForms;
+        const seen = new Set<string>();
+        const normalized = baseManifest
+            .map((raw: any) => {
+                const id = canonicalPresenceId(String(raw?.id ?? ""));
+                if (!id || seen.has(id)) {
+                    return null;
+                }
+                seen.add(id);
+                return {
+                    ...raw,
+                    id,
+                    en: String(raw?.en ?? raw?.label ?? shortPresenceIdLabel(id)).trim() || shortPresenceIdLabel(id),
+                    ja: String(raw?.ja ?? raw?.label_ja ?? "presence").trim() || "presence",
+                    x: clamp01(Number(raw?.x ?? 0.5)),
+                    y: clamp01(Number(raw?.y ?? 0.5)),
+                    hue: Number.isFinite(Number(raw?.hue))
+                        ? Number(raw?.hue)
+                        : presenceHueFromId(id),
+                };
+            })
+            .filter((row): row is any => row !== null);
+
+        if (normalized.length <= 0) {
+            return spreadPresenceAnchors(fallbackNamedForms);
+        }
+        return spreadPresenceAnchors(normalized);
+    };
 
     const resolveFileGraph = (state: SimulationState | null): FileGraph | null => {
         const fromSimulation = state?.file_graph;
-        if (fromSimulation && Array.isArray(fromSimulation.file_nodes)) {
-            return fromSimulation;
-        }
         const fromCatalog = catalogRef.current?.file_graph;
-        if (fromCatalog && Array.isArray(fromCatalog.file_nodes)) {
-            return fromCatalog;
+        const baseGraph = (
+            fromSimulation && (Array.isArray(fromSimulation.file_nodes) || Array.isArray((fromSimulation as any).nodes))
+                ? fromSimulation
+                : (
+                    fromCatalog && (Array.isArray(fromCatalog.file_nodes) || Array.isArray((fromCatalog as any).nodes))
+                        ? fromCatalog
+                        : null
+                )
+        );
+        if (!baseGraph) {
+            return null;
         }
-        return null;
+
+        const crawlerGraph = resolveCrawlerGraph(state);
+        const crawlerRows = Array.isArray((baseGraph as any)?.crawler_nodes)
+            ? ((baseGraph as any).crawler_nodes as any[])
+            : [];
+        const externalCrawlerRows = Array.isArray(crawlerGraph?.crawler_nodes)
+            ? (crawlerGraph?.crawler_nodes as any[])
+            : [];
+        const crawlerEdges = Array.isArray(crawlerGraph?.edges)
+            ? (crawlerGraph?.edges as any[])
+            : [];
+        if (crawlerRows.length <= 0 && externalCrawlerRows.length <= 0 && crawlerEdges.length <= 0) {
+            return baseGraph;
+        }
+
+        const fieldNodes = Array.isArray(baseGraph.field_nodes)
+            ? baseGraph.field_nodes.filter((row) => row && typeof row === "object")
+            : [];
+        const tagNodes = Array.isArray((baseGraph as any).tag_nodes)
+            ? ((baseGraph as any).tag_nodes as any[]).filter((row) => row && typeof row === "object")
+            : [];
+        const fileNodes = Array.isArray(baseGraph.file_nodes)
+            ? baseGraph.file_nodes.filter((row) => row && typeof row === "object")
+            : [];
+        const nodesRaw = Array.isArray(baseGraph.nodes) && baseGraph.nodes.length > 0
+            ? baseGraph.nodes
+            : [...fieldNodes, ...tagNodes, ...fileNodes];
+        const nodes = nodesRaw
+            .filter((row) => row && typeof row === "object")
+            .map((row: any) => ({ ...row }));
+        const edges = Array.isArray(baseGraph.edges)
+            ? baseGraph.edges.filter((row) => row && typeof row === "object").map((row: any) => ({ ...row }))
+            : [];
+
+        const nodeIdSet = new Set<string>();
+        nodes.forEach((row: any) => {
+            const id = String(row?.id ?? "").trim();
+            if (id) {
+                nodeIdSet.add(id);
+            }
+        });
+
+        const fieldAliasByCrawlerTarget = new Map<string, string>();
+        fieldNodes.forEach((row: any) => {
+            const fieldId = String(row?.id ?? "").trim();
+            const nodeId = String(row?.node_id ?? "").trim();
+            const sourceTokens = [fieldId, nodeId];
+            sourceTokens.forEach((token) => {
+                if (!token) {
+                    return;
+                }
+                const presenceId = token.startsWith("field:")
+                    ? token.slice("field:".length).trim()
+                    : token;
+                if (!presenceId) {
+                    return;
+                }
+                fieldAliasByCrawlerTarget.set(`crawler-field:${presenceId}`, fieldId || `field:${presenceId}`);
+            });
+        });
+
+        const mergedCrawlerNodes: any[] = [];
+        const crawlerSeen = new Set<string>();
+        const addCrawlerNode = (raw: any) => {
+            if (!raw || typeof raw !== "object") {
+                return;
+            }
+            const id = String(raw?.id ?? "").trim();
+            if (!id || crawlerSeen.has(id)) {
+                return;
+            }
+            crawlerSeen.add(id);
+            const normalized = {
+                ...raw,
+                id,
+                node_type: "crawler",
+                crawler_kind: String(raw?.crawler_kind ?? raw?.kind ?? "url").trim() || "url",
+                kind: String(raw?.kind ?? raw?.crawler_kind ?? "url").trim() || "url",
+                x: clamp01(Number(raw?.x ?? 0.5)),
+                y: clamp01(Number(raw?.y ?? 0.5)),
+            };
+            mergedCrawlerNodes.push(normalized);
+            if (!nodeIdSet.has(id)) {
+                nodes.push(normalized);
+                nodeIdSet.add(id);
+            }
+        };
+        crawlerRows.forEach(addCrawlerNode);
+        externalCrawlerRows.forEach(addCrawlerNode);
+
+        const seenEdgeKeys = new Set<string>();
+        edges.forEach((row: any) => {
+            const source = String(row?.source ?? "").trim();
+            const target = String(row?.target ?? "").trim();
+            const kind = String(row?.kind ?? "").trim().toLowerCase();
+            if (source && target) {
+                seenEdgeKeys.add(`${source}|${target}|${kind}`);
+            }
+        });
+
+        crawlerEdges.forEach((row: any, index) => {
+            if (!row || typeof row !== "object") {
+                return;
+            }
+            let source = String(row?.source ?? "").trim();
+            let target = String(row?.target ?? "").trim();
+            if (!source || !target) {
+                return;
+            }
+            source = fieldAliasByCrawlerTarget.get(source) ?? source;
+            target = fieldAliasByCrawlerTarget.get(target) ?? target;
+            if (source.startsWith("crawler-field:")) {
+                source = source.replace("crawler-field:", "field:");
+            }
+            if (target.startsWith("crawler-field:")) {
+                target = target.replace("crawler-field:", "field:");
+            }
+            const kind = String(row?.kind ?? "hyperlink").trim().toLowerCase() || "hyperlink";
+            if (!nodeIdSet.has(source) || !nodeIdSet.has(target) || source === target) {
+                return;
+            }
+            const edgeKey = `${source}|${target}|${kind}`;
+            if (seenEdgeKeys.has(edgeKey)) {
+                return;
+            }
+            seenEdgeKeys.add(edgeKey);
+            edges.push({
+                ...row,
+                id: String(row?.id ?? "").trim() || `nexus-crawler-edge:${index}`,
+                source,
+                target,
+                kind,
+                weight: clamp01(Number(row?.weight ?? 0.28)),
+            });
+        });
+
+        const mergedStats = {
+            ...(baseGraph.stats ?? {}),
+            crawler_nexus_count: mergedCrawlerNodes.length,
+            nexus_node_count: nodes.length,
+            nexus_edge_count: edges.length,
+        };
+        return {
+            ...baseGraph,
+            nodes,
+            edges,
+            crawler_nodes: mergedCrawlerNodes,
+            stats: mergedStats,
+        };
     };
 
     const resolveCrawlerGraph = (state: SimulationState | null): CrawlerGraph | null => {
         const fromSimulation = state?.crawler_graph;
-        if (fromSimulation && Array.isArray(fromSimulation.crawler_nodes)) {
+        if (fromSimulation && (Array.isArray(fromSimulation.crawler_nodes) || Array.isArray((fromSimulation as any).nodes))) {
             return fromSimulation;
         }
         const fromCatalog = catalogRef.current?.crawler_graph;
-        if (fromCatalog && Array.isArray(fromCatalog.crawler_nodes)) {
+        if (fromCatalog && (Array.isArray(fromCatalog.crawler_nodes) || Array.isArray((fromCatalog as any).nodes))) {
             return fromCatalog;
         }
         return null;
@@ -2261,6 +3037,60 @@ export function SimulationCanvas({
         return match?.hit ?? null;
     };
 
+    const nearestParticleTelemetryAt = (xRatio: number, yRatio: number) => {
+        let match: { hit: (typeof particleTelemetryHits)[number]; distance: number } | null = null;
+        for (const hit of particleTelemetryHits) {
+            const dx = xRatio - hit.x;
+            const dy = yRatio - hit.y;
+            const distance = Math.hypot(dx, dy);
+            if (distance > Math.max(0.009, hit.radiusNorm * 1.35)) {
+                continue;
+            }
+            if (!match || distance < match.distance) {
+                match = { hit, distance };
+            }
+        }
+        return match?.hit ?? null;
+    };
+
+    const resolveGraphNodeById = (
+        state: SimulationState | null,
+        nodeId: string,
+    ): { node: any; nodeKind: "file" | "crawler" } | null => {
+        const id = String(nodeId ?? "").trim();
+        if (!id) {
+            return null;
+        }
+
+        const fileGraph = resolveFileGraph(state);
+        if (fileGraph) {
+            const fileNode = [
+                ...(Array.isArray(fileGraph.nodes) ? fileGraph.nodes : []),
+                ...(Array.isArray(fileGraph.file_nodes) ? fileGraph.file_nodes : []),
+                ...(Array.isArray(fileGraph.tag_nodes) ? fileGraph.tag_nodes : []),
+            ].find((row: any) => String(row?.id ?? "").trim() === id);
+            if (fileNode) {
+                const nodeType = String((fileNode as any)?.node_type ?? "").trim().toLowerCase();
+                return {
+                    node: fileNode,
+                    nodeKind: nodeType === "crawler" ? "crawler" : "file",
+                };
+            }
+        }
+
+        const crawlerGraph = resolveCrawlerGraph(state);
+        if (crawlerGraph) {
+            const crawlerNode = [
+                ...(Array.isArray(crawlerGraph.nodes) ? crawlerGraph.nodes : []),
+                ...(Array.isArray(crawlerGraph.crawler_nodes) ? crawlerGraph.crawler_nodes : []),
+            ].find((row: any) => String(row?.id ?? "").trim() === id);
+            if (crawlerNode) {
+                return { node: crawlerNode, nodeKind: "crawler" };
+            }
+        }
+        return null;
+    };
+
     const nearestPresenceAt = (xRatio: number, yRatio: number, namedForms: Array<any>) => {
         let closestIndex = -1;
         let closestDistance = Number.POSITIVE_INFINITY;
@@ -2304,48 +3134,383 @@ export function SimulationCanvas({
     };
 
     const drawParticles = (
+        t: number,
         field: any,
         radius: number,
         isHighlighted: boolean,
-        state: SimulationState | null,
+        fieldParticlesByPresence: Map<string, BackendFieldParticle[]>,
         w: number,
         h: number,
     ) => {
-        const fieldParticles = state?.presence_dynamics?.field_particles ?? state?.field_particles ?? [];
-        if (!Array.isArray(fieldParticles) || fieldParticles.length <= 0) {
-            return;
+        const fieldId = String(field?.id ?? "").trim();
+        const fieldKey = normalizePresenceKey(fieldId);
+        const rows =
+            fieldParticlesByPresence.get(fieldId)
+            ?? fieldParticlesByPresence.get(fieldKey)
+            ?? [];
+        if (rows.length <= 0) return;
+
+        ctx.save();
+        ctx.globalCompositeOperation = "lighter";
+        ctx.globalAlpha = isHighlighted ? 0.88 : 0.68;
+
+        const radiusScale = Math.max(0.1, radius / 62);
+        const wFloat = w;
+        const hFloat = h;
+
+        for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+            const row = rows[rowIndex];
+            const {
+                isChaosParticle,
+                isStaticParticle,
+                isNexusParticle,
+                isSmartDaimoi,
+                isResourceEmitter,
+                isTransferParticle,
+                routeNodeId,
+                graphNodeId,
+            } = resolveOverlayParticleFlags(row);
+            const particleMotion = resolveParticleRenderMotion(
+                row,
+                `${fieldId || "presence"}:${rowIndex}`,
+                isNexusParticle || isStaticParticle,
+            );
+            const px = particleMotion.xNorm * wFloat;
+            const py = particleMotion.yNorm * hFloat;
+            const resourceConsumeType = String((row as any)?.resource_consume_type ?? "").trim();
+            const resourceConsumeAmount = Math.max(0, Number((row as any)?.resource_consume_amount ?? 0));
+            const actionBlocked = Boolean((row as any)?.resource_action_blocked);
+            const isEconomyParticle = isResourceEmitter || resourceConsumeAmount > 0;
+            const particleRadius = Math.max(
+                isNexusParticle
+                    ? 0.96
+                    : (isTransferParticle || isEconomyParticle || isSmartDaimoi ? 1.2 : 0.8),
+                clampValue(Number(row?.size ?? 1.0), 0.35, 1.8)
+                    * radiusScale
+                    * (isNexusParticle ? 0.9 : 1.18),
+            );
+            const routeProbability = clamp01(Number((row as any)?.route_probability ?? 1));
+            const vx = particleMotion.vx;
+            const vy = particleMotion.vy;
+            const velocityMagnitude = particleMotion.speed;
+            const particlePhase = (t * (1.15 + routeProbability * 0.45)) + rowIndex * 0.37;
+            const renderX = px;
+            const renderY = py;
+
+            if (
+                isTransferParticle
+                && (routeNodeId.length > 0 || graphNodeId.length > 0)
+                && routeProbability >= 0.1
+                && particleTelemetryHits.length < 420
+            ) {
+                particleTelemetryHits.push({
+                    x: clamp01(renderX / Math.max(1, wFloat)),
+                    y: clamp01(renderY / Math.max(1, hFloat)),
+                    radiusNorm: Math.max(0.004, (particleRadius * 2.2) / Math.max(wFloat, hFloat)),
+                    graphNodeId,
+                    routeNodeId,
+                });
+            }
+
+            const red = Math.round(clamp01(Number(row?.r ?? 0.5)) * 255);
+            const green = Math.round(clamp01(Number(row?.g ?? 0.5)) * 255);
+            const blue = Math.round(clamp01(Number(row?.b ?? 0.5)) * 255);
+            const colorBase = `${red},${green},${blue}`;
+            const resourceHue = resourceDaimoiHue(String((row as any)?.resource_type ?? ""));
+            const consumeHue = resourceDaimoiHue(resourceConsumeType);
+
+            if (velocityMagnitude > 0.002 && (isTransferParticle || isResourceEmitter || resourceConsumeAmount > 0 || isSmartDaimoi)) {
+                const velocityPixels = velocityMagnitude * Math.max(wFloat, hFloat);
+                const trailLength = clampValue(
+                    velocityPixels * (isNexusParticle ? 0.26 : 0.44),
+                    0.8,
+                    isNexusParticle ? 3.4 : 8.6,
+                );
+                const trailX = renderX + (vx / Math.max(velocityMagnitude, 0.0001)) * trailLength;
+                const trailY = renderY + (vy / Math.max(velocityMagnitude, 0.0001)) * trailLength;
+                const trailAlpha = isTransferParticle ? 0.38 : (isSmartDaimoi ? 0.34 : 0.26);
+                ctx.strokeStyle = `rgba(${colorBase}, ${trailAlpha})`;
+                ctx.lineWidth = isTransferParticle ? 0.7 : (isSmartDaimoi ? 0.62 : 0.54);
+                ctx.beginPath();
+                ctx.moveTo(renderX, renderY);
+                ctx.lineTo(trailX, trailY);
+                ctx.stroke();
+            }
+
+            if (isTransferParticle) {
+                ctx.strokeStyle = `rgba(126, 236, 255, ${0.22 + routeProbability * 0.28})`;
+                ctx.lineWidth = 0.55;
+                ctx.beginPath();
+                ctx.arc(renderX, renderY, particleRadius * 1.2, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+
+            if (isResourceEmitter) {
+                ctx.strokeStyle = `hsla(${resourceHue}, 92%, 72%, 0.46)`;
+                ctx.lineWidth = 0.74;
+                ctx.beginPath();
+                ctx.arc(renderX, renderY, particleRadius * 1.65, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+
+            if (resourceConsumeAmount > 0 && !isResourceEmitter) {
+                const consumeNorm = clamp01(resourceConsumeAmount * 240);
+                ctx.strokeStyle = `hsla(${consumeHue}, 90%, ${actionBlocked ? 58 : 74}%, ${0.2 + consumeNorm * 0.42})`;
+                ctx.lineWidth = 0.52 + consumeNorm * 0.65;
+                ctx.beginPath();
+                ctx.arc(renderX, renderY, particleRadius * (1.2 + consumeNorm * 0.9), 0, Math.PI * 2);
+                ctx.stroke();
+            }
+
+            if (isSmartDaimoi && !isChaosParticle) {
+                const deflectProb = clamp01(Number((row as any)?.action_probabilities?.deflect ?? 0.5));
+                const smartAlpha = actionBlocked ? 0.48 : (0.54 + deflectProb * 0.34);
+                const smartRing = particleRadius * (1.22 + deflectProb * 0.34);
+                ctx.strokeStyle = `rgba(${colorBase}, ${smartAlpha})`;
+                ctx.lineWidth = 0.72 + deflectProb * 0.28;
+                ctx.beginPath();
+                ctx.arc(renderX, renderY, smartRing, 0, Math.PI * 2);
+                ctx.stroke();
+
+                const wing = particleRadius * (0.98 + deflectProb * 0.54);
+                const dx = Math.cos(particlePhase) * wing;
+                const dy = Math.sin(particlePhase) * wing;
+                ctx.strokeStyle = `rgba(${colorBase}, ${actionBlocked ? 0.56 : 0.82})`;
+                ctx.lineWidth = 0.66;
+                ctx.beginPath();
+                ctx.moveTo(renderX - dx, renderY - dy);
+                ctx.lineTo(renderX + dx, renderY + dy);
+                ctx.moveTo(renderX - dy * 0.56, renderY + dx * 0.56);
+                ctx.lineTo(renderX + dy * 0.56, renderY - dx * 0.56);
+                ctx.stroke();
+            }
+
+            if (isChaosParticle) {
+                const wing = particleRadius * 1.3;
+                ctx.strokeStyle = `rgba(${colorBase},0.95)`;
+                ctx.lineWidth = 1.0;
+                ctx.beginPath();
+                ctx.moveTo(renderX - wing, renderY - wing);
+                ctx.lineTo(renderX + wing, renderY + wing);
+                ctx.moveTo(renderX + wing, renderY - wing);
+                ctx.lineTo(renderX - wing, renderY + wing);
+                ctx.stroke();
+                continue;
+            }
+
+            if (isNexusParticle || isStaticParticle) {
+                const glyphRadius = particleRadius * 1.15;
+                ctx.fillStyle = `rgba(${colorBase},0.9)`;
+                ctx.beginPath();
+                ctx.moveTo(renderX, renderY - glyphRadius);
+                ctx.lineTo(renderX + glyphRadius, renderY);
+                ctx.lineTo(renderX, renderY + glyphRadius);
+                ctx.lineTo(renderX - glyphRadius, renderY);
+                ctx.closePath();
+                ctx.fill();
+                ctx.strokeStyle = `rgba(${colorBase},0.74)`;
+                ctx.lineWidth = 0.56;
+                ctx.stroke();
+                continue;
+            }
+
+            if (actionBlocked) {
+                const blockedRadius = particleRadius * 1.35;
+                ctx.strokeStyle = "rgba(255, 124, 124, 0.78)";
+                ctx.lineWidth = 0.8;
+                ctx.beginPath();
+                ctx.moveTo(renderX - blockedRadius, renderY - blockedRadius);
+                ctx.lineTo(renderX + blockedRadius, renderY + blockedRadius);
+                ctx.moveTo(renderX + blockedRadius, renderY - blockedRadius);
+                ctx.lineTo(renderX - blockedRadius, renderY + blockedRadius);
+                ctx.stroke();
+            }
+
+            ctx.fillStyle = `rgba(${colorBase},${actionBlocked ? 0.42 : (isTransferParticle || isEconomyParticle ? 0.9 : (isSmartDaimoi ? 0.78 : 0.62))})`;
+            ctx.beginPath();
+            ctx.arc(renderX, renderY, particleRadius * 1.35, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.fillStyle = `rgba(${colorBase},${actionBlocked ? 0.62 : (isEconomyParticle ? 0.98 : (isSmartDaimoi ? 0.96 : 0.9))})`;
+            ctx.beginPath();
+            ctx.arc(renderX, renderY, particleRadius * 0.74, 0, Math.PI * 2);
+            ctx.fill();
         }
-        const rows = fieldParticles
-            .filter((row: any) => String(row?.presence_id ?? "").trim() === String(field?.id ?? "").trim())
-            .slice(0, 112);
+        ctx.restore();
+    };
+
+    const drawUnboundParticles = (
+        t: number,
+        rows: BackendFieldParticle[],
+        w: number,
+        h: number,
+    ) => {
         if (rows.length <= 0) {
             return;
         }
 
+        const wFloat = w;
+        const hFloat = h;
         ctx.save();
         ctx.globalCompositeOperation = "lighter";
-        ctx.globalAlpha = isHighlighted ? 0.48 : 0.34;
-        for (const row of rows) {
-            const xRatio = clamp01(Number(row?.x ?? 0.5));
-            const yRatio = clamp01(Number(row?.y ?? 0.5));
-            const px = xRatio * w;
-            const py = yRatio * h;
-            const size = clampValue(Number(row?.size ?? 1.2), 0.6, 3.8);
-            const particleRadius = Math.max(0.45, (size * radius) / 28);
+        ctx.globalAlpha = 0.66;
+
+        for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+            const row = rows[rowIndex];
+            const {
+                isChaosParticle,
+                isStaticParticle,
+                isNexusParticle,
+                isSmartDaimoi,
+                isResourceEmitter,
+                isTransferParticle,
+                routeNodeId,
+                graphNodeId,
+            } = resolveOverlayParticleFlags(row);
+            const particleMotion = resolveParticleRenderMotion(
+                row,
+                `unbound:${rowIndex}`,
+                isNexusParticle || isStaticParticle,
+            );
+            const px = particleMotion.xNorm * wFloat;
+            const py = particleMotion.yNorm * hFloat;
+            const resourceConsumeType = String((row as any)?.resource_consume_type ?? "").trim();
+            const resourceConsumeAmount = Math.max(0, Number((row as any)?.resource_consume_amount ?? 0));
+            const actionBlocked = Boolean((row as any)?.resource_action_blocked);
+            const isEconomyParticle = isResourceEmitter || resourceConsumeAmount > 0;
+
+            const particleRadius = Math.max(
+                isNexusParticle
+                    ? 0.84
+                    : (isTransferParticle || isEconomyParticle || isSmartDaimoi ? 1.0 : 0.66),
+                clampValue(Number(row?.size ?? 1.0), 0.35, 1.8)
+                    * 0.24
+                    * (isNexusParticle ? 0.88 : 1.14),
+            );
+
+            if (
+                isTransferParticle
+                && (routeNodeId.length > 0 || graphNodeId.length > 0)
+                && particleTelemetryHits.length < 420
+            ) {
+                particleTelemetryHits.push({
+                    x: clamp01(px / Math.max(1, wFloat)),
+                    y: clamp01(py / Math.max(1, hFloat)),
+                    radiusNorm: Math.max(0.004, (particleRadius * 2.1) / Math.max(wFloat, hFloat)),
+                    graphNodeId,
+                    routeNodeId,
+                });
+            }
+
             const red = Math.round(clamp01(Number(row?.r ?? 0.5)) * 255);
             const green = Math.round(clamp01(Number(row?.g ?? 0.5)) * 255);
             const blue = Math.round(clamp01(Number(row?.b ?? 0.5)) * 255);
+            const colorBase = `${red},${green},${blue}`;
+            const consumeHue = resourceDaimoiHue(resourceConsumeType);
 
-            ctx.fillStyle = `rgba(${red}, ${green}, ${blue}, 0.24)`;
+            const vx = particleMotion.vx;
+            const vy = particleMotion.vy;
+            const speed = particleMotion.speed;
+            const particlePhase = (t * (1.1 + routeNodeId.length * 0.02)) + rowIndex * 0.29;
+            if (speed > 0.002 && (isTransferParticle || isResourceEmitter || resourceConsumeAmount > 0 || isSmartDaimoi)) {
+                const velocityPixels = speed * Math.max(wFloat, hFloat);
+                const trailLength = clampValue(
+                    velocityPixels * (isNexusParticle ? 0.24 : 0.4),
+                    0.7,
+                    isNexusParticle ? 3.0 : 7.2,
+                );
+                const trailX = px + (vx / Math.max(speed, 0.0001)) * trailLength;
+                const trailY = py + (vy / Math.max(speed, 0.0001)) * trailLength;
+                const trailAlpha = isTransferParticle ? 0.34 : (isSmartDaimoi ? 0.3 : 0.24);
+                ctx.strokeStyle = `rgba(${colorBase}, ${trailAlpha})`;
+                ctx.lineWidth = isTransferParticle ? 0.6 : (isSmartDaimoi ? 0.52 : 0.46);
+                ctx.beginPath();
+                ctx.moveTo(px, py);
+                ctx.lineTo(trailX, trailY);
+                ctx.stroke();
+            }
+
+            if (resourceConsumeAmount > 0 && !isResourceEmitter) {
+                const consumeNorm = clamp01(resourceConsumeAmount * 220);
+                ctx.strokeStyle = `hsla(${consumeHue}, 90%, ${actionBlocked ? 58 : 74}%, ${0.18 + consumeNorm * 0.34})`;
+                ctx.lineWidth = 0.46 + consumeNorm * 0.55;
+                ctx.beginPath();
+                ctx.arc(px, py, particleRadius * (1.1 + consumeNorm * 0.7), 0, Math.PI * 2);
+                ctx.stroke();
+            }
+
+            if (isSmartDaimoi && !isChaosParticle) {
+                const deflectProb = clamp01(Number((row as any)?.action_probabilities?.deflect ?? 0.5));
+                const smartRing = particleRadius * (1.16 + deflectProb * 0.3);
+                ctx.strokeStyle = `rgba(${colorBase}, ${actionBlocked ? 0.4 : (0.44 + deflectProb * 0.24)})`;
+                ctx.lineWidth = 0.58;
+                ctx.beginPath();
+                ctx.arc(px, py, smartRing, 0, Math.PI * 2);
+                ctx.stroke();
+
+                const wing = particleRadius * (0.9 + deflectProb * 0.5);
+                const dx = Math.cos(particlePhase) * wing;
+                const dy = Math.sin(particlePhase) * wing;
+                ctx.strokeStyle = `rgba(${colorBase}, ${actionBlocked ? 0.46 : 0.68})`;
+                ctx.lineWidth = 0.52;
+                ctx.beginPath();
+                ctx.moveTo(px - dx, py - dy);
+                ctx.lineTo(px + dx, py + dy);
+                ctx.stroke();
+            }
+
+            if (isChaosParticle) {
+                const wing = particleRadius * 1.24;
+                ctx.strokeStyle = `rgba(${colorBase},0.92)`;
+                ctx.lineWidth = 0.95;
+                ctx.beginPath();
+                ctx.moveTo(px - wing, py - wing);
+                ctx.lineTo(px + wing, py + wing);
+                ctx.moveTo(px + wing, py - wing);
+                ctx.lineTo(px - wing, py + wing);
+                ctx.stroke();
+                continue;
+            }
+
+            if (isNexusParticle || isStaticParticle) {
+                const glyphRadius = particleRadius * 1.08;
+                ctx.fillStyle = `rgba(${colorBase},0.9)`;
+                ctx.beginPath();
+                ctx.moveTo(px, py - glyphRadius);
+                ctx.lineTo(px + glyphRadius, py);
+                ctx.lineTo(px, py + glyphRadius);
+                ctx.lineTo(px - glyphRadius, py);
+                ctx.closePath();
+                ctx.fill();
+                ctx.strokeStyle = `rgba(${colorBase},0.66)`;
+                ctx.lineWidth = 0.46;
+                ctx.stroke();
+                continue;
+            }
+
+            if (actionBlocked) {
+                const blockedRadius = particleRadius * 1.2;
+                ctx.strokeStyle = "rgba(255, 124, 124, 0.68)";
+                ctx.lineWidth = 0.7;
+                ctx.beginPath();
+                ctx.moveTo(px - blockedRadius, py - blockedRadius);
+                ctx.lineTo(px + blockedRadius, py + blockedRadius);
+                ctx.moveTo(px + blockedRadius, py - blockedRadius);
+                ctx.lineTo(px - blockedRadius, py + blockedRadius);
+                ctx.stroke();
+            }
+
+            ctx.fillStyle = `rgba(${colorBase},${actionBlocked ? 0.4 : (isTransferParticle || isEconomyParticle ? 0.88 : (isSmartDaimoi ? 0.76 : 0.62))})`;
             ctx.beginPath();
-            ctx.arc(px, py, particleRadius * 2.0, 0, Math.PI * 2);
+            ctx.arc(px, py, particleRadius * 1.3, 0, Math.PI * 2);
             ctx.fill();
 
-            ctx.fillStyle = `rgba(${red}, ${green}, ${blue}, 0.56)`;
+            ctx.fillStyle = `rgba(${colorBase},${actionBlocked ? 0.6 : (isEconomyParticle ? 0.98 : (isSmartDaimoi ? 0.94 : 0.9))})`;
             ctx.beginPath();
-            ctx.arc(px, py, particleRadius, 0, Math.PI * 2);
+            ctx.arc(px, py, particleRadius * 0.72, 0, Math.PI * 2);
             ctx.fill();
         }
+
         ctx.restore();
     };
 
@@ -2675,6 +3840,7 @@ export function SimulationCanvas({
         w: number,
         h: number,
         state: SimulationState | null,
+        namedForms: Array<any>,
     ) => {
         const graph = resolveFileGraph(state);
         if (!graph) {
@@ -2683,14 +3849,25 @@ export function SimulationCanvas({
 
         const fieldNodes = Array.isArray(graph.field_nodes) ? graph.field_nodes : [];
         const fileNodes = Array.isArray(graph.file_nodes) ? graph.file_nodes : [];
+        const crawlerNexusNodes = Array.isArray((graph as any).crawler_nodes)
+            ? ((graph as any).crawler_nodes as any[])
+            : [];
+        const nexusNodes = [...fileNodes, ...crawlerNexusNodes];
         const graphNodes = Array.isArray(graph.nodes) && graph.nodes.length > 0
             ? graph.nodes
-            : [...fieldNodes, ...fileNodes];
+            : [...fieldNodes, ...nexusNodes];
         const tagNodes = Array.isArray((graph as any).tag_nodes)
             ? ((graph as any).tag_nodes as any[])
             : graphNodes.filter((node: any) => String(node?.node_type ?? "").toLowerCase() === "tag");
         const nodeById = new Map(graphNodes.map((node: any) => [String(node.id), node]));
         const edges = Array.isArray(graph.edges) ? graph.edges : [];
+        const renderEdges = thinFileGraphEdgesForRendering(
+            edges,
+            nodeById,
+            nexusNodes.length,
+            selectedGraphNodeId,
+        );
+        let workspaceBindCount = 0;
         const resourceCounts: Record<string, number> = {};
         const provenanceCounts: Record<FileNodeProvenanceKind, number> = {
             workspace: 0,
@@ -2762,13 +3939,13 @@ export function SimulationCanvas({
             ctx.restore();
         }
 
-        if (edges.length > 0) {
+        if (renderEdges.length > 0) {
             ctx.save();
             ctx.globalCompositeOperation = "screen";
-            for (let i = 0; i < edges.length; i++) {
-                const edge = edges[i] as any;
-                const src = nodeById.get(String(edge.source));
-                const tgt = nodeById.get(String(edge.target));
+            for (let i = 0; i < renderEdges.length; i++) {
+                const edge = renderEdges[i] as FileGraphRenderEdge;
+                const src = nodeById.get(edge.source);
+                const tgt = nodeById.get(edge.target);
                 if (!src || !tgt) {
                     continue;
                 }
@@ -2788,6 +3965,104 @@ export function SimulationCanvas({
                 ctx.quadraticCurveTo((sx + tx) / 2 + bend, (sy + ty) / 2 - bend * 0.45, tx, ty);
                 ctx.stroke();
             }
+            ctx.restore();
+        }
+
+        const workspaceBindingMap = museWorkspaceBindingsRef.current;
+        const showWorkspaceBindingOverlay = false;
+        if (showWorkspaceBindingOverlay && Object.keys(workspaceBindingMap).length > 0 && fileNodes.length > 0) {
+            const presencePositionById = new Map<string, { x: number; y: number; hue: number }>();
+            const filePositionById = new Map<string, { x: number; y: number; hue: number }>();
+
+            for (const form of namedForms) {
+                const presenceId = normalizePresenceKey(String((form as any)?.id ?? ""));
+                if (!presenceId || presencePositionById.has(presenceId)) {
+                    continue;
+                }
+                presencePositionById.set(presenceId, {
+                    x: clamp01(Number((form as any)?.x ?? 0.5)),
+                    y: clamp01(Number((form as any)?.y ?? 0.5)),
+                    hue: Number((form as any)?.hue ?? 198),
+                });
+            }
+
+            for (const field of fieldNodes as any[]) {
+                const fx = clamp01(Number(field?.x ?? 0.5));
+                const fy = clamp01(Number(field?.y ?? 0.5));
+                const fh = Number(field?.hue ?? 198);
+                const fieldId = String(field?.id ?? "").trim();
+                const conceptFromFieldId = fieldId.startsWith("presence:concept:")
+                    ? fieldId.slice("presence:concept:".length)
+                    : "";
+                const candidates = [
+                    String(field?.dominant_presence ?? ""),
+                    String(field?.concept_presence_id ?? ""),
+                    String(field?.organized_by ?? ""),
+                    conceptFromFieldId,
+                ];
+                for (const candidate of candidates) {
+                    const normalizedPresence = normalizePresenceKey(candidate);
+                    if (!normalizedPresence || presencePositionById.has(normalizedPresence)) {
+                        continue;
+                    }
+                    presencePositionById.set(normalizedPresence, { x: fx, y: fy, hue: fh });
+                }
+            }
+
+            for (const node of fileNodes as any[]) {
+                const nx = clamp01(Number(node?.x ?? 0.5));
+                const ny = clamp01(Number(node?.y ?? 0.5));
+                const nh = Number(node?.hue ?? 210);
+                const id = String(node?.id ?? "").trim();
+                if (id && !filePositionById.has(id)) {
+                    filePositionById.set(id, { x: nx, y: ny, hue: nh });
+                }
+                const nodeId = String(node?.node_id ?? "").trim();
+                if (nodeId && !filePositionById.has(nodeId)) {
+                    filePositionById.set(nodeId, { x: nx, y: ny, hue: nh });
+                }
+            }
+
+            ctx.save();
+            ctx.globalCompositeOperation = "screen";
+            ctx.lineCap = "round";
+            let presenceLane = 0;
+            for (const [presenceId, nodeIds] of Object.entries(workspaceBindingMap)) {
+                const source = presencePositionById.get(normalizePresenceKey(presenceId));
+                if (!source || !Array.isArray(nodeIds) || nodeIds.length <= 0) {
+                    continue;
+                }
+                const sourceX = source.x * w;
+                const sourceY = source.y * h;
+                const bindIds = nodeIds.slice(0, 24);
+                for (let nodeIndex = 0; nodeIndex < bindIds.length; nodeIndex += 1) {
+                    const target = filePositionById.get(String(bindIds[nodeIndex] ?? "").trim());
+                    if (!target) {
+                        continue;
+                    }
+                    workspaceBindCount += 1;
+                    const targetX = target.x * w;
+                    const targetY = target.y * h;
+                    const hue = Number.isFinite(source.hue) ? source.hue : target.hue;
+                    const alpha = Math.min(0.74, 0.22 + (bindIds.length * 0.01));
+                    const bend = Math.sin((t * 1.7) + (presenceLane * 0.55) + (nodeIndex * 0.28)) * 7;
+                    ctx.strokeStyle = `hsla(${hue}, 92%, 72%, ${alpha})`;
+                    ctx.lineWidth = 0.7;
+                    ctx.setLineDash([2.6, 4.8]);
+                    ctx.lineDashOffset = -((t * 24) + presenceLane * 5 + nodeIndex);
+                    ctx.beginPath();
+                    ctx.moveTo(sourceX, sourceY);
+                    ctx.quadraticCurveTo(
+                        ((sourceX + targetX) / 2) + bend,
+                        ((sourceY + targetY) / 2) - (bend * 0.42),
+                        targetX,
+                        targetY,
+                    );
+                    ctx.stroke();
+                }
+                presenceLane += 1;
+            }
+            ctx.setLineDash([]);
             ctx.restore();
         }
 
@@ -2876,22 +4151,27 @@ export function SimulationCanvas({
             ctx.restore();
         }
 
-        if (fileNodes.length > 0) {
+        if (nexusNodes.length > 0) {
+            const showProvenanceOrbitDetail = nexusNodes.length <= 72;
             ctx.save();
             ctx.globalCompositeOperation = "screen";
-            for (let i = 0; i < fileNodes.length; i++) {
-                const node = fileNodes[i] as any;
+            for (let i = 0; i < nexusNodes.length; i++) {
+                const node = nexusNodes[i] as any;
                 const nx = clamp01(Number(node.x ?? 0.5));
                 const ny = clamp01(Number(node.y ?? 0.5));
                 const px = nx * w;
                 const py = ny * h;
                 const importance = clamp01(Number(node.importance ?? 0.2));
                 const pulse = 0.5 + Math.sin((t * 3) + i * 0.33) * 0.5;
-                const resourceKind = classifyFileResourceKind(node);
+                const resourceKind = resourceKindForNode(node);
                 const provenanceKind = fileNodeProvenanceKind(node);
                 provenanceCounts[provenanceKind] += 1;
                 resourceCounts[resourceKind] = (resourceCounts[resourceKind] ?? 0) + 1;
-                const fallbackHue = Number(node.hue ?? 210);
+                const nodeType = String(node?.node_type ?? "file").trim().toLowerCase();
+                const crawlerKind = String(node?.crawler_kind ?? "url").trim().toLowerCase();
+                const fallbackHue = nodeType === "crawler"
+                    ? (crawlerKind === "domain" ? 172 : (crawlerKind === "content" ? 26 : Number(node.hue ?? 205)))
+                    : Number(node.hue ?? 210);
                 const visual = resourceVisualSpec(resourceKind, fallbackHue);
                 let radius = (1.8 + importance * 3.2 + pulse * 0.9) * (resourceKind === "video" ? 1.08 : 1);
                 const isSelected = selectedGraphNodeId !== "" && selectedGraphNodeId === String(node.id ?? "");
@@ -2931,32 +4211,34 @@ export function SimulationCanvas({
                 ctx.fillStyle = "rgba(255, 255, 255, 0.82)";
                 fillResourceShape(ctx, visual.shape, px - radius * 0.26, py - radius * 0.28, Math.max(0.55, radius * 0.28));
 
-                const provenanceHue = fileNodeProvenanceHue(provenanceKind);
-                const provenanceOrbit = radius + 2.4 + importance * 2.2;
-                const provenanceAngle = (t * 0.9) + i * 0.41;
-                const provenanceX = px + Math.cos(provenanceAngle) * provenanceOrbit;
-                const provenanceY = py + Math.sin(provenanceAngle) * provenanceOrbit;
-                const provenanceDot = Math.max(0.8, 0.85 + importance * 0.8);
-                ctx.fillStyle = `hsla(${provenanceHue}, 92%, 80%, 0.92)`;
-                ctx.beginPath();
-                ctx.arc(provenanceX, provenanceY, provenanceDot, 0, Math.PI * 2);
-                ctx.fill();
+                if (showProvenanceOrbitDetail || isSelected) {
+                    const provenanceHue = fileNodeProvenanceHue(provenanceKind);
+                    const provenanceOrbit = radius + 2.4 + importance * 2.2;
+                    const provenanceAngle = (t * 0.9) + i * 0.41;
+                    const provenanceX = px + Math.cos(provenanceAngle) * provenanceOrbit;
+                    const provenanceY = py + Math.sin(provenanceAngle) * provenanceOrbit;
+                    const provenanceDot = Math.max(0.8, 0.85 + importance * 0.8);
+                    ctx.fillStyle = `hsla(${provenanceHue}, 92%, 80%, 0.92)`;
+                    ctx.beginPath();
+                    ctx.arc(provenanceX, provenanceY, provenanceDot, 0, Math.PI * 2);
+                    ctx.fill();
 
-                ctx.strokeStyle = `hsla(${provenanceHue}, 84%, 70%, 0.38)`;
-                ctx.lineWidth = 0.75;
-                ctx.setLineDash([2.5, 4]);
-                ctx.lineDashOffset = -((t * 28) + i * 0.7);
-                ctx.beginPath();
-                ctx.arc(px, py, provenanceOrbit, 0, Math.PI * 2);
-                ctx.stroke();
-                ctx.setLineDash([]);
+                    ctx.strokeStyle = `hsla(${provenanceHue}, 84%, 70%, 0.38)`;
+                    ctx.lineWidth = 0.75;
+                    ctx.setLineDash([2.5, 4]);
+                    ctx.lineDashOffset = -((t * 28) + i * 0.7);
+                    ctx.beginPath();
+                    ctx.arc(px, py, provenanceOrbit, 0, Math.PI * 2);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                }
 
                 graphNodeHits.push({
                     node,
                     x: nx,
                     y: ny,
                     radiusNorm: (radius + lift * 0.42) / Math.max(w, h),
-                    nodeKind: "file",
+                    nodeKind: nodeType === "crawler" ? "crawler" : "file",
                     resourceKind,
                 });
 
@@ -3062,6 +4344,9 @@ export function SimulationCanvas({
             .filter((value) => value.length > 0)
             .join("  |  ");
         const tagCount = Number((graph as any)?.stats?.tag_count ?? tagNodes.length ?? 0);
+        const edgeRows = renderEdges.length >= edges.length
+            ? `edges rendered: ${edges.length}`
+            : `edges rendered: ${renderEdges.length}/${edges.length} (hub-capped)`;
         const inbox = graph.inbox;
         ctx.save();
         ctx.globalCompositeOperation = "source-over";
@@ -3084,15 +4369,20 @@ export function SimulationCanvas({
         ctx.fillText(`concept presences: ${conceptCount}${conceptRows ? ` | ${conceptRows}` : ""}`, 10, 84);
         ctx.fillStyle = "rgba(214, 236, 255, 0.8)";
         ctx.fillText(`tags: ${tagCount}${tagRows ? ` | ${tagRows}` : ""}`, 10, 95);
+        ctx.fillStyle = "rgba(202, 231, 255, 0.76)";
+        ctx.fillText(edgeRows, 10, 106);
+        ctx.fillStyle = "rgba(197, 235, 255, 0.74)";
+        ctx.fillText(`muse binds: ${workspaceBindCount}`, 10, 117);
         ctx.restore();
 
         if (selectedGraphNodeId) {
-            const selected = fileNodes.find((row: any) => String(row.id) === selectedGraphNodeId)
+            const selected = nexusNodes.find((row: any) => String(row.id) === selectedGraphNodeId)
                 ?? tagNodes.find((row: any) => String(row.id) === selectedGraphNodeId);
             if (selected) {
                 const sx = clamp01(Number(selected.x ?? 0.5)) * w;
                 const sy = clamp01(Number(selected.y ?? 0.5)) * h;
-                const selectedResourceKind = classifyFileResourceKind(selected);
+                const selectedResourceKind = resourceKindForNode(selected);
+                const selectedNodeType = String(selected?.node_type ?? "file").trim().toLowerCase();
                 const provenanceKind = fileNodeProvenanceKind(selected);
                 const provenanceLabel = fileNodeProvenanceLabel(provenanceKind);
                 const label = shortPathLabel(
@@ -3128,15 +4418,20 @@ export function SimulationCanvas({
                     boxY + 30,
                 );
                 ctx.fillStyle = "rgba(170, 216, 247, 0.9)";
-                ctx.fillText(`origin ${provenanceLabel} | range ${Math.round(documentRangeFromImportance(Number(selected?.importance ?? 0.2)) * 100)}%`, boxX + 6, boxY + 39);
-                ctx.fillStyle = "rgba(165, 212, 248, 0.9)";
                 ctx.fillText(
-                    String(selected?.node_type ?? "") === "tag"
-                        ? `tag ${String(selected.tag ?? selected.node_id ?? "")}`
-                        : `concept ${String(selected.concept_presence_label ?? "unassigned")}`,
+                    `origin ${provenanceLabel} | range ${Math.round(documentRangeFromImportance(Number(selected?.importance ?? 0.2)) * 100)}%`,
                     boxX + 6,
-                    boxY + 48,
+                    boxY + 39,
                 );
+                ctx.fillStyle = "rgba(165, 212, 248, 0.9)";
+                const detailText = selectedNodeType === "tag"
+                    ? `tag ${String(selected.tag ?? selected.node_id ?? "")}`
+                    : (
+                        selectedNodeType === "crawler"
+                            ? `crawler ${String(selected.crawler_kind ?? "url")} | ${shortPathLabel(String(selected.domain ?? selected.url ?? ""))}`
+                            : `concept ${String(selected.concept_presence_label ?? "unassigned")}`
+                    );
+                ctx.fillText(detailText, boxX + 6, boxY + 48);
                 ctx.restore();
             }
         }
@@ -3344,6 +4639,469 @@ export function SimulationCanvas({
         ctx.font = "500 8px ui-monospace, SFMono-Regular, Menlo, monospace";
         ctx.fillStyle = "rgba(166, 214, 255, 0.92)";
         ctx.fillText(`${ghost.status_ja} · pulse ${Math.round(pulse * 100)}%`, x, y + radius + 25);
+        ctx.restore();
+    };
+
+    const drawGraphRuntimeDiagnostics = (
+        w: number,
+        h: number,
+        state: SimulationState | null,
+    ) => {
+        const probabilistic = state?.presence_dynamics?.daimoi_probabilistic;
+        const graphRuntime = probabilistic?.graph_runtime;
+        if (!graphRuntime) {
+            return;
+        }
+
+        const routeMean = clamp01(Number(probabilistic?.mean_route_probability ?? 0));
+        const driftMean = clampValue(Number(probabilistic?.mean_drift_score ?? 0), -1, 1);
+        const influenceMean = clamp01(Number(probabilistic?.mean_influence_power ?? 0));
+        const edgeCostMean = Math.max(0, Number(graphRuntime?.edge_cost_mean ?? 0));
+        const gravityMean = Math.max(0, Number(graphRuntime?.gravity_mean ?? 0));
+        const priceMean = Math.max(0, Number(graphRuntime?.price_mean ?? 0));
+        const nooiActiveCells = Math.max(0, Number(state?.presence_dynamics?.nooi_field?.active_cells ?? 0));
+        const nodeCount = Math.max(0, Number(graphRuntime?.node_count ?? 0));
+        const edgeCount = Math.max(0, Number(graphRuntime?.edge_count ?? 0));
+        const topNode = Array.isArray(graphRuntime?.top_nodes)
+            ? graphRuntime?.top_nodes?.[0]
+            : undefined;
+        const topNodeId = String((topNode as any)?.node_id ?? "").trim();
+
+        const boxWidth = Math.min(332, Math.max(242, w * 0.31));
+        const boxHeight = 44;
+        const boxX = 10;
+        const boxY = Math.max(8, h * 0.03);
+
+        ctx.save();
+        ctx.globalCompositeOperation = "source-over";
+        ctx.fillStyle = "rgba(8, 18, 30, 0.82)";
+        ctx.strokeStyle = "rgba(122, 205, 255, 0.48)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.roundRect(boxX, boxY, boxWidth, boxHeight, 6);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.textAlign = "left";
+        ctx.font = "600 8px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.fillStyle = "rgba(178, 232, 255, 0.95)";
+        ctx.fillText(
+            `graph route ${Math.round(routeMean * 100)}% · drift ${driftMean >= 0 ? "+" : ""}${driftMean.toFixed(2)} · infl ${influenceMean.toFixed(2)} · price ${priceMean.toFixed(2)}`,
+            boxX + 8,
+            boxY + 14,
+        );
+
+        ctx.fillStyle = "rgba(154, 214, 250, 0.9)";
+        ctx.fillText(
+            `cost ${edgeCostMean.toFixed(2)} · gravity ${gravityMean.toFixed(2)} · nooi ${nooiActiveCells} · nodes ${nodeCount} edges ${edgeCount}`,
+            boxX + 8,
+            boxY + 25,
+        );
+
+        if (topNodeId) {
+            ctx.fillStyle = "rgba(126, 199, 246, 0.86)";
+            ctx.fillText(`top gravity node: ${shortPathLabel(topNodeId)}`, boxX + 8, boxY + 36);
+        }
+        ctx.restore();
+    };
+
+    const drawGraphDaimoiFlowOverlay = (
+        t: number,
+        w: number,
+        h: number,
+        namedForms: Array<any>,
+        state: SimulationState | null,
+    ) => {
+        const fieldRows = resolveFieldParticleRows(state);
+        if (fieldRows.length <= 0) {
+            return;
+        }
+
+        const anchorByPresence = new Map<string, { x: number; y: number; hue: number }>();
+        for (const form of namedForms) {
+            const presenceId = canonicalPresenceId(String((form as any)?.id ?? ""));
+            if (!presenceId) {
+                continue;
+            }
+            const anchor = {
+                x: clamp01(Number((form as any)?.x ?? 0.5)) * w,
+                y: clamp01(Number((form as any)?.y ?? 0.5)) * h,
+                hue: Number((form as any)?.hue ?? presenceHueFromId(presenceId)),
+            };
+            anchorByPresence.set(presenceId, anchor);
+            anchorByPresence.set(normalizePresenceKey(presenceId), anchor);
+        }
+
+        const flowBuckets = new Map<
+            string,
+            {
+                sourceId: string;
+                targetId: string;
+                weight: number;
+                samples: number;
+                resourceWeight: number;
+            }
+        >();
+
+        for (const row of fieldRows) {
+            if (!row || typeof row !== "object") {
+                continue;
+            }
+            const sourcePresenceId = canonicalPresenceId(String((row as any)?.presence_id ?? ""));
+            if (!sourcePresenceId) {
+                continue;
+            }
+
+            const routeNodeId = String((row as any)?.route_node_id ?? "").trim();
+            const routePresenceId = routeNodeId.startsWith("field:")
+                ? canonicalPresenceId(routeNodeId.slice("field:".length))
+                : "";
+            const resourceTargetPresenceId = (row as any)?.resource_daimoi
+                ? canonicalPresenceId(String((row as any)?.resource_target_presence_id ?? ""))
+                : "";
+            const targetPresenceId = routePresenceId || resourceTargetPresenceId;
+            if (!targetPresenceId || targetPresenceId === sourcePresenceId) {
+                continue;
+            }
+
+            const sourceAnchor = anchorByPresence.get(sourcePresenceId)
+                ?? anchorByPresence.get(normalizePresenceKey(sourcePresenceId));
+            const targetAnchor = anchorByPresence.get(targetPresenceId)
+                ?? anchorByPresence.get(normalizePresenceKey(targetPresenceId));
+            if (!sourceAnchor || !targetAnchor) {
+                continue;
+            }
+
+            const routeProbability = clamp01(Number((row as any)?.route_probability ?? 0));
+            const influencePower = clamp01(Number((row as any)?.influence_power ?? 0));
+            const driftSignal = Math.abs(clampValue(Number((row as any)?.drift_score ?? 0), -1, 1));
+            const resourceEmitNorm = (row as any)?.resource_daimoi
+                ? clamp01(Number((row as any)?.resource_emit_amount ?? 0) * 24)
+                : 0;
+            const flowWeight =
+                0.14
+                + routeProbability * 0.56
+                + influencePower * 0.34
+                + driftSignal * 0.24
+                + resourceEmitNorm * 0.78;
+            const key = `${sourcePresenceId}|${targetPresenceId}`;
+            const bucket = flowBuckets.get(key) ?? {
+                sourceId: sourcePresenceId,
+                targetId: targetPresenceId,
+                weight: 0,
+                samples: 0,
+                resourceWeight: 0,
+            };
+            bucket.weight += flowWeight;
+            bucket.samples += 1;
+            bucket.resourceWeight += resourceEmitNorm;
+            flowBuckets.set(key, bucket);
+        }
+
+        const flowRows = Array.from(flowBuckets.values())
+            .sort((left, right) => right.weight - left.weight)
+            .slice(0, 92);
+        if (flowRows.length <= 0) {
+            return;
+        }
+
+        const maxWeight = Math.max(
+            0.0001,
+            ...flowRows.map((row) => row.weight),
+        );
+
+        ctx.save();
+        ctx.globalCompositeOperation = "screen";
+        ctx.lineCap = "round";
+        for (let index = 0; index < flowRows.length; index += 1) {
+            const flow = flowRows[index];
+            const sourceAnchor = anchorByPresence.get(flow.sourceId)
+                ?? anchorByPresence.get(normalizePresenceKey(flow.sourceId));
+            const targetAnchor = anchorByPresence.get(flow.targetId)
+                ?? anchorByPresence.get(normalizePresenceKey(flow.targetId));
+            if (!sourceAnchor || !targetAnchor) {
+                continue;
+            }
+
+            const sx = sourceAnchor.x;
+            const sy = sourceAnchor.y;
+            const tx = targetAnchor.x;
+            const ty = targetAnchor.y;
+            const dx = tx - sx;
+            const dy = ty - sy;
+            const distance = Math.hypot(dx, dy);
+            if (distance <= 0.0001) {
+                continue;
+            }
+
+            const unitX = dx / distance;
+            const unitY = dy / distance;
+            const normalX = -unitY;
+            const normalY = unitX;
+            const flowNorm = clamp01(flow.weight / maxWeight);
+            const bend = (8 + flowNorm * 20 + Math.sin(t * 0.9 + index * 0.23) * 6)
+                * (index % 2 === 0 ? 1 : -1);
+            const controlX = (sx + tx) * 0.5 + normalX * bend;
+            const controlY = (sy + ty) * 0.5 + normalY * bend;
+            const glowAlpha = clamp01(0.06 + flowNorm * 0.24);
+            const sourceHue = Number(sourceAnchor.hue ?? 198);
+            const targetHue = Number(targetAnchor.hue ?? 198);
+            const gradient = ctx.createLinearGradient(sx, sy, tx, ty);
+            gradient.addColorStop(0, `hsla(${sourceHue}, 90%, 72%, ${glowAlpha})`);
+            gradient.addColorStop(1, `hsla(${targetHue}, 90%, 74%, ${glowAlpha})`);
+
+            ctx.strokeStyle = gradient;
+            ctx.lineWidth = 0.5 + flowNorm * (1.8 + flow.resourceWeight * 0.18);
+            ctx.setLineDash([
+                6 + flowNorm * 10,
+                8 + (1 - flowNorm) * 8,
+            ]);
+            ctx.lineDashOffset = -((t * (26 + flowNorm * 32)) + index * 5);
+            ctx.beginPath();
+            ctx.moveTo(sx, sy);
+            ctx.quadraticCurveTo(controlX, controlY, tx, ty);
+            ctx.stroke();
+
+            const packetProgress = ((t * (0.18 + flowNorm * 0.24)) + index * 0.13) % 1;
+            const inv = 1 - packetProgress;
+            const packetX = (inv * inv * sx) + (2 * inv * packetProgress * controlX) + (packetProgress * packetProgress * tx);
+            const packetY = (inv * inv * sy) + (2 * inv * packetProgress * controlY) + (packetProgress * packetProgress * ty);
+            ctx.fillStyle = `hsla(${Math.round((sourceHue + targetHue) * 0.5)}, 96%, 82%, ${0.2 + flowNorm * 0.56})`;
+            ctx.beginPath();
+            ctx.arc(packetX, packetY, 1 + flowNorm * 2.3, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.setLineDash([]);
+        ctx.restore();
+
+        const topFlow = flowRows[0];
+        ctx.save();
+        ctx.globalCompositeOperation = "source-over";
+        ctx.textAlign = "left";
+        ctx.font = "600 8px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.fillStyle = "rgba(176, 233, 255, 0.94)";
+        ctx.fillText(
+            `graph daimoi lanes ${flowRows.length} · samples ${flowRows.reduce((sum, row) => sum + row.samples, 0)}`,
+            10,
+            h - 70,
+        );
+        ctx.fillStyle = "rgba(146, 213, 247, 0.88)";
+        ctx.fillText(
+            `top lane ${shortPresenceIdLabel(topFlow.sourceId)} -> ${shortPresenceIdLabel(topFlow.targetId)} · ${topFlow.weight.toFixed(1)}`,
+            10,
+            h - 58,
+        );
+        ctx.restore();
+    };
+
+    const drawResourceDaimoiOverlay = (
+        t: number,
+        w: number,
+        h: number,
+        namedForms: Array<any>,
+        state: SimulationState | null,
+    ) => {
+        const dynamics = state?.presence_dynamics;
+        if (!dynamics) {
+            return;
+        }
+        const summary = dynamics.resource_daimoi ?? dynamics.daimoi_probabilistic?.resource_daimoi;
+        const deliveredPackets = Math.max(0, Number(summary?.delivered_packets ?? 0));
+        if (deliveredPackets <= 0) {
+            return;
+        }
+
+        const directRows = Array.isArray(dynamics.field_particles) ? dynamics.field_particles : [];
+        const fieldRows = directRows.length > 0 ? directRows : resolveFieldParticleRows(state);
+        if (fieldRows.length <= 0) {
+            return;
+        }
+
+        const anchorByPresence = new Map<string, { x: number; y: number }>();
+        for (const form of namedForms) {
+            const id = String((form as any)?.id ?? "").trim();
+            if (!id) {
+                continue;
+            }
+            const anchor = {
+                x: clamp01(Number((form as any)?.x ?? 0.5)) * w,
+                y: clamp01(Number((form as any)?.y ?? 0.5)) * h,
+            };
+            anchorByPresence.set(id, anchor);
+            anchorByPresence.set(normalizePresenceKey(id), anchor);
+        }
+
+        const recipientTotals = new Map<string, number>();
+        let rendered = 0;
+
+        ctx.save();
+        ctx.globalCompositeOperation = "screen";
+        for (let index = 0; index < fieldRows.length; index += 1) {
+            const row = fieldRows[index] as any;
+            if (!row || !row.resource_daimoi) {
+                continue;
+            }
+            const targetPresenceId = String(row.resource_target_presence_id ?? "").trim();
+            if (!targetPresenceId) {
+                continue;
+            }
+
+            const targetAnchor = anchorByPresence.get(targetPresenceId)
+                ?? anchorByPresence.get(normalizePresenceKey(targetPresenceId));
+            if (!targetAnchor) {
+                continue;
+            }
+
+            const startX = clamp01(Number(row.x ?? 0.5)) * w;
+            const startY = clamp01(Number(row.y ?? 0.5)) * h;
+            const emitAmount = Math.max(0, Number(row.resource_emit_amount ?? 0));
+            const emitNorm = clamp01(emitAmount * 22);
+            const resourceHue = resourceDaimoiHue(String(row.resource_type ?? ""));
+            const bend = Math.sin((t * 1.6) + (index * 0.24)) * (6 + emitNorm * 14);
+            const midX = (startX + targetAnchor.x) * 0.5 + bend;
+            const midY = (startY + targetAnchor.y) * 0.5 - bend * 0.55;
+
+            ctx.strokeStyle = `hsla(${resourceHue}, 95%, 72%, ${0.2 + emitNorm * 0.55})`;
+            ctx.lineWidth = 0.8 + emitNorm * 2.0;
+            ctx.beginPath();
+            ctx.moveTo(startX, startY);
+            ctx.quadraticCurveTo(midX, midY, targetAnchor.x, targetAnchor.y);
+            ctx.stroke();
+
+            const pulseRadius = 1.6 + (emitNorm * 3.0);
+            ctx.fillStyle = `hsla(${resourceHue}, 98%, 80%, ${0.22 + emitNorm * 0.56})`;
+            ctx.beginPath();
+            ctx.arc(targetAnchor.x, targetAnchor.y, pulseRadius, 0, Math.PI * 2);
+            ctx.fill();
+
+            recipientTotals.set(
+                targetPresenceId,
+                (recipientTotals.get(targetPresenceId) ?? 0) + emitAmount,
+            );
+
+            rendered += 1;
+            if (rendered >= 260) {
+                break;
+            }
+        }
+        ctx.restore();
+
+        if (rendered <= 0) {
+            return;
+        }
+
+        const topRecipient = Array.from(recipientTotals.entries())
+            .sort((left, right) => right[1] - left[1])[0];
+        const transferTotal = Math.max(0, Number(summary?.total_transfer ?? 0));
+
+        ctx.save();
+        ctx.globalCompositeOperation = "source-over";
+        ctx.textAlign = "left";
+        ctx.font = "600 8px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.fillStyle = "rgba(255, 238, 198, 0.96)";
+        ctx.fillText(
+            `resource daimoi packets ${rendered}/${deliveredPackets} · transfer ${transferTotal.toFixed(2)}`,
+            10,
+            h - 34,
+        );
+        if (topRecipient) {
+            ctx.fillStyle = "rgba(255, 215, 158, 0.92)";
+            ctx.fillText(
+                `resource target ${shortPresenceIdLabel(topRecipient[0])} · +${topRecipient[1].toFixed(2)}`,
+                10,
+                h - 46,
+            );
+        }
+        ctx.restore();
+    };
+
+    const drawNooiFieldOverlay = (
+        t: number,
+        w: number,
+        h: number,
+        state: SimulationState | null,
+    ) => {
+        const nooiField = state?.presence_dynamics?.nooi_field;
+        const cells = Array.isArray(nooiField?.cells) ? nooiField.cells : [];
+        if (cells.length <= 0) {
+            return;
+        }
+
+        const cols = Math.max(1, Number(nooiField?.grid_cols ?? 1));
+        const rows = Math.max(1, Number(nooiField?.grid_rows ?? 1));
+        const cellW = w / cols;
+        const cellH = h / rows;
+        const vectorPeak = Math.max(0.0001, Number(nooiField?.vector_peak ?? 0.001));
+        const pulse = 0.88 + Math.sin(t * 1.7) * 0.12;
+
+        ctx.save();
+        ctx.globalCompositeOperation = "screen";
+        for (let index = 0; index < cells.length; index += 1) {
+            const cell = cells[index] as any;
+            const intensity = clamp01(Number(cell?.intensity ?? 0));
+            if (intensity <= 0.01) {
+                continue;
+            }
+            const influence = clamp01(Number(cell?.influence ?? intensity));
+            const occupancyRatio = clamp01(Number(cell?.occupancy_ratio ?? 0));
+            const cx = clamp01(Number(cell?.x ?? 0.5)) * w;
+            const cy = clamp01(Number(cell?.y ?? 0.5)) * h;
+            const vx = Number(cell?.vx ?? 0);
+            const vy = Number(cell?.vy ?? 0);
+            const vectorMagnitude = Math.hypot(vx, vy);
+            const vectorNorm = clamp01(vectorMagnitude / vectorPeak);
+            const dominant = String(cell?.dominant_presence_id ?? "").trim();
+            const dominantHue = dominant.length > 0
+                ? (Array.from(dominant).reduce((sum, ch) => sum + ch.charCodeAt(0), 0) % 360)
+                : 198;
+
+            const rectW = cellW * 0.92;
+            const rectH = cellH * 0.92;
+            ctx.fillStyle = `hsla(${dominantHue}, 86%, 66%, ${(0.03 + intensity * 0.18 + occupancyRatio * 0.09) * pulse})`;
+            ctx.fillRect(cx - (rectW / 2), cy - (rectH / 2), rectW, rectH);
+
+            if (vectorMagnitude > 1e-7) {
+                const dirX = vx / vectorMagnitude;
+                const dirY = vy / vectorMagnitude;
+                const arrowLength = Math.min(cellW, cellH) * (0.32 + (vectorNorm * 0.9) + influence * 0.38);
+                const arrowEndX = cx + (dirX * arrowLength);
+                const arrowEndY = cy + (dirY * arrowLength);
+                const arrowWidth = 0.55 + influence * 1.35 + vectorNorm * 0.9;
+                const headSize = 1.2 + vectorNorm * 2.3;
+
+                ctx.strokeStyle = `hsla(${dominantHue}, 92%, 76%, ${0.22 + influence * 0.54})`;
+                ctx.lineWidth = arrowWidth;
+                ctx.beginPath();
+                ctx.moveTo(cx, cy);
+                ctx.lineTo(arrowEndX, arrowEndY);
+                ctx.stroke();
+
+                const baseAngle = Math.atan2(dirY, dirX);
+                ctx.beginPath();
+                ctx.moveTo(arrowEndX, arrowEndY);
+                ctx.lineTo(
+                    arrowEndX - Math.cos(baseAngle - 0.5) * headSize,
+                    arrowEndY - Math.sin(baseAngle - 0.5) * headSize,
+                );
+                ctx.lineTo(
+                    arrowEndX - Math.cos(baseAngle + 0.5) * headSize,
+                    arrowEndY - Math.sin(baseAngle + 0.5) * headSize,
+                );
+                ctx.closePath();
+                ctx.fillStyle = `hsla(${dominantHue}, 95%, 80%, ${0.28 + influence * 0.55})`;
+                ctx.fill();
+            }
+        }
+
+        ctx.globalCompositeOperation = "source-over";
+        ctx.textAlign = "left";
+        ctx.font = "600 8px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.fillStyle = "rgba(176, 229, 255, 0.95)";
+        ctx.fillText(
+            `nooi cells ${cells.length} · influence ${Number(nooiField?.mean_influence ?? 0).toFixed(2)} · vpeak ${Number(nooiField?.vector_peak ?? 0).toFixed(3)}`,
+            10,
+            h - 10,
+        );
         ctx.restore();
     };
 
@@ -3647,38 +5405,29 @@ export function SimulationCanvas({
         ctx.restore();
     };
 
-    const drawButterflies = (t: number, w: number, h: number) => {
-        const count = 12;
-        ctx.save();
-        for(let i=0; i<count; i++) {
-            const seed = i * 1.5 + t * 0.2;
-            const bx = (Math.sin(seed) * 0.4 + 0.5) * w;
-            const by = (Math.cos(seed * 0.8) * 0.4 + 0.5) * h;
-            const size = 6 + Math.sin(t * 10 + i) * 2;
-            const wingSpan = 4 + size;
-            ctx.fillStyle = "rgba(10, 5, 15, 0.9)";
-            ctx.shadowBlur = 8;
-            ctx.shadowColor = i % 2 === 0 ? "rgba(255, 0, 100, 0.32)" : "rgba(150, 0, 255, 0.3)";
-            ctx.beginPath();
-            ctx.moveTo(bx, by);
-            const flap = Math.sin(t * 15 + i) * 5;
-            ctx.lineTo(bx - wingSpan, by - 5 - flap);
-            ctx.lineTo(bx - wingSpan, by + 5 + flap);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.moveTo(bx, by);
-            ctx.lineTo(bx + wingSpan, by - 5 - flap);
-            ctx.lineTo(bx + wingSpan, by + 5 + flap);
-            ctx.fill();
-        }
-        ctx.restore();
-    };
-
     const draw = (ts: number) => {
         const currentSimulation = simulationRef.current;
+        const allFieldParticleRows = resolveFieldParticleRows(currentSimulation);
+        const fieldParticleCount = allFieldParticleRows.length;
+        const targetFrameMs = fieldParticleCount > 1200
+            ? 34
+            : fieldParticleCount > 760
+                ? 24
+                : 16;
+        if (lastPaintTs > 0 && (ts - lastPaintTs) < targetFrameMs) {
+            rafId = requestAnimationFrame(draw);
+            return;
+        }
+        lastPaintTs = ts;
         const namedForms = resolveNamedForms();
         const t = ts * 0.001;
+        overlayMotionNowSec = t;
+        overlayMotionDtSec = overlayMotionLastFrameTs > 0
+            ? clampValue((ts - overlayMotionLastFrameTs) * 0.001, 1 / 144, 0.08)
+            : (1 / 60);
+        overlayMotionLastFrameTs = ts;
         graphNodeHits = [];
+        particleTelemetryHits = [];
         const dpr = window.devicePixelRatio || 1;
         const rect = canvas.getBoundingClientRect();
         const nextWidth = Math.max(1, Math.floor(rect.width * dpr));
@@ -3769,13 +5518,30 @@ export function SimulationCanvas({
 
         const hasLayerVisibility = layerVisibility !== undefined;
         const backgroundOmni = !hasLayerVisibility && backgroundMode && overlayView === "omni";
-        const showPresenceLayer = layerVisibility?.presence ?? (overlayView === "omni" || overlayView === "presence");
+        const showPresenceLayer = layerVisibility?.presence ?? (
+            overlayView === "omni"
+            || overlayView === "presence"
+            || overlayView === "file-graph"
+            || overlayView === "crawler-graph"
+        );
         const showFileImpactLayer = layerVisibility?.["file-impact"] ?? (!backgroundOmni && (overlayView === "omni" || overlayView === "file-impact"));
         const showFileGraphLayer = layerVisibility?.["file-graph"] ?? (!backgroundOmni && (overlayView === "omni" || overlayView === "file-graph"));
         const showCrawlerGraphLayer = layerVisibility?.["crawler-graph"] ?? (!backgroundOmni && (overlayView === "omni" || overlayView === "crawler-graph"));
         const showTruthGateLayer = layerVisibility?.["truth-gate"] ?? (overlayView === "omni" || overlayView === "truth-gate");
         const showLogicalLayer = layerVisibility?.logic ?? (!backgroundOmni && (overlayView === "omni" || overlayView === "logic"));
         const showPainFieldLayer = layerVisibility?.["pain-field"] ?? (!backgroundOmni && (overlayView === "omni" || overlayView === "pain-field"));
+        const fileGraphData = resolveFileGraph(currentSimulation);
+        const crawlerGraphData = resolveCrawlerGraph(currentSimulation);
+        const hasFileGraphData = (
+            (Array.isArray(fileGraphData?.nodes) ? fileGraphData.nodes.length : 0)
+            + (Array.isArray(fileGraphData?.file_nodes) ? fileGraphData.file_nodes.length : 0)
+        ) > 0;
+        const hasCrawlerGraphData = (
+            (Array.isArray(crawlerGraphData?.nodes) ? crawlerGraphData.nodes.length : 0)
+            + (Array.isArray(crawlerGraphData?.crawler_nodes) ? crawlerGraphData.crawler_nodes.length : 0)
+        ) > 0;
+        const drawFileGraphLayer = showFileGraphLayer && hasFileGraphData;
+        const drawCrawlerGraphLayer = showCrawlerGraphLayer && !drawFileGraphLayer && hasCrawlerGraphData;
         const pointerNearest = nearestPresenceAt(pointerField.x, pointerField.y, namedForms);
         const pointerHighlighted = pointerPower > 0.09 && pointerNearest.distance <= 0.18
             ? pointerNearest.index
@@ -3783,21 +5549,104 @@ export function SimulationCanvas({
         const activeLayerCount =
             (showPresenceLayer ? 1 : 0)
             + (showFileImpactLayer ? 1 : 0)
-            + (showFileGraphLayer ? 1 : 0)
-            + (showCrawlerGraphLayer ? 1 : 0)
+            + (drawFileGraphLayer ? 1 : 0)
+            + (drawCrawlerGraphLayer ? 1 : 0)
             + (showTruthGateLayer ? 1 : 0)
             + (showLogicalLayer ? 1 : 0)
             + (showPainFieldLayer ? 1 : 0);
         const denseLayerMix = activeLayerCount >= 6 ? 0.6 : (activeLayerCount >= 4 ? 0.78 : 1);
+        const resourceDaimoiSummary = currentSimulation?.presence_dynamics?.resource_daimoi
+            ?? currentSimulation?.presence_dynamics?.daimoi_probabilistic?.resource_daimoi;
+        const resourceConsumptionSummary = currentSimulation?.presence_dynamics?.resource_consumption
+            ?? currentSimulation?.presence_dynamics?.daimoi_probabilistic?.resource_consumption;
+        const resourcePacketCount = Math.max(0, Number(resourceDaimoiSummary?.delivered_packets ?? 0));
+        const resourceActionPacketCount = Math.max(0, Number(resourceConsumptionSummary?.action_packets ?? 0));
+        const resourceBlockedPacketCount = Math.max(0, Number(resourceConsumptionSummary?.blocked_packets ?? 0));
+        const economyOverlayIntensity = clamp01(
+            (resourcePacketCount / 320)
+            + (resourceActionPacketCount / 420)
+            + (resourceBlockedPacketCount / 260),
+        );
+        const graphLayerMix = denseLayerMix * (renderRichOverlayParticles
+            ? (0.62 - economyOverlayIntensity * 0.18)
+            : 1);
+        const showGraphDaimoiOverlay = renderRichOverlayParticles
+            && !drawFileGraphLayer
+            && !drawCrawlerGraphLayer
+            && showPresenceLayer
+            && (resourcePacketCount > 0 || resourceActionPacketCount > 0);
+        const showResourceDaimoiOverlay = renderRichOverlayParticles
+            && showPresenceLayer
+            && (resourcePacketCount > 0 || resourceActionPacketCount > 0);
+        const showNooiFieldOverlay = renderRichOverlayParticles
+            && showLogicalLayer
+            && (Number(currentSimulation?.presence_dynamics?.nooi_field?.active_cells ?? 0) > 0)
+            && economyOverlayIntensity < 0.82;
         const showPresenceNodes =
-            showPresenceLayer || showFileImpactLayer || showTruthGateLayer;
+            showPresenceLayer || showFileImpactLayer || drawFileGraphLayer || drawCrawlerGraphLayer || showTruthGateLayer;
+        const fieldParticlesByPresence = new Map<string, BackendFieldParticle[]>();
+        const namedFormPresenceKeys = new Set<string>();
+        const unboundFieldParticles: BackendFieldParticle[] = [];
+        for (const form of namedForms) {
+            const formId = canonicalPresenceId(String((form as any)?.id ?? "").trim());
+            if (!formId) {
+                continue;
+            }
+            namedFormPresenceKeys.add(formId);
+            namedFormPresenceKeys.add(normalizePresenceKey(formId));
+        }
+        if (showPresenceNodes && renderRichOverlayParticles) {
+            if (allFieldParticleRows.length > 0) {
+                for (const row of allFieldParticleRows) {
+                    if (!row || typeof row !== "object") continue;
+                    const particle = row as BackendFieldParticle;
+                    const presenceId = String(particle?.presence_id ?? "").trim();
+                    if (!presenceId) continue;
+                    const canonicalId = canonicalPresenceId(presenceId);
+                    const normalizedId = normalizePresenceKey(canonicalId || presenceId);
+                    const isBound =
+                        namedFormPresenceKeys.has(presenceId)
+                        || (canonicalId.length > 0 && namedFormPresenceKeys.has(canonicalId))
+                        || namedFormPresenceKeys.has(normalizedId);
+                    if (!isBound) {
+                        unboundFieldParticles.push(particle);
+                        continue;
+                    }
+                    const aliasKeys = [presenceId, canonicalId, normalizedId]
+                        .filter((value, idx, arr) => value.length > 0 && arr.indexOf(value) === idx);
+                    for (const key of aliasKeys) {
+                        let bucket = fieldParticlesByPresence.get(key);
+                        if (!bucket) {
+                            bucket = [];
+                            fieldParticlesByPresence.set(key, bucket);
+                        }
+                        bucket.push(particle);
+                    }
+                }
+            }
+        }
+
+        if (overlayMotionByParticleId.size > 0) {
+            const staleAfterSec = 4.0;
+            for (const [particleId, motionState] of overlayMotionByParticleId.entries()) {
+                if ((overlayMotionNowSec - motionState.seenAtSec) > staleAfterSec) {
+                    overlayMotionByParticleId.delete(particleId);
+                }
+            }
+        }
 
         if (showPresenceLayer) {
             drawEchoes(t, w, h, currentSimulation);
             drawRiverFlow(t, w, h, namedForms, currentSimulation);
             drawWitnessThreadFlow(t, w, h, namedForms, currentSimulation);
             drawGhostSentinel(t, w, h, currentSimulation);
-            drawButterflies(t, w, h);
+            drawGraphRuntimeDiagnostics(w, h, currentSimulation);
+            if (showGraphDaimoiOverlay) {
+                ctx.save();
+                ctx.globalAlpha = 0.48;
+                drawGraphDaimoiFlowOverlay(t, w, h, namedForms, currentSimulation);
+                ctx.restore();
+            }
         }
         if (showFileImpactLayer) {
             ctx.save();
@@ -3811,15 +5660,15 @@ export function SimulationCanvas({
             drawLogicalGraphOverlay(t, w, h, currentSimulation);
             ctx.restore();
         }
-        if (showFileGraphLayer) {
+        if (drawFileGraphLayer) {
             ctx.save();
-            ctx.globalAlpha = denseLayerMix;
-            drawFileCategoryGraph(t, w, h, currentSimulation);
+            ctx.globalAlpha = graphLayerMix;
+            drawFileCategoryGraph(t, w, h, currentSimulation, namedForms);
             ctx.restore();
         }
-        if (showCrawlerGraphLayer) {
+        if (drawCrawlerGraphLayer) {
             ctx.save();
-            ctx.globalAlpha = denseLayerMix;
+            ctx.globalAlpha = graphLayerMix;
             drawCrawlerCategoryGraph(t, w, h, currentSimulation);
             ctx.restore();
         }
@@ -3831,37 +5680,6 @@ export function SimulationCanvas({
             ctx.globalAlpha = denseLayerMix;
             drawPainFieldOverlay(t, w, h, currentSimulation);
             ctx.restore();
-        }
-
-        if(showPresenceNodes && namedForms.length > 2) {
-            const loopPoints = namedForms.map((f: any) => ({x: f.x * w, y: f.y * h}));
-            ctx.save();
-            ctx.globalAlpha = 0.04 + globalIntensity * 0.1;
-            ctx.setLineDash([2, 10]);
-            ctx.strokeStyle = "rgba(" + (90 + globalIntensity * 80) + ", 220, " + (165 + globalIntensity * 45) + ", 0.28)";
-            ctx.lineWidth = 0.4 + globalIntensity * 0.7;
-            for(let i=0; i<loopPoints.length; i++) {
-                for(let j=i+1; j<loopPoints.length; j++) {
-                    const d = Math.hypot(loopPoints[i].x - loopPoints[j].x, loopPoints[i].y - loopPoints[j].y);
-                    const maxDist = w * (0.22 + globalIntensity * 0.11);
-                    if(d < maxDist) {
-                        ctx.beginPath(); ctx.moveTo(loopPoints[i].x, loopPoints[i].y);
-                        ctx.lineTo(loopPoints[j].x, loopPoints[j].y); ctx.stroke();
-                    }
-                }
-            }
-            ctx.restore();
-            loopPoints.push(loopPoints[0]);
-            ctx.strokeStyle = "rgba(145, 200, 235, " + (0.08 + globalIntensity * 0.1) + ")";
-            ctx.lineWidth = 0.45 + globalIntensity * 0.7;
-            ctx.beginPath(); ctx.moveTo(loopPoints[0].x, loopPoints[0].y);
-            for(let i=1; i<loopPoints.length; i++) {
-                const start = loopPoints[i-1]; const end = loopPoints[i];
-                const mx = (start.x + end.x)/2; const my = (start.y + end.y)/2;
-                const bend = Math.sin(t * 0.5 + i * 0.8) * 20 * (1 + globalIntensity);
-                ctx.quadraticCurveTo(mx+bend, my-bend*0.5, end.x, end.y);
-            }
-            ctx.stroke();
         }
 
         if (showPresenceNodes) {
@@ -3884,7 +5702,9 @@ export function SimulationCanvas({
             const telemetry = drawPresenceStatus(cx, cy, radiusBase, f.hue, entityState);
             const isHighlighted = highlighted === i || pointerHighlighted === i;
             drawNebula(t, f, cx, cy, radiusBase, f.hue, intensity, isHighlighted);
-            drawParticles(f, radiusBase, isHighlighted, currentSimulation, w, h);
+            if (renderRichOverlayParticles) {
+                drawParticles(t, f, radiusBase, isHighlighted, fieldParticlesByPresence, w, h);
+            }
             const isBottomHalf = f.y > 0.7;
             const labelY = isBottomHalf ? cy - radiusBase * 1.2 : cy + radiusBase * 1.2;
             ctx.save();
@@ -3918,6 +5738,24 @@ export function SimulationCanvas({
             ctx.fillText(metricLine, cx, textCenterY + 20);
             ctx.restore();
             }
+
+            if (showResourceDaimoiOverlay) {
+                ctx.save();
+                ctx.globalAlpha = 0.64;
+                drawResourceDaimoiOverlay(t, w, h, namedForms, currentSimulation);
+                ctx.restore();
+            }
+            if (showNooiFieldOverlay) {
+                ctx.save();
+                ctx.globalAlpha = 0.34;
+                drawNooiFieldOverlay(t, w, h, currentSimulation);
+                ctx.restore();
+            }
+
+            if (renderRichOverlayParticles && unboundFieldParticles.length > 0) {
+                drawUnboundParticles(t, unboundFieldParticles, w, h);
+            }
+
         }
         rafId = requestAnimationFrame(draw);
     };
@@ -3987,6 +5825,109 @@ export function SimulationCanvas({
         },
     };
 
+    const activateGraphNode = (
+        node: any,
+        nodeKind: "file" | "crawler",
+        xRatio: number,
+        yRatio: number,
+        selectionSource: "graph" | "particle" = "graph",
+    ) => {
+        const resourceKind = resourceKindForNode(node);
+        selectedGraphNodeId = String(node?.id ?? "");
+        selectedGraphNodeLabel = shortPathLabel(
+            String(
+                node?.title
+                || node?.domain
+                || node?.source_rel_path
+                || node?.archived_rel_path
+                || node?.name
+                || node?.label
+                || node?.id
+                || "",
+            ),
+        );
+        const target = String(
+            node?.domain
+            || node?.title
+            || node?.source_rel_path
+            || node?.archived_rel_path
+            || node?.name
+            || node?.id
+            || "particle_field",
+        );
+        const witnessPrefix = nodeKind === "crawler" ? "crawler" : "file";
+        api.pulseAt(xRatio, yRatio, 1.0, `${witnessPrefix}:${target}`);
+        if (metaRef.current) {
+            const selectedLabel = selectionSource === "particle"
+                ? "route node"
+                : (nodeKind === "crawler" ? "crawler node" : "file node");
+            metaRef.current.textContent = `selected ${selectedLabel}: ${selectedGraphNodeLabel} [${resourceKindLabel(resourceKind)}]`;
+        }
+        const openUrl = openUrlForGraphNode(
+            node,
+            nodeKind === "crawler" ? "crawler" : "file",
+        );
+        const domain = String(node?.domain ?? "").trim();
+        const worldscreenUrl = resolveWorldscreenUrl(openUrl, nodeKind, domain);
+        if (worldscreenUrl) {
+            const worldscreenNodeKind: "file" | "crawler" = nodeKind === "crawler" ? "crawler" : "file";
+            const isRemoteResource = isRemoteHttpUrl(worldscreenUrl);
+            const frameUrlCandidate = remoteFrameUrlForNode(node, worldscreenUrl, resourceKind);
+            const imageRef = String(
+                node?.source_rel_path
+                || node?.archive_rel_path
+                || node?.archived_rel_path
+                || node?.url
+                || worldscreenUrl,
+            ).trim();
+            const graphGeneratedAt =
+                nodeKind === "crawler"
+                    ? String(resolveCrawlerGraph(simulationRef.current)?.generated_at ?? "")
+                    : String(resolveFileGraph(simulationRef.current)?.generated_at ?? "");
+            const discoveredAt = timestampLabel(node?.discovered_at ?? node?.discoveredAt ?? "");
+            const fetchedAt = timestampLabel(node?.fetched_at ?? node?.fetchedAt ?? node?.last_seen ?? node?.lastSeen ?? "");
+            const encounteredAt =
+                fetchedAt
+                || discoveredAt
+                || timestampLabel(node?.encountered_at ?? node?.encounteredAt ?? graphGeneratedAt);
+            setWorldscreen({
+                url: worldscreenUrl,
+                imageRef,
+                label: selectedGraphNodeLabel,
+                nodeKind: worldscreenNodeKind,
+                resourceKind,
+                anchorRatioX: clamp01(xRatio),
+                anchorRatioY: clamp01(yRatio),
+                view: resourceKind === "image"
+                    ? "metadata"
+                    : isRemoteResource
+                        ? "metadata"
+                        : worldscreenViewForNode(node, worldscreenNodeKind, resourceKind),
+                subtitle: worldscreenSubtitleForNode(node, worldscreenNodeKind, resourceKind),
+                remoteFrameUrl: resourceKind === "image"
+                    ? (frameUrlCandidate || worldscreenUrl)
+                    : isRemoteResource
+                        ? frameUrlCandidate
+                        : "",
+                encounteredAt,
+                sourceUrl: String(node?.source_url ?? node?.sourceUrl ?? "").trim(),
+                domain,
+                titleText: String(node?.title ?? "").trim(),
+                statusText: String(node?.status ?? "").trim(),
+                contentTypeText: String(node?.content_type ?? node?.contentType ?? "").trim(),
+                complianceText: String(node?.compliance ?? "").trim(),
+                discoveredAt,
+                fetchedAt,
+                summaryText: String(node?.summary ?? node?.text_excerpt ?? "").trim(),
+                tagsText: joinListValues(node?.tags),
+                labelsText: joinListValues(node?.labels),
+            });
+            if (metaRef.current) {
+                metaRef.current.textContent = `hologram opened: ${selectedGraphNodeLabel}`;
+            }
+        }
+    };
+
     const onPointerDown = (event: PointerEvent) => {
         const rect = canvas.getBoundingClientRect();
         if (rect.width <= 0 || rect.height <= 0) return;
@@ -4003,101 +5944,30 @@ export function SimulationCanvas({
         if (graphHit) {
             event.preventDefault();
             event.stopPropagation();
-            const node = graphHit.node;
-            const nodeKind = graphHit.nodeKind;
-            const resourceKind = resourceKindForNode(node);
-            selectedGraphNodeId = String(node?.id ?? "");
-            selectedGraphNodeLabel = shortPathLabel(
-                String(
-                    node?.title
-                    || node?.domain
-                    || node?.source_rel_path
-                    || node?.archived_rel_path
-                    || node?.name
-                    || node?.label
-                    || node?.id
-                    || "",
-                ),
-            );
-            const target = String(
-                node?.domain
-                || node?.title
-                || node?.source_rel_path
-                || node?.archived_rel_path
-                || node?.name
-                || node?.id
-                || "particle_field",
-            );
-            const witnessPrefix = nodeKind === "crawler" ? "crawler" : "file";
-            api.pulseAt(xRatio, yRatio, 1.0, `${witnessPrefix}:${target}`);
-            if (metaRef.current) {
-                const selectedLabel = nodeKind === "crawler" ? "crawler node" : "file node";
-                metaRef.current.textContent = `selected ${selectedLabel}: ${selectedGraphNodeLabel} [${resourceKindLabel(resourceKind)}]`;
-            }
-            const openUrl = openUrlForGraphNode(
-                node,
-                nodeKind === "crawler" ? "crawler" : "file",
-            );
-            const domain = String(node?.domain ?? "").trim();
-            const worldscreenUrl = resolveWorldscreenUrl(openUrl, nodeKind, domain);
-            if (worldscreenUrl) {
-                const worldscreenNodeKind: "file" | "crawler" = nodeKind === "crawler" ? "crawler" : "file";
-                const isRemoteResource = isRemoteHttpUrl(worldscreenUrl);
-                const frameUrlCandidate = remoteFrameUrlForNode(node, worldscreenUrl, resourceKind);
-                const imageRef = String(
-                    node?.source_rel_path
-                    || node?.archive_rel_path
-                    || node?.archived_rel_path
-                    || node?.url
-                    || worldscreenUrl,
-                ).trim();
-                const graphGeneratedAt =
-                    nodeKind === "crawler"
-                        ? String(resolveCrawlerGraph(simulationRef.current)?.generated_at ?? "")
-                        : String(resolveFileGraph(simulationRef.current)?.generated_at ?? "");
-                const discoveredAt = timestampLabel(node?.discovered_at ?? node?.discoveredAt ?? "");
-                const fetchedAt = timestampLabel(node?.fetched_at ?? node?.fetchedAt ?? node?.last_seen ?? node?.lastSeen ?? "");
-                const encounteredAt =
-                    fetchedAt
-                    || discoveredAt
-                    || timestampLabel(node?.encountered_at ?? node?.encounteredAt ?? graphGeneratedAt);
-                setWorldscreen({
-                    url: worldscreenUrl,
-                    imageRef,
-                    label: selectedGraphNodeLabel,
-                    nodeKind: worldscreenNodeKind,
-                    resourceKind,
-                    anchorRatioX: clamp01(graphHit.x),
-                    anchorRatioY: clamp01(graphHit.y),
-                    view: resourceKind === "image"
-                        ? "metadata"
-                        : isRemoteResource
-                            ? "metadata"
-                            : worldscreenViewForNode(node, worldscreenNodeKind, resourceKind),
-                    subtitle: worldscreenSubtitleForNode(node, worldscreenNodeKind, resourceKind),
-                    remoteFrameUrl: resourceKind === "image"
-                        ? (frameUrlCandidate || worldscreenUrl)
-                        : isRemoteResource
-                            ? frameUrlCandidate
-                            : "",
-                    encounteredAt,
-                    sourceUrl: String(node?.source_url ?? node?.sourceUrl ?? "").trim(),
-                    domain,
-                    titleText: String(node?.title ?? "").trim(),
-                    statusText: String(node?.status ?? "").trim(),
-                    contentTypeText: String(node?.content_type ?? node?.contentType ?? "").trim(),
-                    complianceText: String(node?.compliance ?? "").trim(),
-                    discoveredAt,
-                    fetchedAt,
-                    summaryText: String(node?.summary ?? node?.text_excerpt ?? "").trim(),
-                    tagsText: joinListValues(node?.tags),
-                    labelsText: joinListValues(node?.labels),
-                });
-                if (metaRef.current) {
-                    metaRef.current.textContent = `hologram opened: ${selectedGraphNodeLabel}`;
-                }
-            }
+            activateGraphNode(graphHit.node, graphHit.nodeKind, graphHit.x, graphHit.y, "graph");
             return;
+        }
+
+        const particleHit = nearestParticleTelemetryAt(xRatio, yRatio);
+        if (particleHit) {
+            const currentState = simulationRef.current;
+            const routeTargetId = String(particleHit.routeNodeId ?? "").trim();
+            const graphTargetId = String(particleHit.graphNodeId ?? "").trim();
+            const resolvedNode =
+                resolveGraphNodeById(currentState, routeTargetId)
+                || resolveGraphNodeById(currentState, graphTargetId);
+            if (resolvedNode) {
+                event.preventDefault();
+                event.stopPropagation();
+                activateGraphNode(
+                    resolvedNode.node,
+                    resolvedNode.nodeKind,
+                    particleHit.x,
+                    particleHit.y,
+                    "particle",
+                );
+                return;
+            }
         }
 
         const namedForms = resolveNamedForms();
@@ -4147,7 +6017,7 @@ export function SimulationCanvas({
         }
         cancelAnimationFrame(rafId);
     };
-  }, [backgroundMode, backgroundWash, interactive, layerVisibility, onOverlayInit, overlayView]);
+  }, [backgroundMode, backgroundWash, interactive, layerVisibility, onOverlayInit, overlayView, resolveFieldParticleRows]);
 
   const activeOverlayView =
     OVERLAY_VIEW_OPTIONS.find((option) => option.id === overlayView) ?? OVERLAY_VIEW_OPTIONS[0];
@@ -4160,6 +6030,86 @@ export function SimulationCanvas({
     ? resolveWorldscreenPlacement(worldscreen, containerRef.current)
     : null;
   const activeImageCommentRef = worldscreen ? worldscreenImageRef(worldscreen) : "";
+  const activeFieldParticleRows = useMemo<BackendFieldParticle[]>(() => {
+    return resolveFieldParticleRows(simulation);
+  }, [resolveFieldParticleRows, simulation]);
+  const resourceEconomyHud = useMemo(() => {
+    const dynamics = simulation?.presence_dynamics;
+    const probabilistic = dynamics?.daimoi_probabilistic;
+    const resourceSummary = dynamics?.resource_daimoi ?? probabilistic?.resource_daimoi;
+    const consumptionSummary = dynamics?.resource_consumption ?? probabilistic?.resource_consumption;
+    const packets = Math.max(0, Number(resourceSummary?.delivered_packets ?? 0));
+    const transfer = Math.max(0, Number(resourceSummary?.total_transfer ?? 0));
+    const actionPackets = Math.max(0, Number(consumptionSummary?.action_packets ?? 0));
+    const blockedPackets = Math.max(0, Number(consumptionSummary?.blocked_packets ?? 0));
+    const consumedTotal = Math.max(0, Number(consumptionSummary?.consumed_total ?? 0));
+    const starvedPresences = Array.isArray(consumptionSummary?.starved_presences)
+      ? consumptionSummary.starved_presences.length
+      : 0;
+    return {
+      packets,
+      transfer,
+      actionPackets,
+      blockedPackets,
+      consumedTotal,
+      starvedPresences,
+    };
+  }, [simulation]);
+  const liveFieldParticleCount = activeFieldParticleRows.length;
+  const fallbackPointCount = Array.isArray(simulation?.points) ? simulation.points.length : 0;
+  const particleLegendStats = useMemo(() => {
+    const primary = {
+      chaos: 0,
+      nexus: 0,
+      smart: 0,
+      resource: 0,
+      transfer: 0,
+      legacy: 0,
+    };
+    const overlays = {
+      transfer: 0,
+      resource: 0,
+    };
+
+    for (const row of activeFieldParticleRows) {
+      const {
+        isChaosParticle,
+        isStaticParticle,
+        isNexusParticle,
+        isSmartDaimoi,
+        isResourceEmitter,
+        isTransferParticle,
+      } = resolveOverlayParticleFlags(row);
+
+      if (isTransferParticle) {
+        overlays.transfer += 1;
+      }
+      if (isResourceEmitter) {
+        overlays.resource += 1;
+      }
+
+      if (isChaosParticle) {
+        primary.chaos += 1;
+      } else if (isNexusParticle || isStaticParticle) {
+        primary.nexus += 1;
+      } else if (isResourceEmitter) {
+        primary.resource += 1;
+      } else if (isTransferParticle) {
+        primary.transfer += 1;
+      } else if (isSmartDaimoi) {
+        primary.smart += 1;
+      } else {
+        primary.legacy += 1;
+      }
+    }
+
+    return {
+      total: activeFieldParticleRows.length,
+      primary,
+      overlays,
+    };
+  }, [activeFieldParticleRows]);
+  const overlayParticleModeActive = renderRichOverlayParticles && liveFieldParticleCount > 0;
 
   return (
     <div ref={containerRef} className={containerClassName}>
@@ -4191,7 +6141,7 @@ export function SimulationCanvas({
             )}
             <p className="mt-1 text-[10px] text-[#bcd8ef]">{activeOverlayView.description}</p>
             {interactive ? (
-              <p className="mt-1 text-[10px] text-[#c4d7f0]">tap node for hologram pop-out / 節点でホログラム起動</p>
+              <p className="mt-1 text-[10px] text-[#c4d7f0]">tap node or CDB route trail for hologram pop-out / 節点・CDB航路でホログラム起動</p>
             ) : null}
           </div>
           <div className="mt-2 rounded-md border border-[rgba(126,214,247,0.34)] bg-[rgba(7,19,33,0.76)] px-2 py-2 shadow-[0_14px_30px_rgba(0,9,20,0.34)]">
@@ -4308,6 +6258,41 @@ export function SimulationCanvas({
       {!compactHud ? (
         <div className="absolute bottom-2 left-2 text-xs text-[var(--muted)] pointer-events-none">
           <p ref={metaRef}>simulation stream active</p>
+        </div>
+      ) : null}
+      {interactive ? (
+        <div
+          className={`absolute left-2 z-20 pointer-events-none rounded-md border border-[rgba(122,182,220,0.34)] bg-[rgba(6,16,28,0.72)] px-2 py-1.5 text-[10px] text-[#cde8ff] ${
+            compactHud ? "bottom-10 max-w-[19rem]" : "bottom-12 max-w-[24rem]"
+          }`}
+        >
+          <p className="uppercase tracking-[0.1em] text-[#9fd2f3]">particle key</p>
+          {overlayParticleModeActive ? (
+            <>
+              <p className="text-[#9ecbe8]">primary classes (one class per particle, n={particleLegendStats.total})</p>
+              <p><span className="text-[#ffa8e8]">✦</span> chaos butterflies ({particleLegendStats.primary.chaos})</p>
+              <p><span className="text-[#cce4ff]">◆</span> nexus particles (passive) ({particleLegendStats.primary.nexus})</p>
+              <p><span className="text-[#ffdba1]">●</span> resource emitters / packets ({particleLegendStats.primary.resource})</p>
+              <p><span className="text-[#7fe8ff]">●</span> transfer daimoi ({particleLegendStats.primary.transfer})</p>
+              <p><span className="text-[#87b9df]">·</span> smart daimoi ({particleLegendStats.primary.smart}) · legacy points ({particleLegendStats.primary.legacy})</p>
+              <p className="mt-1 text-[#9ecbe8]">
+                stream signals: transfer ({particleLegendStats.overlays.transfer}) · resource ({particleLegendStats.overlays.resource})
+              </p>
+              <p className="mt-1 text-[#ffd7aa]">
+                economy: packets {resourceEconomyHud.packets} · actions {resourceEconomyHud.actionPackets} · blocked {resourceEconomyHud.blockedPackets}
+              </p>
+              <p className="text-[#ffbf9a]">
+                transfer {resourceEconomyHud.transfer.toFixed(2)} · consumed {resourceEconomyHud.consumedTotal.toFixed(2)} · starved presences {resourceEconomyHud.starvedPresences}
+              </p>
+              <p className="mt-1 text-[#9ecbe8]">mode: field particles ({liveFieldParticleCount})</p>
+            </>
+          ) : (
+            <>
+              <p><span className="text-[#8fc8ff]">●</span> no field particles in current stream</p>
+              <p className="text-[#9ecbe8]">source-of-truth mode keeps legacy point-cloud fallback disabled.</p>
+              <p className="mt-1 text-[#9ecbe8]">mode: stream-only ({fallbackPointCount} legacy points omitted)</p>
+            </>
+          )}
         </div>
       ) : null}
       {interactive ? (

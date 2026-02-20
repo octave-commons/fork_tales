@@ -23,6 +23,7 @@ from code.world_web import (
     attach_ui_projection,
     build_chat_reply,
     build_drift_scan_payload,
+    build_witness_lineage_payload,
     build_ui_projection,
     build_voice_lines,
     build_world_payload,
@@ -151,7 +152,17 @@ def test_world_panel_layering_interaction_guards_present() -> None:
     assert "world-council-grid" in viewport_source
     assert "onAdjustPanelCouncilRank" in viewport_source
     assert "onPinPanelToTertiary" in viewport_source
-    assert 'className="world-orbital-dock"' in viewport_source
+    assert "world-unity-sidebar" in viewport_source
+    assert "world-unity-icon-strip" in viewport_source
+    assert "world-unity-icon-cluster" in viewport_source
+    assert "world-unity-inline-card" in viewport_source
+    assert "world-glass-pan-pad" in viewport_source
+    assert "mouse lock: pane holds this card" in viewport_source
+    assert "pending rank on release" in viewport_source
+    assert "focusCandidateIds" in viewport_source
+    assert "if (!panelById.has(trayPanelId)" in viewport_source
+    assert "isGlassForwardCandidate" in viewport_source
+    assert "preferred simulation frame" in viewport_source
 
     body_block = _css_rule_block(css_source, ".world-panel-body")
     assert "overscroll-behavior: contain;" in body_block
@@ -205,17 +216,27 @@ def test_world_panel_world_space_state_space_contract_present() -> None:
         in app_source
     )
     assert "transition-colors pointer-events-none" in app_source
+    assert "w-full" in app_source
     assert "shadow-[0_12px_30px_rgba(2,8,14,0.34)] pointer-events-auto" in app_source
     assert "panelWorldX" in app_source
     assert "pixelsPerWorldX" in app_source
     assert 'id: "nexus.ui.world_log"' in app_source
+    assert "id: GLASS_VIEWPORT_PANEL_ID" in app_source
     assert "<WorldLogPanel catalog={catalog} />" in app_source
+    assert "onNudgeCameraPan={nudgeCameraPan}" in app_source
+    assert "isGlassPrimaryPanelId" in app_source
+    assert "Glass lane preferred" in app_source
     assert "if (!isWideViewport)" not in app_source
 
     assert 'className="world-council-root"' in viewport_source
     assert "world-council-grid" in viewport_source
-    assert "world-smart-pile" in viewport_source
-    assert "world-orbital-dock" in viewport_source
+    assert "world-council-shell" in viewport_source
+    assert "world-unity-sidebar" in viewport_source
+    assert "world-unity-icon-strip" in viewport_source
+    assert "world-unity-icon-cluster" in viewport_source
+    assert "world-unity-inline-card" in viewport_source
+    assert "world-task-tray-glass" in viewport_source
+    assert "world-orbital-dock" not in viewport_source
     assert 'renderFocusPane("primary", primaryPanelId)' in viewport_source
     assert "onAdjustPanelCouncilRank" in viewport_source
     assert "onPinPanelToTertiary" in viewport_source
@@ -230,14 +251,20 @@ def test_world_panel_world_space_state_space_contract_present() -> None:
     focus_block = _css_rule_block(css_source, ".world-focus-pane")
     assert "max-height: calc(100vh - 12.2rem);" in focus_block
 
-    smart_pile_block = _css_rule_block(css_source, ".world-smart-pile")
-    assert "display: grid;" in smart_pile_block
+    unity_sidebar_block = _css_rule_block(css_source, ".world-unity-sidebar")
+    assert "display: grid;" in unity_sidebar_block
 
-    orbital_dock_block = _css_rule_block(css_source, ".world-orbital-dock")
-    assert "position: fixed;" in orbital_dock_block
+    unity_strip_block = _css_rule_block(css_source, ".world-unity-icon-strip")
+    assert "overflow: auto;" in unity_strip_block
+    assert "max-height:" in unity_strip_block
+
+    unity_cluster_block = _css_rule_block(css_source, ".world-unity-icon-cluster")
+    assert "display: grid;" in unity_cluster_block
 
     assert ".world-smart-card-actions" in css_source
+    assert ".world-unity-icon" in css_source
     assert ".world-focus-action-close" in css_source
+    assert ".world-focus-pane-glass" in css_source
 
 
 def test_hologram_canvas_remote_resource_metadata_contract() -> None:
@@ -334,6 +361,40 @@ def test_world_log_panel_contract_present() -> None:
     assert 'if (source !== "nasa_gibs")' in panel_source
     assert 'loading="lazy"' in panel_source
     assert 'referrerPolicy="no-referrer"' in panel_source
+
+
+def test_witness_thread_ledger_panel_contract_present() -> None:
+    part_root = Path(__file__).resolve().parents[2]
+    app_path = part_root / "frontend" / "src" / "App.tsx"
+    layout_path = part_root / "frontend" / "src" / "app" / "worldPanelLayout.ts"
+    panel_path = part_root / "frontend" / "src" / "components" / "Panels" / "Chat.tsx"
+    server_path = part_root / "code" / "world_web" / "server.py"
+
+    app_source = app_path.read_text("utf-8")
+    layout_source = layout_path.read_text("utf-8")
+    panel_source = panel_path.read_text("utf-8")
+    server_source = server_path.read_text("utf-8")
+
+    assert 'id: "nexus.ui.chat.witness_thread"' in app_source
+    assert "multi_entity: true" in app_source
+    assert 'presence_ids: [resolvedMusePresenceId || "witness_thread"]' in app_source
+    assert "activeMusePresenceId={activeMusePresenceId}" in app_source
+    assert "onMusePresenceChange={setActiveMusePresenceId}" in app_source
+    assert "emitWitnessChatReply" in app_source
+    assert '"nexus.ui.chat.witness_thread": {' in layout_source
+    assert 'anchorId: "witness_thread"' in layout_source
+
+    assert "Witness Thread Ledger / 証人の糸 台帳" in panel_source
+    assert "Particles Made Clear / 粒子明瞭化" in panel_source
+    assert 'runtimeApiUrl("/api/witness/lineage")' in panel_source
+    assert "/say witness_thread ${trimmed}" in panel_source
+    assert (
+        'const [chatChannel, setChatChannel] = useState<ChatChannel>("ledger")'
+        in panel_source
+    )
+
+    assert 'if parsed.path == "/api/witness/lineage":' in server_source
+    assert "build_witness_lineage_payload(self.part_root)" in server_source
 
 
 def test_stability_observatory_panel_npu_widget_contract_present() -> None:
@@ -454,6 +515,106 @@ def test_chat_reply_multi_entity_ollama_falls_back_per_presence() -> None:
     assert payload["trace"]["entities"][0]["status"] == "fallback"
     assert len(payload["trace"]["failures"]) == 1
     assert payload["trace"]["failures"][0]["fallback_used"] is True
+
+
+def test_witness_lineage_payload_raises_missing_upstream_drift(
+    monkeypatch: Any,
+) -> None:
+    def fake_run(
+        cmd: list[str],
+        cwd: str,
+        check: bool,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, check, capture_output, text, timeout
+        args = cmd[1:]
+        if args == ["rev-parse", "--is-inside-work-tree"]:
+            return subprocess.CompletedProcess(cmd, 0, "true\n", "")
+        if args == ["rev-parse", "--show-toplevel"]:
+            return subprocess.CompletedProcess(cmd, 0, "/tmp/repo\n", "")
+        if args == ["rev-parse", "--abbrev-ref", "HEAD"]:
+            return subprocess.CompletedProcess(cmd, 0, "feature/witness-ledger\n", "")
+        if args == ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]:
+            return subprocess.CompletedProcess(cmd, 128, "", "no upstream configured")
+        if args == ["status", "--porcelain"]:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                "M  part64/frontend/src/App.tsx\n M receipts.log\n?? specs/drafts/witness.md\n",
+                "",
+            )
+        if args == ["log", "-1", "--pretty=%h %s"]:
+            return subprocess.CompletedProcess(cmd, 0, "abc1234 witness baseline\n", "")
+        raise AssertionError(f"unexpected git command: {cmd}")
+
+    monkeypatch.setattr(world_web_module.subprocess, "run", fake_run)
+
+    payload = build_witness_lineage_payload(Path("."))
+
+    assert payload["ok"] is True
+    assert payload["record"] == "ημ.witness-lineage.v1"
+    assert payload["checkpoint"]["branch"] == "feature/witness-ledger"
+    assert payload["checkpoint"]["upstream"] == ""
+    assert payload["push_obligation"] is False
+    assert payload["push_obligation_unknown"] is True
+    assert payload["working_tree"]["dirty"] is True
+    assert payload["working_tree"]["staged"] == 1
+    assert payload["working_tree"]["unstaged"] == 1
+    assert payload["working_tree"]["untracked"] == 1
+    assert payload["continuity_drift"]["active"] is True
+    assert payload["continuity_drift"]["code"] == "missing_upstream"
+
+
+def test_witness_lineage_payload_reports_ahead_behind_when_upstream_present(
+    monkeypatch: Any,
+) -> None:
+    def fake_run(
+        cmd: list[str],
+        cwd: str,
+        check: bool,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, check, capture_output, text, timeout
+        args = cmd[1:]
+        if args == ["rev-parse", "--is-inside-work-tree"]:
+            return subprocess.CompletedProcess(cmd, 0, "true\n", "")
+        if args == ["rev-parse", "--show-toplevel"]:
+            return subprocess.CompletedProcess(cmd, 0, "/tmp/repo\n", "")
+        if args == ["rev-parse", "--abbrev-ref", "HEAD"]:
+            return subprocess.CompletedProcess(cmd, 0, "main\n", "")
+        if args == ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]:
+            return subprocess.CompletedProcess(cmd, 0, "origin/main\n", "")
+        if args == ["rev-list", "--left-right", "--count", "HEAD...@{upstream}"]:
+            return subprocess.CompletedProcess(cmd, 0, "3\t2\n", "")
+        if args == ["status", "--porcelain"]:
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        if args == ["log", "-1", "--pretty=%h %s"]:
+            return subprocess.CompletedProcess(cmd, 0, "def5678 synced\n", "")
+        if args == ["remote", "get-url", "origin"]:
+            return subprocess.CompletedProcess(
+                cmd, 0, "git@github.com:err/fork_tales.git\n", ""
+            )
+        raise AssertionError(f"unexpected git command: {cmd}")
+
+    monkeypatch.setattr(world_web_module.subprocess, "run", fake_run)
+
+    payload = build_witness_lineage_payload(Path("."))
+
+    assert payload["ok"] is True
+    assert payload["checkpoint"]["branch"] == "main"
+    assert payload["checkpoint"]["upstream"] == "origin/main"
+    assert payload["checkpoint"]["ahead"] == 3
+    assert payload["checkpoint"]["behind"] == 2
+    assert payload["push_obligation"] is True
+    assert payload["push_obligation_unknown"] is False
+    assert payload["repo"]["remote"] == "origin"
+    assert payload["repo"]["remote_url"] == "git@github.com:err/fork_tales.git"
+    assert payload["continuity_drift"]["active"] is True
+    assert payload["continuity_drift"]["code"] == "behind_upstream"
 
 
 def test_embedding_backend_accepts_tensorflow(monkeypatch: Any) -> None:
@@ -4691,6 +4852,134 @@ def test_simulation_state_includes_crawler_graph_nodes() -> None:
     assert len(simulation.get("points", [])) == simulation.get("total", 0)
 
 
+def test_simulation_state_unifies_crawler_nodes_into_nexus_graph() -> None:
+    catalog = {
+        "items": [],
+        "counts": {},
+        "file_graph": {
+            "record": "ημ.file-graph.v1",
+            "generated_at": "2026-02-16T00:00:00+00:00",
+            "inbox": {},
+            "nodes": [
+                {
+                    "id": "field:gates_of_truth",
+                    "node_type": "field",
+                    "node_id": "field:gates_of_truth",
+                    "x": 0.2,
+                    "y": 0.2,
+                    "hue": 52,
+                    "field": "f2",
+                    "label": "gates_of_truth",
+                },
+                {
+                    "id": "file:1",
+                    "node_type": "file",
+                    "x": 0.4,
+                    "y": 0.4,
+                    "hue": 200,
+                    "importance": 0.5,
+                    "source_rel_path": "notes/a.md",
+                    "dominant_field": "f2",
+                },
+            ],
+            "field_nodes": [
+                {
+                    "id": "field:gates_of_truth",
+                    "node_type": "field",
+                    "node_id": "field:gates_of_truth",
+                    "x": 0.2,
+                    "y": 0.2,
+                    "hue": 52,
+                    "field": "f2",
+                    "label": "gates_of_truth",
+                }
+            ],
+            "file_nodes": [
+                {
+                    "id": "file:1",
+                    "node_type": "file",
+                    "x": 0.4,
+                    "y": 0.4,
+                    "hue": 200,
+                    "importance": 0.5,
+                    "source_rel_path": "notes/a.md",
+                    "dominant_field": "f2",
+                }
+            ],
+            "edges": [],
+            "stats": {
+                "field_count": 1,
+                "file_count": 1,
+                "edge_count": 0,
+                "kind_counts": {},
+                "field_counts": {"f2": 1},
+                "knowledge_entries": 0,
+            },
+        },
+        "crawler_graph": {
+            "record": "ημ.crawler-graph.v1",
+            "generated_at": "2026-02-16T00:00:00+00:00",
+            "source": {
+                "endpoint": "http://127.0.0.1:8793/api/weaver/graph",
+                "service": "web-graph-weaver",
+            },
+            "status": {"alive": 1, "queue_size": 0},
+            "nodes": [],
+            "field_nodes": [],
+            "crawler_nodes": [
+                {
+                    "id": "crawler:abc",
+                    "node_id": "url:https://example.org",
+                    "node_type": "crawler",
+                    "crawler_kind": "url",
+                    "label": "https://example.org",
+                    "x": 0.68,
+                    "y": 0.32,
+                    "hue": 200,
+                    "importance": 0.8,
+                    "url": "https://example.org",
+                    "dominant_field": "f2",
+                }
+            ],
+            "edges": [
+                {
+                    "id": "edge:field-to-crawler",
+                    "source": "crawler-field:gates_of_truth",
+                    "target": "crawler:abc",
+                    "kind": "hyperlink",
+                    "weight": 0.4,
+                }
+            ],
+            "stats": {
+                "field_count": 1,
+                "crawler_count": 1,
+                "edge_count": 1,
+                "kind_counts": {"url": 1},
+                "field_counts": {"f2": 1},
+                "nodes_total": 1,
+                "edges_total": 1,
+                "url_nodes_total": 1,
+            },
+        },
+    }
+
+    simulation = build_simulation_state(catalog)
+    file_graph = simulation.get("file_graph", {})
+    graph_nodes = file_graph.get("nodes", []) if isinstance(file_graph, dict) else []
+    graph_edges = file_graph.get("edges", []) if isinstance(file_graph, dict) else []
+    crawler_rows = (
+        file_graph.get("crawler_nodes", []) if isinstance(file_graph, dict) else []
+    )
+
+    assert any(str(node.get("id", "")) == "crawler:abc" for node in graph_nodes)
+    assert any(str(node.get("id", "")) == "crawler:abc" for node in crawler_rows)
+    assert any(
+        str(edge.get("source", "")) == "field:gates_of_truth"
+        and str(edge.get("target", "")) == "crawler:abc"
+        for edge in graph_edges
+    )
+
+
 def test_catalog_includes_truth_state_snapshot() -> None:
     with tempfile.TemporaryDirectory() as td:
         vault = Path(td)
@@ -5295,10 +5584,26 @@ def test_simulation_state_includes_presence_dynamics_and_file_sentinel() -> None
     assert isinstance(compute_jobs, list)
     assert compute_jobs[0].get("id") == "compute:test-1"
     assert compute_jobs[0].get("emitter_presence_id") == "health_sentinel_gpu1"
+    simulation_budget = dynamics.get("simulation_budget", {})
+    assert int(simulation_budget.get("point_limit", 0)) <= int(
+        simulation_budget.get("point_limit_max", 0)
+    )
+    slice_offload = simulation_budget.get("slice_offload", {})
+    assert str(slice_offload.get("source", "")).strip()
+    assert "fallback" in slice_offload
     field_particles = dynamics.get("field_particles", [])
     assert isinstance(field_particles, list)
     assert dynamics.get("field_particles_record") == "ημ.field-particles.v1"
     assert simulation.get("field_particles") == field_particles
+    resource_daimoi = dynamics.get("resource_daimoi", {})
+    assert resource_daimoi.get("record") == "eta-mu.resource-daimoi-flow.v1"
+    assert "delivered_packets" in resource_daimoi
+    assert "total_transfer" in resource_daimoi
+    resource_consumption = dynamics.get("resource_consumption", {})
+    assert resource_consumption.get("record") == "eta-mu.resource-daimoi-consumption.v1"
+    assert "action_packets" in resource_consumption
+    assert "blocked_packets" in resource_consumption
+    assert "consumed_total" in resource_consumption
     if field_particles:
         first_particle = field_particles[0]
         assert str(first_particle.get("presence_id", "")).strip()
@@ -5307,6 +5612,10 @@ def test_simulation_state_includes_presence_dynamics_and_file_sentinel() -> None
         assert 0.0 <= float(first_particle.get("r", 0.0)) <= 0.8
         assert 0.0 <= float(first_particle.get("g", 0.0)) <= 0.8
         assert 0.0 <= float(first_particle.get("b", 0.0)) <= 0.8
+        if first_particle.get("resource_consume_amount") is not None:
+            assert float(first_particle.get("resource_consume_amount", 0.0)) >= 0.0
+        if first_particle.get("resource_action_blocked") is not None:
+            assert isinstance(first_particle.get("resource_action_blocked"), bool)
 
 
 def test_simulation_state_witness_thread_uses_idle_lineage_without_events() -> None:

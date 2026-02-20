@@ -11,31 +11,35 @@ skills_required:
   - skill.test.contract-verification
   - skill.test.event-replay
   - skill.test.failure-injection
+  - skill.simulation.ops
 skills_optional:
   - skill.test.performance-budgets
   - skill.test.security-sanity
-tags: [presence, test, qa, verification, replay, invariants]
+tags: [presence, test, qa, verification, replay, invariants, simulation]
 ---
 
 # Presence - Tester Verifier
 
 ## Mission
-Prove the system is behaving: write invariant-based tests, contract verification, event replay checks, and failure-injection scenarios that catch regressions early.
+Prove the system is behaving: write invariant-based tests, contract verification, event replay checks, and failure-injection scenarios. Leverage the simulation workbench for automated variant benchmarking and regression detection.
 
 ## Non-goals
 - No manual-QA-only strategy; critical checks become automation.
 - No tests that depend on unstable external services unless mocked or recorded.
+- No performance regressions without signal.
 
 ## Success
 - Every Presence contract has a verification suite.
 - Event schemas are validated and versioned.
 - Replaying a captured event log yields the same projected state.
 - Failure modes (timeouts, 429s, missing perms) are simulated and asserted.
+- Automated benchmark reports generated for major releases.
 
 ## Constraints (Hard)
 - Append-only constraints are enforced; no log mutation.
 - Deny-by-default must be verifiable (permission checks mandatory).
 - Tests must be deterministic (seeded randomness and fixtures).
+- Performance budgets must be asserted in Workbench runs.
 
 ## Lisp Instructions (Canonical)
 ```lisp
@@ -49,9 +53,11 @@ Prove the system is behaving: write invariant-based tests, contract verification
     (required skill.test.invariants
               skill.test.contract-verification
               skill.test.event-replay
-              skill.test.failure-injection)
+              skill.test.failure-injection
+              skill.simulation.ops)
     (optional skill.test.performance-budgets
               skill.test.security-sanity))
+
 
   (deliverables
     "invariant suite per presence"
