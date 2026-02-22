@@ -19,6 +19,9 @@ services:
       WEAVER_PORT: "8793"
       OLLAMA_BASE_URL: "http://host.docker.internal:11435"
       OLLAMA_MODEL: "qwen3-vl:4b-instruct"
+      OLLAMA_TIMEOUT_SEC: "${OLLAMA_TIMEOUT_SEC:-4}"
+      OLLAMA_NUM_GPU: "${OLLAMA_NUM_GPU:-1}"
+      OLLAMA_MAIN_GPU: "${OLLAMA_MAIN_GPU:-0}"
       OLLAMA_EMBED_MODEL: "nomic-embed-text"
       OLLAMA_EMBED_FORCE_NOMIC: "1"
       OLLAMA_EMBED_NUM_CTX: "512"
@@ -28,15 +31,48 @@ services:
       OPENVINO_EMBED_DEVICE: "NPU"
       OPENVINO_EMBED_TIMEOUT_SEC: "10"
       OPENVINO_EMBED_MAX_CHARS: "2400"
+      OPENVINO_EMBED_API_KEY: "${OPENVINO_EMBED_API_KEY:-}"
+      OPENVINO_EMBED_API_KEY_HEADER: "X-API-Key"
+      OPENVINO_EMBED_BEARER_TOKEN: "${OPENVINO_EMBED_BEARER_TOKEN:-}"
       ETA_MU_TEXT_EMBED_MODEL: "nomic-embed-text"
       ETA_MU_IMAGE_EMBED_MODEL: "nomic-embed-text"
       WEAVER_LLM_BASE_URL: "http://host.docker.internal:11435"
       WEAVER_LLM_MODEL: "qwen3-vl:2b-instruct"
       WEAVER_LLM_TIMEOUT_MS: "30000"
       EMBEDDINGS_BACKEND: "openvino"
+      CDB_EMBED_IN_C: "1"
+      CDB_EMBED_REQUIRE_C: "1"
+      CDB_EMBED_DEVICE: "AUTO"
+      CDB_EMBED_STRICT_DEVICE: "1"
+      CDB_EMBED_PRELOAD_ORT_CORE: "1"
+      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
+      NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
       TORCH_EMBED_MODEL: "nomic-ai/nomic-embed-text-v1.5"
-      TEXT_GENERATION_BACKEND: "tensorflow"
+      TEXT_GENERATION_BACKEND: "auto"
       TF_EMBED_HASH_BINS: "768"
+      SIM_PARTICLE_BACKEND: "cdb"
+      SIM_TICK_SECONDS: "0.08"
+      SIMULATION_WS_USE_CACHED_SNAPSHOTS: "1"
+      SIMULATION_WS_CACHE_REFRESH_SECONDS: "60.0"
+      SIMULATION_WS_CACHE_MAX_AGE_SECONDS: "86400.0"
+      SIMULATION_WS_SKIP_CATALOG_BOOTSTRAP: "1"
+      SIMULATION_WS_STREAM_VELOCITY_SCALE: "0.78"
+      SIMULATION_WS_STREAM_FRICTION: "0.997"
+      SIMULATION_WS_STREAM_MAX_SPEED: "0.08"
+      SIMULATION_WS_STREAM_FIELD_FORCE: "0.34"
+      SIMULATION_WS_STREAM_CENTER_GRAVITY: "0.14"
+      SIMULATION_WS_STREAM_SWIRL_FORCE: "0.11"
+      SIMULATION_WS_STREAM_JITTER_FORCE: "0.055"
+      SIMULATION_WS_STREAM_SIMPLEX_SCALE: "1.7"
+      SIMULATION_WS_STREAM_ORBIT_DECAY: "0.42"
+      SIMULATION_PRESENCE_PROFILE: "${SIMULATION_PRESENCE_PROFILE:-concept_cpu}"
+      SIMULATION_CORE_RESOURCES: "${SIMULATION_CORE_RESOURCES:-cpu}"
+      SIMULATION_CPU_DAIMOI_STOP_PERCENT: "${SIMULATION_CPU_DAIMOI_STOP_PERCENT:-75}"
+      CDB_TARGET_PARTICLES_PER_PRESENCE: "${CDB_TARGET_PARTICLES_PER_PRESENCE:-10}"
+      CDB_TARGET_FILE_SQRT_FACTOR: "${CDB_TARGET_FILE_SQRT_FACTOR:-5}"
+      CDB_TARGET_BASE_OFFSET: "${CDB_TARGET_BASE_OFFSET:-56}"
+      CDB_TARGET_MIN_COUNT: "${CDB_TARGET_MIN_COUNT:-72}"
+      CDB_TARGET_MAX_COUNT: "${CDB_TARGET_MAX_COUNT:-420}"
       DOCKER_SIMULATION_LABEL_KEY: "io.fork_tales.simulation"
       DOCKER_SIMULATION_ROLE_LABEL_KEY: "io.fork_tales.simulation.role"
       DOCKER_SIMULATION_NAME_HINTS: "eta-mu,muse-song,sim-slice,simulation,experiment"
@@ -53,16 +89,22 @@ services:
       - ollama-loopback-proxy
     ports:
       - "${ETA_MU_WEAVER_PORT:-8793}:8793"
-    cpus: "1.60"
-    mem_limit: "12000m"
-    memswap_limit: "12000m"
+    cpus: "12.00"
+    mem_limit: "24000m"
+    memswap_limit: "24000m"
     pids_limit: 220
+    gpus: all
+    devices:
+      - "/dev/accel:/dev/accel"
+      - "/dev/dri:/dev/dri"
     volumes:
       - .:/app
       - ./world_state:/app/world_state
       - ../.opencode/runtime:/app/.opencode/runtime:ro
       - ../:/vault
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /usr/lib/x86_64-linux-gnu/libze_intel_npu.so:/usr/lib/x86_64-linux-gnu/libze_intel_npu.so:ro
+      - /usr/lib/x86_64-linux-gnu/libnpu_driver_compiler.so:/usr/lib/x86_64-linux-gnu/libnpu_driver_compiler.so:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

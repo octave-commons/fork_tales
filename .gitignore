@@ -65,5 +65,7 @@ part64/bench_embed_native_ov
 part64/onnxruntime-linux-*.tgz
 part64/onnxruntime-linux-*/
 part64/runs/
+part64/code/world_web/native/libc_embed_runtime.so
+part64/code/world_web/native/libc_embed_runtime.buildinfo
 part64/frontend/coverage/
 session-ses_*.md

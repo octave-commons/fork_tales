@@ -159,6 +159,11 @@ interface OverlayApi {
   singAll?: () => void;
   getAnchorRatio?: (kind: string, targetId: string) => { x: number; y: number; kind: string; label?: string } | null;
   projectRatioToClient?: (xRatio: number, yRatio: number) => { x: number; y: number; w: number; h: number };
+  interactAt?: (
+    xRatio: number,
+    yRatio: number,
+    options?: { openWorldscreen?: boolean },
+  ) => { hitNode: boolean; openedWorldscreen: boolean; target: string };
 }
 
 interface UiToast {
@@ -4333,10 +4338,35 @@ export default function App() {
     };
   }, [viewportHeight, viewportWidth, worldPanelLayout]);
 
+  const lastGlassClickRef = useRef<{ ts: number; x: number; y: number } | null>(null);
+
+  const handleGlassInteractAt = useCallback((xRatio: number, yRatio: number) => {
+    const anchorX = clamp(Number(xRatio ?? 0.5), 0, 1);
+    const anchorY = clamp(Number(yRatio ?? 0.5), 0, 1);
+    const result = overlayApi?.interactAt?.(anchorX, anchorY, { openWorldscreen: true });
+    if (result?.hitNode) {
+      return;
+    }
+
+    const now = performance.now();
+    const last = lastGlassClickRef.current;
+    if (last && (now - last.ts) < 320 && Math.abs(last.x - anchorX) < 0.05 && Math.abs(last.y - anchorY) < 0.05) {
+      // Double click on glass -> fly camera
+      flyCameraToRatios(anchorX, anchorY, "node", glassCenterRatio.x, glassCenterRatio.y);
+      lastGlassClickRef.current = null;
+      return;
+    }
+    lastGlassClickRef.current = { ts: now, x: anchorX, y: anchorY };
+
+    overlayApi?.pulseAt?.(anchorX, anchorY, 0.88, result?.target ?? "glass_click");
+  }, [flyCameraToRatios, glassCenterRatio.x, glassCenterRatio.y, overlayApi]);
+
   const handleNexusInteraction = useCallback((event: NexusInteractionEvent) => {
     const anchorX = clamp(Number(event.xRatio ?? 0.5), 0, 1);
     const anchorY = clamp(Number(event.yRatio ?? 0.5), 0, 1);
-    flyCameraToRatios(anchorX, anchorY, "node", glassCenterRatio.x, glassCenterRatio.y);
+    if (event.isDoubleTap) {
+      flyCameraToRatios(anchorX, anchorY, "node", glassCenterRatio.x, glassCenterRatio.y);
+    }
     overlayApi?.pulseAt?.(
       anchorX,
       anchorY,
@@ -4529,6 +4559,7 @@ export default function App() {
           onAdjustPanelCouncilRank={adjustPanelCouncilRank}
           onPinPanelToTertiary={pinPanelToTertiary}
           onFlyCameraToAnchor={flyCameraToAnchor}
+          onGlassInteractAt={handleGlassInteractAt}
           onNudgeCameraPan={nudgeCameraPan}
           onWorldPanelDragEnd={handleWorldPanelDragEnd}
         />

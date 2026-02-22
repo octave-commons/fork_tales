@@ -11,6 +11,7 @@ import shutil
 import socket
 import struct
 import subprocess
+import select
 import sys
 import tempfile
 import threading
@@ -120,6 +121,7 @@ from .projection import (
     projection_perspective_options,
 )
 from .simulation import (
+    advance_simulation_field_particles,
     build_simulation_delta,
     build_mix_stream,
     build_named_field_overlays,
@@ -317,6 +319,48 @@ _RUNTIME_GUARD_HEARTBEAT_SECONDS = max(
     1.0,
     float(os.getenv("RUNTIME_GUARD_HEARTBEAT_SECONDS", "4.5") or "4.5"),
 )
+_SIMULATION_WS_FULL_SNAPSHOT_HEARTBEAT_SECONDS = max(
+    0.0,
+    float(os.getenv("SIMULATION_WS_FULL_SNAPSHOT_HEARTBEAT_SECONDS", "12.0") or "12.0"),
+)
+_SIMULATION_WS_PROJECTION_HEARTBEAT_SECONDS = max(
+    0.0,
+    float(os.getenv("SIMULATION_WS_PROJECTION_HEARTBEAT_SECONDS", "2.5") or "2.5"),
+)
+_SIMULATION_WS_DELTA_STREAM_MODE = (
+    str(os.getenv("SIMULATION_WS_DELTA_STREAM_MODE", "world") or "world")
+    .strip()
+    .lower()
+)
+_SIMULATION_WS_USE_CACHED_SNAPSHOTS = str(
+    os.getenv("SIMULATION_WS_USE_CACHED_SNAPSHOTS", "0") or "0"
+).strip().lower() in {"1", "true", "yes", "on"}
+_SIMULATION_WS_CACHE_REFRESH_SECONDS = max(
+    SIM_TICK_SECONDS,
+    float(os.getenv("SIMULATION_WS_CACHE_REFRESH_SECONDS", "1.0") or "1.0"),
+)
+_SIMULATION_WS_CACHE_MAX_AGE_SECONDS = max(
+    _SIMULATION_HTTP_CACHE_SECONDS,
+    float(os.getenv("SIMULATION_WS_CACHE_MAX_AGE_SECONDS", "300.0") or "300.0"),
+)
+_SIMULATION_WS_SKIP_CATALOG_BOOTSTRAP = str(
+    os.getenv("SIMULATION_WS_SKIP_CATALOG_BOOTSTRAP", "0") or "0"
+).strip().lower() in {"1", "true", "yes", "on"}
+_SIMULATION_WS_MUSE_POLL_SECONDS = max(
+    0.05,
+    float(os.getenv("SIMULATION_WS_MUSE_POLL_SECONDS", "0.5") or "0.5"),
+)
+_SIMULATION_WS_STREAM_PARTICLE_MAX = max(
+    48,
+    int(float(os.getenv("SIMULATION_WS_STREAM_PARTICLE_MAX", "180") or "180")),
+)
+_WS_WIRE_ARRAY_SCHEMA = "eta-mu.ws.arr.v1"
+_WS_WIRE_MODE_DEFAULT = str(os.getenv("WS_WIRE_MODE", "json") or "json").strip().lower()
+_WS_PACK_TAG_OBJECT = -1
+_WS_PACK_TAG_ARRAY = -2
+_WS_PACK_TAG_STRING = -3
+_WS_PACK_TAG_BOOL = -4
+_WS_PACK_TAG_NULL = -5
 
 
 def _runtime_ws_client_snapshot() -> dict[str, int]:
@@ -421,6 +465,66 @@ def _runtime_health_payload(part_root: Path) -> dict[str, Any]:
 
 def _json_compact(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _normalize_ws_wire_mode(mode: str) -> str:
+    clean = str(mode or "").strip().lower()
+    if clean in {"arr", "array", "arrays", "packed", "compact"}:
+        return "arr"
+    if clean in {"json", "object", "objects", "legacy"}:
+        return "json"
+    default_mode = str(_WS_WIRE_MODE_DEFAULT or "json").strip().lower()
+    if default_mode in {"arr", "array", "arrays", "packed", "compact"}:
+        return "arr"
+    return "json"
+
+
+def _ws_pack_value(
+    value: Any,
+    *,
+    key_table: list[str],
+    key_index: dict[str, int],
+) -> Any:
+    if value is None:
+        return [_WS_PACK_TAG_NULL]
+    if isinstance(value, bool):
+        return [_WS_PACK_TAG_BOOL, 1 if value else 0]
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return [_WS_PACK_TAG_STRING, "0"]
+        return value
+    if isinstance(value, str):
+        return [_WS_PACK_TAG_STRING, value]
+    if isinstance(value, list):
+        encoded_items = [
+            _ws_pack_value(item, key_table=key_table, key_index=key_index)
+            for item in value
+        ]
+        return [_WS_PACK_TAG_ARRAY, *encoded_items]
+    if isinstance(value, dict):
+        encoded_pairs: list[Any] = [_WS_PACK_TAG_OBJECT]
+        for key, nested in value.items():
+            key_name = str(key)
+            key_slot = key_index.get(key_name)
+            if key_slot is None:
+                key_slot = len(key_table)
+                key_index[key_name] = key_slot
+                key_table.append(key_name)
+            encoded_pairs.append(key_slot)
+            encoded_pairs.append(
+                _ws_pack_value(nested, key_table=key_table, key_index=key_index)
+            )
+        return encoded_pairs
+    return [_WS_PACK_TAG_STRING, str(value)]
+
+
+def _ws_pack_message(payload: dict[str, Any]) -> list[Any]:
+    key_table: list[str] = []
+    key_index: dict[str, int] = {}
+    encoded = _ws_pack_value(payload, key_table=key_table, key_index=key_index)
+    return [_WS_WIRE_ARRAY_SCHEMA, key_table, encoded]
 
 
 def _simulation_http_cache_key(
@@ -890,6 +994,507 @@ def _simulation_ws_trim_simulation_payload(
     ):
         trimmed.pop(key, None)
     return trimmed
+
+
+def _simulation_ws_placeholder_payload(
+    *,
+    perspective: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    simulation: dict[str, Any] = {
+        "ok": True,
+        "generated_at": now_iso,
+        "timestamp": now_iso,
+        "total": 0,
+        "audio": 0,
+        "image": 0,
+        "video": 0,
+        "points": [],
+        "presence_dynamics": {
+            "generated_at": now_iso,
+            "simulation_budget": {
+                "point_limit": 0,
+                "point_limit_max": 0,
+                "cpu_utilization": 0.0,
+                "slice_offload": {},
+            },
+            "emission_policy": {},
+            "presence_impacts": [],
+            "field_particles": [],
+            "daimoi_probabilistic": {},
+        },
+        "perspective": perspective,
+    }
+    return simulation, {}
+
+
+def _simulation_ws_compact_field_particles(rows: Any) -> list[dict[str, Any]]:
+    return _simulation_ws_compact_field_particles_with_nodes(
+        rows,
+        node_positions={},
+        node_text_chars={},
+    )
+
+
+def _simulation_ws_collect_node_positions(
+    simulation_payload: dict[str, Any],
+) -> tuple[dict[str, tuple[float, float]], dict[str, float]]:
+    if not isinstance(simulation_payload, dict):
+        return {}, {}
+
+    node_positions: dict[str, tuple[float, float]] = {}
+    node_text_chars: dict[str, float] = {}
+
+    def _node_text_weight(row: dict[str, Any]) -> float:
+        text_keys = (
+            "summary",
+            "text_excerpt",
+            "excerpt",
+            "title",
+            "label",
+            "name",
+            "url",
+            "dominant_field",
+            "dominant_presence",
+        )
+        total = 0
+        for key in text_keys:
+            value = row.get(key)
+            if isinstance(value, str):
+                total += len(value)
+            elif isinstance(value, list):
+                total += sum(len(str(item)) for item in value)
+        return float(total)
+
+    def _collect_graph_nodes(graph_payload: Any) -> list[dict[str, Any]]:
+        if not isinstance(graph_payload, dict):
+            return []
+        rows: list[dict[str, Any]] = []
+        for key in ("nodes", "file_nodes", "crawler_nodes", "field_nodes", "tag_nodes"):
+            values = graph_payload.get(key, [])
+            if isinstance(values, list):
+                for row in values:
+                    if isinstance(row, dict):
+                        rows.append(row)
+        return rows
+
+    for graph_key in ("file_graph", "crawler_graph", "nexus_graph"):
+        graph_payload = simulation_payload.get(graph_key, {})
+        for row in _collect_graph_nodes(graph_payload):
+            node_id = str(row.get("id", "") or "").strip()
+            if not node_id or node_id in node_positions:
+                continue
+            x_value = max(0.0, min(1.0, _safe_float(row.get("x", 0.5), 0.5)))
+            y_value = max(0.0, min(1.0, _safe_float(row.get("y", 0.5), 0.5)))
+            node_positions[node_id] = (x_value, y_value)
+            node_text_chars[node_id] = _node_text_weight(row)
+
+    return node_positions, node_text_chars
+
+
+def _simulation_ws_compact_field_particles_with_nodes(
+    rows: Any,
+    *,
+    node_positions: dict[str, tuple[float, float]],
+    node_text_chars: dict[str, float],
+) -> list[dict[str, Any]]:
+    if not isinstance(rows, list):
+        return []
+
+    compact_rows: list[dict[str, Any]] = []
+    limit = max(1, _SIMULATION_WS_STREAM_PARTICLE_MAX)
+    for index, row in enumerate(rows[:limit]):
+        if not isinstance(row, dict):
+            continue
+        particle_id = str(row.get("id", "") or "").strip() or f"ws:{index}"
+        x_value = max(0.0, min(1.0, _safe_float(row.get("x", 0.5), 0.5)))
+        y_value = max(0.0, min(1.0, _safe_float(row.get("y", 0.5), 0.5)))
+        vx_value = _safe_float(row.get("vx", 0.0), 0.0)
+        vy_value = _safe_float(row.get("vy", 0.0), 0.0)
+
+        if abs(vx_value) + abs(vy_value) < 1e-6:
+            seed = int(hashlib.sha1(particle_id.encode("utf-8")).hexdigest()[:8], 16)
+            angle = (float(seed % 6283) / 1000.0) * math.pi
+            vx_value = math.cos(angle) * 0.01
+            vy_value = math.sin(angle) * 0.01
+
+        graph_node_id = str(row.get("graph_node_id", "") or "")
+        route_node_id = str(row.get("route_node_id", "") or "")
+        graph_anchor = node_positions.get(graph_node_id)
+        route_anchor = node_positions.get(route_node_id)
+        graph_x = (
+            _safe_float(graph_anchor[0], x_value)
+            if isinstance(graph_anchor, tuple)
+            else _safe_float(row.get("graph_x", x_value), x_value)
+        )
+        graph_y = (
+            _safe_float(graph_anchor[1], y_value)
+            if isinstance(graph_anchor, tuple)
+            else _safe_float(row.get("graph_y", y_value), y_value)
+        )
+        route_x = (
+            _safe_float(route_anchor[0], graph_x)
+            if isinstance(route_anchor, tuple)
+            else _safe_float(row.get("route_x", graph_x), graph_x)
+        )
+        route_y = (
+            _safe_float(route_anchor[1], graph_y)
+            if isinstance(route_anchor, tuple)
+            else _safe_float(row.get("route_y", graph_y), graph_y)
+        )
+        semantic_text_chars = max(
+            0.0,
+            _safe_float(row.get("semantic_text_chars", 0.0), 0.0),
+            _safe_float(node_text_chars.get(route_node_id, 0.0), 0.0),
+            _safe_float(node_text_chars.get(graph_node_id, 0.0), 0.0),
+        )
+        message_probability = max(
+            0.0,
+            _safe_float(row.get("message_probability", 0.0), 0.0),
+        )
+        package_entropy = max(
+            0.0,
+            _safe_float(row.get("package_entropy", 0.0), 0.0),
+        )
+        daimoi_energy = max(
+            0.0,
+            _safe_float(row.get("daimoi_energy", 0.0), 0.0),
+            message_probability + (package_entropy * 0.35),
+        )
+        semantic_mass = max(
+            0.05,
+            _safe_float(row.get("semantic_mass", 0.0), 0.0),
+            _safe_float(row.get("mass", 0.0), 0.0),
+        )
+
+        compact_rows.append(
+            {
+                "id": particle_id,
+                "presence_id": str(row.get("presence_id", "") or ""),
+                "presence_role": str(row.get("presence_role", "") or ""),
+                "particle_mode": str(row.get("particle_mode", "") or ""),
+                "is_nexus": bool(row.get("is_nexus", False)),
+                "graph_node_id": graph_node_id,
+                "route_node_id": route_node_id,
+                "route_resource_focus": str(row.get("route_resource_focus", "") or ""),
+                "graph_x": round(max(0.0, min(1.0, graph_x)), 5),
+                "graph_y": round(max(0.0, min(1.0, graph_y)), 5),
+                "route_x": round(max(0.0, min(1.0, route_x)), 5),
+                "route_y": round(max(0.0, min(1.0, route_y)), 5),
+                "semantic_text_chars": round(semantic_text_chars, 3),
+                "semantic_mass": round(semantic_mass, 6),
+                "daimoi_energy": round(daimoi_energy, 6),
+                "message_probability": round(message_probability, 6),
+                "package_entropy": round(package_entropy, 6),
+                "collision_count": int(
+                    max(0, _safe_float(row.get("collision_count", 0.0), 0.0))
+                ),
+                "x": round(x_value, 5),
+                "y": round(y_value, 5),
+                "size": round(
+                    max(0.2, min(6.0, _safe_float(row.get("size", 1.2), 1.2))),
+                    4,
+                ),
+                "r": round(max(0.0, min(1.0, _safe_float(row.get("r", 0.4), 0.4))), 4),
+                "g": round(max(0.0, min(1.0, _safe_float(row.get("g", 0.5), 0.5))), 4),
+                "b": round(max(0.0, min(1.0, _safe_float(row.get("b", 0.7), 0.7))), 4),
+                "drift_cost_semantic_term": round(
+                    _safe_float(row.get("drift_cost_semantic_term", 0.0), 0.0), 6
+                ),
+                "drift_gravity_term": round(
+                    _safe_float(row.get("drift_gravity_term", 0.0), 0.0), 6
+                ),
+                "valve_gravity_term": round(
+                    _safe_float(row.get("valve_gravity_term", 0.0), 0.0), 6
+                ),
+                "drift_cost_term": round(
+                    _safe_float(row.get("drift_cost_term", 0.0), 0.0), 6
+                ),
+                "route_probability": round(
+                    max(
+                        0.0,
+                        min(1.0, _safe_float(row.get("route_probability", 0.0), 0.0)),
+                    ),
+                    6,
+                ),
+                "influence_power": round(
+                    max(
+                        0.0, min(1.0, _safe_float(row.get("influence_power", 0.0), 0.0))
+                    ),
+                    6,
+                ),
+                "node_saturation": round(
+                    max(
+                        0.0, min(1.0, _safe_float(row.get("node_saturation", 0.0), 0.0))
+                    ),
+                    6,
+                ),
+                "gravity_potential": round(
+                    max(0.0, _safe_float(row.get("gravity_potential", 0.0), 0.0)), 6
+                ),
+                "route_resource_focus_contribution": round(
+                    _safe_float(row.get("route_resource_focus_contribution", 0.0), 0.0),
+                    6,
+                ),
+                "vx": round(vx_value, 6),
+                "vy": round(vy_value, 6),
+            }
+        )
+    return compact_rows
+
+
+def _simulation_ws_extract_stream_particles(
+    simulation_payload: dict[str, Any],
+    *,
+    node_positions: dict[str, tuple[float, float]] | None = None,
+    node_text_chars: dict[str, float] | None = None,
+) -> list[dict[str, Any]]:
+    dynamics = (
+        simulation_payload.get("presence_dynamics", {})
+        if isinstance(simulation_payload, dict)
+        else {}
+    )
+    if not isinstance(dynamics, dict):
+        return []
+
+    compact_rows = _simulation_ws_compact_field_particles_with_nodes(
+        dynamics.get("field_particles", []),
+        node_positions=node_positions or {},
+        node_text_chars=node_text_chars or {},
+    )
+    dynamics["field_particles"] = compact_rows
+    simulation_payload["presence_dynamics"] = dynamics
+    return compact_rows
+
+
+def _simulation_ws_load_cached_payload(
+    *,
+    part_root: Path,
+    perspective: str,
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    cached_body = _simulation_http_cached_body(
+        perspective=perspective,
+        max_age_seconds=_SIMULATION_WS_CACHE_MAX_AGE_SECONDS,
+    )
+    if cached_body is None:
+        cached_body = _simulation_http_disk_cache_load(
+            part_root,
+            perspective=perspective,
+            max_age_seconds=_SIMULATION_WS_CACHE_MAX_AGE_SECONDS,
+        )
+    if cached_body is None:
+        return None
+
+    try:
+        payload = json.loads(cached_body.decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    node_positions, node_text_chars = _simulation_ws_collect_node_positions(payload)
+    simulation_payload = _simulation_ws_trim_simulation_payload(payload)
+    simulation_payload.pop("projection", None)
+    _simulation_ws_extract_stream_particles(
+        simulation_payload,
+        node_positions=node_positions,
+        node_text_chars=node_text_chars,
+    )
+    projection = payload.get("projection", {})
+    if not isinstance(projection, dict):
+        projection = {}
+    return simulation_payload, projection
+
+
+def _simulation_ws_normalize_delta_stream_mode(mode: str) -> str:
+    clean = str(mode or "").strip().lower()
+    if clean in {"worker", "workers", "thread", "threads", "subsystem", "subsystems"}:
+        return "workers"
+    if clean in {"world", "single", "legacy", "combined"}:
+        return "world"
+    if _SIMULATION_WS_DELTA_STREAM_MODE in {
+        "worker",
+        "workers",
+        "thread",
+        "threads",
+        "subsystem",
+        "subsystems",
+    }:
+        return "workers"
+    return "world"
+
+
+def _simulation_ws_worker_for_top_level_key(key: str) -> str:
+    clean = str(key or "").strip().lower()
+    if clean in {
+        "timestamp",
+        "total",
+        "audio",
+        "image",
+        "video",
+        "points",
+        "truth_state",
+        "perspective",
+        "myth",
+        "world",
+    }:
+        return "sim-core"
+    if clean in {"projection"}:
+        return "sim-projection"
+    if clean in {"field_particles", "pain_field"}:
+        return "sim-particles"
+    if clean in {"daimoi", "entities", "echoes"}:
+        return "sim-daimoi"
+    if clean in {"presence_dynamics"}:
+        return "sim-presence"
+    return "sim-misc"
+
+
+def _simulation_ws_worker_for_presence_key(key: str) -> str:
+    clean = str(key or "").strip().lower()
+    if clean in {"field_particles", "nooi_field"}:
+        return "sim-particles"
+    if clean in {
+        "simulation_budget",
+        "resource_heartbeat",
+        "compute_jobs_180s",
+        "compute_summary",
+        "compute_jobs",
+        "resource_daimoi",
+        "resource_consumption",
+        "river_flow",
+    }:
+        return "sim-resource"
+    if clean in {
+        "click_events",
+        "file_events",
+        "recent_click_targets",
+        "recent_file_paths",
+        "user_presence",
+        "user_input_messages",
+        "user_embedded_daimoi_count",
+    }:
+        return "sim-interaction"
+    if clean in {
+        "daimoi_probabilistic",
+        "daimoi_probabilistic_record",
+        "daimoi_behavior_defaults",
+        "ghost",
+        "fork_tax",
+    }:
+        return "sim-daimoi"
+    return "sim-presence"
+
+
+def _simulation_ws_split_delta_by_worker(
+    delta: dict[str, Any],
+) -> list[dict[str, Any]]:
+    patch = delta.get("patch") if isinstance(delta, dict) else None
+    if not isinstance(patch, dict) or not patch:
+        return []
+
+    worker_patch: dict[str, dict[str, Any]] = {}
+    worker_changed_keys: dict[str, list[str]] = {}
+
+    def _record_worker_patch(
+        *,
+        worker_id: str,
+        key: str,
+        value: Any,
+        changed_key: str,
+    ) -> None:
+        bucket = worker_patch.get(worker_id)
+        if not isinstance(bucket, dict):
+            bucket = {}
+            worker_patch[worker_id] = bucket
+        bucket[key] = value
+
+        changed = worker_changed_keys.get(worker_id)
+        if not isinstance(changed, list):
+            changed = []
+            worker_changed_keys[worker_id] = changed
+        if changed_key not in changed:
+            changed.append(changed_key)
+
+    for key, value in patch.items():
+        if key == "presence_dynamics":
+            if isinstance(value, dict):
+                grouped_dynamics: dict[str, dict[str, Any]] = {}
+                for dynamics_key, dynamics_value in value.items():
+                    worker_id = _simulation_ws_worker_for_presence_key(dynamics_key)
+                    grouped = grouped_dynamics.get(worker_id)
+                    if not isinstance(grouped, dict):
+                        grouped = {}
+                        grouped_dynamics[worker_id] = grouped
+                    grouped[dynamics_key] = dynamics_value
+                for worker_id, dynamics_patch in grouped_dynamics.items():
+                    bucket = worker_patch.get(worker_id)
+                    if not isinstance(bucket, dict):
+                        bucket = {}
+                        worker_patch[worker_id] = bucket
+                    existing_dynamics = bucket.get("presence_dynamics")
+                    if not isinstance(existing_dynamics, dict):
+                        existing_dynamics = {}
+                        bucket["presence_dynamics"] = existing_dynamics
+                    existing_dynamics.update(dynamics_patch)
+
+                    changed = worker_changed_keys.get(worker_id)
+                    if not isinstance(changed, list):
+                        changed = []
+                        worker_changed_keys[worker_id] = changed
+                    for dynamics_key in dynamics_patch:
+                        changed_key = f"presence_dynamics.{dynamics_key}"
+                        if changed_key not in changed:
+                            changed.append(changed_key)
+            else:
+                _record_worker_patch(
+                    worker_id="sim-presence",
+                    key="presence_dynamics",
+                    value=value,
+                    changed_key="presence_dynamics",
+                )
+            continue
+
+        _record_worker_patch(
+            worker_id=_simulation_ws_worker_for_top_level_key(key),
+            key=key,
+            value=value,
+            changed_key=key,
+        )
+
+    timestamp_value = patch.get("timestamp")
+    if timestamp_value is not None:
+        for row in worker_patch.values():
+            if isinstance(row, dict) and "timestamp" not in row:
+                row["timestamp"] = timestamp_value
+
+    worker_priority = {
+        "sim-core": 0,
+        "sim-particles": 1,
+        "sim-resource": 2,
+        "sim-interaction": 3,
+        "sim-presence": 4,
+        "sim-daimoi": 5,
+        "sim-projection": 6,
+        "sim-misc": 7,
+    }
+    rows: list[dict[str, Any]] = []
+    for worker_id, worker_row_patch in worker_patch.items():
+        changed = worker_changed_keys.get(worker_id, [])
+        rows.append(
+            {
+                "worker_id": worker_id,
+                "patch": worker_row_patch,
+                "changed_keys": changed,
+            }
+        )
+    rows.sort(
+        key=lambda row: (
+            worker_priority.get(str(row.get("worker_id", "")), 99),
+            str(row.get("worker_id", "")),
+        )
+    )
+    return rows
 
 
 def _simulation_http_compact_simulation_payload(
@@ -1684,8 +2289,14 @@ class WorldHandler(BaseHTTPRequestHandler):
             status=status,
         )
 
-    def _send_ws_event(self, payload: dict[str, Any]) -> None:
-        frame = websocket_frame_text(_json_compact(payload))
+    def _send_ws_event(
+        self, payload: dict[str, Any], *, wire_mode: str = "json"
+    ) -> None:
+        if _normalize_ws_wire_mode(wire_mode) == "arr":
+            ws_payload: Any = _ws_pack_message(payload)
+        else:
+            ws_payload = payload
+        frame = websocket_frame_text(_json_compact(ws_payload))
         timeout_before = self.connection.gettimeout()
         timeout_overridden = False
         if timeout_before is not None:
@@ -2002,7 +2613,7 @@ class WorldHandler(BaseHTTPRequestHandler):
         simulation["perspective"] = perspective
         return simulation, projection
 
-    def _handle_docker_websocket(self) -> None:
+    def _handle_docker_websocket(self, *, wire_mode: str) -> None:
         ws_key = str(self.headers.get("Sec-WebSocket-Key", "")).strip()
         if not ws_key:
             self._send_bytes(
@@ -2040,7 +2651,14 @@ class WorldHandler(BaseHTTPRequestHandler):
             _runtime_ws_release_client_slot()
             return
 
-        self.connection.settimeout(1.0)
+        # Use poll for non-blocking socket reads
+        poll = select.poll()
+        poll.register(self.connection, select.POLLIN)
+        ws_wire_mode = _normalize_ws_wire_mode(wire_mode)
+
+        def send_ws(payload: dict[str, Any]) -> None:
+            self._send_ws_event(payload, wire_mode=ws_wire_mode)
+
         last_docker_refresh = time.monotonic()
         last_docker_broadcast = last_docker_refresh
         last_docker_fingerprint = ""
@@ -2051,14 +2669,14 @@ class WorldHandler(BaseHTTPRequestHandler):
                 last_docker_fingerprint = str(
                     docker_snapshot.get("fingerprint", "") or ""
                 )
-                self._send_ws_event(
+                send_ws(
                     {
                         "type": "docker_simulations",
                         "docker": docker_snapshot,
                     }
                 )
             except Exception as exc:
-                self._send_ws_event(
+                send_ws(
                     {
                         "type": "docker_simulations_error",
                         "error": exc.__class__.__name__,
@@ -2081,7 +2699,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                         >= DOCKER_SIMULATION_WS_HEARTBEAT_SECONDS
                     )
                     if docker_changed or docker_heartbeat_due:
-                        self._send_ws_event(
+                        send_ws(
                             {
                                 "type": "docker_simulations",
                                 "docker": docker_snapshot,
@@ -2091,11 +2709,11 @@ class WorldHandler(BaseHTTPRequestHandler):
                         last_docker_fingerprint = docker_fingerprint
                     last_docker_refresh = now_monotonic
 
-                try:
+                # Non-blocking check for incoming client data
+                ready = poll.poll(10)
+                if ready:
                     if not _consume_ws_client_frame(self.connection):
                         break
-                except socket.timeout:
-                    continue
         except (
             BrokenPipeError,
             ConnectionResetError,
@@ -2106,7 +2724,13 @@ class WorldHandler(BaseHTTPRequestHandler):
         finally:
             _runtime_ws_release_client_slot()
 
-    def _handle_websocket(self, *, perspective: str) -> None:
+    def _handle_websocket(
+        self,
+        *,
+        perspective: str,
+        delta_stream_mode: str,
+        wire_mode: str,
+    ) -> None:
         ws_key = str(self.headers.get("Sec-WebSocket-Key", "")).strip()
         if not ws_key:
             self._send_bytes(
@@ -2145,28 +2769,86 @@ class WorldHandler(BaseHTTPRequestHandler):
             return
 
         perspective_key = normalize_projection_perspective(perspective)
-        self.connection.settimeout(1.0)
+        stream_mode = _simulation_ws_normalize_delta_stream_mode(delta_stream_mode)
+        ws_wire_mode = _normalize_ws_wire_mode(wire_mode)
+        if _SIMULATION_WS_USE_CACHED_SNAPSHOTS and ws_wire_mode == "arr":
+            ws_wire_mode = "json"
+
+        def send_ws(payload: dict[str, Any]) -> None:
+            self._send_ws_event(payload, wire_mode=ws_wire_mode)
+
+        # Use poll for non-blocking socket reads
+        poll = select.poll()
+        poll.register(self.connection, select.POLLIN)
         catalog: dict[str, Any] = {}
         queue_snapshot: dict[str, Any] = {}
         influence_snapshot: dict[str, Any] = {}
         last_simulation_for_delta: dict[str, Any] | None = None
         muse_event_seq = 0
         last_docker_fingerprint = ""
+        simulation_worker_seq = 0
+        last_projection_delta_broadcast = 0.0
+        last_cached_simulation_timestamp = ""
+        stream_particles: list[dict[str, Any]] = []
+        last_muse_poll = 0.0
+
+        def maybe_send_muse_events(now_monotonic: float) -> None:
+            nonlocal muse_event_seq
+            nonlocal last_muse_poll
+
+            if now_monotonic - last_muse_poll < _SIMULATION_WS_MUSE_POLL_SECONDS:
+                return
+
+            previous_muse_seq = muse_event_seq
+            muse_events = self._muse_manager().list_events(
+                since_seq=previous_muse_seq,
+                limit=96,
+            )
+            if muse_events:
+                muse_event_seq = max(
+                    previous_muse_seq,
+                    max(
+                        int(row.get("seq", 0))
+                        for row in muse_events
+                        if isinstance(row, dict)
+                    ),
+                )
+                send_ws(
+                    {
+                        "type": "muse_events",
+                        "events": muse_events,
+                        "since_seq": previous_muse_seq,
+                        "next_seq": muse_event_seq,
+                    }
+                )
+            last_muse_poll = now_monotonic
 
         try:
-            catalog, queue_snapshot, _, influence_snapshot, _ = self._runtime_catalog(
-                perspective=perspective_key,
-                include_projection=False,
-            )
-            catalog_payload = _simulation_http_trim_catalog(catalog)
-            _, mix_meta = build_mix_stream(catalog, self.vault_root)
-            self._send_ws_event(
-                {
-                    "type": "catalog",
-                    "catalog": catalog_payload,
-                    "mix": mix_meta,
-                }
-            )
+            if (
+                _SIMULATION_WS_USE_CACHED_SNAPSHOTS
+                and _SIMULATION_WS_SKIP_CATALOG_BOOTSTRAP
+            ):
+                catalog = {}
+                queue_snapshot = {}
+                influence_snapshot = {}
+            else:
+                catalog, queue_snapshot, _, influence_snapshot, _ = (
+                    self._runtime_catalog(
+                        perspective=perspective_key,
+                        include_projection=False,
+                    )
+                )
+
+            if not _SIMULATION_WS_SKIP_CATALOG_BOOTSTRAP:
+                catalog_payload = _simulation_http_trim_catalog(catalog)
+                _, mix_meta = build_mix_stream(catalog, self.vault_root)
+                send_ws(
+                    {
+                        "type": "catalog",
+                        "catalog": catalog_payload,
+                        "mix": mix_meta,
+                    }
+                )
             muse_bootstrap_events = self._muse_manager().list_events(
                 since_seq=0,
                 limit=96,
@@ -2177,7 +2859,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                     for row in muse_bootstrap_events
                     if isinstance(row, dict)
                 )
-                self._send_ws_event(
+                send_ws(
                     {
                         "type": "muse_events",
                         "events": muse_bootstrap_events,
@@ -2186,14 +2868,27 @@ class WorldHandler(BaseHTTPRequestHandler):
                     }
                 )
 
-            simulation, projection = self._runtime_simulation(
-                catalog,
-                queue_snapshot,
-                influence_snapshot,
-                perspective=perspective_key,
-            )
-            simulation_payload = _simulation_ws_trim_simulation_payload(simulation)
-            self._send_ws_event(
+            if _SIMULATION_WS_USE_CACHED_SNAPSHOTS:
+                cached_payload = _simulation_ws_load_cached_payload(
+                    part_root=self.part_root,
+                    perspective=perspective_key,
+                )
+                if cached_payload is None:
+                    simulation_payload, projection = _simulation_ws_placeholder_payload(
+                        perspective=perspective_key,
+                    )
+                else:
+                    simulation_payload, projection = cached_payload
+            else:
+                simulation, projection = self._runtime_simulation(
+                    catalog,
+                    queue_snapshot,
+                    influence_snapshot,
+                    perspective=perspective_key,
+                )
+                simulation_payload = _simulation_ws_trim_simulation_payload(simulation)
+                simulation_payload.pop("projection", None)
+            send_ws(
                 {
                     "type": "simulation",
                     "simulation": simulation_payload,
@@ -2201,18 +2896,31 @@ class WorldHandler(BaseHTTPRequestHandler):
                 }
             )
             last_simulation_for_delta = simulation_payload
-
-            docker_snapshot = collect_docker_simulation_snapshot()
-            self._send_ws_event(
-                {
-                    "type": "docker_simulations",
-                    "docker": docker_snapshot,
-                }
+            stream_particles = _simulation_ws_extract_stream_particles(
+                simulation_payload
             )
-            last_docker_fingerprint = str(docker_snapshot.get("fingerprint", "") or "")
+            last_cached_simulation_timestamp = str(
+                simulation_payload.get("timestamp", "") or ""
+            )
+            boot_tick = time.monotonic()
+            last_simulation_full_broadcast = boot_tick
+            last_projection_delta_broadcast = boot_tick
+            last_simulation_cache_refresh = boot_tick
+
+            if not _SIMULATION_WS_USE_CACHED_SNAPSHOTS:
+                docker_snapshot = collect_docker_simulation_snapshot()
+                send_ws(
+                    {
+                        "type": "docker_simulations",
+                        "docker": docker_snapshot,
+                    }
+                )
+                last_docker_fingerprint = str(
+                    docker_snapshot.get("fingerprint", "") or ""
+                )
         except Exception:
             try:
-                self._send_ws_event(
+                send_ws(
                     {
                         "type": "error",
                         "error": "initial websocket payload failed",
@@ -2224,12 +2932,14 @@ class WorldHandler(BaseHTTPRequestHandler):
             _runtime_ws_release_client_slot()
             return
 
-        last_catalog_refresh = time.monotonic()
-        last_catalog_broadcast = last_catalog_refresh
-        last_sim_tick = last_catalog_refresh
-        last_docker_refresh = last_catalog_refresh
-        last_docker_broadcast = last_catalog_refresh
-        last_runtime_guard_broadcast = last_catalog_refresh
+        clock_now = time.monotonic()
+        last_catalog_refresh = clock_now
+        last_catalog_broadcast = clock_now
+        last_sim_tick = clock_now
+        last_docker_refresh = clock_now
+        last_docker_broadcast = clock_now
+        last_runtime_guard_broadcast = clock_now
+        last_muse_poll = clock_now
         runtime_guard: dict[str, Any] = {
             "mode": "normal",
             "reasons": [],
@@ -2238,7 +2948,9 @@ class WorldHandler(BaseHTTPRequestHandler):
         try:
             while True:
                 now_monotonic = time.monotonic()
-                if now_monotonic - last_catalog_refresh >= CATALOG_REFRESH_SECONDS:
+                if (
+                    not _SIMULATION_WS_USE_CACHED_SNAPSHOTS
+                ) and now_monotonic - last_catalog_refresh >= CATALOG_REFRESH_SECONDS:
                     catalog, queue_snapshot, _, influence_snapshot, _ = (
                         self._runtime_catalog(
                             perspective=perspective_key,
@@ -2248,12 +2960,13 @@ class WorldHandler(BaseHTTPRequestHandler):
                     last_catalog_refresh = now_monotonic
 
                 if (
-                    now_monotonic - last_runtime_guard_broadcast
+                    (not _SIMULATION_WS_USE_CACHED_SNAPSHOTS)
+                    and now_monotonic - last_runtime_guard_broadcast
                     >= _RUNTIME_GUARD_HEARTBEAT_SECONDS
                 ):
                     runtime_health = _runtime_health_payload(self.part_root)
                     runtime_guard = runtime_health.get("guard", {})
-                    self._send_ws_event(
+                    send_ws(
                         {
                             "type": "runtime_health",
                             "runtime": runtime_health,
@@ -2271,7 +2984,11 @@ class WorldHandler(BaseHTTPRequestHandler):
                 catalog_broadcast_interval = (
                     CATALOG_BROADCAST_HEARTBEAT_SECONDS * load_scale
                 )
-                sim_tick_interval = SIM_TICK_SECONDS * load_scale
+                sim_tick_interval = (
+                    SIM_TICK_SECONDS
+                    if _SIMULATION_WS_USE_CACHED_SNAPSHOTS
+                    else (SIM_TICK_SECONDS * load_scale)
+                )
                 docker_refresh_interval = (
                     DOCKER_SIMULATION_WS_REFRESH_SECONDS * load_scale
                 )
@@ -2280,10 +2997,14 @@ class WorldHandler(BaseHTTPRequestHandler):
                     and guard_mode == "critical"
                 )
 
-                if now_monotonic - last_catalog_broadcast >= catalog_broadcast_interval:
+                if (
+                    not _SIMULATION_WS_SKIP_CATALOG_BOOTSTRAP
+                    and now_monotonic - last_catalog_broadcast
+                    >= catalog_broadcast_interval
+                ):
                     catalog_payload = _simulation_http_trim_catalog(catalog)
                     _, mix_meta = build_mix_stream(catalog, self.vault_root)
-                    self._send_ws_event(
+                    send_ws(
                         {
                             "type": "catalog",
                             "catalog": catalog_payload,
@@ -2293,8 +3014,138 @@ class WorldHandler(BaseHTTPRequestHandler):
                     last_catalog_broadcast = now_monotonic
 
                 if now_monotonic - last_sim_tick >= sim_tick_interval:
+                    if _SIMULATION_WS_USE_CACHED_SNAPSHOTS:
+                        cache_refresh_due = (
+                            _SIMULATION_WS_CACHE_REFRESH_SECONDS <= 0.0
+                            or (
+                                now_monotonic - last_simulation_cache_refresh
+                                >= (_SIMULATION_WS_CACHE_REFRESH_SECONDS * load_scale)
+                            )
+                        )
+                        if cache_refresh_due:
+                            cached_payload = _simulation_ws_load_cached_payload(
+                                part_root=self.part_root,
+                                perspective=perspective_key,
+                            )
+                            if cached_payload is not None:
+                                simulation_payload, projection = cached_payload
+                                stream_particles = (
+                                    _simulation_ws_extract_stream_particles(
+                                        simulation_payload
+                                    )
+                                )
+                                cached_timestamp = str(
+                                    simulation_payload.get("timestamp", "") or ""
+                                )
+                                full_snapshot_due = (
+                                    _SIMULATION_WS_FULL_SNAPSHOT_HEARTBEAT_SECONDS
+                                    <= 0.0
+                                    or (
+                                        now_monotonic - last_simulation_full_broadcast
+                                        >= _SIMULATION_WS_FULL_SNAPSHOT_HEARTBEAT_SECONDS
+                                    )
+                                )
+                                if (
+                                    full_snapshot_due
+                                    and cached_timestamp
+                                    and cached_timestamp
+                                    != last_cached_simulation_timestamp
+                                ):
+                                    send_ws(
+                                        {
+                                            "type": "simulation",
+                                            "simulation": simulation_payload,
+                                            "projection": projection,
+                                        }
+                                    )
+                                    last_simulation_full_broadcast = now_monotonic
+                                    last_projection_delta_broadcast = now_monotonic
+                                    last_simulation_for_delta = simulation_payload
+                                    last_cached_simulation_timestamp = cached_timestamp
+                            last_simulation_cache_refresh = now_monotonic
+
+                        tick_timestamp = datetime.now(timezone.utc).isoformat()
+                        advance_simulation_field_particles(
+                            simulation_payload,
+                            dt_seconds=sim_tick_interval,
+                            now_seconds=now_monotonic,
+                        )
+                        simulation_payload["timestamp"] = tick_timestamp
+                        simulation_payload["generated_at"] = tick_timestamp
+                        dynamics = simulation_payload.get("presence_dynamics", {})
+                        if isinstance(dynamics, dict):
+                            dynamics["generated_at"] = tick_timestamp
+                            simulation_payload["presence_dynamics"] = dynamics
+
+                        ws_cache_payload = dict(simulation_payload)
+                        ws_cache_payload["projection"] = projection
+                        _simulation_http_cache_store(
+                            f"{perspective_key}|ws-stream|simulation",
+                            _json_compact(ws_cache_payload).encode("utf-8"),
+                        )
+
+                        dynamics = simulation_payload.get("presence_dynamics", {})
+                        if isinstance(dynamics, dict) and isinstance(
+                            dynamics.get("field_particles"), list
+                        ):
+                            stream_particles = dynamics.get("field_particles", [])
+                        tick_patch: dict[str, Any] = {
+                            "timestamp": tick_timestamp,
+                        }
+                        tick_changed_keys = ["timestamp"]
+                        if stream_particles:
+                            tick_patch["presence_dynamics"] = {
+                                "field_particles": stream_particles,
+                            }
+                            tick_changed_keys.append(
+                                "presence_dynamics.field_particles"
+                            )
+
+                        if stream_mode == "workers":
+                            simulation_worker_seq += 1
+                            send_ws(
+                                {
+                                    "type": "simulation_delta",
+                                    "stream": "workers",
+                                    "worker_id": "sim-core",
+                                    "worker_seq": simulation_worker_seq,
+                                    "delta": {
+                                        "record": "eta-mu.simulation-worker-delta.v1",
+                                        "schema_version": "simulation.worker-delta.v1",
+                                        "generated_at": tick_timestamp,
+                                        "worker_id": "sim-core",
+                                        "worker_seq": simulation_worker_seq,
+                                        "previous_fingerprint": "",
+                                        "current_fingerprint": "",
+                                        "changed_keys": tick_changed_keys,
+                                        "has_changes": True,
+                                        "patch": tick_patch,
+                                    },
+                                }
+                            )
+                        else:
+                            send_ws(
+                                {
+                                    "type": "simulation_delta",
+                                    "delta": {
+                                        "record": "eta-mu.simulation-delta.v1",
+                                        "schema_version": "simulation.delta.v1",
+                                        "generated_at": tick_timestamp,
+                                        "previous_fingerprint": "",
+                                        "current_fingerprint": "",
+                                        "changed_keys": tick_changed_keys,
+                                        "has_changes": True,
+                                        "patch": tick_patch,
+                                    },
+                                }
+                            )
+
+                        maybe_send_muse_events(now_monotonic)
+                        last_sim_tick = now_monotonic
+                        continue
+
                     if simulation_guard_skip:
-                        self._send_ws_event(
+                        send_ws(
                             {
                                 "type": "simulation_guard",
                                 "record": "eta-mu.simulation-guard.v1",
@@ -2314,51 +3165,138 @@ class WorldHandler(BaseHTTPRequestHandler):
                         simulation_payload = _simulation_ws_trim_simulation_payload(
                             simulation
                         )
-                        self._send_ws_event(
-                            {
-                                "type": "simulation",
-                                "simulation": simulation_payload,
-                                "projection": projection,
-                            }
-                        )
+                        simulation_payload.pop("projection", None)
                         delta = build_simulation_delta(
                             last_simulation_for_delta,
                             simulation_payload,
                         )
-                        if bool(delta.get("has_changes", False)):
-                            self._send_ws_event(
+                        delta_patch = (
+                            delta.get("patch") if isinstance(delta, dict) else None
+                        )
+                        if isinstance(delta_patch, dict):
+                            delta_patch.pop("projection", None)
+                        changed_keys = delta.get("changed_keys", [])
+                        if isinstance(changed_keys, list):
+                            changed_keys = [
+                                key for key in changed_keys if key != "projection"
+                            ]
+                        else:
+                            changed_keys = []
+                        delta["changed_keys"] = changed_keys
+                        delta["has_changes"] = bool(changed_keys)
+                        delta_has_changes = bool(delta.get("has_changes", False))
+                        full_snapshot_due = (
+                            _SIMULATION_WS_FULL_SNAPSHOT_HEARTBEAT_SECONDS <= 0.0
+                            or (
+                                now_monotonic - last_simulation_full_broadcast
+                                >= _SIMULATION_WS_FULL_SNAPSHOT_HEARTBEAT_SECONDS
+                            )
+                        )
+                        if full_snapshot_due:
+                            send_ws(
                                 {
-                                    "type": "simulation_delta",
-                                    "delta": delta,
+                                    "type": "simulation",
+                                    "simulation": simulation_payload,
+                                    "projection": projection,
                                 }
                             )
+                            last_simulation_full_broadcast = now_monotonic
+                            last_projection_delta_broadcast = now_monotonic
+                        elif delta_has_changes:
+                            if stream_mode == "workers":
+                                worker_delta_rows = (
+                                    _simulation_ws_split_delta_by_worker(delta)
+                                )
+                                for worker_row in worker_delta_rows:
+                                    simulation_worker_seq += 1
+                                    send_ws(
+                                        {
+                                            "type": "simulation_delta",
+                                            "stream": "workers",
+                                            "worker_id": worker_row.get(
+                                                "worker_id", "sim-misc"
+                                            ),
+                                            "worker_seq": simulation_worker_seq,
+                                            "delta": {
+                                                "record": "eta-mu.simulation-worker-delta.v1",
+                                                "schema_version": "simulation.worker-delta.v1",
+                                                "generated_at": datetime.now(
+                                                    timezone.utc
+                                                ).isoformat(),
+                                                "worker_id": worker_row.get(
+                                                    "worker_id", "sim-misc"
+                                                ),
+                                                "worker_seq": simulation_worker_seq,
+                                                "previous_fingerprint": delta.get(
+                                                    "previous_fingerprint", ""
+                                                ),
+                                                "current_fingerprint": delta.get(
+                                                    "current_fingerprint", ""
+                                                ),
+                                                "changed_keys": worker_row.get(
+                                                    "changed_keys", []
+                                                ),
+                                                "has_changes": bool(
+                                                    worker_row.get("changed_keys", [])
+                                                ),
+                                                "patch": worker_row.get("patch", {}),
+                                            },
+                                        }
+                                    )
+                            else:
+                                send_ws(
+                                    {
+                                        "type": "simulation_delta",
+                                        "delta": delta,
+                                    }
+                                )
+
+                        projection_heartbeat_due = (
+                            _SIMULATION_WS_PROJECTION_HEARTBEAT_SECONDS > 0.0
+                            and (
+                                now_monotonic - last_projection_delta_broadcast
+                                >= _SIMULATION_WS_PROJECTION_HEARTBEAT_SECONDS
+                            )
+                        )
+                        if (not full_snapshot_due) and projection_heartbeat_due:
+                            projection_patch: dict[str, Any] = {
+                                "projection": projection,
+                            }
+                            timestamp_value = simulation_payload.get("timestamp")
+                            if timestamp_value is not None:
+                                projection_patch["timestamp"] = timestamp_value
+                            send_ws(
+                                {
+                                    "type": "simulation_delta",
+                                    "stream": "projection",
+                                    "worker_id": "sim-projection",
+                                    "delta": {
+                                        "record": "eta-mu.simulation-delta.v1",
+                                        "schema_version": "simulation.delta.v1",
+                                        "generated_at": datetime.now(
+                                            timezone.utc
+                                        ).isoformat(),
+                                        "previous_fingerprint": delta.get(
+                                            "previous_fingerprint", ""
+                                        ),
+                                        "current_fingerprint": delta.get(
+                                            "current_fingerprint", ""
+                                        ),
+                                        "changed_keys": ["projection"],
+                                        "has_changes": True,
+                                        "patch": projection_patch,
+                                    },
+                                }
+                            )
+                            last_projection_delta_broadcast = now_monotonic
                         last_simulation_for_delta = simulation_payload
 
-                    previous_muse_seq = muse_event_seq
-                    muse_events = self._muse_manager().list_events(
-                        since_seq=previous_muse_seq,
-                        limit=96,
-                    )
-                    if muse_events:
-                        muse_event_seq = max(
-                            previous_muse_seq,
-                            max(
-                                int(row.get("seq", 0))
-                                for row in muse_events
-                                if isinstance(row, dict)
-                            ),
-                        )
-                        self._send_ws_event(
-                            {
-                                "type": "muse_events",
-                                "events": muse_events,
-                                "since_seq": previous_muse_seq,
-                                "next_seq": muse_event_seq,
-                            }
-                        )
+                    maybe_send_muse_events(now_monotonic)
                     last_sim_tick = now_monotonic
 
-                if now_monotonic - last_docker_refresh >= docker_refresh_interval:
+                if (
+                    not _SIMULATION_WS_USE_CACHED_SNAPSHOTS
+                ) and now_monotonic - last_docker_refresh >= docker_refresh_interval:
                     docker_snapshot = collect_docker_simulation_snapshot()
                     docker_fingerprint = str(
                         docker_snapshot.get("fingerprint", "") or ""
@@ -2369,7 +3307,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                         >= DOCKER_SIMULATION_WS_HEARTBEAT_SECONDS
                     )
                     if docker_changed or docker_heartbeat_due:
-                        self._send_ws_event(
+                        send_ws(
                             {
                                 "type": "docker_simulations",
                                 "docker": docker_snapshot,
@@ -2379,11 +3317,11 @@ class WorldHandler(BaseHTTPRequestHandler):
                         last_docker_fingerprint = docker_fingerprint
                     last_docker_refresh = now_monotonic
 
-                try:
+                # Non-blocking check for incoming client data
+                ready = poll.poll(10)
+                if ready:
                     if not _consume_ws_client_frame(self.connection):
                         break
-                except socket.timeout:
-                    continue
         except (
             BrokenPipeError,
             ConnectionResetError,
@@ -2407,8 +3345,11 @@ class WorldHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/ws":
             stream = str(params.get("stream", [""])[0] or "").strip().lower()
+            wire_mode = str(
+                params.get("wire", [params.get("ws_wire", [""])[0]])[0] or ""
+            )
             if stream in {"docker", "meta", "simulations"}:
-                self._handle_docker_websocket()
+                self._handle_docker_websocket(wire_mode=wire_mode)
                 return
 
             perspective = normalize_projection_perspective(
@@ -2420,7 +3361,14 @@ class WorldHandler(BaseHTTPRequestHandler):
                     or PROJECTION_DEFAULT_PERSPECTIVE
                 )
             )
-            self._handle_websocket(perspective=perspective)
+            delta_stream = str(
+                params.get("delta_stream", [params.get("sim_stream", [""])[0]])[0] or ""
+            )
+            self._handle_websocket(
+                perspective=perspective,
+                delta_stream_mode=delta_stream,
+                wire_mode=wire_mode,
+            )
             return
 
         if parsed.path == "/api/voice-lines":

@@ -232,25 +232,6 @@ function colorForDomain(domain: string): string {
   return `hsl(${hue}, 76%, 62%)`;
 }
 
-function shortNodeLabel(node: WeaverNode): string {
-  if (node.kind === "domain") {
-    return node.domain || node.label;
-  }
-  if (node.kind === "content") {
-    return String(node.content_type || node.label);
-  }
-  if (node.title && node.title.trim().length > 0) {
-    return node.title.slice(0, 42);
-  }
-  const url = String(node.url || node.label || "");
-  const parts = url.split("/");
-  const last = parts[parts.length - 1] || parts[parts.length - 2] || url;
-  if (last.length <= 36) {
-    return last;
-  }
-  return `${last.slice(0, 33)}...`;
-}
-
 function shortText(value: string, max = 92): string {
   const trimmed = value.trim();
   if (trimmed.length <= max) {
@@ -1051,15 +1032,228 @@ export function WebGraphWeaverPanel() {
     if (!canvas) {
       return;
     }
-    const context = canvas.getContext("2d");
-    if (!context) {
+    const gl = canvas.getContext("webgl", { alpha: false, antialias: true });
+    if (!gl) {
       return;
     }
+
+    const lineVertexShaderSource = `
+      attribute vec2 aPos;
+      attribute vec4 aColor;
+      uniform vec2 uResolution;
+      varying vec4 vColor;
+
+      void main() {
+        vec2 clip = vec2(
+          (aPos.x / max(1.0, uResolution.x)) * 2.0 - 1.0,
+          1.0 - (aPos.y / max(1.0, uResolution.y)) * 2.0
+        );
+        gl_Position = vec4(clip, 0.0, 1.0);
+        vColor = aColor;
+      }
+    `;
+
+    const lineFragmentShaderSource = `
+      precision mediump float;
+      varying vec4 vColor;
+
+      void main() {
+        gl_FragColor = vColor;
+      }
+    `;
+
+    const pointVertexShaderSource = `
+      attribute vec2 aPos;
+      attribute float aSize;
+      attribute vec4 aColor;
+      uniform vec2 uResolution;
+      varying vec4 vColor;
+
+      void main() {
+        vec2 clip = vec2(
+          (aPos.x / max(1.0, uResolution.x)) * 2.0 - 1.0,
+          1.0 - (aPos.y / max(1.0, uResolution.y)) * 2.0
+        );
+        gl_Position = vec4(clip, 0.0, 1.0);
+        gl_PointSize = aSize;
+        vColor = aColor;
+      }
+    `;
+
+    const pointFragmentShaderSource = `
+      precision mediump float;
+      varying vec4 vColor;
+
+      void main() {
+        vec2 p = gl_PointCoord * 2.0 - 1.0;
+        float d2 = dot(p, p);
+        if (d2 > 1.0) {
+          discard;
+        }
+        float alpha = (1.0 - d2) * vColor.a;
+        gl_FragColor = vec4(vColor.rgb, alpha);
+      }
+    `;
+
+    const compileShader = (type: number, source: string): WebGLShader | null => {
+      const shader = gl.createShader(type);
+      if (!shader) {
+        return null;
+      }
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        gl.deleteShader(shader);
+        return null;
+      }
+      return shader;
+    };
+
+    const createProgram = (
+      vertexSource: string,
+      fragmentSource: string,
+    ): { program: WebGLProgram; vertexShader: WebGLShader; fragmentShader: WebGLShader } | null => {
+      const vertexShader = compileShader(gl.VERTEX_SHADER, vertexSource);
+      const fragmentShader = compileShader(gl.FRAGMENT_SHADER, fragmentSource);
+      if (!vertexShader || !fragmentShader) {
+        if (vertexShader) {
+          gl.deleteShader(vertexShader);
+        }
+        if (fragmentShader) {
+          gl.deleteShader(fragmentShader);
+        }
+        return null;
+      }
+      const program = gl.createProgram();
+      if (!program) {
+        gl.deleteShader(vertexShader);
+        gl.deleteShader(fragmentShader);
+        return null;
+      }
+      gl.attachShader(program, vertexShader);
+      gl.attachShader(program, fragmentShader);
+      gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        gl.deleteProgram(program);
+        gl.deleteShader(vertexShader);
+        gl.deleteShader(fragmentShader);
+        return null;
+      }
+      return {
+        program,
+        vertexShader,
+        fragmentShader,
+      };
+    };
+
+    const lineProgramBundle = createProgram(lineVertexShaderSource, lineFragmentShaderSource);
+    const pointProgramBundle = createProgram(pointVertexShaderSource, pointFragmentShaderSource);
+    if (!lineProgramBundle || !pointProgramBundle) {
+      if (lineProgramBundle) {
+        gl.deleteProgram(lineProgramBundle.program);
+        gl.deleteShader(lineProgramBundle.vertexShader);
+        gl.deleteShader(lineProgramBundle.fragmentShader);
+      }
+      if (pointProgramBundle) {
+        gl.deleteProgram(pointProgramBundle.program);
+        gl.deleteShader(pointProgramBundle.vertexShader);
+        gl.deleteShader(pointProgramBundle.fragmentShader);
+      }
+      return;
+    }
+
+    const lineBuffer = gl.createBuffer();
+    const pointBuffer = gl.createBuffer();
+    if (!lineBuffer || !pointBuffer) {
+      if (lineBuffer) {
+        gl.deleteBuffer(lineBuffer);
+      }
+      if (pointBuffer) {
+        gl.deleteBuffer(pointBuffer);
+      }
+      gl.deleteProgram(lineProgramBundle.program);
+      gl.deleteShader(lineProgramBundle.vertexShader);
+      gl.deleteShader(lineProgramBundle.fragmentShader);
+      gl.deleteProgram(pointProgramBundle.program);
+      gl.deleteShader(pointProgramBundle.vertexShader);
+      gl.deleteShader(pointProgramBundle.fragmentShader);
+      return;
+    }
+
+    const lineLocPos = gl.getAttribLocation(lineProgramBundle.program, "aPos");
+    const lineLocColor = gl.getAttribLocation(lineProgramBundle.program, "aColor");
+    const lineLocResolution = gl.getUniformLocation(lineProgramBundle.program, "uResolution");
+
+    const pointLocPos = gl.getAttribLocation(pointProgramBundle.program, "aPos");
+    const pointLocSize = gl.getAttribLocation(pointProgramBundle.program, "aSize");
+    const pointLocColor = gl.getAttribLocation(pointProgramBundle.program, "aColor");
+    const pointLocResolution = gl.getUniformLocation(pointProgramBundle.program, "uResolution");
+
+    const activateLineProgram = gl.useProgram.bind(gl, lineProgramBundle.program);
+    const activatePointProgram = gl.useProgram.bind(gl, pointProgramBundle.program);
 
     let rafId = 0;
     let width = 0;
     let height = 0;
     let lastPaintAt = 0;
+
+    const hueToRgb = (hue: number): [number, number, number] => {
+      const h = ((hue % 360) + 360) % 360;
+      const c = 0.7;
+      const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+      const m = 0.16;
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      if (h < 60) {
+        r = c;
+        g = x;
+      } else if (h < 120) {
+        r = x;
+        g = c;
+      } else if (h < 180) {
+        g = c;
+        b = x;
+      } else if (h < 240) {
+        g = x;
+        b = c;
+      } else if (h < 300) {
+        r = x;
+        b = c;
+      } else {
+        r = c;
+        b = x;
+      }
+      return [r + m, g + m, b + m];
+    };
+
+    const addLine = (
+      rows: number[],
+      x0: number,
+      y0: number,
+      x1: number,
+      y1: number,
+      r: number,
+      g: number,
+      b: number,
+      a: number,
+    ) => {
+      rows.push(x0, y0, r, g, b, a);
+      rows.push(x1, y1, r, g, b, a);
+    };
+
+    const addPoint = (
+      rows: number[],
+      x: number,
+      y: number,
+      size: number,
+      r: number,
+      g: number,
+      b: number,
+      a: number,
+    ) => {
+      rows.push(x, y, size, r, g, b, a);
+    };
 
     const draw = (timestamp: number) => {
       const denseMode =
@@ -1088,15 +1282,21 @@ export function WebGraphWeaverPanel() {
         canvas.height = height;
       }
 
-      context.clearRect(0, 0, width, height);
-      context.fillStyle = "rgba(9, 16, 28, 0.96)";
-      context.fillRect(0, 0, width, height);
+      gl.viewport(0, 0, width, height);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.clearColor(0.035, 0.062, 0.11, 0.96);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+
+      // Disable any previously enabled attributes to prevent state leakage between programs
+      gl.disableVertexAttribArray(0);
+      gl.disableVertexAttribArray(1);
+      gl.disableVertexAttribArray(2);
 
       const centerX = width / 2 + viewOffsetX * dpr;
       const centerY = height / 2 + viewOffsetY * dpr;
       const scale = viewScale * dpr;
 
-      const nodeById = new Map(renderGraph.nodes.map((node) => [node.id, node]));
       const highlightedEdgeIds = new Set<string>();
       if (selectedNodeId) {
         for (const edge of renderGraph.edges) {
@@ -1106,7 +1306,7 @@ export function WebGraphWeaverPanel() {
         }
       }
 
-      context.save();
+      const edgeRows: number[] = [];
       for (const edge of renderGraph.edges) {
         const source = layout.get(edge.source);
         const target = layout.get(edge.target);
@@ -1124,87 +1324,69 @@ export function WebGraphWeaverPanel() {
           ? 0.5
           : 0.5 + Math.sin((timestamp / 640) + hashString(edge.id) * 0.0003) * 0.5;
 
+        let r = 0.47;
+        let g = 0.72;
+        let b = 0.86;
+        let a = 0.15 + pulse * 0.08;
+
         if (edge.kind === "hyperlink") {
-          context.strokeStyle = highlighted
-            ? `rgba(112, 232, 255, ${0.58 + pulse * 0.3})`
-            : `rgba(90, 156, 206, ${0.12 + pulse * 0.14})`;
-          context.lineWidth = highlighted ? 1.2 : 0.6;
-          if (!denseMode) {
-            context.setLineDash([5, 7]);
-            context.lineDashOffset = -(timestamp / 40);
-          } else {
-            context.setLineDash([]);
-          }
+          r = 0.41;
+          g = 0.78;
+          b = 0.9;
+          a = highlighted ? (0.66 + pulse * 0.2) : (0.16 + pulse * 0.12);
         } else if (edge.kind === "canonical_redirect") {
-          context.strokeStyle = highlighted
-            ? "rgba(252, 143, 255, 0.82)"
-            : "rgba(186, 100, 208, 0.35)";
-          context.lineWidth = highlighted ? 1.3 : 0.7;
-          if (!denseMode) {
-            context.setLineDash([3, 5]);
-            context.lineDashOffset = timestamp / 30;
-          } else {
-            context.setLineDash([]);
-          }
+          r = 0.78;
+          g = 0.47;
+          b = 0.9;
+          a = highlighted ? 0.72 : 0.28;
         } else if (edge.kind === "domain_membership") {
-          context.strokeStyle = highlighted
-            ? "rgba(255, 205, 133, 0.84)"
-            : "rgba(214, 164, 93, 0.28)";
-          context.lineWidth = highlighted ? 1.2 : 0.5;
-          context.setLineDash([]);
+          r = 0.95;
+          g = 0.73;
+          b = 0.42;
+          a = highlighted ? 0.7 : 0.22;
         } else if (edge.kind === "citation") {
-          context.strokeStyle = highlighted
-            ? "rgba(255, 182, 122, 0.9)"
-            : "rgba(219, 140, 90, 0.4)";
-          context.lineWidth = highlighted ? 1.4 : 0.8;
-          if (!denseMode) {
-            context.setLineDash([4, 6]);
-            context.lineDashOffset = -(timestamp / 36);
-          } else {
-            context.setLineDash([]);
-          }
+          r = 0.95;
+          g = 0.62;
+          b = 0.38;
+          a = highlighted ? 0.78 : 0.34;
         } else if (edge.kind === "cross_reference") {
-          context.strokeStyle = highlighted
-            ? "rgba(250, 123, 228, 0.94)"
-            : "rgba(198, 102, 190, 0.48)";
-          context.lineWidth = highlighted ? 1.5 : 0.9;
-          if (!denseMode) {
-            context.setLineDash([2, 7]);
-            context.lineDashOffset = timestamp / 42;
-          } else {
-            context.setLineDash([]);
-          }
+          r = 0.9;
+          g = 0.48;
+          b = 0.84;
+          a = highlighted ? 0.82 : 0.38;
         } else if (edge.kind === "paper_pdf") {
-          context.strokeStyle = highlighted
-            ? "rgba(133, 238, 248, 0.9)"
-            : "rgba(96, 196, 212, 0.5)";
-          context.lineWidth = highlighted ? 1.25 : 0.7;
-          if (!denseMode) {
-            context.setLineDash([1.5, 4]);
-            context.lineDashOffset = -(timestamp / 28);
-          } else {
-            context.setLineDash([]);
-          }
+          r = 0.46;
+          g = 0.84;
+          b = 0.9;
+          a = highlighted ? 0.74 : 0.32;
         } else {
-          context.strokeStyle = highlighted
-            ? "rgba(164, 239, 158, 0.85)"
-            : "rgba(120, 186, 126, 0.26)";
-          context.lineWidth = highlighted ? 1.0 : 0.45;
-          if (!denseMode) {
-            context.setLineDash([2, 5]);
-            context.lineDashOffset = -(timestamp / 45);
-          } else {
-            context.setLineDash([]);
-          }
+          r = 0.58;
+          g = 0.85;
+          b = 0.62;
+          a = highlighted ? 0.68 : 0.24;
         }
 
-        context.beginPath();
-        context.moveTo(sx, sy);
-        context.lineTo(tx, ty);
-        context.stroke();
+        addLine(edgeRows, sx, sy, tx, ty, r, g, b, a);
       }
-      context.setLineDash([]);
-      context.restore();
+
+      if (edgeRows.length > 0 && lineLocPos >= 0 && lineLocColor >= 0) {
+        activateLineProgram();
+        gl.bindBuffer(gl.ARRAY_BUFFER, lineBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(edgeRows), gl.DYNAMIC_DRAW);
+        gl.enableVertexAttribArray(lineLocPos);
+        gl.vertexAttribPointer(lineLocPos, 2, gl.FLOAT, false, 6 * 4, 0);
+        gl.enableVertexAttribArray(lineLocColor);
+        gl.vertexAttribPointer(lineLocColor, 4, gl.FLOAT, false, 6 * 4, 2 * 4);
+        if (lineLocResolution) {
+          gl.uniform2f(lineLocResolution, width, height);
+        }
+        gl.drawArrays(gl.LINES, 0, edgeRows.length / 6);
+        // Disable line attributes after drawing
+        gl.disableVertexAttribArray(lineLocPos);
+        gl.disableVertexAttribArray(lineLocColor);
+      }
+
+      const pointRows: number[] = [];
 
       for (const node of renderGraph.nodes) {
         const point = layout.get(node.id);
@@ -1224,35 +1406,30 @@ export function WebGraphWeaverPanel() {
         }
         const selected = selectedNodeId === node.id;
         if (selected) {
-          context.fillStyle = "rgba(255, 244, 184, 0.95)";
-          context.beginPath();
-          context.arc(x, y, radius + 4.5, 0, Math.PI * 2);
-          context.fill();
+          addPoint(pointRows, x, y, (radius + 4.8) * dpr, 1.0, 0.94, 0.72, 0.36);
         }
+
+        let r = 0.5;
+        let g = 0.78;
+        let b = 0.95;
 
         if (node.kind === "domain") {
-          context.fillStyle = colorForDomain(String(node.domain || node.label));
+          const hue = hashString(String(node.domain || node.label)) % 360;
+          const rgb = hueToRgb(hue);
+          r = rgb[0];
+          g = rgb[1];
+          b = rgb[2];
         } else if (node.kind === "content") {
-          context.fillStyle = "rgba(116, 216, 144, 0.95)";
+          r = 0.46;
+          g = 0.84;
+          b = 0.56;
         } else if (node.compliance === "robots_blocked" || node.status === "blocked") {
-          context.fillStyle = "rgba(255, 110, 110, 0.9)";
-        } else {
-          context.fillStyle = "rgba(129, 203, 255, 0.85)";
+          r = 1.0;
+          g = 0.44;
+          b = 0.44;
         }
 
-        if (node.kind === "content") {
-          context.beginPath();
-          context.moveTo(x, y - radius);
-          context.lineTo(x + radius, y);
-          context.lineTo(x, y + radius);
-          context.lineTo(x - radius, y);
-          context.closePath();
-          context.fill();
-        } else {
-          context.beginPath();
-          context.arc(x, y, radius, 0, Math.PI * 2);
-          context.fill();
-        }
+        addPoint(pointRows, x, y, radius * dpr, r, g, b, 0.9);
       }
 
       for (let i = 0; i < entityRows.length; i += 1) {
@@ -1276,46 +1453,31 @@ export function WebGraphWeaverPanel() {
         const y = centerY + py * scale;
 
         const hue = (hashString(entity.id || String(i)) % 360);
-        context.fillStyle = `hsla(${hue}, 85%, 62%, 0.95)`;
-        context.beginPath();
-        context.arc(x, y, denseMode ? 2.4 : 3.8, 0, Math.PI * 2);
-        context.fill();
-
+        const [r, g, b] = hueToRgb(hue);
+        addPoint(pointRows, x, y, (denseMode ? 2.6 : 4.2) * dpr, r, g, b, 0.96);
         if (!denseMode) {
-          context.strokeStyle = `hsla(${hue}, 92%, 70%, 0.55)`;
-          context.lineWidth = 0.9;
-          context.beginPath();
-          context.arc(x, y, 7, 0, Math.PI * 2);
-          context.stroke();
+          addPoint(pointRows, x, y, 8.2 * dpr, r, g, b, 0.3);
         }
       }
 
-      if (selectedNodeId) {
-        const selected = nodeById.get(selectedNodeId);
-        if (selected) {
-          context.fillStyle = "rgba(217, 233, 255, 0.95)";
-          context.font = `${11 * dpr}px ui-monospace, SFMono-Regular, Menlo, monospace`;
-          context.textAlign = "left";
-          context.fillText(
-            `${selected.kind.toUpperCase()} :: ${shortNodeLabel(selected)}`,
-            16 * dpr,
-            28 * dpr,
-          );
+      if (pointRows.length > 0 && pointLocPos >= 0 && pointLocSize >= 0 && pointLocColor >= 0) {
+        activatePointProgram();
+        gl.bindBuffer(gl.ARRAY_BUFFER, pointBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(pointRows), gl.DYNAMIC_DRAW);
+        gl.enableVertexAttribArray(pointLocPos);
+        gl.vertexAttribPointer(pointLocPos, 2, gl.FLOAT, false, 7 * 4, 0);
+        gl.enableVertexAttribArray(pointLocSize);
+        gl.vertexAttribPointer(pointLocSize, 1, gl.FLOAT, false, 7 * 4, 2 * 4);
+        gl.enableVertexAttribArray(pointLocColor);
+        gl.vertexAttribPointer(pointLocColor, 4, gl.FLOAT, false, 7 * 4, 3 * 4);
+        if (pointLocResolution) {
+          gl.uniform2f(pointLocResolution, width, height);
         }
-      }
-
-      context.fillStyle = "rgba(172, 197, 227, 0.82)";
-      context.font = `${10 * dpr}px ui-monospace, SFMono-Regular, Menlo, monospace`;
-      context.textAlign = "left";
-      context.fillText(
-        `nodes ${renderGraph.nodes.length}/${visibleGraph.nodes.length} / edges ${renderGraph.edges.length}/${visibleGraph.edges.length} / entities ${entityRows.length} / zoom ${viewScale.toFixed(2)}x`,
-        16 * dpr,
-        (height / dpr - 14) * dpr,
-      );
-
-      if (renderGraph.sampledNodes || renderGraph.sampledEdges) {
-        context.fillStyle = "rgba(255, 201, 132, 0.86)";
-        context.fillText("dense graph mode: sampled render active", 16 * dpr, 16 * dpr);
+        gl.drawArrays(gl.POINTS, 0, pointRows.length / 7);
+        // Disable point attributes after drawing
+        gl.disableVertexAttribArray(pointLocPos);
+        gl.disableVertexAttribArray(pointLocSize);
+        gl.disableVertexAttribArray(pointLocColor);
       }
 
       rafId = window.requestAnimationFrame(draw);
@@ -1324,8 +1486,16 @@ export function WebGraphWeaverPanel() {
     rafId = window.requestAnimationFrame(draw);
     return () => {
       window.cancelAnimationFrame(rafId);
+      gl.deleteBuffer(lineBuffer);
+      gl.deleteBuffer(pointBuffer);
+      gl.deleteProgram(lineProgramBundle.program);
+      gl.deleteShader(lineProgramBundle.vertexShader);
+      gl.deleteShader(lineProgramBundle.fragmentShader);
+      gl.deleteProgram(pointProgramBundle.program);
+      gl.deleteShader(pointProgramBundle.vertexShader);
+      gl.deleteShader(pointProgramBundle.fragmentShader);
     };
-  }, [entityRows, layout, renderGraph.edges, renderGraph.nodes, renderGraph.sampledEdges, renderGraph.sampledNodes, selectedNodeId, viewOffsetX, viewOffsetY, viewScale, visibleGraph.edges.length, visibleGraph.nodes.length]);
+  }, [entityRows, layout, renderGraph.edges, renderGraph.nodes, renderGraph.sampledEdges, renderGraph.sampledNodes, selectedNodeId, viewOffsetX, viewOffsetY, viewScale]);
 
   useEffect(() => {
     const canvas = canvasRef.current;

@@ -37,7 +37,7 @@ def main() -> int:
     )
     parser.add_argument(
         "command",
-        choices=["start", "stop", "status", "bench", "train"],
+        choices=["start", "stop", "status", "bench", "train", "eval"],
         help="Operation to run",
     )
     parser.add_argument(
@@ -77,6 +77,11 @@ def main() -> int:
         type=int,
         default=4207,
         help="Deterministic seed base for train command",
+    )
+    parser.add_argument(
+        "--output",
+        default="../.opencode/runtime/sim_learning_eval.latest.json",
+        help="Evaluation report output path (for eval)",
     )
     parser.add_argument(
         "--keep-other-stacks",
@@ -164,6 +169,39 @@ def main() -> int:
         ]
         if int(args.rounds) > 0:
             command.extend(["--rounds", str(int(args.rounds))])
+        return _run(command, cwd=part_root)
+
+    if args.command == "eval":
+        runtime_args: list[str] = []
+        for alias in aliases:
+            offset = {"baseline": 0, "chaos": 1, "stability": 2}[alias]
+            runtime_args.extend(
+                ["--runtime", f"song-{alias}=http://127.0.0.1:{19877 + offset}"]
+            )
+        command = [
+            "python",
+            "scripts/eval_sim_learning_suite.py",
+            "--circumstances",
+            str(args.circumstances),
+            "--regimen",
+            str(args.regimen),
+            "--timeout",
+            str(float(args.timeout)),
+            "--seed",
+            str(int(args.seed)),
+            "--output",
+            str(args.output),
+            *runtime_args,
+        ]
+        if int(args.rounds) > 0:
+            command.extend(
+                [
+                    "--training-rounds",
+                    str(int(args.rounds)),
+                    "--song-rounds",
+                    str(int(args.rounds)),
+                ]
+            )
         return _run(command, cwd=part_root)
 
     exit_code = 0

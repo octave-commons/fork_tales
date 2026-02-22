@@ -1,0 +1,73 @@
+{
+  "id": "embedding-openvino-starter",
+  "description": "Text embedding benchmark across OpenVINO devices.",
+  "dataset": {
+    "source": "hf",
+    "id": "hf-internal-testing/librispeech_asr_dummy",
+    "config": "clean",
+    "split": "validation",
+    "max_samples": 64,
+    "input_column": "text",
+    "reference_column": "text",
+    "sampling_rate": 16000
+  },
+  "criteria": [
+    {
+      "id": "throughput",
+      "metric": "throughput_items_per_second",
+      "goal": "max",
+      "weight": 0.45,
+      "runners": ["embedding_text"]
+    },
+    {
+      "id": "p95_latency",
+      "metric": "p95_latency_ms",
+      "goal": "min",
+      "weight": 0.45,
+      "runners": ["embedding_text"]
+    },
+    {
+      "id": "dim_target",
+      "metric": "vector_dim_mean",
+      "goal": "target",
+      "target": 128,
+      "weight": 0.1,
+      "runners": ["embedding_text"]
+    }
+  ],
+  "benchmarks": [
+    {
+      "id": "embed_nomic_npu",
+      "runner": "embedding_text",
+      "model": "nomic-embed-text",
+      "device": "NPU",
+      "params": {
+        "backend": "openvino",
+        "target_dim": 128,
+        "max_chars": 1200
+      }
+    },
+    {
+      "id": "embed_nomic_gpu",
+      "runner": "embedding_text",
+      "model": "nomic-embed-text",
+      "device": "GPU",
+      "params": {
+        "backend": "openvino",
+        "target_dim": 128,
+        "max_chars": 1200
+      }
+    },
+    {
+      "id": "embed_nomic_cpu",
+      "runner": "embedding_text",
+      "model": "nomic-embed-text",
+      "device": "CPU",
+      "params": {
+        "backend": "openvino",
+        "target_dim": 128,
+        "max_chars": 1200
+      }
+    }
+  ]
+}

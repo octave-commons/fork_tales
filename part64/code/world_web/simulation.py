@@ -179,6 +179,167 @@ SIMULATION_FILE_GRAPH_EDGE_RESPONSE_FACTOR = max(
     ),
 )
 
+
+_SIMULATION_MINIMAL_PRESENCE_IDS: tuple[str, ...] = (
+    "receipt_river",
+    "witness_thread",
+    "anchor_registry",
+    "gates_of_truth",
+    "health_sentinel_cpu",
+)
+_SIMULATION_RESOURCE_ALIASES: dict[str, str] = {
+    "cpu": "cpu",
+    "ram": "ram",
+    "memory": "ram",
+    "disk": "disk",
+    "network": "network",
+    "net": "network",
+    "gpu": "gpu",
+    "gpu1": "gpu",
+    "gpu2": "gpu",
+    "npu": "npu",
+    "npu0": "npu",
+}
+
+SIMULATION_STREAM_FIELD_FORCE = max(
+    0.0,
+    _safe_float(os.getenv("SIMULATION_WS_STREAM_FIELD_FORCE", "0.22") or "0.22", 0.22),
+)
+SIMULATION_STREAM_VELOCITY_SCALE = max(
+    0.0,
+    _safe_float(
+        os.getenv("SIMULATION_WS_STREAM_VELOCITY_SCALE", "0.75") or "0.75",
+        0.75,
+    ),
+)
+SIMULATION_STREAM_CENTER_GRAVITY = max(
+    0.0,
+    _safe_float(
+        os.getenv("SIMULATION_WS_STREAM_CENTER_GRAVITY", "0.09") or "0.09",
+        0.09,
+    ),
+)
+SIMULATION_STREAM_JITTER_FORCE = max(
+    0.0,
+    _safe_float(
+        os.getenv("SIMULATION_WS_STREAM_JITTER_FORCE", "0.085") or "0.085",
+        0.085,
+    ),
+)
+SIMULATION_STREAM_SIMPLEX_SCALE = max(
+    0.0,
+    _safe_float(
+        os.getenv("SIMULATION_WS_STREAM_SIMPLEX_SCALE", "2.4") or "2.4",
+        2.4,
+    ),
+)
+SIMULATION_STREAM_FRICTION = max(
+    0.8,
+    min(
+        0.9999,
+        _safe_float(
+            os.getenv("SIMULATION_WS_STREAM_FRICTION", "0.997") or "0.997",
+            0.997,
+        ),
+    ),
+)
+SIMULATION_STREAM_MAX_SPEED = max(
+    0.005,
+    _safe_float(os.getenv("SIMULATION_WS_STREAM_MAX_SPEED", "0.095") or "0.095", 0.095),
+)
+
+
+def _csv_env_values(raw: str | None) -> list[str]:
+    values: list[str] = []
+    seen: set[str] = set()
+    for item in str(raw or "").split(","):
+        token = str(item or "").strip().lower()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        values.append(token)
+    return values
+
+
+def _simulation_presence_profile() -> str:
+    profile = str(os.getenv("SIMULATION_PRESENCE_PROFILE", "full") or "full")
+    return profile.strip().lower() or "full"
+
+
+def _simulation_presence_impact_order() -> list[str]:
+    explicit = _csv_env_values(os.getenv("SIMULATION_PRESENCE_IDS", ""))
+    if explicit:
+        return explicit
+
+    profile = _simulation_presence_profile()
+    if profile in {"minimal", "concept_cpu", "concept-cpu", "light"}:
+        return list(_SIMULATION_MINIMAL_PRESENCE_IDS)
+
+    ordered: list[str] = [*CANONICAL_NAMED_FIELD_IDS]
+    ordered.extend(
+        [
+            FILE_SENTINEL_PROFILE["id"],
+            FILE_ORGANIZER_PROFILE["id"],
+            HEALTH_SENTINEL_CPU_PROFILE["id"],
+            HEALTH_SENTINEL_GPU1_PROFILE["id"],
+            HEALTH_SENTINEL_GPU2_PROFILE["id"],
+            HEALTH_SENTINEL_NPU0_PROFILE["id"],
+        ]
+    )
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for presence_id in ordered:
+        token = str(presence_id or "").strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        deduped.append(token)
+    return deduped
+
+
+def _simulation_core_resource_emitters(
+    *,
+    cpu_utilization: float,
+) -> tuple[list[str], bool, float]:
+    explicit = _csv_env_values(os.getenv("SIMULATION_CORE_RESOURCES", ""))
+    profile = _simulation_presence_profile()
+
+    if explicit:
+        requested = explicit
+    elif profile in {"minimal", "concept_cpu", "concept-cpu", "light"}:
+        requested = ["cpu"]
+    else:
+        requested = ["cpu", "ram", "disk", "network", "gpu", "npu"]
+
+    resources: list[str] = []
+    seen: set[str] = set()
+    for token in requested:
+        canonical = _SIMULATION_RESOURCE_ALIASES.get(str(token or "").strip().lower())
+        if not canonical or canonical in seen:
+            continue
+        seen.add(canonical)
+        resources.append(canonical)
+
+    cpu_daimoi_stop_percent = max(
+        0.0,
+        min(
+            100.0,
+            _safe_float(
+                os.getenv("SIMULATION_CPU_DAIMOI_STOP_PERCENT", "75") or "75",
+                75.0,
+            ),
+        ),
+    )
+    cpu_core_emitter_enabled = (
+        _safe_float(cpu_utilization, 0.0) < cpu_daimoi_stop_percent
+    )
+    if not cpu_core_emitter_enabled:
+        resources = [resource for resource in resources if resource != "cpu"]
+
+    return resources, cpu_core_emitter_enabled, cpu_daimoi_stop_percent
+
+
 SIMULATION_FILE_GRAPH_NODE_FIELDS: tuple[str, ...] = (
     "id",
     "node_id",
@@ -3188,10 +3349,10 @@ def _build_logical_graph(catalog: dict[str, Any]) -> dict[str, Any]:
         node_id = (
             f"logical:fact:{hashlib.sha256(claim_id.encode('utf-8')).hexdigest()[:22]}"
         )
-        orbit = 0.14 + (_stable_ratio(claim_id, idx) * 0.09)
+        radius = 0.14 + (_stable_ratio(claim_id, idx) * 0.09)
         angle = _stable_ratio(claim_id, idx + 7) * math.tau
-        x = 0.72 + math.cos(angle) * orbit
-        y = 0.5 + math.sin(angle) * orbit
+        x = 0.72 + math.cos(angle) * radius
+        y = 0.5 + math.sin(angle) * radius
         proof_refs = [
             str(item).strip()
             for item in claim.get("proof_refs", [])
@@ -6064,15 +6225,14 @@ def _apply_file_graph_document_similarity_layout(
                         source = entry
                         break
             seed = f"{source['id']}|particle|{index}"
-            phase = (_stable_ratio(seed, 17) * math.tau) + (
-                now_seconds * (0.28 + (_stable_ratio(seed, 23) * 0.52))
-            )
-            orbit = 0.006 + (
+            scatter = 0.006 + (
                 _stable_ratio(seed, 31)
                 * max(0.018, _safe_float(source["range"], 0.03) * 0.64)
             )
-            x = _clamp01(_safe_float(source["x"], 0.5) + math.cos(phase) * orbit)
-            y = _clamp01(_safe_float(source["y"], 0.5) + math.sin(phase) * orbit)
+            seed_x = (_stable_ratio(seed, 47) * 2.0) - 1.0
+            seed_y = (_stable_ratio(seed, 53) * 2.0) - 1.0
+            x = _clamp01(_safe_float(source["x"], 0.5) + (seed_x * scatter))
+            y = _clamp01(_safe_float(source["y"], 0.5) + (seed_y * scatter * 0.82))
             particles.append(
                 {
                     "id": f"embed-particle:{index}",
@@ -6738,17 +6898,21 @@ def _build_backend_field_particles(
                     cache_row = {}
 
                 seed_ratio = _stable_ratio(f"{particle_id}|seed", local_index + 11)
-                base_angle = (seed_ratio * math.tau) + (
-                    now * (0.09 + (world_influence * 0.22) + (compute_pressure * 0.08))
+                spread = max(0.018, 0.085 - (local_density_ratio * 0.045))
+                home_dx = (
+                    (_stable_ratio(f"{particle_id}|home-x", local_index + 19) * 2.0)
+                    - 1.0
+                ) * spread
+                home_dy = (
+                    (
+                        (_stable_ratio(f"{particle_id}|home-y", local_index + 29) * 2.0)
+                        - 1.0
+                    )
+                    * spread
+                    * 0.82
                 )
-                orbit_span = max(0.018, 0.085 - (local_density_ratio * 0.045))
-                base_orbit = 0.008 + (
-                    _stable_ratio(f"{particle_id}|orbit", local_index + 19) * orbit_span
-                )
-                home_x = _clamp01(field_center_x + (math.cos(base_angle) * base_orbit))
-                home_y = _clamp01(
-                    field_center_y + (math.sin(base_angle) * base_orbit * 0.82)
-                )
+                home_x = _clamp01(field_center_x + home_dx)
+                home_y = _clamp01(field_center_y + home_dy)
 
                 px = _clamp01(_safe_float(cache_row.get("x", home_x), home_x))
                 py = _clamp01(_safe_float(cache_row.get("y", home_y), home_y))
@@ -7585,9 +7749,28 @@ _RESOURCE_DAIMOI_WALLET_CAP: dict[str, float] = {
     "gpu": 40.0,
     "npu": 40.0,
 }
-_RESOURCE_DAIMOI_ACTION_BASE_COST = 0.00022
+_RESOURCE_DAIMOI_ACTION_BASE_COST = 0.00001
 _RESOURCE_DAIMOI_ACTION_COST_MAX = 0.0028
 _RESOURCE_DAIMOI_ACTION_SATISFIED_RATIO = 0.85
+
+_SIMULATION_BOOT_RESET_LOCK = threading.Lock()
+_SIMULATION_BOOT_RESET_APPLIED = False
+
+
+def _maybe_reset_simulation_runtime_state() -> None:
+    global _SIMULATION_BOOT_RESET_APPLIED
+    reset_on_boot = str(
+        os.getenv("SIMULATION_RESET_DAIMOI_ON_BOOT", "1") or "1"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if not reset_on_boot:
+        return
+    with _SIMULATION_BOOT_RESET_LOCK:
+        if _SIMULATION_BOOT_RESET_APPLIED:
+            return
+        get_presence_runtime_manager().reset()
+        with _DAIMO_DYNAMICS_LOCK:
+            _DAIMO_DYNAMICS_CACHE.clear()
+        _SIMULATION_BOOT_RESET_APPLIED = True
 
 
 def _canonical_resource_type(resource_type: str) -> str:
@@ -7787,6 +7970,8 @@ def _apply_resource_daimoi_emissions(
     recipient_impacts: list[dict[str, Any]] = []
     fallback_recipients: list[dict[str, Any]] = []
     anchor_by_presence: dict[str, tuple[float, float]] = {}
+    impact_by_id: dict[str, dict[str, Any]] = {}
+    cpu_core_impact: dict[str, Any] | None = None
     for impact in presence_impacts:
         if not isinstance(impact, dict):
             continue
@@ -7794,6 +7979,9 @@ def _apply_resource_daimoi_emissions(
         if not presence_id:
             continue
         _normalize_resource_wallet(impact)
+        impact_by_id[presence_id] = impact
+        if presence_id == "presence.core.cpu":
+            cpu_core_impact = impact
         if _core_resource_type_from_presence_id(presence_id):
             continue
 
@@ -7803,15 +7991,22 @@ def _apply_resource_daimoi_emissions(
             manifest_by_id=manifest_by_id,
         )
         fallback_recipients.append(impact)
-        if str(
-            impact.get("presence_type", "")
-        ).strip() == "sub-sim" or presence_id.startswith("presence.sim."):
-            recipient_impacts.append(impact)
+        # All presences with anchors are valid recipients
+        recipient_impacts.append(impact)
 
     if not recipient_impacts:
         recipient_impacts = fallback_recipients
     if not recipient_impacts:
         return summary
+
+    # Ambient fill for CPU Core
+    if cpu_core_impact:
+        wallet = cpu_core_impact.get("resource_wallet", {})
+        if isinstance(wallet, dict):
+            ambient_fill = 0.15  # Very high fill
+            current = _safe_float(wallet.get("cpu", 0.0), 0.0)
+            cap = _safe_float(_RESOURCE_DAIMOI_WALLET_CAP.get("cpu", 48.0), 48.0)
+            wallet["cpu"] = min(cap, current + ambient_fill)
 
     resource_totals: dict[str, float] = {key: 0.0 for key in _RESOURCE_DAIMOI_TYPES}
     recipient_totals: dict[str, float] = {}
@@ -7826,7 +8021,40 @@ def _apply_resource_daimoi_emissions(
         presence_id = str(row.get("presence_id", "")).strip()
         resource_type = _core_resource_type_from_presence_id(presence_id)
         if not resource_type:
+            # Allow non-core presences to emit CPU if they have pressure
+            resource_type = "cpu"
+
+        emitter_cpu_cost = 0.0
+        emitter_impact = impact_by_id.get(presence_id)
+        if not isinstance(emitter_impact, dict):
             continue
+        emitter_wallet = _normalize_resource_wallet(emitter_impact)
+
+        # Pressure-based leak check
+        resource_cap = max(
+            0.1,
+            _safe_float(_RESOURCE_DAIMOI_WALLET_CAP.get(resource_type, 32.0), 32.0),
+        )
+        resource_balance = max(
+            0.0, _safe_float(emitter_wallet.get(resource_type, 0.0), 0.0)
+        )
+        resource_pressure = _clamp01(resource_balance / resource_cap)
+        if resource_pressure < 0.15:
+            # Not enough saturation to leak
+            continue
+
+        if resource_type != "cpu":
+            emitter_cpu_cost = _RESOURCE_DAIMOI_ACTION_BASE_COST
+            emitter_cpu_balance = max(
+                0.0,
+                _safe_float(emitter_wallet.get("cpu", 0.0), 0.0),
+            )
+            if emitter_cpu_balance + 1e-9 < emitter_cpu_cost:
+                row["resource_action_blocked"] = True
+                row["resource_block_reason"] = "cpu_wallet_required_for_emit"
+                row["top_job"] = "resource_starved"
+                continue
+
         emitter_rows += 1
 
         availability = _resource_availability_ratio(resource_type, resource_heartbeat)
@@ -7850,13 +8078,14 @@ def _apply_resource_daimoi_emissions(
         local_price = max(0.35, _safe_float(row.get("local_price", 1.0), 1.0))
 
         emit_amount = (
-            0.0015
-            + (influence_power * 0.009)
+            0.25
+            + (influence_power * 0.12)
             + (route_probability * 0.005)
             + (drift_score * 0.003)
             + (gravity_signal * 0.002)
         )
-        emit_amount *= 0.3 + (availability * 0.7)
+        # Modulate by pressure (higher pressure -> larger packets)
+        emit_amount *= 0.3 + (availability * 0.7) + (resource_pressure * 0.5)
         emit_amount /= local_price
         emit_amount = max(0.0, emit_amount)
         if emit_amount <= 1e-7:
@@ -7900,8 +8129,10 @@ def _apply_resource_daimoi_emissions(
         if credited <= 1e-8:
             continue
 
-        target_wallet[resource_type] = round(next_value, 6)
-        best_target["resource_wallet"] = target_wallet
+        # DELAYED CREDIT: Do not credit target immediately.
+        # Resources are carried by the particle and delivered on absorption.
+        # target_wallet[resource_type] = round(next_value, 6)
+        # best_target["resource_wallet"] = target_wallet
 
         packet_count += 1
         resource_totals[resource_type] = (
@@ -7916,12 +8147,31 @@ def _apply_resource_daimoi_emissions(
         row["resource_emit_amount"] = round(credited, 6)
         row["resource_target_presence_id"] = best_target_id
         row["resource_availability"] = round(availability, 6)
+        row["resource_action_blocked"] = False
         row["top_job"] = "emit_resource_packet"
         row["job_probabilities"] = {
             "emit_resource_packet": round(0.74, 6),
             "invoke_resource_probe": round(0.16, 6),
             "deliver_message": round(0.10, 6),
         }
+        # Decrement payload from source
+        source_balance = max(
+            0.0, _safe_float(emitter_wallet.get(resource_type, 0.0), 0.0)
+        )
+        source_after = max(0.0, source_balance - emit_amount)
+        emitter_wallet[resource_type] = round(source_after, 6)
+
+        if emitter_cpu_cost > 0.0 and isinstance(emitter_impact, dict):
+            emitter_cpu_balance = max(
+                0.0,
+                _safe_float(emitter_wallet.get("cpu", 0.0), 0.0),
+            )
+            emitter_cpu_after = max(0.0, emitter_cpu_balance - emitter_cpu_cost)
+            emitter_wallet["cpu"] = round(emitter_cpu_after, 6)
+            row["resource_emit_cpu_cost"] = round(emitter_cpu_cost, 6)
+            row["resource_emit_cpu_balance_after"] = round(emitter_cpu_after, 6)
+
+        emitter_impact["resource_wallet"] = emitter_wallet
 
     summary["emitter_rows"] = int(emitter_rows)
     summary["delivered_packets"] = int(packet_count)
@@ -8000,21 +8250,7 @@ def _apply_resource_daimoi_action_consumption(
             continue
 
         wallet = _normalize_resource_wallet(impact)
-        focus_resource = _canonical_resource_type(
-            str(row.get("route_resource_focus", ""))
-        )
-        if not focus_resource:
-            focus_resource = _canonical_resource_type(str(row.get("resource_type", "")))
-        if not focus_resource:
-            if wallet:
-                focus_resource = max(
-                    _RESOURCE_DAIMOI_TYPES,
-                    key=lambda resource: max(
-                        0.0, _safe_float(wallet.get(resource, 0.0), 0.0)
-                    ),
-                )
-            else:
-                focus_resource = "cpu"
+        focus_resource = "cpu"
 
         influence_power = _clamp01(
             _safe_float(
@@ -8339,19 +8575,27 @@ def _build_user_presence_embedded_daimoi_rows(
 
         base_x = _clamp01(_safe_float(event.get("x_ratio", anchor_x), anchor_x))
         base_y = _clamp01(_safe_float(event.get("y_ratio", anchor_y), anchor_y))
-        phase = (now * 1.24) + (index * 1.41)
-        orbit = 0.008 + ((index % 5) * 0.003) + ((1.0 - life) * 0.012)
-        x = _clamp01(((base_x * 0.58) + (anchor_x * 0.42)) + (math.cos(phase) * orbit))
-        y = _clamp01(
-            ((base_y * 0.58) + (anchor_y * 0.42))
-            + (math.sin(phase * 0.91) * orbit * 0.84)
-        )
-        vx = -math.sin(phase) * orbit * 0.34
-        vy = math.cos(phase * 0.91) * orbit * 0.28
-
         event_id = str(
             event.get("id", f"user-input:{index:02d}") or f"user-input:{index:02d}"
         ).strip()
+        event_seed = int(hashlib.sha1(event_id.encode("utf-8")).hexdigest()[:8], 16)
+        noise_scale = 0.007 + ((1.0 - life) * 0.006)
+        noise_time = now * (0.44 + (life * 0.22))
+        noise_x = _simplex_noise_2d(
+            (base_x * 5.4) + (index * 0.27),
+            noise_time,
+            seed=(event_seed % 251) + 13,
+        )
+        noise_y = _simplex_noise_2d(
+            (base_y * 5.4) + 19.0 + (index * 0.23),
+            noise_time * 1.09,
+            seed=(event_seed % 251) + 37,
+        )
+        x = _clamp01(((base_x * 0.62) + (anchor_x * 0.38)) + (noise_x * noise_scale))
+        y = _clamp01(((base_y * 0.62) + (anchor_y * 0.38)) + (noise_y * noise_scale))
+        vx = noise_x * noise_scale * 0.9
+        vy = noise_y * noise_scale * 0.9
+
         message = str(event.get("message", "") or "").strip()
         kind = str(event.get("kind", "input") or "input").strip().lower() or "input"
         target = (
@@ -8425,6 +8669,8 @@ def build_simulation_state(
     queue_snapshot: dict[str, Any] | None = None,
     docker_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    _prof_start = time.perf_counter()
+    _maybe_reset_simulation_runtime_state()
     now = time.time()
     resource_budget_snapshot = _resource_monitor_snapshot()
     budget_devices = (
@@ -8668,10 +8914,17 @@ def build_simulation_state(
             elif truth_gate_blocked:
                 hue = max(0.0, hue - 12.0)
 
-            orbit = 0.012 + (claim_index * 0.014)
-            phase = now * (0.45 + claim_index * 0.11)
-            x_norm = _clamp01(claim_x + (math.cos(phase) * orbit))
-            y_norm = _clamp01(claim_y + (math.sin(phase) * orbit))
+            spread = 0.012 + (claim_index * 0.014)
+            offset_x = (
+                (_stable_ratio(f"truth-claim:{claim_index}:x", claim_index + 3) * 2.0)
+                - 1.0
+            ) * spread
+            offset_y = (
+                (_stable_ratio(f"truth-claim:{claim_index}:y", claim_index + 7) * 2.0)
+                - 1.0
+            ) * spread
+            x_norm = _clamp01(claim_x + offset_x)
+            y_norm = _clamp01(claim_y + (offset_y * 0.86))
             saturation = 0.72 if status == "proved" else 0.78
             value = 0.96 if status == "proved" else 0.88
             r_raw, g_raw, b_raw = colorsys.hsv_to_rgb(
@@ -8794,15 +9047,8 @@ def build_simulation_state(
     manifest_lookup = {
         str(item.get("id", "")): item for item in ENTITY_MANIFEST if item.get("id")
     }
-    impact_order = [
-        *CANONICAL_NAMED_FIELD_IDS,
-        FILE_SENTINEL_PROFILE["id"],
-        FILE_ORGANIZER_PROFILE["id"],
-        HEALTH_SENTINEL_CPU_PROFILE["id"],
-        HEALTH_SENTINEL_GPU1_PROFILE["id"],
-        HEALTH_SENTINEL_GPU2_PROFILE["id"],
-        HEALTH_SENTINEL_NPU0_PROFILE["id"],
-    ]
+    presence_profile = _simulation_presence_profile()
+    impact_order = _simulation_presence_impact_order()
     base_file = {
         "receipt_river": 0.94,
         "witness_thread": 0.38,
@@ -9020,7 +9266,9 @@ def build_simulation_state(
     ][:4]
 
     # Create core resource presences
-    core_resources = ["cpu", "ram", "disk", "network", "gpu", "npu"]
+    core_resources, cpu_core_emitter_enabled, cpu_daimoi_stop_percent = (
+        _simulation_core_resource_emitters(cpu_utilization=resource_cpu_util)
+    )
     manager = get_presence_runtime_manager()
     for resource in core_resources:
         presence_id = f"presence.core.{resource}"
@@ -9203,9 +9451,12 @@ def build_simulation_state(
         process_resource_cycle(presence_impacts, now=now)
 
     # Calculate daimoi particles (using presence_impacts which now has updated wallets)
+    _prof_pre_particles = time.perf_counter()
     particle_backend_mode = (
         str(os.getenv("SIM_PARTICLE_BACKEND", "python") or "python").strip().lower()
     )
+    if os.getenv("SIM_PROFILE_INTERNAL") == "1":
+        print(f"DEBUG: particle_backend_mode={particle_backend_mode}", flush=True)
     if particle_backend_mode in {"c", "cdb", "native", "double-buffer-c"}:
         try:
             from .c_double_buffer_backend import build_double_buffer_field_particles
@@ -9400,6 +9651,12 @@ def build_simulation_state(
             "cpu_utilization": round(resource_cpu_util, 2),
             "slice_offload": sim_budget_slice,
         },
+        "emission_policy": {
+            "presence_profile": presence_profile,
+            "core_resource_emitters": list(core_resources),
+            "cpu_core_emitter_enabled": bool(cpu_core_emitter_enabled),
+            "cpu_daimoi_stop_percent": round(cpu_daimoi_stop_percent, 2),
+        },
         "click_events": clicks_recent,
         "file_events": file_changes_recent,
         "recent_click_targets": list(influence.get("recent_click_targets", []))[:6],
@@ -9478,7 +9735,7 @@ def build_simulation_state(
         "gate": {},
     }
 
-    return {
+    simulation = {
         "ok": True,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -9585,6 +9842,571 @@ def build_simulation_state(
             resolution=32,
         ),
     }
+    if os.getenv("SIM_PROFILE_INTERNAL") == "1":
+        print(
+            f"DEBUG PROFILE: pre_particles={(_prof_pre_particles - _prof_start) * 1000:.2f}ms, total={(time.perf_counter() - _prof_start) * 1000:.2f}ms",
+            flush=True,
+        )
+    return simulation
+
+
+def _stream_particle_effective_mass(row: dict[str, Any]) -> float:
+    semantic_text_chars = max(
+        0.0, _safe_float(row.get("semantic_text_chars", 0.0), 0.0)
+    )
+    semantic_mass = max(0.0, _safe_float(row.get("semantic_mass", 0.0), 0.0))
+    daimoi_energy = max(0.0, _safe_float(row.get("daimoi_energy", 0.0), 0.0))
+    message_probability = max(
+        0.0,
+        _safe_float(row.get("message_probability", 0.0), 0.0),
+    )
+    package_entropy = max(0.0, _safe_float(row.get("package_entropy", 0.0), 0.0))
+
+    text_term = math.log1p(semantic_text_chars) * 0.32
+    energy_term = math.log1p((daimoi_energy * 2.8) + (message_probability * 3.5)) * 0.42
+    entropy_term = package_entropy * 0.08
+    mass_term = semantic_mass * 0.15
+    return max(0.35, min(8.5, 0.5 + text_term + energy_term + entropy_term + mass_term))
+
+
+def _stream_particle_collision_radius(row: dict[str, Any], mass_value: float) -> float:
+    size_value = max(0.35, _safe_float(row.get("size", 1.0), 1.0))
+    return max(
+        0.004, min(0.035, (size_value * 0.0044) + (math.sqrt(mass_value) * 0.0014))
+    )
+
+
+def _resolve_semantic_particle_collisions(rows: list[dict[str, Any]]) -> None:
+    if not isinstance(rows, list):
+        return
+    particle_rows = [row for row in rows if isinstance(row, dict)]
+    if len(particle_rows) < 2:
+        return
+
+    mass_by_id: dict[str, float] = {}
+    radius_by_id: dict[str, float] = {}
+    for row in particle_rows:
+        particle_id = str(row.get("id", "") or id(row))
+        mass_value = _stream_particle_effective_mass(row)
+        mass_by_id[particle_id] = mass_value
+        radius_by_id[particle_id] = _stream_particle_collision_radius(row, mass_value)
+
+    cell_size = 0.04
+    grid: dict[tuple[int, int], list[dict[str, Any]]] = defaultdict(list)
+    for row in particle_rows:
+        x_value = _clamp01(_safe_float(row.get("x", 0.5), 0.5))
+        y_value = _clamp01(_safe_float(row.get("y", 0.5), 0.5))
+        gx = int(x_value / cell_size)
+        gy = int(y_value / cell_size)
+        grid[(gx, gy)].append(row)
+
+    restitution = 0.88
+    separation_percent = 0.72
+    collision_count_updates: dict[str, int] = defaultdict(int)
+
+    visited_pairs: set[tuple[str, str]] = set()
+    for (gx, gy), bucket in list(grid.items()):
+        neighbors: list[dict[str, Any]] = []
+        for nx in (gx - 1, gx, gx + 1):
+            for ny in (gy - 1, gy, gy + 1):
+                neighbors.extend(grid.get((nx, ny), []))
+
+        for row_a in bucket:
+            id_a = str(row_a.get("id", "") or id(row_a))
+            x_a = _clamp01(_safe_float(row_a.get("x", 0.5), 0.5))
+            y_a = _clamp01(_safe_float(row_a.get("y", 0.5), 0.5))
+            vx_a = _safe_float(row_a.get("vx", 0.0), 0.0)
+            vy_a = _safe_float(row_a.get("vy", 0.0), 0.0)
+            mass_a = max(0.2, _safe_float(mass_by_id.get(id_a, 1.0), 1.0))
+            inv_mass_a = 1.0 / mass_a
+            radius_a = _safe_float(radius_by_id.get(id_a, 0.01), 0.01)
+
+            for row_b in neighbors:
+                if row_a is row_b:
+                    continue
+                id_b = str(row_b.get("id", "") or id(row_b))
+                pair = (id_a, id_b) if id_a < id_b else (id_b, id_a)
+                if pair in visited_pairs:
+                    continue
+                visited_pairs.add(pair)
+
+                x_b = _clamp01(_safe_float(row_b.get("x", 0.5), 0.5))
+                y_b = _clamp01(_safe_float(row_b.get("y", 0.5), 0.5))
+                dx = x_b - x_a
+                dy = y_b - y_a
+                distance = math.hypot(dx, dy)
+
+                mass_b = max(0.2, _safe_float(mass_by_id.get(id_b, 1.0), 1.0))
+                inv_mass_b = 1.0 / mass_b
+                radius_b = _safe_float(radius_by_id.get(id_b, 0.01), 0.01)
+                min_distance = radius_a + radius_b
+                if distance >= min_distance:
+                    continue
+
+                if distance < 1e-6:
+                    seed = int(
+                        hashlib.sha1(f"{id_a}|{id_b}".encode("utf-8")).hexdigest()[:8],
+                        16,
+                    )
+                    theta = float(seed % 6283) / 1000.0
+                    nx = math.cos(theta)
+                    ny = math.sin(theta)
+                    distance = 1e-6
+                else:
+                    nx = dx / distance
+                    ny = dy / distance
+
+                vx_b = _safe_float(row_b.get("vx", 0.0), 0.0)
+                vy_b = _safe_float(row_b.get("vy", 0.0), 0.0)
+                rel_vx = vx_a - vx_b
+                rel_vy = vy_a - vy_b
+                vel_normal = (rel_vx * nx) + (rel_vy * ny)
+
+                if vel_normal < 0.0:
+                    impulse = (-(1.0 + restitution) * vel_normal) / max(
+                        1e-6, inv_mass_a + inv_mass_b
+                    )
+                    impulse_x = impulse * nx
+                    impulse_y = impulse * ny
+                    vx_a += impulse_x * inv_mass_a
+                    vy_a += impulse_y * inv_mass_a
+                    vx_b -= impulse_x * inv_mass_b
+                    vy_b -= impulse_y * inv_mass_b
+
+                    tangent_x = rel_vx - (vel_normal * nx)
+                    tangent_y = rel_vy - (vel_normal * ny)
+                    tangent_norm = math.hypot(tangent_x, tangent_y)
+                    if tangent_norm > 1e-6:
+                        tangent_x /= tangent_norm
+                        tangent_y /= tangent_norm
+                        tangent_impulse = min(
+                            abs(impulse) * 0.18,
+                            abs((rel_vx * tangent_x) + (rel_vy * tangent_y)),
+                        )
+                        vx_a -= tangent_impulse * tangent_x * inv_mass_a
+                        vy_a -= tangent_impulse * tangent_y * inv_mass_a
+                        vx_b += tangent_impulse * tangent_x * inv_mass_b
+                        vy_b += tangent_impulse * tangent_y * inv_mass_b
+
+                penetration = min_distance - distance
+                correction = (
+                    max(0.0, penetration) / max(1e-6, inv_mass_a + inv_mass_b)
+                ) * separation_percent
+                correction_x = correction * nx
+                correction_y = correction * ny
+
+                x_a -= correction_x * inv_mass_a
+                y_a -= correction_y * inv_mass_a
+                x_b += correction_x * inv_mass_b
+                y_b += correction_y * inv_mass_b
+
+                row_b["x"] = round(_clamp01(x_b), 5)
+                row_b["y"] = round(_clamp01(y_b), 5)
+                row_b["vx"] = round(vx_b, 6)
+                row_b["vy"] = round(vy_b, 6)
+                collision_count_updates[id_b] += 1
+
+                collision_count_updates[id_a] += 1
+
+            row_a["x"] = round(_clamp01(x_a), 5)
+            row_a["y"] = round(_clamp01(y_a), 5)
+            row_a["vx"] = round(vx_a, 6)
+            row_a["vy"] = round(vy_a, 6)
+
+    for row in particle_rows:
+        particle_id = str(row.get("id", "") or id(row))
+        collisions = int(collision_count_updates.get(particle_id, 0))
+        row["collision_count"] = collisions
+
+
+def advance_simulation_field_particles(
+    simulation: dict[str, Any],
+    *,
+    dt_seconds: float,
+    now_seconds: float | None = None,
+) -> None:
+    if not isinstance(simulation, dict):
+        return
+    presence_dynamics = simulation.get("presence_dynamics", {})
+    if not isinstance(presence_dynamics, dict):
+        return
+    rows = presence_dynamics.get("field_particles", [])
+    if not isinstance(rows, list) or not rows:
+        return
+
+    dt = max(0.001, _safe_float(dt_seconds, 0.08))
+    base_dt = max(
+        0.001, _safe_float(os.getenv("SIM_TICK_SECONDS", "0.08") or "0.08", 0.08)
+    )
+    now_value = _safe_float(now_seconds, time.time())
+    friction_tick = max(
+        0.8,
+        min(0.99995, SIMULATION_STREAM_FRICTION ** (dt / base_dt)),
+    )
+
+    gravity_max = 1e-6
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        gravity_max = max(
+            gravity_max,
+            _safe_float(row.get("gravity_potential", 0.0), 0.0),
+        )
+
+    presence_centers: dict[str, tuple[float, float]] = {}
+    presence_counts: dict[str, int] = defaultdict(int)
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        presence_id = str(row.get("presence_id", "") or "").strip()
+        if not presence_id:
+            continue
+        x_value = _clamp01(_safe_float(row.get("x", 0.5), 0.5))
+        y_value = _clamp01(_safe_float(row.get("y", 0.5), 0.5))
+        current_x, current_y = presence_centers.get(presence_id, (0.0, 0.0))
+        presence_centers[presence_id] = (current_x + x_value, current_y + y_value)
+        presence_counts[presence_id] = int(presence_counts.get(presence_id, 0)) + 1
+
+    for presence_id, count in list(presence_counts.items()):
+        if count <= 0 or presence_id not in presence_centers:
+            continue
+        total_x, total_y = presence_centers[presence_id]
+        presence_centers[presence_id] = (total_x / count, total_y / count)
+
+    node_centers: dict[str, tuple[float, float]] = {}
+    node_counts: dict[str, int] = defaultdict(int)
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        x_value = _clamp01(_safe_float(row.get("x", 0.5), 0.5))
+        y_value = _clamp01(_safe_float(row.get("y", 0.5), 0.5))
+        tokens = {
+            str(row.get("graph_node_id", "") or "").strip(),
+            str(row.get("route_node_id", "") or "").strip(),
+        }
+        for token in tokens:
+            if not token:
+                continue
+            total_x, total_y = node_centers.get(token, (0.0, 0.0))
+            node_centers[token] = (total_x + x_value, total_y + y_value)
+            node_counts[token] = int(node_counts.get(token, 0)) + 1
+
+    for node_id, count in list(node_counts.items()):
+        if count <= 0 or node_id not in node_centers:
+            continue
+        total_x, total_y = node_centers[node_id]
+        node_centers[node_id] = (total_x / count, total_y / count)
+
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+
+        particle_id = str(row.get("id", "") or f"field:{index}")
+        x_value = _clamp01(_safe_float(row.get("x", 0.5), 0.5))
+        y_value = _clamp01(_safe_float(row.get("y", 0.5), 0.5))
+        vx_value = (
+            _safe_float(row.get("vx", 0.0), 0.0) * SIMULATION_STREAM_VELOCITY_SCALE
+        )
+        vy_value = (
+            _safe_float(row.get("vy", 0.0), 0.0) * SIMULATION_STREAM_VELOCITY_SCALE
+        )
+
+        presence_id = str(row.get("presence_id", "") or "").strip()
+        presence_center_x, presence_center_y = presence_centers.get(
+            presence_id, (0.5, 0.5)
+        )
+        to_presence_x = presence_center_x - x_value
+        to_presence_y = presence_center_y - y_value
+        to_presence_mag = math.hypot(to_presence_x, to_presence_y)
+        if to_presence_mag > 1e-6:
+            to_presence_x /= to_presence_mag
+            to_presence_y /= to_presence_mag
+
+        graph_node_id = str(row.get("graph_node_id", "") or "").strip()
+        route_node_id = str(row.get("route_node_id", "") or "").strip()
+        route_anchor_x_raw = _safe_float(row.get("route_x", float("nan")), float("nan"))
+        route_anchor_y_raw = _safe_float(row.get("route_y", float("nan")), float("nan"))
+        graph_anchor_x_raw = _safe_float(row.get("graph_x", float("nan")), float("nan"))
+        graph_anchor_y_raw = _safe_float(row.get("graph_y", float("nan")), float("nan"))
+        route_anchor_valid = math.isfinite(route_anchor_x_raw) and math.isfinite(
+            route_anchor_y_raw
+        )
+        graph_anchor_valid = math.isfinite(graph_anchor_x_raw) and math.isfinite(
+            graph_anchor_y_raw
+        )
+
+        semantic_node_id = route_node_id or graph_node_id
+        semantic_anchor: tuple[float, float] | None = None
+        if route_anchor_valid:
+            semantic_anchor = (
+                _clamp01(route_anchor_x_raw),
+                _clamp01(route_anchor_y_raw),
+            )
+        elif graph_anchor_valid:
+            semantic_anchor = (
+                _clamp01(graph_anchor_x_raw),
+                _clamp01(graph_anchor_y_raw),
+            )
+        elif semantic_node_id:
+            semantic_count = int(node_counts.get(semantic_node_id, 0))
+            center_candidate = node_centers.get(semantic_node_id)
+            if semantic_count > 1 and isinstance(center_candidate, tuple):
+                semantic_anchor = center_candidate
+
+        if semantic_anchor is None:
+            semantic_anchor = presence_centers.get(presence_id, (0.5, 0.5))
+        semantic_anchor_x, semantic_anchor_y = semantic_anchor
+        semantic_dx = semantic_anchor_x - x_value
+        semantic_dy = semantic_anchor_y - y_value
+        semantic_dist = max(1e-6, math.hypot(semantic_dx, semantic_dy))
+        semantic_nx = semantic_dx / semantic_dist
+        semantic_ny = semantic_dy / semantic_dist
+
+        center_dx = 0.5 - x_value
+        center_dy = 0.5 - y_value
+        center_dist = max(1e-6, math.hypot(center_dx, center_dy))
+        center_nx = center_dx / center_dist
+        center_ny = center_dy / center_dist
+        edge_distance = max(abs(x_value - 0.5), abs(y_value - 0.5))
+        edge_signal = _clamp01((edge_distance - 0.36) / 0.22)
+        lateral_nx = -semantic_ny
+        lateral_ny = semantic_nx
+
+        drift_gravity_term = _safe_float(row.get("drift_gravity_term", 0.0), 0.0)
+        valve_gravity_term = _safe_float(row.get("valve_gravity_term", 0.0), 0.0)
+        gravity_potential = _safe_float(row.get("gravity_potential", 0.0), 0.0)
+        influence_power = _clamp01(_safe_float(row.get("influence_power", 0.0), 0.0))
+        route_probability = _clamp01(
+            _safe_float(row.get("route_probability", 0.5), 0.5)
+        )
+        node_saturation = _clamp01(_safe_float(row.get("node_saturation", 0.0), 0.0))
+        drift_cost_term = _safe_float(row.get("drift_cost_term", 0.0), 0.0)
+        drift_cost_semantic_term = _safe_float(
+            row.get("drift_cost_semantic_term", 0.0), 0.0
+        )
+        focus_contribution = _safe_float(
+            row.get("route_resource_focus_contribution", 0.0), 0.0
+        )
+        semantic_text_chars = max(
+            0.0,
+            _safe_float(row.get("semantic_text_chars", 0.0), 0.0),
+        )
+        semantic_mass = max(0.0, _safe_float(row.get("semantic_mass", 0.0), 0.0))
+        daimoi_energy = max(0.0, _safe_float(row.get("daimoi_energy", 0.0), 0.0))
+        message_probability = max(
+            0.0,
+            _safe_float(row.get("message_probability", 0.0), 0.0),
+        )
+        package_entropy = max(0.0, _safe_float(row.get("package_entropy", 0.0), 0.0))
+
+        gravity_signal = _clamp01(gravity_potential / max(1e-6, gravity_max))
+        semantic_text_signal = _clamp01(math.log1p(semantic_text_chars) / 8.0)
+        semantic_mass_signal = _clamp01(semantic_mass / 6.0)
+        energy_signal = _clamp01((daimoi_energy * 0.35) + (message_probability * 0.45))
+        entropy_signal = _clamp01(package_entropy / 3.0)
+        semantic_signal = _clamp01(
+            abs(drift_cost_semantic_term)
+            + (semantic_text_signal * 0.6)
+            + (semantic_mass_signal * 0.5)
+            + (energy_signal * 0.45)
+            + (entropy_signal * 0.25)
+        )
+        drift_cost_signal = _clamp01(abs(drift_cost_term))
+        force_signal = _clamp01(
+            (abs(drift_gravity_term) * 0.08)
+            + (abs(valve_gravity_term) * 0.05)
+            + (gravity_signal * 0.72)
+            + (influence_power * 0.44)
+            + (semantic_signal * 0.58)
+        )
+
+        semantic_gain = SIMULATION_STREAM_FIELD_FORCE * (
+            0.18
+            + (force_signal * 0.36)
+            + (semantic_signal * 1.18)
+            + (route_probability * 0.34)
+            + min(0.24, abs(focus_contribution) * 0.08)
+        )
+        presence_gain = SIMULATION_STREAM_FIELD_FORCE * (
+            0.03 + ((1.0 - route_probability) * 0.08) + ((1.0 - semantic_signal) * 0.06)
+        )
+        center_gain = SIMULATION_STREAM_CENTER_GRAVITY * (
+            edge_signal
+            * (
+                0.22
+                + (gravity_signal * 0.38)
+                + (influence_power * 0.16)
+                + ((1.0 - node_saturation) * 0.12)
+            )
+        )
+        jitter_gain = SIMULATION_STREAM_JITTER_FORCE * (
+            0.72
+            + (semantic_signal * 0.84)
+            + (influence_power * 0.36)
+            + (edge_signal * 0.24)
+            + min(0.62, abs(focus_contribution) * 0.22)
+        )
+
+        seed = int(hashlib.sha1(particle_id.encode("utf-8")).hexdigest()[:8], 16)
+        noise_frequency = 2.8 + (semantic_signal * 4.2) + (route_probability * 1.1)
+        noise_time_scale = 0.44 + (route_probability * 0.48) + (semantic_signal * 0.22)
+        jitter_x_primary = _simplex_noise_2d(
+            (x_value * noise_frequency) + (index * 0.019),
+            now_value * noise_time_scale,
+            seed=(seed % 251) + 7,
+        )
+        jitter_y_primary = _simplex_noise_2d(
+            (y_value * noise_frequency) + 100.0 + (index * 0.017),
+            now_value * (noise_time_scale * 1.07),
+            seed=(seed % 251) + 19,
+        )
+        jitter_x_detail = _simplex_noise_2d(
+            (x_value * (noise_frequency * 2.1)) + 37.0 + (index * 0.013),
+            now_value * (noise_time_scale * 1.63),
+            seed=(seed % 251) + 43,
+        )
+        jitter_y_detail = _simplex_noise_2d(
+            (y_value * (noise_frequency * 2.05)) + 173.0 + (index * 0.011),
+            now_value * (noise_time_scale * 1.71),
+            seed=(seed % 251) + 71,
+        )
+        jitter_x = (
+            (jitter_x_primary + (jitter_x_detail * 0.58))
+            * jitter_gain
+            * SIMULATION_STREAM_SIMPLEX_SCALE
+        )
+        jitter_y = (
+            (jitter_y_primary + (jitter_y_detail * 0.58))
+            * jitter_gain
+            * SIMULATION_STREAM_SIMPLEX_SCALE
+        )
+
+        ax = (
+            (semantic_nx * semantic_gain)
+            + (to_presence_x * presence_gain)
+            + (center_nx * center_gain)
+            + jitter_x
+        )
+        ay = (
+            (semantic_ny * semantic_gain)
+            + (to_presence_y * presence_gain)
+            + (center_ny * center_gain)
+            + jitter_y
+        )
+
+        vx_value += ax * dt
+        vy_value += ay * dt
+        lateral_velocity = (vx_value * lateral_nx) + (vy_value * lateral_ny)
+        lateral_damping = min(
+            0.92,
+            (0.24 + (semantic_signal * 0.34) + (route_probability * 0.2)) * dt,
+        )
+        vx_value -= lateral_velocity * lateral_nx * lateral_damping
+        vy_value -= lateral_velocity * lateral_ny * lateral_damping
+
+        base_drag = 1.0 - min(
+            0.08, (node_saturation * 0.03) + (drift_cost_signal * 0.02)
+        )
+        vx_value *= friction_tick * base_drag
+        vy_value *= friction_tick * base_drag
+
+        dynamic_max_speed = SIMULATION_STREAM_MAX_SPEED * (
+            0.68
+            + (influence_power * 0.22)
+            + (gravity_signal * 0.12)
+            + (semantic_signal * 0.22)
+            + (energy_signal * 0.08)
+        )
+        speed = math.hypot(vx_value, vy_value)
+        if speed > dynamic_max_speed and speed > 0.0:
+            speed_scale = dynamic_max_speed / speed
+            vx_value *= speed_scale
+            vy_value *= speed_scale
+
+        next_x = x_value + (vx_value * dt)
+        next_y = y_value + (vy_value * dt)
+
+        if next_x < 0.0:
+            next_x = 0.0
+            vx_value = abs(vx_value) * 0.82
+        elif next_x > 1.0:
+            next_x = 1.0
+            vx_value = -abs(vx_value) * 0.82
+
+        if next_y < 0.0:
+            next_y = 0.0
+            vy_value = abs(vy_value) * 0.82
+        elif next_y > 1.0:
+            next_y = 1.0
+            vy_value = -abs(vy_value) * 0.82
+
+        row["x"] = round(_clamp01(next_x), 5)
+        row["y"] = round(_clamp01(next_y), 5)
+        row["vx"] = round(vx_value, 6)
+        row["vy"] = round(vy_value, 6)
+
+        # Absorption (Suck up)
+        if bool(row.get("resource_daimoi", False)):
+            target_id = str(row.get("resource_target_presence_id", "")).strip()
+            if target_id:
+                tx, ty = presence_centers.get(target_id, (0.5, 0.5))
+                dist_sq = ((tx - next_x) ** 2) + ((ty - next_y) ** 2)
+                if dist_sq < 0.0036:  # Radius approx 0.06
+                    manager = get_presence_runtime_manager()
+                    state = manager.get_state(target_id)
+                    wallet = state.setdefault("resource_wallet", {})
+                    if not isinstance(wallet, dict):
+                        wallet = {}
+                        state["resource_wallet"] = wallet
+
+                    amount = _safe_float(row.get("resource_emit_amount", 0.0), 0.0)
+                    res_type = str(row.get("resource_type", "cpu"))
+
+                    # Check pressure for absorption probability
+                    current_bal = _safe_float(wallet.get(res_type, 0.0), 0.0)
+                    # Use fixed cap for now, similar to _apply_resource_daimoi_emissions default
+                    # In a real implementation we'd import _RESOURCE_DAIMOI_WALLET_CAP
+                    cap = 32.0
+                    if target_id == "presence.core.cpu":
+                        cap = 48.0
+
+                    pressure = _clamp01(current_bal / cap)
+
+                    # Probability of absorption inversely related to pressure
+                    # Low pressure = High absorption chance (Suck up)
+                    # High pressure = Low absorption chance (Deflect)
+                    absorb_prob = 1.0 - (pressure * 0.85)  # Always at least 15% chance
+
+                    seed_val = int(
+                        hashlib.sha1(
+                            f"{row.get('id')}|{now_value}".encode("utf-8")
+                        ).hexdigest()[:8],
+                        16,
+                    )
+                    rng_val = (seed_val % 1000) / 1000.0
+
+                    if rng_val < absorb_prob:
+                        wallet[res_type] = round(current_bal + amount, 6)
+                        row["_absorbed"] = True
+                    else:
+                        # Deflect
+                        row["_deflected"] = True
+                        row["vx"] = -vx_value * 0.6
+                        row["vy"] = -vy_value * 0.6
+                        # Push away slightly
+                        dx = next_x - tx
+                        dy = next_y - ty
+                        mag = math.hypot(dx, dy)
+                        if mag > 1e-6:
+                            next_x = _clamp01(next_x + (dx / mag * 0.03))
+                            next_y = _clamp01(next_y + (dy / mag * 0.03))
+
+    _resolve_semantic_particle_collisions(rows)
+
+    # Remove absorbed
+    presence_dynamics["field_particles"] = [r for r in rows if not r.get("_absorbed")]
+    if len(presence_dynamics["field_particles"]) != len(rows):
+        simulation["presence_dynamics"] = presence_dynamics
 
 
 def build_simulation_delta(

@@ -1,51 +1,46 @@
-# Whisper Benchmark Container
+# Whisper Benchmark (Unified Bench System)
 
-This benchmark stack evaluates multiple Whisper model sizes across OpenVINO
-devices (`NPU`, `GPU`, `CPU`) using a Hugging Face dataset.
+Whisper benchmarking now runs through the same comprehensive benchmark runner
+used by the embedding benchmark stack.
 
-Default dataset:
-- id: `hf-internal-testing/librispeech_asr_dummy`
-- config: `clean`
-- split: `validation`
+Default whisper suite:
+- `scripts/benchmark_suites/whisper_openvino_starter.json`
+- Dataset: `hf-internal-testing/librispeech_asr_dummy` (`clean` / `validation`)
+- Devices: `NPU`, `GPU`, `CPU`
+- Sizes: `tiny`, `base`, `small`
 
-Default model sizes:
-- `tiny` (`openai/whisper-tiny.en`)
-- `base` (`openai/whisper-base.en`)
-- `small` (`openai/whisper-small.en`)
-
-## Run
+## Run via Unified Compose Stack
 
 From `part64/`:
 
 ```bash
-docker compose -f docker-compose.whisper-bench.yml up --build
+docker compose -f docker-compose.embed-bench.yml --profile runner run --rm model-bench-runner
 ```
 
-The container is configured as `privileged` so device plugins can access local
-accelerators for NPU/GPU runs.
+Alternative compatibility command:
+
+```bash
+docker compose -f docker-compose.whisper-bench.yml up --build
+```
 
 ## Output
 
-- JSON report: `runs/whisper-bench/whisper-benchmark.latest.json`
+- JSON report: `runs/model-bench/model-bench.latest.json`
+  (or `runs/whisper-bench/whisper-benchmark.latest.json` in compatibility mode)
 
 Each row includes:
-- `model_id`, `device`, `status`
-- model load time, inference time, average/p95 latency
-- real-time factors (`real_time_factor`, `x_realtime`)
-- WER against the dataset transcript column (when available)
+- case id, runner id, model id, device, status
+- model load time, inference timing, average/p95 latency
+- realtime metrics (`real_time_factor`, `x_realtime`)
+- WER when transcript references are available
+- weighted score breakdown from criteria
 
-## Common Overrides
+## Override Suite or Output
 
 ```bash
-WHISPER_BENCH_MODELS=tiny,base,small,medium \
-WHISPER_BENCH_DEVICES=NPU,GPU,CPU \
-WHISPER_BENCH_MAX_SAMPLES=64 \
-WHISPER_BENCH_DATASET=hf-internal-testing/librispeech_asr_dummy \
-WHISPER_BENCH_DATASET_CONFIG=clean \
-WHISPER_BENCH_SPLIT=validation \
-docker compose -f docker-compose.whisper-bench.yml up --build
+MODEL_BENCH_SUITE=/workspace/scripts/benchmark_suites/whisper_openvino_starter.json \
+MODEL_BENCH_OUTPUT=/results/whisper-benchmark.latest.json \
+docker compose -f docker-compose.embed-bench.yml --profile runner run --rm model-bench-runner
 ```
 
-Optional strict modes:
-- `WHISPER_BENCH_FAIL_ON_MISSING_DEVICE=1`
-- `WHISPER_BENCH_FAIL_ON_ERROR=1`
+For full suite schema and multi-runner benchmarking, see `MODEL_BENCH_RUNNER.md`.

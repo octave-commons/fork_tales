@@ -476,14 +476,20 @@ def _resource_auto_embedding_order(
         ).upper()
         openvino_ready = "NPU" in openvino_device
 
+    allow_cpu_fallback = str(
+        os.getenv("EMBED_ALLOW_CPU_FALLBACK", "0") or "0"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
     order: list[str] = []
     if openvino_ready and npu_status != "hot":
         order.append("openvino")
-    if cpu_utilization < 95.0:
-        order.append("tensorflow")
-    if gpu_utilization < 92.0:
+    if gpu_utilization < 97.0:
         order.append("ollama")
-    order.extend(["tensorflow", "ollama", "openvino"])
+    if allow_cpu_fallback and cpu_utilization < 95.0:
+        order.append("tensorflow")
+    order.extend(["openvino", "ollama"])
+    if allow_cpu_fallback:
+        order.append("tensorflow")
 
     deduped: list[str] = []
     seen: set[str] = set()
@@ -511,12 +517,10 @@ def _resource_auto_text_order(
     gpu_utilization = _safe_float(gpu1.get("utilization", 0.0), 0.0)
     error_ratio = _safe_float(log_watch.get("error_ratio", 0.0), 0.0)
 
-    if cpu_utilization >= 88.0 or error_ratio >= 0.5:
-        preferred = ["ollama", "tensorflow"]
-    elif gpu_utilization < 85.0:
-        preferred = ["ollama", "tensorflow"]
-    else:
+    if gpu_utilization >= 97.0 and cpu_utilization < 70.0 and error_ratio < 0.25:
         preferred = ["tensorflow", "ollama"]
+    else:
+        preferred = ["ollama", "tensorflow"]
 
     deduped: list[str] = []
     seen: set[str] = set()

@@ -21,3 +21,33 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+
+  model-bench-runner:
+    profiles: ["runner"]
+    build:
+      context: .
+      dockerfile: Dockerfile.whisper-bench
+    privileged: true
+    environment:
+      HF_HOME: /cache/huggingface
+      TRANSFORMERS_CACHE: /cache/huggingface/transformers
+      HF_DATASETS_CACHE: /cache/huggingface/datasets
+      HF_TOKEN: "${HF_TOKEN:-}"
+      MODEL_BENCH_SUITE: "${MODEL_BENCH_SUITE:-/workspace/scripts/benchmark_suites/whisper_openvino_starter.json}"
+      MODEL_BENCH_OUTPUT: "${MODEL_BENCH_OUTPUT:-/results/model-bench.latest.json}"
+      MODEL_BENCH_CONTINUE_ON_ERROR: "${MODEL_BENCH_CONTINUE_ON_ERROR:-1}"
+      OPENVINO_EMBED_ENDPOINT: "${OPENVINO_EMBED_ENDPOINT:-http://host.docker.internal:18000/v1/embeddings}"
+      OPENVINO_EMBED_MODEL: "${OPENVINO_EMBED_MODEL:-nomic-embed-text}"
+      OPENVINO_EMBED_DEVICE: "${OPENVINO_EMBED_DEVICE:-NPU}"
+      OPENVINO_EMBED_TIMEOUT_SEC: "${OPENVINO_EMBED_TIMEOUT_SEC:-10}"
+      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://host.docker.internal:11435}"
+      OLLAMA_EMBED_MODEL: "${OLLAMA_EMBED_MODEL:-nomic-embed-text}"
+    volumes:
+      - model_bench_cache:/cache
+      - ./runs/model-bench:/results
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: "no"
+
+volumes:
+  model_bench_cache:

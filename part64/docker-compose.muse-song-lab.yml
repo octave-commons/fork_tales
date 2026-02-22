@@ -10,6 +10,9 @@ services:
       PYTHONUNBUFFERED: "1"
       OLLAMA_BASE_URL: "http://host.docker.internal:11435"
       OLLAMA_MODEL: "qwen3-vl:4b-instruct"
+      OLLAMA_TIMEOUT_SEC: "${OLLAMA_TIMEOUT_SEC:-4}"
+      OLLAMA_NUM_GPU: "${OLLAMA_NUM_GPU:-1}"
+      OLLAMA_MAIN_GPU: "${OLLAMA_MAIN_GPU:-0}"
       OLLAMA_EMBED_MODEL: "nomic-embed-text"
       OLLAMA_EMBED_FORCE_NOMIC: "1"
       OLLAMA_EMBED_NUM_CTX: "512"
@@ -19,8 +22,18 @@ services:
       OPENVINO_EMBED_DEVICE: "NPU"
       OPENVINO_EMBED_TIMEOUT_SEC: "10"
       OPENVINO_EMBED_MAX_CHARS: "2400"
+      OPENVINO_EMBED_API_KEY: "${OPENVINO_EMBED_API_KEY:-}"
+      OPENVINO_EMBED_API_KEY_HEADER: "X-API-Key"
+      OPENVINO_EMBED_BEARER_TOKEN: "${OPENVINO_EMBED_BEARER_TOKEN:-}"
       EMBEDDINGS_BACKEND: "openvino"
-      TEXT_GENERATION_BACKEND: "ollama"
+      CDB_EMBED_IN_C: "1"
+      CDB_EMBED_REQUIRE_C: "1"
+      CDB_EMBED_DEVICE: "AUTO"
+      CDB_EMBED_STRICT_DEVICE: "1"
+      CDB_EMBED_PRELOAD_ORT_CORE: "1"
+      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
+      NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
+      TEXT_GENERATION_BACKEND: "auto"
       TF_EMBED_HASH_BINS: "768"
       OMP_NUM_THREADS: "1"
       OPENBLAS_NUM_THREADS: "1"
@@ -28,6 +41,7 @@ services:
       NUMEXPR_NUM_THREADS: "1"
       TF_NUM_INTRAOP_THREADS: "1"
       TF_NUM_INTEROP_THREADS: "1"
+      SIM_PARTICLE_BACKEND: "cdb"
       SIM_SLICE_OFFLOAD_MODE: "local"
       MUSE_RUNTIME_BACKEND: "json"
       MUSE_RUNTIME_STATE_PATH: "/app/world_state/muse_runtime_state_song_baseline.json"
@@ -52,11 +66,17 @@ services:
     mem_limit: "8000m"
     memswap_limit: "8000m"
     pids_limit: 96
+    gpus: all
+    devices:
+      - "/dev/accel:/dev/accel"
+      - "/dev/dri:/dev/dri"
     volumes:
       - .:/app
       - eta_mu_song_baseline_world_state:/app/world_state
       - ../.opencode/runtime:/app/.opencode/runtime:ro
       - ../:/vault
+      - /usr/lib/x86_64-linux-gnu/libze_intel_npu.so:/usr/lib/x86_64-linux-gnu/libze_intel_npu.so:ro
+      - /usr/lib/x86_64-linux-gnu/libnpu_driver_compiler.so:/usr/lib/x86_64-linux-gnu/libnpu_driver_compiler.so:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -86,6 +106,9 @@ services:
       PYTHONUNBUFFERED: "1"
       OLLAMA_BASE_URL: "http://host.docker.internal:11435"
       OLLAMA_MODEL: "qwen3-vl:4b-instruct"
+      OLLAMA_TIMEOUT_SEC: "${OLLAMA_TIMEOUT_SEC:-4}"
+      OLLAMA_NUM_GPU: "${OLLAMA_NUM_GPU:-1}"
+      OLLAMA_MAIN_GPU: "${OLLAMA_MAIN_GPU:-0}"
       OLLAMA_EMBED_MODEL: "nomic-embed-text"
       OLLAMA_EMBED_FORCE_NOMIC: "1"
       OLLAMA_EMBED_NUM_CTX: "512"
@@ -95,8 +118,18 @@ services:
       OPENVINO_EMBED_DEVICE: "NPU"
       OPENVINO_EMBED_TIMEOUT_SEC: "10"
       OPENVINO_EMBED_MAX_CHARS: "2400"
+      OPENVINO_EMBED_API_KEY: "${OPENVINO_EMBED_API_KEY:-}"
+      OPENVINO_EMBED_API_KEY_HEADER: "X-API-Key"
+      OPENVINO_EMBED_BEARER_TOKEN: "${OPENVINO_EMBED_BEARER_TOKEN:-}"
       EMBEDDINGS_BACKEND: "openvino"
-      TEXT_GENERATION_BACKEND: "ollama"
+      CDB_EMBED_IN_C: "1"
+      CDB_EMBED_REQUIRE_C: "1"
+      CDB_EMBED_DEVICE: "AUTO"
+      CDB_EMBED_STRICT_DEVICE: "1"
+      CDB_EMBED_PRELOAD_ORT_CORE: "1"
+      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
+      NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
+      TEXT_GENERATION_BACKEND: "auto"
       TF_EMBED_HASH_BINS: "768"
       OMP_NUM_THREADS: "1"
       OPENBLAS_NUM_THREADS: "1"
@@ -104,6 +137,7 @@ services:
       NUMEXPR_NUM_THREADS: "1"
       TF_NUM_INTRAOP_THREADS: "1"
       TF_NUM_INTEROP_THREADS: "1"
+      SIM_PARTICLE_BACKEND: "cdb"
       SIM_SLICE_OFFLOAD_MODE: "local"
       MUSE_RUNTIME_BACKEND: "json"
       MUSE_RUNTIME_STATE_PATH: "/app/world_state/muse_runtime_state_song_chaos.json"
@@ -128,11 +162,17 @@ services:
     mem_limit: "6200m"
     memswap_limit: "6200m"
     pids_limit: 112
+    gpus: all
+    devices:
+      - "/dev/accel:/dev/accel"
+      - "/dev/dri:/dev/dri"
     volumes:
       - .:/app
       - eta_mu_song_chaos_world_state:/app/world_state
       - ../.opencode/runtime:/app/.opencode/runtime:ro
       - ../:/vault
+      - /usr/lib/x86_64-linux-gnu/libze_intel_npu.so:/usr/lib/x86_64-linux-gnu/libze_intel_npu.so:ro
+      - /usr/lib/x86_64-linux-gnu/libnpu_driver_compiler.so:/usr/lib/x86_64-linux-gnu/libnpu_driver_compiler.so:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -162,6 +202,9 @@ services:
       PYTHONUNBUFFERED: "1"
       OLLAMA_BASE_URL: "http://host.docker.internal:11435"
       OLLAMA_MODEL: "qwen3-vl:4b-instruct"
+      OLLAMA_TIMEOUT_SEC: "${OLLAMA_TIMEOUT_SEC:-4}"
+      OLLAMA_NUM_GPU: "${OLLAMA_NUM_GPU:-1}"
+      OLLAMA_MAIN_GPU: "${OLLAMA_MAIN_GPU:-0}"
       OLLAMA_EMBED_MODEL: "nomic-embed-text"
       OLLAMA_EMBED_FORCE_NOMIC: "1"
       OLLAMA_EMBED_NUM_CTX: "512"
@@ -171,8 +214,18 @@ services:
       OPENVINO_EMBED_DEVICE: "NPU"
       OPENVINO_EMBED_TIMEOUT_SEC: "10"
       OPENVINO_EMBED_MAX_CHARS: "2400"
+      OPENVINO_EMBED_API_KEY: "${OPENVINO_EMBED_API_KEY:-}"
+      OPENVINO_EMBED_API_KEY_HEADER: "X-API-Key"
+      OPENVINO_EMBED_BEARER_TOKEN: "${OPENVINO_EMBED_BEARER_TOKEN:-}"
       EMBEDDINGS_BACKEND: "openvino"
-      TEXT_GENERATION_BACKEND: "ollama"
+      CDB_EMBED_IN_C: "1"
+      CDB_EMBED_REQUIRE_C: "1"
+      CDB_EMBED_DEVICE: "AUTO"
+      CDB_EMBED_STRICT_DEVICE: "1"
+      CDB_EMBED_PRELOAD_ORT_CORE: "1"
+      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
+      NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
+      TEXT_GENERATION_BACKEND: "auto"
       TF_EMBED_HASH_BINS: "768"
       OMP_NUM_THREADS: "1"
       OPENBLAS_NUM_THREADS: "1"
@@ -180,6 +233,7 @@ services:
       NUMEXPR_NUM_THREADS: "1"
       TF_NUM_INTRAOP_THREADS: "1"
       TF_NUM_INTEROP_THREADS: "1"
+      SIM_PARTICLE_BACKEND: "cdb"
       SIM_SLICE_OFFLOAD_MODE: "local"
       MUSE_RUNTIME_BACKEND: "json"
       MUSE_RUNTIME_STATE_PATH: "/app/world_state/muse_runtime_state_song_stability.json"
@@ -204,11 +258,17 @@ services:
     mem_limit: "8000m"
     memswap_limit: "8000m"
     pids_limit: 88
+    gpus: all
+    devices:
+      - "/dev/accel:/dev/accel"
+      - "/dev/dri:/dev/dri"
     volumes:
       - .:/app
       - eta_mu_song_stability_world_state:/app/world_state
       - ../.opencode/runtime:/app/.opencode/runtime:ro
       - ../:/vault
+      - /usr/lib/x86_64-linux-gnu/libze_intel_npu.so:/usr/lib/x86_64-linux-gnu/libze_intel_npu.so:ro
+      - /usr/lib/x86_64-linux-gnu/libnpu_driver_compiler.so:/usr/lib/x86_64-linux-gnu/libnpu_driver_compiler.so:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

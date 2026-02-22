@@ -3,6 +3,7 @@ from __future__ import annotations
 import colorsys
 import hashlib
 import math
+import os
 import re
 import socket
 import threading
@@ -2312,6 +2313,16 @@ def build_probabilistic_daimoi_particles(
     now_seconds_int = _safe_int(now_seconds, 0)
     now_seconds_tenths_int = _safe_int(now_seconds * 10.0, 0)
     now_monotonic = time.monotonic()
+    cpu_daimoi_stop_percent = max(
+        0.0,
+        min(
+            100.0,
+            _safe_float(
+                os.getenv("SIMULATION_CPU_DAIMOI_STOP_PERCENT", "75") or "75",
+                75.0,
+            ),
+        ),
+    )
     spawned_count = 0
     collision_count = 0
     deflect_count = 0
@@ -2391,6 +2402,7 @@ def build_probabilistic_daimoi_particles(
 
             # Core presence logic: emission depends on resource availability
             role, _ = _presence_role_and_mode(presence_id)
+            cpu_emitter_blocked = False
             file_influence = 0.0
             click_influence = 0.0
             world_influence = 0.0
@@ -2436,10 +2448,16 @@ def build_probabilistic_daimoi_particles(
 
                 # Higher availability (lower usage) -> higher emission target
                 # Base target count logic, but modified for core
-                availability_factor = _clamp01((100.0 - usage_percent) / 100.0)
-                target_count = int(
-                    round(8.0 + (availability_factor * 40.0))
-                )  # Scale 8-48
+                cpu_emitter_blocked = (
+                    resource_type == "cpu" and usage_percent >= cpu_daimoi_stop_percent
+                )
+                if cpu_emitter_blocked:
+                    target_count = 0
+                else:
+                    availability_factor = _clamp01((100.0 - usage_percent) / 100.0)
+                    target_count = int(
+                        round(8.0 + (availability_factor * 40.0))
+                    )  # Scale 8-48
             else:
                 # Standard presence logic
                 affected_by = (
@@ -2497,7 +2515,10 @@ def build_probabilistic_daimoi_particles(
                 )
 
             target_count = int(round(target_count * load_scale))
-            target_count = max(8, min(per_presence_cap, target_count))
+            if cpu_emitter_blocked:
+                target_count = 0
+            else:
+                target_count = max(8, min(per_presence_cap, target_count))
 
             owned_ids = sorted(
                 [
@@ -3185,6 +3206,9 @@ def build_probabilistic_daimoi_particles(
 
                 mass_right = max(0.2, _safe_float(right.get("mass", 0.8), 0.8))
                 mass_total = max(1e-6, left_mass + mass_right)
+
+                # --- COLLISION RESOLUTION ---
+
                 if overlap > 0.0:
                     left_share = mass_right / mass_total
                     right_share = left_mass / mass_total
@@ -3199,21 +3223,76 @@ def build_probabilistic_daimoi_particles(
 
                 rvx = _safe_float(right.get("vx", 0.0), 0.0)
                 rvy = _safe_float(right.get("vy", 0.0), 0.0)
-                relative_normal = ((rvx - left_vx) * nx) + ((rvy - left_vy) * ny)
-                restitution = 0.72
-                if relative_normal < 0.0:
-                    impulse = (-(1.0 + restitution) * relative_normal) / (
-                        (1.0 / left_mass) + (1.0 / mass_right)
-                    )
-                else:
-                    impulse = overlap * 0.014
 
-                left_vx = left_vx - ((impulse / left_mass) * nx)
-                left_vy = left_vy - ((impulse / left_mass) * ny)
-                left["vx"] = left_vx
-                left["vy"] = left_vy
-                right["vx"] = rvx + ((impulse / mass_right) * nx)
-                right["vy"] = rvy + ((impulse / mass_right) * ny)
+                # Special Nexus Handling: Slingshot
+                if right_is_nexus:
+                    # If hitting a nexus, check if we should be routed.
+                    # Look up target anchor
+                    target_id = str(left.get("target", "")).strip()
+                    if not target_id:
+                        target_id = str(left.get("owner", "")).strip()
+
+                    target_anchor = anchors.get(target_id)
+                    slingshot_vx = 0.0
+                    slingshot_vy = 0.0
+
+                    if isinstance(target_anchor, dict):
+                        tx = _safe_float(target_anchor.get("x", 0.5), 0.5)
+                        ty = _safe_float(target_anchor.get("y", 0.5), 0.5)
+                        tdx = tx - right_x
+                        tdy = ty - right_y
+                        tdist = math.sqrt((tdx * tdx) + (tdy * tdy))
+                        if tdist > 1e-6:
+                            # Direction towards target
+                            slingshot_vx = (tdx / tdist) * 0.008
+                            slingshot_vy = (tdy / tdist) * 0.008
+
+                    # Blend reflection with slingshot
+                    # Calculate reflection first
+                    relative_normal = ((rvx - left_vx) * nx) + ((rvy - left_vy) * ny)
+                    restitution = 0.5  # Less bouncy on nexus
+
+                    if relative_normal < 0.0:
+                        # Bounce
+                        impulse = (-(1.0 + restitution) * relative_normal) / (
+                            (1.0 / left_mass) + (1.0 / mass_right)
+                        )
+                        left_vx = left_vx - ((impulse / left_mass) * nx)
+                        left_vy = left_vy - ((impulse / left_mass) * ny)
+
+                    # Apply slingshot (kick)
+                    left_vx = (left_vx * 0.4) + slingshot_vx
+                    left_vy = (left_vy * 0.4) + slingshot_vy
+
+                    # Add a random kick to prevent sticking
+                    kick_angle = (
+                        _stable_ratio(f"{left_id}|kick", left_collision_count)
+                        * math.tau
+                    )
+                    left_vx += math.cos(kick_angle) * 0.002
+                    left_vy += math.sin(kick_angle) * 0.002
+
+                    left["vx"] = left_vx
+                    left["vy"] = left_vy
+                    # Nexus doesn't move
+
+                else:
+                    # Standard Particle-Particle Collision
+                    relative_normal = ((rvx - left_vx) * nx) + ((rvy - left_vy) * ny)
+                    restitution = 0.72
+                    if relative_normal < 0.0:
+                        impulse = (-(1.0 + restitution) * relative_normal) / (
+                            (1.0 / left_mass) + (1.0 / mass_right)
+                        )
+                    else:
+                        impulse = overlap * 0.014
+
+                    left_vx = left_vx - ((impulse / left_mass) * nx)
+                    left_vy = left_vy - ((impulse / left_mass) * ny)
+                    left["vx"] = left_vx
+                    left["vy"] = left_vy
+                    right["vx"] = rvx + ((impulse / mass_right) * nx)
+                    right["vy"] = rvy + ((impulse / mass_right) * ny)
 
                 left_collision_count += 1
                 left["collisions"] = left_collision_count
@@ -3419,9 +3498,24 @@ def build_probabilistic_daimoi_particles(
             if action == "diffuse":
                 diffuse_count += 1
                 remove_ids.add(particle_id)
+
+                # Semantic Absorption: Credit the target presence with resource
+                # "All other daimoi are basicly equal to 1 CPU daimoi + they have actual semantics"
+                target_impact = impact_by_id.get(best_presence)
+                if isinstance(target_impact, dict):
+                    target_wallet = target_impact.get("resource_wallet")
+                    if not isinstance(target_wallet, dict):
+                        target_wallet = {}
+                        target_impact["resource_wallet"] = target_wallet
+
+                    # Credit 0.05 CPU (approx 5 standard resource packets)
+                    current_cpu = _safe_float(target_wallet.get("cpu", 0.0), 0.0)
+                    target_wallet["cpu"] = round(current_cpu + 0.05, 6)
+
                 surface["diffuse_count"] = (
                     _safe_int(surface.get("diffuse_count", 0), 0) + 1
                 )
+
                 surface["field_energy"] = _safe_float(
                     surface.get("field_energy", 0.0), 0.0
                 ) + (

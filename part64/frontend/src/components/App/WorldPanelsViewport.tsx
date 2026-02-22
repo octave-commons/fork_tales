@@ -9,6 +9,7 @@ import {
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
+  type WheelEvent as ReactWheelEvent,
   type ReactNode,
 } from "react";
 import type { PanInfo } from "framer-motion";
@@ -58,6 +59,7 @@ interface Props {
   onAdjustPanelCouncilRank: (panelId: string, delta: number) => void;
   onPinPanelToTertiary: (panelId: string) => void;
   onFlyCameraToAnchor: (anchor: WorldAnchorTarget) => void;
+  onGlassInteractAt: (xRatio: number, yRatio: number) => void;
   onNudgeCameraPan: (xRatioDelta: number, yRatioDelta: number, sourcePanelId?: string) => void;
   onWorldPanelDragEnd: (panelId: string, info: PanInfo) => void;
 }
@@ -70,6 +72,10 @@ type FocusPaneMode = "panel" | "glass";
 type OperationalState = "running" | "paused" | "blocked";
 const GLASS_VIEWPORT_PANEL_ID = "nexus.ui.glass_viewport";
 const PANEL_LABEL_CACHE = new Map<string, string>();
+const GLASS_MIDDLE_PAN_GAIN = 2.8;
+const GLASS_MIDDLE_PAN_CLAMP = 0.32;
+const GLASS_TOUCH_PAN_GAIN = 1;
+const GLASS_TOUCH_PAN_CLAMP = 0.14;
 
 function panelLabelFromId(panelId: string): string {
   const cached = PANEL_LABEL_CACHE.get(panelId);
@@ -280,6 +286,7 @@ function WorldPanelsViewportInner({
   onAdjustPanelCouncilRank,
   onPinPanelToTertiary,
   onFlyCameraToAnchor,
+  onGlassInteractAt,
   onNudgeCameraPan,
   onWorldPanelDragEnd,
 }: Props) {
@@ -325,6 +332,8 @@ function WorldPanelsViewportInner({
     lastY: number;
     pendingDx: number;
     pendingDy: number;
+    panGain: number;
+    panClamp: number;
     moved: boolean;
   }>(null);
   const trayPanelIdRef = useRef<string | null>(trayPanelId);
@@ -736,8 +745,8 @@ function WorldPanelsViewportInner({
     if (!drag) {
       return;
     }
-    const dx = clampRatio(drag.pendingDx, -0.14, 0.14);
-    const dy = clampRatio(drag.pendingDy, -0.14, 0.14);
+    const dx = clampRatio(drag.pendingDx * drag.panGain, -drag.panClamp, drag.panClamp);
+    const dy = clampRatio(drag.pendingDy * drag.panGain, -drag.panClamp, drag.panClamp);
     drag.pendingDx = 0;
     drag.pendingDy = 0;
     if (Math.abs(dx) < 0.001 && Math.abs(dy) < 0.001) {
@@ -761,33 +770,54 @@ function WorldPanelsViewportInner({
     panelId: string,
     event: ReactPointerEvent<HTMLElement>,
   ) => {
-    if (event.button !== 0) {
+    const interactiveTarget = isGlassInteractiveTarget(event.target);
+    const isTouchPointer = event.pointerType === "touch";
+    const isMiddleButtonPan = event.button === 1;
+    const shouldStartPan = isMiddleButtonPan || isTouchPointer;
+
+    // Middle-button drag or touch-drag pans the camera.
+    if (shouldStartPan) {
+      if (interactiveTarget) {
+        return;
+      }
+      const paneRect = event.currentTarget.getBoundingClientRect();
+      glassDragRef.current = {
+        pointerId: event.pointerId,
+        panelId,
+        paneRect,
+        lastX: event.clientX,
+        lastY: event.clientY,
+        pendingDx: 0,
+        pendingDy: 0,
+        panGain: isMiddleButtonPan ? GLASS_MIDDLE_PAN_GAIN : GLASS_TOUCH_PAN_GAIN,
+        panClamp: isMiddleButtonPan ? GLASS_MIDDLE_PAN_CLAMP : GLASS_TOUCH_PAN_CLAMP,
+        moved: false,
+      };
+      if (glassDragFrameRef.current !== null) {
+        window.cancelAnimationFrame(glassDragFrameRef.current);
+        glassDragFrameRef.current = null;
+      }
+      setGlassDragPanelId(panelId);
+      event.currentTarget.setPointerCapture(event.pointerId);
+      onActivatePanel(panelId);
+      onSelectPanel(panelId);
+      event.preventDefault();
+      event.stopPropagation();
       return;
     }
-    if (isGlassInteractiveTarget(event.target)) {
-      return;
+
+    // Left-click opens/focuses the nearest nexus target immediately.
+    if (event.button === 0 && !interactiveTarget) {
+      const paneRect = event.currentTarget.getBoundingClientRect();
+      const xRatio = clampRatio((event.clientX - paneRect.left) / Math.max(1, paneRect.width), 0, 1);
+      const yRatio = clampRatio((event.clientY - paneRect.top) / Math.max(1, paneRect.height), 0, 1);
+      onActivatePanel(panelId);
+      onSelectPanel(panelId);
+      onGlassInteractAt(xRatio, yRatio);
+      event.preventDefault();
+      event.stopPropagation();
     }
-    const paneRect = event.currentTarget.getBoundingClientRect();
-    glassDragRef.current = {
-      pointerId: event.pointerId,
-      panelId,
-      paneRect,
-      lastX: event.clientX,
-      lastY: event.clientY,
-      pendingDx: 0,
-      pendingDy: 0,
-      moved: false,
-    };
-    if (glassDragFrameRef.current !== null) {
-      window.cancelAnimationFrame(glassDragFrameRef.current);
-      glassDragFrameRef.current = null;
-    }
-    setGlassDragPanelId(panelId);
-    event.currentTarget.setPointerCapture(event.pointerId);
-    onActivatePanel(panelId);
-    onSelectPanel(panelId);
-    event.preventDefault();
-  }, [onActivatePanel, onSelectPanel]);
+  }, [onActivatePanel, onGlassInteractAt, onSelectPanel]);
 
   const handleGlassPanePointerMove = useCallback((event: ReactPointerEvent<HTMLElement>) => {
     const drag = glassDragRef.current;
@@ -814,6 +844,7 @@ function WorldPanelsViewportInner({
     flushGlassPaneDrag();
     scheduleGlassPaneDragFlush();
     event.preventDefault();
+    event.stopPropagation();
   }, [flushGlassPaneDrag, scheduleGlassPaneDragFlush]);
 
   const handleGlassPanePointerUp = useCallback((event: ReactPointerEvent<HTMLElement>) => {
@@ -821,30 +852,25 @@ function WorldPanelsViewportInner({
     if (!drag || drag.pointerId !== event.pointerId) {
       return;
     }
+    // Handle releases for middle-button pan and touch pan.
+    if (event.button !== 1 && event.pointerType !== "touch") {
+      return;
+    }
     if (glassDragFrameRef.current !== null) {
       window.cancelAnimationFrame(glassDragFrameRef.current);
       glassDragFrameRef.current = null;
     }
+    const releasePanGain = event.pointerType === "touch" ? 2.5 : drag.panGain;
+    const releasePanClamp = event.pointerType === "touch" ? 0.28 : drag.panClamp;
+    // Middle mouse drag panning - increased speed
     if (Math.abs(drag.pendingDx) > 0.0005 || Math.abs(drag.pendingDy) > 0.0005) {
-      const dx = clampRatio(drag.pendingDx, -0.14, 0.14);
-      const dy = clampRatio(drag.pendingDy, -0.14, 0.14);
+      const dx = clampRatio(drag.pendingDx * releasePanGain, -releasePanClamp, releasePanClamp);
+      const dy = clampRatio(drag.pendingDy * releasePanGain, -releasePanClamp, releasePanClamp);
       drag.pendingDx = 0;
       drag.pendingDy = 0;
       if (Math.abs(dx) >= 0.001 || Math.abs(dy) >= 0.001) {
         drag.moved = true;
         onNudgeCameraPan(dx, dy, drag.panelId);
-      }
-    }
-
-    if (!drag.moved) {
-      const width = Math.max(1, drag.paneRect.width);
-      const height = Math.max(1, drag.paneRect.height);
-      const xRatio = ((event.clientX - drag.paneRect.left) / width) - 0.5;
-      const yRatio = ((event.clientY - drag.paneRect.top) / height) - 0.5;
-      const clickDx = clampRatio(xRatio * 0.28, -0.12, 0.12);
-      const clickDy = clampRatio(yRatio * 0.28, -0.12, 0.12);
-      if (Math.abs(clickDx) > 0.003 || Math.abs(clickDy) > 0.003) {
-        onNudgeCameraPan(clickDx, clickDy, drag.panelId);
       }
     }
 
@@ -854,6 +880,27 @@ function WorldPanelsViewportInner({
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
     event.preventDefault();
+    event.stopPropagation();
+  }, [onNudgeCameraPan]);
+
+  const handleGlassPaneWheel = useCallback((
+    panelId: string,
+    event: ReactWheelEvent<HTMLElement>,
+  ) => {
+    if (isGlassInteractiveTarget(event.target)) {
+      return;
+    }
+    const paneRect = event.currentTarget.getBoundingClientRect();
+    const width = Math.max(220, paneRect.width);
+    const height = Math.max(180, paneRect.height);
+    const dx = clampRatio((-event.deltaX / width) * 3.2, -0.24, 0.24);
+    const dy = clampRatio((-event.deltaY / height) * 3.2, -0.24, 0.24);
+    if (Math.abs(dx) < 0.0006 && Math.abs(dy) < 0.0006) {
+      return;
+    }
+    onNudgeCameraPan(dx, dy, panelId);
+    event.preventDefault();
+    event.stopPropagation();
   }, [onNudgeCameraPan]);
 
   const togglePanelGlassMode = useCallback((
@@ -1417,6 +1464,7 @@ function WorldPanelsViewportInner({
         onPointerUpCapture={glassOverlayMode ? handleGlassPanePointerUp : undefined}
         onPointerCancelCapture={glassOverlayMode ? handleGlassPanePointerUp : undefined}
         onLostPointerCapture={glassOverlayMode ? handleGlassPanePointerUp : undefined}
+        onWheelCapture={glassOverlayMode ? (event) => handleGlassPaneWheel(panelId, event) : undefined}
       >
         <header className="world-focus-pane-header">
           <div className="min-w-0">
@@ -1693,11 +1741,11 @@ function WorldPanelsViewportInner({
         </div>
 
         {paneMode === "glass" ? (
-          <div className="world-glass-pane">
+            <div className="world-glass-pane">
             <p className="world-glass-title">glass viewport</p>
             <div className="world-glass-grid">
               <p className="world-glass-row">
-                drag empty pane space to pan the simulation directly.
+                middle drag or touch drag to pan · trackpad two-finger scroll pans · click opens/focuses nexus
               </p>
               {detailsOpen ? (
                 <>

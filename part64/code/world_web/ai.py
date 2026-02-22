@@ -181,6 +181,28 @@ def _ollama_endpoint() -> tuple[str, str, str, float]:
     return endpoint, embeddings_endpoint, model, timeout_s
 
 
+def _ollama_gpu_request_options() -> dict[str, Any]:
+    options: dict[str, Any] = {}
+
+    raw_num_gpu = str(os.getenv("OLLAMA_NUM_GPU", "") or "").strip()
+    if raw_num_gpu:
+        try:
+            num_gpu = int(float(raw_num_gpu))
+            if num_gpu >= 0:
+                options["num_gpu"] = num_gpu
+        except (TypeError, ValueError):
+            pass
+
+    raw_main_gpu = str(os.getenv("OLLAMA_MAIN_GPU", "") or "").strip()
+    if raw_main_gpu:
+        try:
+            options["main_gpu"] = max(0, int(float(raw_main_gpu)))
+        except (TypeError, ValueError):
+            pass
+
+    return options
+
+
 def _embedding_payload_vector(raw: Any) -> list[float] | None:
     if isinstance(raw, dict):
         direct = _normalize_embedding_vector(raw.get("embedding"))
@@ -229,7 +251,7 @@ def _ollama_embed_remote(text: str, model: str | None = None) -> list[float] | N
     sample_text = text[:max_chars] if max_chars > 0 else text
 
     raw_num_ctx = str(os.getenv("OLLAMA_EMBED_NUM_CTX", "") or "").strip()
-    embed_options: dict[str, Any] = {}
+    embed_options: dict[str, Any] = dict(_ollama_gpu_request_options())
     if raw_num_ctx:
         try:
             num_ctx = int(float(raw_num_ctx))
@@ -831,6 +853,9 @@ def _ollama_generate_text_remote(
         "prompt": prompt,
         "stream": False,
     }
+    ollama_options = _ollama_gpu_request_options()
+    if ollama_options:
+        payload["options"] = ollama_options
     req = Request(
         endpoint,
         method="POST",

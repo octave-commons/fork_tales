@@ -3498,6 +3498,138 @@ def test_websocket_helpers() -> None:
     assert frame[1] == len('{"ok":true}')
 
 
+def test_simulation_ws_normalize_delta_stream_mode_aliases() -> None:
+    from code.world_web import server as server_module
+
+    assert (
+        server_module._simulation_ws_normalize_delta_stream_mode("workers") == "workers"
+    )
+    assert (
+        server_module._simulation_ws_normalize_delta_stream_mode("thread") == "workers"
+    )
+    assert server_module._simulation_ws_normalize_delta_stream_mode("world") == "world"
+
+
+def test_ws_wire_mode_normalization_aliases() -> None:
+    from code.world_web import server as server_module
+
+    assert server_module._normalize_ws_wire_mode("arr") == "arr"
+    assert server_module._normalize_ws_wire_mode("packed") == "arr"
+    assert server_module._normalize_ws_wire_mode("json") == "json"
+
+
+def test_ws_pack_message_uses_array_numeric_wire_nodes() -> None:
+    from code.world_web import server as server_module
+
+    payload = {
+        "type": "simulation_delta",
+        "ok": True,
+        "nullable": None,
+        "delta": {
+            "patch": {
+                "timestamp": "2026-02-21T18:10:00Z",
+                "values": [1, "alpha", 2.5, False, None],
+            }
+        },
+    }
+
+    packed = server_module._ws_pack_message(payload)
+    assert isinstance(packed, list)
+    assert packed[0] == server_module._WS_WIRE_ARRAY_SCHEMA
+    assert isinstance(packed[1], list)
+    assert isinstance(packed[2], list)
+
+    def assert_only_arrays_strings_numbers(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                assert_only_arrays_strings_numbers(item)
+            return
+        assert isinstance(value, (str, int, float))
+        assert not isinstance(value, bool)
+
+    assert_only_arrays_strings_numbers(packed)
+
+    key_table = cast(list[str], packed[1])
+
+    def decode_node(node: Any) -> Any:
+        if isinstance(node, (int, float)) and not isinstance(node, bool):
+            return node
+        assert isinstance(node, list)
+        assert node
+        tag = int(cast(int | float, node[0]))
+        if tag == server_module._WS_PACK_TAG_NULL:
+            return None
+        if tag == server_module._WS_PACK_TAG_BOOL:
+            return int(cast(int | float, node[1])) != 0
+        if tag == server_module._WS_PACK_TAG_STRING:
+            return str(node[1])
+        if tag == server_module._WS_PACK_TAG_ARRAY:
+            return [decode_node(item) for item in node[1:]]
+        if tag == server_module._WS_PACK_TAG_OBJECT:
+            out: dict[str, Any] = {}
+            index = 1
+            while index + 1 < len(node):
+                key_slot = int(cast(int | float, node[index]))
+                key_name = key_table[key_slot]
+                out[key_name] = decode_node(node[index + 1])
+                index += 2
+            return out
+        raise AssertionError(f"unexpected node tag: {tag}")
+
+    decoded = decode_node(packed[2])
+    assert decoded == payload
+
+
+def test_simulation_ws_split_delta_by_worker_splits_presence_dynamics() -> None:
+    from code.world_web import server as server_module
+
+    delta = {
+        "patch": {
+            "timestamp": "2026-02-21T17:55:00Z",
+            "total": 2,
+            "daimoi": {"active": 1},
+            "presence_dynamics": {
+                "field_particles": [{"id": "dm-1"}],
+                "resource_heartbeat": {"devices": {"cpu": {"utilization": 12.0}}},
+                "user_presence": {"id": "user"},
+            },
+        },
+        "changed_keys": [
+            "timestamp",
+            "total",
+            "daimoi",
+            "presence_dynamics",
+        ],
+    }
+
+    rows = server_module._simulation_ws_split_delta_by_worker(delta)
+    by_worker = {
+        str(row.get("worker_id", "")): row
+        for row in rows
+        if isinstance(row, dict) and row.get("worker_id")
+    }
+
+    assert "sim-core" in by_worker
+    assert "sim-daimoi" in by_worker
+    assert "sim-particles" in by_worker
+    assert "sim-resource" in by_worker
+    assert "sim-interaction" in by_worker
+
+    assert by_worker["sim-core"]["patch"].get("total") == 2
+    assert by_worker["sim-daimoi"]["patch"].get("daimoi") == {"active": 1}
+    assert by_worker["sim-particles"]["patch"].get("presence_dynamics", {}).get(
+        "field_particles", []
+    ) == [{"id": "dm-1"}]
+    assert by_worker["sim-resource"]["patch"].get("presence_dynamics", {}).get(
+        "resource_heartbeat", {}
+    ) == {"devices": {"cpu": {"utilization": 12.0}}}
+    assert by_worker["sim-interaction"]["patch"].get("presence_dynamics", {}).get(
+        "user_presence", {}
+    ) == {"id": "user"}
+
+    assert by_worker["sim-daimoi"]["patch"].get("timestamp") == "2026-02-21T17:55:00Z"
+
+
 class _MockWebSocketTransport:
     def __init__(self, payload: bytes) -> None:
         self._buffer = payload
@@ -4191,6 +4323,94 @@ def test_ollama_embed_force_nomic_with_small_context(monkeypatch: Any) -> None:
     assert seen_payloads[0]["model"] == "nomic-embed-text"
     assert seen_payloads[0]["prompt"] == "abcdef"
     assert seen_payloads[0]["options"] == {"num_ctx": 512}
+
+
+def test_ollama_embed_includes_gpu_options_when_configured(monkeypatch: Any) -> None:
+    class _FakeResponse:
+        def __enter__(self) -> "_FakeResponse":
+            return self
+
+        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps({"embedding": [0.3, 0.4, 0.5]}).encode("utf-8")
+
+    seen_payloads: list[dict[str, Any]] = []
+
+    def fake_urlopen(req: Any, timeout: float = 0.0) -> _FakeResponse:
+        _ = timeout
+        payload = json.loads((req.data or b"{}").decode("utf-8"))
+        seen_payloads.append(payload)
+        return _FakeResponse()
+
+    monkeypatch.setattr(world_web_module, "urlopen", fake_urlopen)
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://stub.local:11434")
+    monkeypatch.setenv("OLLAMA_NUM_GPU", "2")
+    monkeypatch.setenv("OLLAMA_MAIN_GPU", "1")
+    monkeypatch.setenv("OLLAMA_EMBED_NUM_CTX", "256")
+
+    vector = world_web_module._ollama_embed("gpu configured")
+
+    assert vector == [0.3, 0.4, 0.5]
+    assert seen_payloads[0].get("options") == {
+        "num_gpu": 2,
+        "main_gpu": 1,
+        "num_ctx": 256,
+    }
+
+
+def test_ollama_generate_remote_includes_gpu_options_when_configured(
+    monkeypatch: Any,
+) -> None:
+    class _FakeResponse:
+        def __enter__(self) -> "_FakeResponse":
+            return self
+
+        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps({"response": "gpu path active"}).encode("utf-8")
+
+    seen_payloads: list[dict[str, Any]] = []
+
+    def fake_urlopen(req: Any, timeout: float = 0.0) -> _FakeResponse:
+        _ = timeout
+        payload = json.loads((req.data or b"{}").decode("utf-8"))
+        seen_payloads.append(payload)
+        return _FakeResponse()
+
+    monkeypatch.setattr(world_web_module, "urlopen", fake_urlopen)
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://stub.local:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3-vl:4b-instruct")
+    monkeypatch.setenv("OLLAMA_NUM_GPU", "1")
+    monkeypatch.setenv("OLLAMA_MAIN_GPU", "0")
+
+    text, model = world_web_module._ollama_generate_text_remote("gpu prompt")
+
+    assert text == "gpu path active"
+    assert model == "qwen3-vl:4b-instruct"
+    assert seen_payloads[0].get("options") == {"num_gpu": 1, "main_gpu": 0}
+
+
+def test_resource_auto_embedding_order_prefers_hardware_backends(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.delenv("EMBED_ALLOW_CPU_FALLBACK", raising=False)
+    order = world_web_module._resource_auto_embedding_order(
+        snapshot={
+            "devices": {
+                "npu0": {"status": "ok"},
+                "cpu": {"utilization": 22.0},
+                "gpu1": {"utilization": 31.0},
+            }
+        }
+    )
+
+    assert order[0] == "openvino"
+    assert "ollama" in order
+    assert "tensorflow" not in order
 
 
 def test_effective_request_embed_model_honors_force_nomic(monkeypatch: Any) -> None:

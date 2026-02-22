@@ -6,11 +6,17 @@ import ctypes
 import heapq
 import math
 import os
+import shutil
+import site
 import subprocess
+import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
+
+print("DEBUG: c_double_buffer_backend imported", flush=True)
 
 CDB_FLAG_NEXUS = 0x1
 CDB_FLAG_CHAOS = 0x2
@@ -92,11 +98,30 @@ _GROWTH_MODE_MAP = {
 _NATIVE_DIR = Path(__file__).resolve().parent / "native"
 _NATIVE_SOURCE = _NATIVE_DIR / "c_double_buffer_sim.c"
 _NATIVE_LIB = _NATIVE_DIR / "libc_double_buffer_sim.so"
+_EMBED_NATIVE_SOURCE = _NATIVE_DIR / "c_embed_runtime.cpp"
+_EMBED_NATIVE_LIB = _NATIVE_DIR / "libc_embed_runtime.so"
+_EMBED_NATIVE_BUILDINFO = _NATIVE_DIR / "libc_embed_runtime.buildinfo"
 
 _LIB_LOCK = threading.Lock()
 _ENGINE_LOCK = threading.Lock()
 _LIB: ctypes.CDLL | None = None
 _ENGINE: "_CDBEngine | None" = None
+
+_EMBED_LIB_LOCK = threading.Lock()
+_EMBED_RUNTIME_LOCK = threading.Lock()
+_EMBED_LIB: ctypes.CDLL | None = None
+_EMBED_RUNTIME: Any = None
+_EMBED_RUNTIME_ERROR: str = ""
+_EMBED_RUNTIME_SOURCE: str = "pending"
+_EMBED_RUNTIME_CPU_FALLBACK: bool = False
+_EMBED_RUNTIME_CPU_FALLBACK_DETAIL: str = ""
+_LEVEL_ZERO_PRELOAD_LOCK = threading.Lock()
+_LEVEL_ZERO_PRELOADED = False
+_LEVEL_ZERO_HANDLES: list[Any] = []
+_EMBED_MODEL_DOWNLOAD_LOCK = threading.Lock()
+_EMBED_MODEL_DOWNLOAD_ATTEMPTED = False
+_EMBED_VECTOR_CACHE_LOCK = threading.Lock()
+_EMBED_VECTOR_CACHE: dict[str, tuple[float, ...]] = {}
 
 _CDB_MAX_PRESENCE_SLOTS = 64
 _DEFAULT_PRESENCE_LAYOUT: tuple[tuple[str, float, float, float], ...] = (
@@ -129,6 +154,59 @@ def _clamp01(value: float) -> float:
     if value >= 1.0:
         return 1.0
     return value
+
+
+def _is_cpu_fallback_signal(text: str) -> bool:
+    probe = str(text or "").strip().lower()
+    if not probe:
+        return False
+
+    if "cpu" in probe and (
+        "fallback" in probe or "fall back" in probe or "falling back" in probe
+    ):
+        return True
+    if "ov cpu" in probe and ("fallback" in probe or "unsupported" in probe):
+        return True
+    if "ze_result_error_unsupported_feature" in probe and "cpu" in probe:
+        return True
+    if "unsupported" in probe and "npu" in probe and "cpu" in probe:
+        return True
+    if "cpuexecutionprovider" in probe:
+        return True
+    if "cpu execution provider" in probe:
+        return True
+    if "selected_device=cpu" in probe:
+        return True
+    return False
+
+
+def _normalize_embed_device(raw: str | None) -> str:
+    value = str(raw or "").strip().upper()
+    if not value:
+        return "AUTO"
+    if value in {"NPU", "INTEL_NPU"}:
+        return "NPU"
+    if value in {"GPU", "CUDA", "NVIDIA", "NVIDIA_GPU"}:
+        return "GPU"
+    if value == "AUTO":
+        return "AUTO"
+    return "AUTO"
+
+
+def _embed_device_candidates(raw: str | None) -> list[str]:
+    normalized = _normalize_embed_device(raw)
+    if normalized == "NPU":
+        return ["NPU"]
+    if normalized == "GPU":
+        return ["GPU"]
+    return ["NPU", "GPU"]
+
+
+def _is_hardware_embed_device(value: str) -> bool:
+    probe = str(value or "").strip().upper()
+    if not probe:
+        return False
+    return probe in {"NPU", "GPU", "CUDA"}
 
 
 def _sigmoid(value: float) -> float:
@@ -1207,6 +1285,890 @@ def _load_native_lib() -> ctypes.CDLL:
         return lib
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    raw = str(os.getenv(name, "1" if default else "0") or "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _int_env(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    raw = str(os.getenv(name, str(default)) or str(default)).strip()
+    try:
+        value = int(float(raw))
+    except Exception:
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def _maybe_download_embed_model_path() -> Path | None:
+    global _EMBED_MODEL_DOWNLOAD_ATTEMPTED
+
+    if not _bool_env("CDB_EMBED_AUTO_DOWNLOAD_MODEL", True):
+        return None
+
+    with _EMBED_MODEL_DOWNLOAD_LOCK:
+        if _EMBED_MODEL_DOWNLOAD_ATTEMPTED:
+            return None
+        _EMBED_MODEL_DOWNLOAD_ATTEMPTED = True
+
+    try:
+        from huggingface_hub import snapshot_download  # type: ignore
+
+        snapshot = snapshot_download(
+            repo_id="nomic-ai/nomic-embed-text-v1.5",
+            allow_patterns=["onnx/model.onnx", "tokenizer.json"],
+            local_files_only=False,
+        )
+    except Exception:
+        return None
+
+    model_path = Path(str(snapshot)) / "onnx" / "model.onnx"
+    if model_path.exists() and model_path.is_file():
+        return model_path
+    return None
+
+
+def _resolve_embed_model_path() -> Path | None:
+    explicit = str(os.getenv("CDB_EMBED_MODEL_PATH", "") or "").strip()
+    if explicit:
+        path = Path(explicit).expanduser()
+        if path.exists() and path.is_file():
+            return path
+
+    part_root = Path(__file__).resolve().parents[2]
+    candidates = [
+        part_root
+        / "world_state"
+        / "models"
+        / "nomic-embed-text-v1.5"
+        / "onnx"
+        / "model.onnx",
+        part_root / "models" / "nomic-embed-text-v1.5" / "onnx" / "model.onnx",
+    ]
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            return candidate
+
+    hf_home = Path(
+        str(os.getenv("HF_HOME", str(Path.home() / ".cache" / "huggingface")) or "")
+    )
+    snapshot_root = (
+        hf_home / "hub" / "models--nomic-ai--nomic-embed-text-v1.5" / "snapshots"
+    )
+    if snapshot_root.exists() and snapshot_root.is_dir():
+        snapshots = sorted(
+            snapshot_root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True
+        )
+        for snapshot in snapshots:
+            model_path = snapshot / "onnx" / "model.onnx"
+            if model_path.exists() and model_path.is_file():
+                return model_path
+
+    downloaded = _maybe_download_embed_model_path()
+    if downloaded is not None:
+        return downloaded
+    return None
+
+
+def _resolve_embed_tokenizer_path(model_path: Path) -> Path | None:
+    explicit = str(os.getenv("CDB_EMBED_TOKENIZER_PATH", "") or "").strip()
+    if explicit:
+        path = Path(explicit).expanduser().resolve()
+        if path.exists() and path.is_file():
+            return path
+
+    model_parent = model_path.parent
+    candidates = [
+        model_parent / "tokenizer.json",
+        model_parent.parent / "tokenizer.json",
+    ]
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            return candidate
+
+    for parent in model_path.parents:
+        if parent.name == "models--nomic-ai--nomic-embed-text-v1.5":
+            snapshots = parent / "snapshots"
+            if snapshots.exists() and snapshots.is_dir():
+                snapshot_paths = sorted(
+                    snapshots.iterdir(),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+                for snapshot in snapshot_paths:
+                    tok = snapshot / "tokenizer.json"
+                    if tok.exists() and tok.is_file():
+                        return tok
+            break
+    return None
+
+
+def _resolve_ort_include_dir() -> Path | None:
+    explicit = str(os.getenv("CDB_ORT_INCLUDE_DIR", "") or "").strip()
+    if explicit:
+        path = Path(explicit).expanduser().resolve()
+        if path.exists() and path.is_dir():
+            return path
+
+    part_root = Path(__file__).resolve().parents[2]
+    candidates = sorted(
+        [
+            path
+            for path in part_root.glob("onnxruntime-linux-x64-*/include")
+            if path.exists()
+        ],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    return candidates[0].resolve() if candidates else None
+
+
+def _resolve_ort_capi_dir() -> Path | None:
+    explicit_lib = str(os.getenv("CDB_ORT_LIB_DIR", "") or "").strip()
+    if explicit_lib:
+        path = Path(explicit_lib).expanduser().resolve()
+        if path.exists() and path.is_dir():
+            return path
+
+    explicit = str(os.getenv("CDB_ORT_CAPI_DIR", "") or "").strip()
+    if explicit:
+        path = Path(explicit).expanduser().resolve()
+        if path.exists() and path.is_dir():
+            return path
+
+    site_candidates: list[Path] = []
+    try:
+        user_site = site.getusersitepackages()
+        if isinstance(user_site, str) and user_site:
+            site_candidates.append(Path(user_site))
+    except Exception:
+        pass
+    try:
+        for row in site.getsitepackages():
+            site_candidates.append(Path(str(row)))
+    except Exception:
+        pass
+
+    discovered: list[Path] = []
+    for site_root in site_candidates:
+        capi = site_root / "onnxruntime" / "capi"
+        if capi.exists() and capi.is_dir():
+            discovered.append(capi.resolve())
+
+    part_root = Path(__file__).resolve().parents[2]
+    for local_dir in part_root.glob("onnxruntime-linux-x64-*/lib"):
+        if local_dir.exists() and local_dir.is_dir():
+            discovered.append(local_dir.resolve())
+
+    if not discovered:
+        return None
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in discovered:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+
+    def _candidate_score(path: Path) -> tuple[int, float]:
+        score = 0
+        if (path / "libonnxruntime.so").exists():
+            score += 1
+        if (path / "libonnxruntime_providers_openvino.so").exists():
+            score += 10
+        if (path / "libopenvino_intel_npu_plugin.so").exists():
+            score += 10
+        try:
+            mtime = float(path.stat().st_mtime)
+        except Exception:
+            mtime = 0.0
+        return (score, mtime)
+
+    ordered = sorted(unique, key=_candidate_score, reverse=True)
+    return ordered[0] if ordered else None
+
+
+def _resolve_ort_soname(capi_dir: Path) -> str | None:
+    direct = capi_dir / "libonnxruntime.so"
+    if direct.exists() and direct.is_file():
+        return "libonnxruntime.so"
+
+    candidates = sorted(
+        [
+            path
+            for path in capi_dir.glob("libonnxruntime.so.*")
+            if path.exists() and path.is_file()
+        ],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not candidates:
+        return None
+    return candidates[0].name
+
+
+def _ensure_ort_soname_links(capi_dir: Path | None) -> None:
+    if capi_dir is None or not capi_dir.exists() or not capi_dir.is_dir():
+        return
+
+    direct = capi_dir / "libonnxruntime.so"
+    so1 = capi_dir / "libonnxruntime.so.1"
+
+    if direct.exists() and so1.exists():
+        return
+
+    versioned = sorted(
+        [
+            path
+            for path in capi_dir.glob("libonnxruntime.so.*")
+            if path.exists()
+            and path.is_file()
+            and path.name not in {"libonnxruntime.so.1"}
+        ],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not versioned:
+        return
+
+    target = versioned[0].name
+    try:
+        if not so1.exists():
+            so1.symlink_to(target)
+    except Exception:
+        pass
+    try:
+        if not direct.exists():
+            direct.symlink_to(target)
+    except Exception:
+        pass
+
+
+def _preload_level_zero_library(path: Path) -> None:
+    if not path.exists() or not path.is_file():
+        return
+    mode = getattr(ctypes, "RTLD_GLOBAL", 0)
+    try:
+        handle = ctypes.CDLL(str(path), mode=mode)
+    except Exception:
+        return
+    _LEVEL_ZERO_HANDLES.append(handle)
+
+
+def _shared_library_loadable(path: Path) -> bool:
+    if not path.exists() or not path.is_file():
+        return False
+    mode = getattr(ctypes, "RTLD_GLOBAL", 0)
+    try:
+        ctypes.CDLL(str(path), mode=mode)
+    except Exception:
+        return False
+    return True
+
+
+def _preload_ort_core_runtime(capi_dir: Path | None) -> None:
+    if not _bool_env("CDB_EMBED_PRELOAD_ORT_CORE", False):
+        return
+    if capi_dir is None or not capi_dir.exists() or not capi_dir.is_dir():
+        return
+
+    mode = getattr(ctypes, "RTLD_GLOBAL", 0)
+    for stem in ("libonnxruntime.so", "libonnxruntime_providers_shared.so"):
+        direct = capi_dir / stem
+        candidate: Path | None = (
+            direct if direct.exists() and direct.is_file() else None
+        )
+        if candidate is None:
+            matches = sorted(
+                [
+                    path
+                    for path in capi_dir.glob(f"{stem}.*")
+                    if path.exists() and path.is_file()
+                ],
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            candidate = matches[0] if matches else None
+        if candidate is None:
+            continue
+        try:
+            handle = ctypes.CDLL(str(candidate), mode=mode)
+        except Exception:
+            continue
+        _LEVEL_ZERO_HANDLES.append(handle)
+
+
+def _resolve_level_zero_loader_path(directory: Path) -> Path | None:
+    candidates = [
+        directory / "libze_loader.so",
+        directory / "libze_loader.so.1",
+    ]
+    for candidate in candidates:
+        if _shared_library_loadable(candidate):
+            return candidate
+
+    try:
+        for candidate in sorted(directory.glob("libze_loader.so.*")):
+            if _shared_library_loadable(candidate):
+                return candidate
+    except Exception:
+        return None
+    return None
+
+
+def _preload_level_zero_runtime(
+    *, loader_path: Path | None, alt_driver: Path | None
+) -> None:
+    global _LEVEL_ZERO_PRELOADED
+    with _LEVEL_ZERO_PRELOAD_LOCK:
+        if _LEVEL_ZERO_PRELOADED:
+            return
+        if loader_path is not None:
+            _preload_level_zero_library(loader_path)
+        if alt_driver is not None:
+            _preload_level_zero_library(alt_driver)
+        _LEVEL_ZERO_PRELOADED = True
+
+
+def _prepare_npu_level_zero_env() -> None:
+    if _bool_env("CDB_EMBED_SKIP_LEVEL_ZERO_SETUP", False):
+        return
+
+    part_root = Path(__file__).resolve().parents[2]
+    libze_candidates = [
+        Path(str(os.getenv("CDB_LIBZE_LOADER_DIR", "") or "").strip()),
+        Path("/usr/lib/x86_64-linux-gnu"),
+        Path("/lib/x86_64-linux-gnu"),
+        part_root
+        / ".cache-npu"
+        / "libze"
+        / "extracted"
+        / "usr"
+        / "lib"
+        / "x86_64-linux-gnu",
+    ]
+
+    selected_loader_path: Path | None = None
+    for candidate in libze_candidates:
+        if not candidate:
+            continue
+        if not candidate.exists():
+            continue
+        loader_path = _resolve_level_zero_loader_path(candidate)
+        if loader_path is not None:
+            selected_loader_path = loader_path
+            break
+
+    existing = str(os.getenv("LD_LIBRARY_PATH", "") or "")
+    parts = [part for part in existing.split(":") if part]
+
+    capi_dir = _resolve_ort_capi_dir()
+    if capi_dir is not None:
+        _ensure_ort_soname_links(capi_dir)
+        _preload_ort_core_runtime(capi_dir)
+        capi_str = str(capi_dir)
+        if capi_str not in parts:
+            parts.insert(0, capi_str)
+
+    if selected_loader_path is not None:
+        selected_dir = selected_loader_path.parent
+        selected_str = str(selected_dir)
+        if (
+            selected_str
+            not in {
+                "/usr/lib/x86_64-linux-gnu",
+                "/lib/x86_64-linux-gnu",
+            }
+            and selected_str not in parts
+        ):
+            parts.append(selected_str)
+
+    if parts:
+        os.environ["LD_LIBRARY_PATH"] = ":".join(parts)
+
+    selected_alt_driver: Path | None = None
+    alt_driver_env = str(os.getenv("ZE_ENABLE_ALT_DRIVERS", "") or "").strip()
+    if alt_driver_env:
+        candidate = Path(alt_driver_env)
+        if _shared_library_loadable(candidate):
+            selected_alt_driver = candidate
+        else:
+            os.environ.pop("ZE_ENABLE_ALT_DRIVERS", None)
+    else:
+        candidate = Path("/usr/lib/x86_64-linux-gnu/libze_intel_npu.so")
+        if _shared_library_loadable(candidate):
+            os.environ["ZE_ENABLE_ALT_DRIVERS"] = str(candidate)
+            selected_alt_driver = candidate
+
+    _preload_level_zero_runtime(
+        loader_path=selected_loader_path,
+        alt_driver=selected_alt_driver,
+    )
+
+
+def _embed_buildinfo_matches(*, include_dir: Path, capi_dir: Path, soname: str) -> bool:
+    if not _EMBED_NATIVE_BUILDINFO.exists() or not _EMBED_NATIVE_BUILDINFO.is_file():
+        return False
+    try:
+        rows = _EMBED_NATIVE_BUILDINFO.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return False
+    expected = [
+        str(include_dir.resolve()),
+        str(capi_dir.resolve()),
+        str(soname),
+    ]
+    return rows[:3] == expected
+
+
+def _write_embed_buildinfo(*, include_dir: Path, capi_dir: Path, soname: str) -> None:
+    payload = f"{include_dir.resolve()}\n{capi_dir.resolve()}\n{soname}\n"
+    _EMBED_NATIVE_BUILDINFO.write_text(payload, encoding="utf-8")
+
+
+def _build_embed_shared_library() -> None:
+    if not _EMBED_NATIVE_SOURCE.exists():
+        raise RuntimeError(f"missing embed native source: {_EMBED_NATIVE_SOURCE}")
+
+    include_dir = _resolve_ort_include_dir()
+    capi_dir = _resolve_ort_capi_dir()
+    if include_dir is None:
+        raise RuntimeError("missing ONNX Runtime include directory for c_embed_runtime")
+    if capi_dir is None:
+        raise RuntimeError("missing ONNX Runtime capi directory for c_embed_runtime")
+
+    soname = _resolve_ort_soname(capi_dir)
+    if not soname:
+        raise RuntimeError("missing libonnxruntime.so in capi directory")
+
+    command = [
+        "g++",
+        "-O3",
+        "-fPIC",
+        "-shared",
+        "-std=c++17",
+        str(_EMBED_NATIVE_SOURCE),
+        "-I",
+        str(include_dir),
+        "-L",
+        str(capi_dir),
+        f"-l:{soname}",
+        f"-Wl,-rpath,{capi_dir}",
+        "-o",
+        str(_EMBED_NATIVE_LIB),
+    ]
+    subprocess.run(command, check=True, capture_output=True, text=True)
+    _write_embed_buildinfo(include_dir=include_dir, capi_dir=capi_dir, soname=soname)
+
+
+def _load_embed_lib() -> ctypes.CDLL:
+    global _EMBED_LIB
+    with _EMBED_LIB_LOCK:
+        if _EMBED_LIB is not None:
+            return _EMBED_LIB
+
+        can_build = shutil.which("g++") is not None
+
+        needs_build = (not _EMBED_NATIVE_LIB.exists()) or (
+            _EMBED_NATIVE_LIB.stat().st_mtime < _EMBED_NATIVE_SOURCE.stat().st_mtime
+        )
+        if not needs_build:
+            include_dir = _resolve_ort_include_dir()
+            capi_dir = _resolve_ort_capi_dir()
+            soname = _resolve_ort_soname(capi_dir) if capi_dir is not None else None
+            if include_dir is None or capi_dir is None or not soname:
+                needs_build = True
+            elif not _embed_buildinfo_matches(
+                include_dir=include_dir,
+                capi_dir=capi_dir,
+                soname=soname,
+            ):
+                needs_build = True
+
+        if needs_build and not can_build and _EMBED_NATIVE_LIB.exists():
+            needs_build = False
+
+        if needs_build:
+            try:
+                _build_embed_shared_library()
+            except Exception:
+                if not _EMBED_NATIVE_LIB.exists():
+                    raise
+
+        mode = getattr(ctypes, "RTLD_GLOBAL", 0)
+        lib = ctypes.CDLL(str(_EMBED_NATIVE_LIB), mode=mode)
+        lib.c_embed_runtime_create.argtypes = [
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_int64,
+            ctypes.c_int32,
+            ctypes.c_int32,
+            ctypes.c_int32,
+        ]
+        lib.c_embed_runtime_create.restype = ctypes.c_void_p
+
+        lib.c_embed_runtime_last_create_error.argtypes = []
+        lib.c_embed_runtime_last_create_error.restype = ctypes.c_char_p
+
+        lib.c_embed_runtime_embed.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_int64),
+            ctypes.POINTER(ctypes.c_int64),
+            ctypes.POINTER(ctypes.c_int64),
+            ctypes.POINTER(ctypes.c_float),
+        ]
+        lib.c_embed_runtime_embed.restype = ctypes.c_int32
+
+        lib.c_embed_runtime_last_error.argtypes = [ctypes.c_void_p]
+        lib.c_embed_runtime_last_error.restype = ctypes.c_char_p
+
+        lib.c_embed_runtime_selected_device.argtypes = [ctypes.c_void_p]
+        lib.c_embed_runtime_selected_device.restype = ctypes.c_char_p
+
+        lib.c_embed_runtime_cpu_fallback_detected.argtypes = [ctypes.c_void_p]
+        lib.c_embed_runtime_cpu_fallback_detected.restype = ctypes.c_int32
+
+        lib.c_embed_runtime_cpu_fallback_detail.argtypes = [ctypes.c_void_p]
+        lib.c_embed_runtime_cpu_fallback_detail.restype = ctypes.c_char_p
+
+        lib.c_embed_runtime_output_dim.argtypes = [ctypes.c_void_p]
+        lib.c_embed_runtime_output_dim.restype = ctypes.c_int32
+
+        lib.c_embed_runtime_seq_len.argtypes = [ctypes.c_void_p]
+        lib.c_embed_runtime_seq_len.restype = ctypes.c_int64
+
+        lib.c_embed_runtime_destroy.argtypes = [ctypes.c_void_p]
+        lib.c_embed_runtime_destroy.restype = None
+
+        _EMBED_LIB = lib
+        return lib
+
+
+class _CEmbedRuntime:
+    def __init__(self, *, requested_device: str) -> None:
+        self._lib = _load_embed_lib()
+        self._handle: ctypes.c_void_p | None = None
+        self._tokenizer: Any = None
+        self._seq_len = _int_env("CDB_EMBED_SEQ_LEN", 128, minimum=8, maximum=8192)
+        self._out_dim = 24
+        normalized = _normalize_embed_device(requested_device)
+        self._device = "NPU" if normalized == "AUTO" else normalized
+        self._threads = _int_env("CDB_EMBED_THREADS", 1, minimum=1, maximum=32)
+        self._strict = _bool_env("CDB_EMBED_STRICT_DEVICE", True)
+
+        model_path = _resolve_embed_model_path()
+        if model_path is None:
+            raise RuntimeError(
+                "nomic onnx model path not found for c runtime embedding"
+            )
+        tokenizer_path = _resolve_embed_tokenizer_path(model_path)
+        if tokenizer_path is None:
+            raise RuntimeError("tokenizer.json not found for c runtime embedding")
+
+        try:
+            from tokenizers import Tokenizer  # type: ignore
+
+            self._tokenizer = Tokenizer.from_file(str(tokenizer_path))
+        except Exception as exc:
+            raise RuntimeError(
+                f"failed to load tokenizer for c runtime embedding: {exc}"
+            ) from exc
+
+        handle = self._lib.c_embed_runtime_create(
+            str(model_path).encode("utf-8"),
+            self._device.encode("utf-8"),
+            ctypes.c_int64(self._seq_len),
+            ctypes.c_int32(self._out_dim),
+            ctypes.c_int32(self._threads),
+            ctypes.c_int32(1 if self._strict else 0),
+        )
+        if not handle:
+            detail = ""
+            try:
+                raw = self._lib.c_embed_runtime_last_create_error()
+                if raw:
+                    detail = str(raw.decode("utf-8", errors="ignore") or "").strip()
+            except Exception:
+                detail = ""
+            if detail:
+                raise RuntimeError(f"failed to create c embed runtime handle: {detail}")
+            raise RuntimeError("failed to create c embed runtime handle")
+        self._handle = handle
+
+    def close(self) -> None:
+        if self._handle is None:
+            return
+        try:
+            self._lib.c_embed_runtime_destroy(self._handle)
+        finally:
+            self._handle = None
+
+    def selected_device(self) -> str:
+        if self._handle is None:
+            return "invalid"
+        raw = self._lib.c_embed_runtime_selected_device(self._handle)
+        if not raw:
+            return "unknown"
+        try:
+            return raw.decode("utf-8", errors="ignore")
+        except Exception:
+            return "unknown"
+
+    def cpu_fallback_detected(self) -> bool:
+        if self._handle is None:
+            return False
+        try:
+            return bool(
+                int(self._lib.c_embed_runtime_cpu_fallback_detected(self._handle))
+            )
+        except Exception:
+            return False
+
+    def cpu_fallback_detail(self) -> str:
+        if self._handle is None:
+            return ""
+        try:
+            raw = self._lib.c_embed_runtime_cpu_fallback_detail(self._handle)
+        except Exception:
+            return ""
+        if not raw:
+            return ""
+        try:
+            return raw.decode("utf-8", errors="ignore")
+        except Exception:
+            return ""
+
+    def last_error(self) -> str:
+        if self._handle is None:
+            return "invalid_handle"
+        raw = self._lib.c_embed_runtime_last_error(self._handle)
+        if not raw:
+            return ""
+        try:
+            return raw.decode("utf-8", errors="ignore")
+        except Exception:
+            return "unknown_error"
+
+    def embed_24(self, text: str) -> list[float] | None:
+        if self._handle is None:
+            return None
+
+        encoded = self._tokenizer.encode(str(text or ""))
+        token_ids = list(getattr(encoded, "ids", []) or [])
+        if not token_ids:
+            token_ids = [101, 102]
+
+        token_ids = token_ids[: self._seq_len]
+        attention_mask = [1] * len(token_ids)
+        token_type_ids = [0] * len(token_ids)
+
+        if len(token_ids) < self._seq_len:
+            pad = self._seq_len - len(token_ids)
+            token_ids.extend([0] * pad)
+            attention_mask.extend([0] * pad)
+            token_type_ids.extend([0] * pad)
+
+        ids_array = (ctypes.c_int64 * self._seq_len)(*token_ids)
+        mask_array = (ctypes.c_int64 * self._seq_len)(*attention_mask)
+        type_array = (ctypes.c_int64 * self._seq_len)(*token_type_ids)
+        out_array = (ctypes.c_float * self._out_dim)(*([0.0] * self._out_dim))
+
+        ok = int(
+            self._lib.c_embed_runtime_embed(
+                self._handle,
+                ids_array,
+                mask_array,
+                type_array,
+                out_array,
+            )
+        )
+        if ok != 1:
+            return None
+        return [float(out_array[i]) for i in range(self._out_dim)]
+
+
+def _c_embed_runtime_enabled() -> bool:
+    return _bool_env("CDB_EMBED_IN_C", True)
+
+
+def _c_embed_runtime_required() -> bool:
+    return _bool_env("CDB_EMBED_REQUIRE_C", True)
+
+
+def _get_c_embed_runtime() -> Any:
+    global _EMBED_RUNTIME
+    global _EMBED_RUNTIME_ERROR
+    global _EMBED_RUNTIME_SOURCE
+    global _EMBED_RUNTIME_CPU_FALLBACK
+    global _EMBED_RUNTIME_CPU_FALLBACK_DETAIL
+
+    if not _c_embed_runtime_enabled():
+        _EMBED_RUNTIME_SOURCE = "disabled"
+        _EMBED_RUNTIME_ERROR = "c runtime embedding disabled"
+        _EMBED_RUNTIME_CPU_FALLBACK = False
+        _EMBED_RUNTIME_CPU_FALLBACK_DETAIL = ""
+        return None
+
+    with _EMBED_RUNTIME_LOCK:
+        if _EMBED_RUNTIME is not None:
+            return _EMBED_RUNTIME
+
+        requested_device = os.getenv("CDB_EMBED_DEVICE", "AUTO")
+        device_candidates = _embed_device_candidates(requested_device)
+        failures: list[str] = []
+
+        for candidate in device_candidates:
+            runtime: _CEmbedRuntime | None = None
+            try:
+                if candidate == "NPU":
+                    _prepare_npu_level_zero_env()
+
+                runtime = _CEmbedRuntime(requested_device=candidate)
+
+                selected_device = str(runtime.selected_device() or "").strip().upper()
+                if not _is_hardware_embed_device(selected_device):
+                    raise RuntimeError(
+                        f"invalid_runtime_device:selected_device={selected_device or 'unknown'}"
+                    )
+
+                fallback_detected = bool(runtime.cpu_fallback_detected())
+                fallback_detail = str(runtime.cpu_fallback_detail() or "").strip()
+                if fallback_detected:
+                    detail = (
+                        fallback_detail or "cpu_fallback_detected_during_runtime_init"
+                    )
+                    raise RuntimeError(detail)
+
+                probe_vec = runtime.embed_24("eta-mu hardware embedding probe")
+                runtime_error = str(runtime.last_error() or "").strip()
+                fallback_detected = bool(runtime.cpu_fallback_detected())
+                fallback_detail = str(runtime.cpu_fallback_detail() or "").strip()
+                if fallback_detected:
+                    detail = fallback_detail or runtime_error or "cpu_fallback_detected"
+                    raise RuntimeError(detail)
+                if _is_cpu_fallback_signal(runtime_error):
+                    raise RuntimeError(runtime_error)
+                if _is_cpu_fallback_signal(fallback_detail):
+                    raise RuntimeError(fallback_detail)
+                if not (isinstance(probe_vec, list) and len(probe_vec) == 24):
+                    detail = runtime_error or "hardware_probe_failed"
+                    raise RuntimeError(detail)
+
+                _EMBED_RUNTIME = runtime
+                _EMBED_RUNTIME_SOURCE = f"c-onnxruntime:{selected_device}"
+                _EMBED_RUNTIME_ERROR = ""
+                _EMBED_RUNTIME_CPU_FALLBACK = False
+                _EMBED_RUNTIME_CPU_FALLBACK_DETAIL = ""
+                return runtime
+            except Exception as exc:
+                if runtime is not None:
+                    try:
+                        runtime.close()
+                    except Exception:
+                        pass
+                failures.append(f"{candidate}:{exc}")
+
+        _EMBED_RUNTIME = None
+        _EMBED_RUNTIME_SOURCE = "c-unavailable"
+        _EMBED_RUNTIME_ERROR = (
+            " | ".join(failures) or "hardware_embedding_runtime_unavailable"
+        )
+        _EMBED_RUNTIME_CPU_FALLBACK = _is_cpu_fallback_signal(_EMBED_RUNTIME_ERROR)
+        _EMBED_RUNTIME_CPU_FALLBACK_DETAIL = (
+            _EMBED_RUNTIME_ERROR if _EMBED_RUNTIME_CPU_FALLBACK else ""
+        )
+        return None
+
+
+_EMBED_CACHE_HITS = 0
+_EMBED_CACHE_MISSES = 0
+
+
+def _embed_seed_vector_24(text: str) -> tuple[float, ...]:
+    global _EMBED_RUNTIME_ERROR
+    global _EMBED_RUNTIME_CPU_FALLBACK
+    global _EMBED_RUNTIME_CPU_FALLBACK_DETAIL
+    global _EMBED_CACHE_HITS, _EMBED_CACHE_MISSES
+
+    key = str(text or "")
+    with _EMBED_VECTOR_CACHE_LOCK:
+        cached = _EMBED_VECTOR_CACHE.get(key)
+    if cached is not None:
+        _EMBED_CACHE_HITS += 1
+        return cached
+
+    _EMBED_CACHE_MISSES += 1
+
+    runtime = _get_c_embed_runtime()
+    if runtime is not None:
+        runtime_error = ""
+        fallback_detected = False
+        fallback_detail = ""
+        try:
+            vec = runtime.embed_24(key)
+        except Exception:
+            vec = None
+        try:
+            runtime_error = str(runtime.last_error() or "").strip()
+        except Exception:
+            runtime_error = ""
+
+        try:
+            fallback_detected = bool(runtime.cpu_fallback_detected())
+            fallback_detail = str(runtime.cpu_fallback_detail() or "").strip()
+        except Exception:
+            fallback_detected = False
+            fallback_detail = ""
+
+        if fallback_detected:
+            detail = fallback_detail or runtime_error or "npu_cpu_fallback_detected"
+            _EMBED_RUNTIME_CPU_FALLBACK = True
+            _EMBED_RUNTIME_CPU_FALLBACK_DETAIL = detail
+            _EMBED_RUNTIME_ERROR = detail
+            vec = None
+        elif runtime_error:
+            _EMBED_RUNTIME_ERROR = runtime_error
+            if _is_cpu_fallback_signal(runtime_error):
+                _EMBED_RUNTIME_CPU_FALLBACK = True
+                _EMBED_RUNTIME_CPU_FALLBACK_DETAIL = runtime_error
+
+        packed: tuple[float, ...] | None = None
+        if isinstance(vec, list) and len(vec) == 24:
+            _EMBED_RUNTIME_ERROR = ""
+            _EMBED_RUNTIME_CPU_FALLBACK = False
+            _EMBED_RUNTIME_CPU_FALLBACK_DETAIL = ""
+            packed = tuple(float(v) for v in vec)
+        elif _EMBED_RUNTIME_CPU_FALLBACK:
+            # Cache zeros for fallback to avoid repeated slow NPU->CPU failure paths
+            packed = tuple(0.0 for _ in range(24))
+
+        if packed is not None:
+            with _EMBED_VECTOR_CACHE_LOCK:
+                if len(_EMBED_VECTOR_CACHE) >= 16384:
+                    _EMBED_VECTOR_CACHE.clear()
+                _EMBED_VECTOR_CACHE[key] = packed
+            return packed
+
+    if not _EMBED_RUNTIME_ERROR:
+        _EMBED_RUNTIME_ERROR = "hardware_embedding_runtime_unavailable"
+    packed = tuple(0.0 for _ in range(24))
+    with _EMBED_VECTOR_CACHE_LOCK:
+        if len(_EMBED_VECTOR_CACHE) >= 16384:
+            _EMBED_VECTOR_CACHE.clear()
+        _EMBED_VECTOR_CACHE[key] = packed
+    return packed
+
+
+def _clear_embed_seed_cache() -> None:
+    with _EMBED_VECTOR_CACHE_LOCK:
+        _EMBED_VECTOR_CACHE.clear()
+
+
 class _CDBEngine:
     def __init__(self, lib: ctypes.CDLL) -> None:
         self._lib = lib
@@ -1390,11 +2352,26 @@ def _get_engine(*, count: int, seed: int) -> _CDBEngine:
 
 def shutdown_c_double_buffer_backend() -> None:
     global _ENGINE
+    global _EMBED_RUNTIME
     with _ENGINE_LOCK:
         if _ENGINE is None:
-            return
-        _ENGINE.close()
-        _ENGINE = None
+            pass
+        else:
+            _ENGINE.close()
+            _ENGINE = None
+
+    with _EMBED_RUNTIME_LOCK:
+        runtime = _EMBED_RUNTIME
+        _EMBED_RUNTIME = None
+    if runtime is not None:
+        try:
+            runtime.close()
+        except Exception:
+            pass
+    try:
+        _clear_embed_seed_cache()
+    except Exception:
+        pass
 
 
 atexit.register(shutdown_c_double_buffer_backend)
@@ -2830,32 +3807,100 @@ def build_double_buffer_field_particles(
         0.0,
     )
 
+    cpu_daimoi_stop_percent = max(
+        0.0,
+        min(
+            100.0,
+            _safe_float(
+                os.getenv("SIMULATION_CPU_DAIMOI_STOP_PERCENT", "75") or "75",
+                75.0,
+            ),
+        ),
+    )
+    cpu_core_emitter_enabled = cpu_util < cpu_daimoi_stop_percent
+    if not cpu_core_emitter_enabled:
+        presence_ids = [pid for pid in presence_ids if pid != "presence.core.cpu"]
+    if not presence_ids:
+        fallback_presence_id = "health_sentinel_cpu"
+        presence_ids = [fallback_presence_id]
+        if fallback_presence_id not in presence_layout:
+            presence_layout[fallback_presence_id] = (0.5, 0.5, None)
+
+    particles_per_presence = max(
+        6,
+        min(
+            64,
+            int(
+                _safe_float(
+                    os.getenv("CDB_TARGET_PARTICLES_PER_PRESENCE", "10") or "10",
+                    10.0,
+                )
+            ),
+        ),
+    )
+    particles_file_sqrt_factor = max(
+        0.0,
+        min(
+            64.0,
+            _safe_float(
+                os.getenv("CDB_TARGET_FILE_SQRT_FACTOR", "6") or "6",
+                6.0,
+            ),
+        ),
+    )
+    particles_base_offset = max(
+        24,
+        min(
+            1024,
+            int(
+                _safe_float(
+                    os.getenv("CDB_TARGET_BASE_OFFSET", "64") or "64",
+                    64.0,
+                )
+            ),
+        ),
+    )
+
     target_count = (
-        (max(1, len(presence_ids)) * 28) + int((len(file_nodes) ** 0.5) * 24.0) + 192
+        (max(1, len(presence_ids)) * particles_per_presence)
+        + int((len(file_nodes) ** 0.5) * particles_file_sqrt_factor)
+        + particles_base_offset
     )
     queue_clamped = _clamp01(_safe_float(queue_ratio, 0.0))
     if queue_clamped >= 0.9:
-        target_count = int(target_count * 0.82)
+        target_count = int(target_count * 0.65)
     elif queue_clamped >= 0.75:
-        target_count = int(target_count * 0.9)
+        target_count = int(target_count * 0.78)
     elif queue_clamped >= 0.55:
-        target_count = int(target_count * 0.96)
+        target_count = int(target_count * 0.9)
 
     compute_count = int(len(compute_jobs) if isinstance(compute_jobs, list) else 0)
     if compute_count >= 96:
-        target_count = int(target_count * 0.82)
+        target_count = int(target_count * 0.7)
     elif compute_count >= 64:
-        target_count = int(target_count * 0.9)
-    elif compute_count >= 32:
-        target_count = int(target_count * 0.95)
-
-    if cpu_util >= 95.0:
         target_count = int(target_count * 0.78)
-    elif cpu_util >= 85.0:
+    elif compute_count >= 32:
         target_count = int(target_count * 0.88)
 
-    min_count = max(220, len(presence_ids) * 20)
-    target_count = max(min_count, min(1800, target_count))
+    if cpu_util >= 95.0:
+        target_count = int(target_count * 0.62)
+    elif cpu_util >= 85.0:
+        target_count = int(target_count * 0.74)
+    elif cpu_util >= 75.0:
+        target_count = int(target_count * 0.86)
+
+    min_count_floor = max(
+        64,
+        int(_safe_float(os.getenv("CDB_TARGET_MIN_COUNT", "96") or "96", 96.0)),
+    )
+    max_count_floor = max(
+        min_count_floor,
+        int(_safe_float(os.getenv("CDB_TARGET_MAX_COUNT", "720") or "720", 720.0)),
+    )
+    min_count = max(
+        min_count_floor, len(presence_ids) * max(4, particles_per_presence // 2)
+    )
+    target_count = max(min_count, min(max_count_floor, target_count))
 
     seed = _seed_from_layout(
         presence_ids=presence_ids,
@@ -2879,23 +3924,36 @@ def build_double_buffer_field_particles(
         except Exception:
             pass
 
-    # Resolve embeddings for all particles
-    try:
-        from .daimoi_probabilistic import _embedding_from_text, _normalize_vector
-
-        # We need to maintain a persistent set of embeddings for the C particles
-        # For now, we derive them from owner + slot index to ensure they are stable.
-        flat_embeddings = []
-        for i in range(target_count):
-            owner_id = i % max(1, len(presence_ids))
-            presence_id = presence_ids[owner_id]
-            # stable-ish seed text for each slot
-            seed_text = f"CDB Slot {i} Owner {presence_id}"
-            emb = _embedding_from_text(seed_text)
-            flat_embeddings.extend(emb)
+    # Resolve embeddings for all particles using C inference runtime when available.
+    # Python only receives 24d folded vectors from the runtime boundary.
+    _prof_emb_start = time.perf_counter()
+    flat_embeddings: list[float] = []
+    for i in range(target_count):
+        owner_id = i % max(1, len(presence_ids))
+        presence_id = presence_ids[owner_id]
+        seed_text = f"CDB Slot {i} Owner {presence_id}"
+        emb = list(_embed_seed_vector_24(seed_text))
+        if len(emb) < 24:
+            emb = emb + [0.0] * (24 - len(emb))
+        elif len(emb) > 24:
+            emb = emb[:24]
+        flat_embeddings.extend(emb)
+    _prof_emb_end = time.perf_counter()
+    if os.getenv("SIM_PROFILE_INTERNAL") == "1":
+        print(
+            f"CDB PROFILE: embeddings={(_prof_emb_end - _prof_emb_start) * 1000:.2f}ms "
+            f"count={target_count} hits={_EMBED_CACHE_HITS} misses={_EMBED_CACHE_MISSES}",
+            flush=True,
+        )
+    if flat_embeddings:
         engine.update_embeddings(flat_embeddings)
-    except Exception:
-        pass
+
+    embedding_runtime_source = _EMBED_RUNTIME_SOURCE
+    embedding_runtime_error = _EMBED_RUNTIME_ERROR
+    embedding_runtime_cpu_fallback = bool(_EMBED_RUNTIME_CPU_FALLBACK)
+    embedding_runtime_cpu_fallback_detail = str(
+        _EMBED_RUNTIME_CPU_FALLBACK_DETAIL or ""
+    )
 
     try:
         from .simulation import _NOOI_FIELD
@@ -3712,9 +4770,23 @@ def build_double_buffer_field_particles(
             (resource_route_count / count) if count > 0 else 0.0,
             6,
         ),
+        "target_count": int(target_count),
+        "presence_count": int(len(presence_ids)),
+        "presence_profile": str(
+            os.getenv("SIMULATION_PRESENCE_PROFILE", "full") or "full"
+        ),
+        "cpu_utilization": round(_safe_float(cpu_util, 0.0), 2),
+        "cpu_core_emitter_enabled": bool(cpu_core_emitter_enabled),
+        "cpu_daimoi_stop_percent": round(cpu_daimoi_stop_percent, 2),
         "matrix_mean": {"ss": 0.0, "sc": 0.0, "cs": 0.0, "cc": 0.0},
         "behavior_defaults": ["deflect", "diffuse"],
         "backend": "c-double-buffer",
+        "embedding_runtime_source": str(embedding_runtime_source or "unknown"),
+        "embedding_runtime_error": str(embedding_runtime_error or ""),
+        "embedding_runtime_cpu_fallback": bool(embedding_runtime_cpu_fallback),
+        "embedding_runtime_cpu_fallback_detail": str(
+            embedding_runtime_cpu_fallback_detail or ""
+        ),
         "frame_id": int(frame_id),
         "force_frame": int(force_frame),
         "chaos_frame": int(chaos_frame),

@@ -124,6 +124,36 @@ def test_c_double_buffer_builder_uses_default_presence_ids(monkeypatch: Any) -> 
     assert str(rows[0].get("presence_id", "")).strip()
 
 
+def test_c_double_buffer_builder_disables_cpu_core_emitter_when_cpu_hot(
+    monkeypatch: Any,
+) -> None:
+    fake_engine = _FakeEngine()
+
+    def fake_get_engine(*, count: int, seed: int) -> _FakeEngine:
+        fake_engine.calls.append((count, seed))
+        return fake_engine
+
+    monkeypatch.setattr(c_double_buffer_backend, "_get_engine", fake_get_engine)
+    monkeypatch.setenv("SIMULATION_CPU_DAIMOI_STOP_PERCENT", "75")
+
+    rows, summary = c_double_buffer_backend.build_double_buffer_field_particles(
+        file_graph={"file_nodes": []},
+        presence_impacts=[
+            {"id": "presence.core.cpu"},
+            {"id": "witness_thread"},
+        ],
+        resource_heartbeat={"devices": {"cpu": {"utilization": 88.0}}},
+        compute_jobs=[],
+        queue_ratio=0.0,
+        now=1_700_900_250.0,
+    )
+
+    assert rows
+    assert all(str(row.get("presence_id", "")) != "presence.core.cpu" for row in rows)
+    assert summary.get("cpu_core_emitter_enabled") is False
+    assert summary.get("cpu_daimoi_stop_percent") == 75.0
+
+
 def test_mask_nodes_for_anchor_prefers_nearest_nodes() -> None:
     mask = c_double_buffer_backend._mask_nodes_for_anchor(
         node_ids=["node:a", "node:b", "node:c"],
@@ -472,3 +502,102 @@ def test_graph_route_step_native_uses_resource_signature_gravity() -> None:
     assert next_nodes[1] == 2
     assert focus[0] == "cpu"
     assert focus[1] == "ram"
+
+
+def test_embed_seed_vector_returns_zeros_when_c_runtime_required(
+    monkeypatch: Any,
+) -> None:
+    c_double_buffer_backend._clear_embed_seed_cache()
+    monkeypatch.setattr(c_double_buffer_backend, "_get_c_embed_runtime", lambda: None)
+    monkeypatch.setattr(
+        c_double_buffer_backend,
+        "_c_embed_runtime_required",
+        lambda: True,
+    )
+
+    vec = c_double_buffer_backend._embed_seed_vector_24("strict-c-runtime")
+
+    assert len(vec) == 24
+    assert all(float(value) == 0.0 for value in vec)
+
+
+def test_cpu_fallback_signal_detector_matches_openvino_warnings() -> None:
+    assert (
+        c_double_buffer_backend._is_cpu_fallback_signal(
+            "OpenVINO NPU compile failed, falling back to OV CPU"
+        )
+        is True
+    )
+    assert (
+        c_double_buffer_backend._is_cpu_fallback_signal(
+            "ZE_RESULT_ERROR_UNSUPPORTED_FEATURE while routing to CPU"
+        )
+        is True
+    )
+    assert (
+        c_double_buffer_backend._is_cpu_fallback_signal(
+            "OpenVINO NPU pipeline active with no fallback"
+        )
+        is False
+    )
+
+
+def test_embed_seed_vector_marks_cpu_fallback_and_fails_closed_when_required(
+    monkeypatch: Any,
+) -> None:
+    class _FallbackRuntime:
+        def embed_24(self, _: str) -> list[float]:
+            return [0.1 for _ in range(24)]
+
+        def last_error(self) -> str:
+            return ""
+
+        def cpu_fallback_detected(self) -> bool:
+            return True
+
+        def cpu_fallback_detail(self) -> str:
+            return "OpenVINO NPU fallback to CPU detected"
+
+    c_double_buffer_backend._clear_embed_seed_cache()
+    monkeypatch.setattr(
+        c_double_buffer_backend,
+        "_get_c_embed_runtime",
+        lambda: _FallbackRuntime(),
+    )
+    monkeypatch.setattr(
+        c_double_buffer_backend,
+        "_c_embed_runtime_required",
+        lambda: True,
+    )
+
+    vec = c_double_buffer_backend._embed_seed_vector_24("strict-no-cpu-fallback")
+
+    assert len(vec) == 24
+    assert all(float(value) == 0.0 for value in vec)
+    assert c_double_buffer_backend._EMBED_RUNTIME_CPU_FALLBACK is True
+    assert "fallback" in c_double_buffer_backend._EMBED_RUNTIME_ERROR.lower()
+
+
+def test_embed_seed_vector_fails_closed_when_c_not_required(
+    monkeypatch: Any,
+) -> None:
+    c_double_buffer_backend._clear_embed_seed_cache()
+    monkeypatch.setattr(c_double_buffer_backend, "_get_c_embed_runtime", lambda: None)
+    monkeypatch.setattr(
+        c_double_buffer_backend,
+        "_c_embed_runtime_required",
+        lambda: False,
+    )
+
+    vec = c_double_buffer_backend._embed_seed_vector_24("allow-python-fallback")
+
+    assert len(vec) == 24
+    assert all(float(value) == 0.0 for value in vec)
+
+
+def test_embed_device_candidates_normalize_npu_gpu_auto() -> None:
+    assert c_double_buffer_backend._embed_device_candidates("NPU") == ["NPU"]
+    assert c_double_buffer_backend._embed_device_candidates("intel_npu") == ["NPU"]
+    assert c_double_buffer_backend._embed_device_candidates("gpu") == ["GPU"]
+    assert c_double_buffer_backend._embed_device_candidates("CUDA") == ["GPU"]
+    assert c_double_buffer_backend._embed_device_candidates("") == ["NPU", "GPU"]

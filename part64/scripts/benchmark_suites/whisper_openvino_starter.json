@@ -1,0 +1,102 @@
+{
+  "id": "whisper-openvino-starter",
+  "description": "Whisper ASR benchmark across OpenVINO devices and model sizes.",
+  "dataset": {
+    "source": "hf",
+    "id": "hf-internal-testing/librispeech_asr_dummy",
+    "config": "clean",
+    "split": "validation",
+    "max_samples": 32,
+    "input_column": "audio",
+    "reference_column": "text",
+    "sampling_rate": 16000
+  },
+  "criteria": [
+    {
+      "id": "wer",
+      "metric": "wer",
+      "goal": "min",
+      "weight": 0.45,
+      "runners": ["whisper_asr"]
+    },
+    {
+      "id": "x_realtime",
+      "metric": "x_realtime",
+      "goal": "max",
+      "weight": 0.3,
+      "runners": ["whisper_asr"]
+    },
+    {
+      "id": "p95_latency",
+      "metric": "p95_latency_ms",
+      "goal": "min",
+      "weight": 0.25,
+      "runners": ["whisper_asr"]
+    }
+  ],
+  "benchmarks": [
+    {
+      "id": "whisper_tiny_npu",
+      "runner": "whisper_asr",
+      "model": "openai/whisper-tiny.en",
+      "device": "NPU",
+      "params": { "language": "en" }
+    },
+    {
+      "id": "whisper_base_npu",
+      "runner": "whisper_asr",
+      "model": "openai/whisper-base.en",
+      "device": "NPU",
+      "params": { "language": "en" }
+    },
+    {
+      "id": "whisper_small_npu",
+      "runner": "whisper_asr",
+      "model": "openai/whisper-small.en",
+      "device": "NPU",
+      "params": { "language": "en" }
+    },
+    {
+      "id": "whisper_tiny_gpu",
+      "runner": "whisper_asr",
+      "model": "openai/whisper-tiny.en",
+      "device": "GPU",
+      "params": { "language": "en" }
+    },
+    {
+      "id": "whisper_base_gpu",
+      "runner": "whisper_asr",
+      "model": "openai/whisper-base.en",
+      "device": "GPU",
+      "params": { "language": "en" }
+    },
+    {
+      "id": "whisper_small_gpu",
+      "runner": "whisper_asr",
+      "model": "openai/whisper-small.en",
+      "device": "GPU",
+      "params": { "language": "en" }
+    },
+    {
+      "id": "whisper_tiny_cpu",
+      "runner": "whisper_asr",
+      "model": "openai/whisper-tiny.en",
+      "device": "CPU",
+      "params": { "language": "en" }
+    },
+    {
+      "id": "whisper_base_cpu",
+      "runner": "whisper_asr",
+      "model": "openai/whisper-base.en",
+      "device": "CPU",
+      "params": { "language": "en" }
+    },
+    {
+      "id": "whisper_small_cpu",
+      "runner": "whisper_asr",
+      "model": "openai/whisper-small.en",
+      "device": "CPU",
+      "params": { "language": "en" }
+    }
+  ]
+}

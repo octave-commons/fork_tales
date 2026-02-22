@@ -7,6 +7,7 @@ ENV PIP_NO_CACHE_DIR=1
 ENV HF_HOME=/cache/huggingface
 ENV TRANSFORMERS_CACHE=/cache/huggingface/transformers
 ENV HF_DATASETS_CACHE=/cache/huggingface/datasets
+ENV PYTHONPATH=/workspace
 
 WORKDIR /workspace
 
@@ -26,6 +27,9 @@ RUN python3 -m pip install --upgrade pip \
         "jiwer>=3.0.5" \
         "soundfile>=0.12.1"
 
+COPY code /workspace/code
 COPY scripts/bench_whisper_models.py /workspace/scripts/bench_whisper_models.py
+COPY scripts/benchmark_runner.py /workspace/scripts/benchmark_runner.py
+COPY scripts/benchmark_suites /workspace/scripts/benchmark_suites
 
-ENTRYPOINT ["python3", "/workspace/scripts/bench_whisper_models.py"]
+ENTRYPOINT ["python3", "/workspace/scripts/benchmark_runner.py"]

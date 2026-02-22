@@ -18,6 +18,15 @@ interface WorldState {
   isConnected: boolean;
 }
 
+const WS_WIRE_ARRAY_SCHEMA = 'eta-mu.ws.arr.v1';
+const WS_PACK_TAG_OBJECT = -1;
+const WS_PACK_TAG_ARRAY = -2;
+const WS_PACK_TAG_STRING = -3;
+const WS_PACK_TAG_BOOL = -4;
+const WS_PACK_TAG_NULL = -5;
+
+type IncomingWsMessage = { type?: unknown; [key: string]: unknown };
+
 function mergeSimulationPatch(
   previous: SimulationState | null,
   patch: Partial<SimulationState>,
@@ -45,15 +54,78 @@ function mergeSimulationPatch(
   return next;
 }
 
+function decodePackedWsNode(node: unknown, keyTable: string[]): unknown {
+  if (typeof node === 'number') {
+    return node;
+  }
+  if (!Array.isArray(node) || node.length === 0) {
+    return null;
+  }
+
+  const tag = Number(node[0]);
+  if (!Number.isFinite(tag)) {
+    return null;
+  }
+
+  if (tag === WS_PACK_TAG_NULL) {
+    return null;
+  }
+  if (tag === WS_PACK_TAG_BOOL) {
+    return Number(node[1] ?? 0) !== 0;
+  }
+  if (tag === WS_PACK_TAG_STRING) {
+    return typeof node[1] === 'string' ? node[1] : String(node[1] ?? '');
+  }
+  if (tag === WS_PACK_TAG_ARRAY) {
+    return node.slice(1).map((row) => decodePackedWsNode(row, keyTable));
+  }
+  if (tag !== WS_PACK_TAG_OBJECT) {
+    return null;
+  }
+
+  const output: Record<string, unknown> = {};
+  for (let index = 1; index + 1 < node.length; index += 2) {
+    const keySlot = Number(node[index]);
+    const keyName =
+      Number.isInteger(keySlot) && keySlot >= 0 && keySlot < keyTable.length
+        ? keyTable[keySlot]
+        : '';
+    if (!keyName) {
+      continue;
+    }
+    output[keyName] = decodePackedWsNode(node[index + 1], keyTable);
+  }
+  return output;
+}
+
+function decodeWsMessage(raw: unknown): IncomingWsMessage | null {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    return raw as IncomingWsMessage;
+  }
+  if (!Array.isArray(raw) || raw.length < 3 || raw[0] !== WS_WIRE_ARRAY_SCHEMA) {
+    return null;
+  }
+  const keyTable = Array.isArray(raw[1])
+    ? raw[1].map((row) => String(row ?? '')).filter((row) => row.length > 0)
+    : [];
+  const decoded = decodePackedWsNode(raw[2], keyTable);
+  if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) {
+    return null;
+  }
+  return decoded as IncomingWsMessage;
+}
+
 export function useWorldState(perspective: UIPerspective = 'hybrid') {
-  const [state, setState] = useState<WorldState>({
+  const initialState: WorldState = {
     catalog: null,
     simulation: null,
     mixMeta: null,
     projection: null,
     museEvents: [],
     isConnected: false,
-  });
+  };
+  const [state, setState] = useState<WorldState>(initialState);
+  const stateRef = useRef<WorldState>(initialState);
 
   const wsRef = useRef<WebSocket | null>(null);
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -86,39 +158,57 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
         flushFrameRef.current = null;
         const next = pendingPatchRef.current;
         pendingPatchRef.current = {};
-        setState((prev) => ({
-          ...prev,
-          ...(next.catalog !== undefined ? { catalog: next.catalog } : {}),
-          ...(next.simulation !== undefined ? { simulation: next.simulation } : {}),
-          ...(next.mixMeta !== undefined ? { mixMeta: next.mixMeta } : {}),
-          ...(next.projection !== undefined ? { projection: next.projection } : {}),
-        }));
+        setState((prev) => {
+          const nextState = {
+            ...prev,
+            ...(next.catalog !== undefined ? { catalog: next.catalog } : {}),
+            ...(next.simulation !== undefined ? { simulation: next.simulation } : {}),
+            ...(next.mixMeta !== undefined ? { mixMeta: next.mixMeta } : {}),
+            ...(next.projection !== undefined ? { projection: next.projection } : {}),
+          };
+          stateRef.current = nextState;
+          return nextState;
+        });
       });
     },
     [],
   );
 
   const connect = useCallback(() => {
-    const url = runtimeWebSocketUrl(`/ws?perspective=${encodeURIComponent(perspective)}`);
+    const url = runtimeWebSocketUrl(
+      `/ws?perspective=${encodeURIComponent(perspective)}&delta_stream=workers&wire=json`,
+    );
 
     const ws = new WebSocket(url);
 
     ws.onopen = () => {
-      setState(s => ({ ...s, isConnected: true }));
+      setState((prev) => {
+        const next = { ...prev, isConnected: true };
+        stateRef.current = next;
+        return next;
+      });
     };
 
     ws.onmessage = (event) => {
       try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === 'catalog') {
+        const msg = decodeWsMessage(JSON.parse(event.data));
+        if (!msg) {
+          return;
+        }
+        const msgType = String(msg.type ?? '').trim();
+        if (msgType === 'catalog') {
+          const catalogPayload = (msg.catalog ?? null) as Catalog | null;
           enqueueStatePatch({
-            catalog: msg.catalog,
-            mixMeta: msg.mix,
-            ...(msg.catalog?.ui_projection ? { projection: msg.catalog.ui_projection } : {}),
+            catalog: catalogPayload,
+            mixMeta: (msg.mix ?? null) as MixMeta | null,
+            ...(catalogPayload?.ui_projection
+              ? { projection: catalogPayload.ui_projection }
+              : {}),
           });
-        } else if (msg.type === 'muse_events') {
-          const incoming = Array.isArray(msg.events)
-            ? msg.events.filter((row: unknown): row is MuseEvent => {
+        } else if (msgType === 'muse_events') {
+          const eventsPayload = msg.events;
+          const incoming = Array.isArray(eventsPayload)
+            ? eventsPayload.filter((row: unknown): row is MuseEvent => {
                 if (!row || typeof row !== 'object') {
                   return false;
                 }
@@ -140,35 +230,37 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
                 merged.push(row);
               });
               merged.sort((left, right) => Number(left.seq ?? 0) - Number(right.seq ?? 0));
-              return {
+              const next = {
                 ...prev,
                 museEvents: merged.slice(-320),
               };
+              stateRef.current = next;
+              return next;
             });
           }
-        } else if (msg.type === 'simulation') {
+        } else if (msgType === 'simulation') {
+          const simulationPayload = (msg.simulation ?? null) as SimulationState | null;
+          const projectionPayload = (msg.projection ?? simulationPayload?.projection ?? null) as
+            | UIProjectionBundle
+            | null;
           enqueueStatePatch({
-            simulation: msg.simulation,
-            ...(msg.projection ?? msg.simulation?.projection
-              ? { projection: msg.projection ?? msg.simulation?.projection }
-              : {}),
+            simulation: simulationPayload,
+            ...(projectionPayload ? { projection: projectionPayload } : {}),
           });
-        } else if (msg.type === 'simulation_delta') {
-          const deltaPatch = msg?.delta?.patch;
+        } else if (msgType === 'simulation_delta') {
+          const deltaPayload = msg.delta as { patch?: unknown } | undefined;
+          const deltaPatch = deltaPayload?.patch;
           if (deltaPatch && typeof deltaPatch === 'object') {
-            setState((prev) => {
-              const nextSimulation = mergeSimulationPatch(
-                prev.simulation,
-                deltaPatch as Partial<SimulationState>,
-              );
-              const projectionPatch = (
-                deltaPatch as { projection?: UIProjectionBundle | null }
-              ).projection;
-              return {
-                ...prev,
-                ...(nextSimulation ? { simulation: nextSimulation } : {}),
-                ...(projectionPatch ? { projection: projectionPatch } : {}),
-              };
+            const nextSimulation = mergeSimulationPatch(
+              pendingPatchRef.current.simulation ?? stateRef.current.simulation,
+              deltaPatch as Partial<SimulationState>,
+            );
+            const projectionPatch = (
+              deltaPatch as { projection?: UIProjectionBundle | null }
+            ).projection;
+            enqueueStatePatch({
+              ...(nextSimulation ? { simulation: nextSimulation } : {}),
+              ...(projectionPatch ? { projection: projectionPatch } : {}),
             });
           }
         }
@@ -178,7 +270,11 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
     };
 
     ws.onclose = () => {
-      setState(s => ({ ...s, isConnected: false }));
+      setState((prev) => {
+        const next = { ...prev, isConnected: false };
+        stateRef.current = next;
+        return next;
+      });
       if (!shouldReconnectRef.current) {
         return;
       }

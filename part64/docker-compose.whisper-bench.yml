@@ -9,22 +9,22 @@ services:
       TRANSFORMERS_CACHE: /cache/huggingface/transformers
       HF_DATASETS_CACHE: /cache/huggingface/datasets
       HF_TOKEN: "${HF_TOKEN:-}"
-      WHISPER_BENCH_MODELS: "${WHISPER_BENCH_MODELS:-tiny,base,small}"
-      WHISPER_BENCH_DEVICES: "${WHISPER_BENCH_DEVICES:-NPU,GPU,CPU}"
-      WHISPER_BENCH_DATASET: "${WHISPER_BENCH_DATASET:-hf-internal-testing/librispeech_asr_dummy}"
-      WHISPER_BENCH_DATASET_CONFIG: "${WHISPER_BENCH_DATASET_CONFIG:-clean}"
-      WHISPER_BENCH_SPLIT: "${WHISPER_BENCH_SPLIT:-validation}"
-      WHISPER_BENCH_MAX_SAMPLES: "${WHISPER_BENCH_MAX_SAMPLES:-32}"
-      WHISPER_BENCH_SAMPLING_RATE: "${WHISPER_BENCH_SAMPLING_RATE:-16000}"
-      WHISPER_BENCH_LANGUAGE: "${WHISPER_BENCH_LANGUAGE:-en}"
-      WHISPER_BENCH_OUTPUT: "${WHISPER_BENCH_OUTPUT:-/results/whisper-benchmark.latest.json}"
-      WHISPER_BENCH_FAIL_ON_MISSING_DEVICE: "${WHISPER_BENCH_FAIL_ON_MISSING_DEVICE:-0}"
-      WHISPER_BENCH_FAIL_ON_ERROR: "${WHISPER_BENCH_FAIL_ON_ERROR:-0}"
+      MODEL_BENCH_SUITE: "${MODEL_BENCH_SUITE:-/workspace/scripts/benchmark_suites/whisper_openvino_starter.json}"
+      MODEL_BENCH_OUTPUT: "${MODEL_BENCH_OUTPUT:-/results/whisper-benchmark.latest.json}"
+      MODEL_BENCH_CONTINUE_ON_ERROR: "${MODEL_BENCH_CONTINUE_ON_ERROR:-1}"
+      OPENVINO_EMBED_ENDPOINT: "${OPENVINO_EMBED_ENDPOINT:-http://host.docker.internal:18000/v1/embeddings}"
+      OPENVINO_EMBED_MODEL: "${OPENVINO_EMBED_MODEL:-nomic-embed-text}"
+      OPENVINO_EMBED_DEVICE: "${OPENVINO_EMBED_DEVICE:-NPU}"
+      OPENVINO_EMBED_TIMEOUT_SEC: "${OPENVINO_EMBED_TIMEOUT_SEC:-10}"
+      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://host.docker.internal:11435}"
+      OLLAMA_EMBED_MODEL: "${OLLAMA_EMBED_MODEL:-nomic-embed-text}"
     volumes:
-      - whisper_bench_cache:/cache
+      - model_bench_cache:/cache
       - ./runs/whisper-bench:/results
-    shm_size: "8gb"
+    shm_size: "12gb"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: "no"
 
 volumes:
-  whisper_bench_cache:
+  model_bench_cache:

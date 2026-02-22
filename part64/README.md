@@ -39,6 +39,15 @@ Long-running embedding benchmark container (websocket live stream + simple UI):
   - `OPENVINO_EMBED_ENDPOINT` (default `http://host.docker.internal:18000/v1/embeddings`)
   - `OLLAMA_BASE_URL` (default `http://host.docker.internal:11435`)
 
+Comprehensive model benchmark runner (same compose stack, runner profile):
+- Start one-shot run: `docker compose -f docker-compose.embed-bench.yml --profile runner run --rm model-bench-runner`
+- Default suite: `scripts/benchmark_suites/whisper_openvino_starter.json`
+- Override suite/output:
+  - `MODEL_BENCH_SUITE=/workspace/scripts/benchmark_suites/universal_starter.json`
+  - `MODEL_BENCH_OUTPUT=/results/model-bench.latest.json`
+- Output artifact: `part64/runs/model-bench/*.json`
+- Docs: `MODEL_BENCH_RUNNER.md`, `WHISPER_BENCHMARK.md`
+
 **For detailed operational instructions, see [SIMULATION_WORKFLOW.md](SIMULATION_WORKFLOW.md).**
 
 Docker simulation discovery contract for experiment stacks:
@@ -71,6 +80,8 @@ Muse song lab (parallel tuned simulations for play-song behavior):
   - stability-tuned: `http://127.0.0.1:19879/`
 - Run cross-runtime task comparison:
   - `python scripts/muse_song_lab_ctl.py bench --regimen world_state/muse_song_training_regime.json`
+- Run end-to-end NPU+learning evaluation (NPU checks, environment stimulus, latency benchmark, training, song benchmark):
+  - `python scripts/muse_song_lab_ctl.py eval --runtimes baseline,chaos,stability --rounds 4 --output ../.opencode/runtime/sim_learning_eval.latest.json`
 - Built-in command probes now include simple modality commands:
   - `Play Music` (expects audio selection)
   - `Open Image` (expects image selection)
@@ -169,6 +180,13 @@ Embedding provider options (GPU/NPU experimental routing):
   - `"openvino_auth_header":"Authorization: Bearer <token>"` for custom header control
 - Hybrid auto mode (prefer NPU, then fallback):
   - `POST /api/embeddings/provider/options` with `{"preset":"hybrid_auto"}`
+
+Force/verify NPU embeddings on running runtimes:
+- Gateway runtime:
+  - `python scripts/ensure_npu_embeddings.py --runtime gateway=http://127.0.0.1:8787`
+- Song-lab runtimes:
+  - `python scripts/ensure_npu_embeddings.py --runtime song-baseline=http://127.0.0.1:19877 --runtime song-chaos=http://127.0.0.1:19878 --runtime song-stability=http://127.0.0.1:19879`
+- If your OpenVINO proxy requires auth, export `OPENVINO_EMBED_API_KEY` or `OPENVINO_EMBED_BEARER_TOKEN` (or keep `PROXY_API_KEY` in `docker-llm-proxy/.env` and the helper scripts auto-detect it).
 
 Useful local PM2 controls (fallback runtime path):
 - `python -m code.world_pm2 status`

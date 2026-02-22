@@ -21,6 +21,32 @@ COMPOSE_FILE = PART_ROOT / "docker-compose.sim-slice-bench.yml"
 DOCKER_SOCKET = "/var/run/docker.sock"
 
 
+def _load_proxy_api_key() -> str:
+    direct = str(os.getenv("OPENVINO_EMBED_API_KEY", "") or "").strip()
+    if direct:
+        return direct
+    proxy_direct = str(os.getenv("PROXY_API_KEY", "") or "").strip()
+    if proxy_direct:
+        return proxy_direct
+
+    proxy_env = PART_ROOT.parent / "docker-llm-proxy" / ".env"
+    if not proxy_env.exists() or not proxy_env.is_file():
+        return ""
+    try:
+        rows = proxy_env.read_text("utf-8", errors="ignore").splitlines()
+    except Exception:
+        return ""
+    for row in rows:
+        text = row.strip()
+        if not text or text.startswith("#"):
+            continue
+        if text.startswith("PROXY_API_KEY="):
+            return text.split("=", 1)[1].strip().strip('"').strip("'")
+        if text.startswith("OPENVINO_EMBED_API_KEY="):
+            return text.split("=", 1)[1].strip().strip('"').strip("'")
+    return ""
+
+
 class UnixSocketHTTPConnection(HTTPConnection):
     def __init__(self, socket_path: str, timeout: float = 10):
         super().__init__("localhost", timeout=timeout)
@@ -152,6 +178,27 @@ class SimulationManager:
         # But wait, if I can't use 'docker run', I HAVE to use the API for spawning too.
 
         # Let's try API create + start.
+        openvino_api_key = _load_proxy_api_key()
+        extra_env = [
+            "CHROMA_HOST=chroma",
+            "CHROMA_PORT=8000",
+            "OLLAMA_BASE_URL=http://host.docker.internal:11435",
+            "OPENVINO_EMBED_ENDPOINT=http://host.docker.internal:18000/v1/embeddings",
+            "OPENVINO_EMBED_MODEL=nomic-embed-text",
+            "OPENVINO_EMBED_DEVICE=NPU",
+            "OPENVINO_EMBED_TIMEOUT_SEC=10",
+            "OPENVINO_EMBED_API_KEY_HEADER=X-API-Key",
+            "EMBEDDINGS_BACKEND=openvino",
+            "CDB_EMBED_IN_C=1",
+            "CDB_EMBED_REQUIRE_C=1",
+            "CDB_EMBED_DEVICE=NPU",
+            "CDB_EMBED_STRICT_DEVICE=1",
+            "CDB_EMBED_PRELOAD_ORT_CORE=1",
+        ]
+        if openvino_api_key:
+            extra_env.append(f"OPENVINO_EMBED_API_KEY={openvino_api_key}")
+            extra_env.append(f"OPENVINO_EMBED_BEARER_TOKEN={openvino_api_key}")
+
         config = {
             "Image": image_name,
             "Labels": {
@@ -167,17 +214,7 @@ class SimulationManager:
                 "NetworkMode": "eta-mu-sim-net",
                 "ExtraHosts": ["host.docker.internal:host-gateway"],
             },
-            "Env": [f"{k}={v}" for k, v in preset.get("env", {}).items()]
-            + [
-                "CHROMA_HOST=chroma",
-                "CHROMA_PORT=8000",
-                "OLLAMA_BASE_URL=http://host.docker.internal:11435",
-                "OPENVINO_EMBED_ENDPOINT=http://host.docker.internal:18000/v1/embeddings",
-                "OPENVINO_EMBED_MODEL=nomic-embed-text",
-                "OPENVINO_EMBED_DEVICE=NPU",
-                "OPENVINO_EMBED_TIMEOUT_SEC=10",
-                "EMBEDDINGS_BACKEND=openvino",
-            ],
+            "Env": [f"{k}={v}" for k, v in preset.get("env", {}).items()] + extra_env,
             "Cmd": [
                 "pm2-runtime",
                 "start",

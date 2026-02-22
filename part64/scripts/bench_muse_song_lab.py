@@ -406,6 +406,11 @@ def _summarize(
     }
 
 
+def _save_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run parallel muse song-task comparison across multiple simulation runtimes"
@@ -439,6 +444,11 @@ def main() -> int:
         default=45.0,
         help="HTTP timeout in seconds",
     )
+    parser.add_argument(
+        "--json-out",
+        default="",
+        help="Optional JSON report output path",
+    )
     args = parser.parse_args()
 
     runtimes: list[tuple[str, str]] = []
@@ -456,8 +466,12 @@ def main() -> int:
     tasks, regimen_rounds = _load_regimen(regimen_path)
     rounds = max(1, int(args.rounds)) if int(args.rounds) > 0 else regimen_rounds
     timeout_seconds = max(1.0, float(args.timeout))
+    report_out = (
+        Path(str(args.json_out)).resolve() if str(args.json_out).strip() else None
+    )
 
     all_samples: list[RunSample] = []
+    runtime_summaries: list[dict[str, Any]] = []
     for runtime_name, runtime_base in runtimes:
         try:
             catalog = _request_json(f"{runtime_base}/api/catalog", timeout_seconds)
@@ -502,7 +516,7 @@ def main() -> int:
                 )
                 runtime_samples.append(sample)
                 all_samples.append(sample)
-        _summarize(runtime_name, runtime_samples, tasks)
+        runtime_summaries.append(_summarize(runtime_name, runtime_samples, tasks))
 
     if not all_samples:
         print("no samples captured")
@@ -527,6 +541,51 @@ def main() -> int:
         print(
             f"  - {runtime_name}: request_rate={request_rate * 100:.1f}% mean_latency={mean_latency:.2f}ms"
         )
+
+    if report_out is not None:
+        ranked_rows: list[dict[str, Any]] = []
+        for runtime_name, rows in ranking:
+            request_rate = sum(1 for row in rows if row.requested) / max(1, len(rows))
+            mean_latency = (
+                statistics.fmean([row.latency_ms for row in rows]) if rows else 0.0
+            )
+            ranked_rows.append(
+                {
+                    "runtime": runtime_name,
+                    "request_rate": request_rate,
+                    "mean_latency_ms": mean_latency,
+                    "samples": len(rows),
+                }
+            )
+
+        report = {
+            "ok": True,
+            "record": "eta-mu.song-lab-benchmark.v1",
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "regimen": str(regimen_path),
+            "rounds": rounds,
+            "runtimes": [{"label": label, "url": url} for label, url in runtimes],
+            "runtime_summaries": runtime_summaries,
+            "ranking": ranked_rows,
+            "samples": [
+                {
+                    "runtime": row.runtime,
+                    "task_id": row.task_id,
+                    "ok": row.ok,
+                    "latency_ms": round(row.latency_ms, 3),
+                    "requested": row.requested,
+                    "blocked": row.blocked,
+                    "action_status": row.action_status,
+                    "selected_label": row.selected_label,
+                    "selected_node_id": row.selected_node_id,
+                    "media_kind": row.media_kind,
+                    "collisions": row.collisions,
+                }
+                for row in all_samples
+            ],
+        }
+        _save_json(report_out, report)
+        print(f"json_report={report_out}")
 
     return 0
 

@@ -377,6 +377,15 @@ def test_simulation_resource_cores_emit_resource_daimoi_to_subsim_wallets(
         },
     )
 
+    # Mock PresenceRuntimeManager to provide enough CPU resource for pressure > 0.15
+    from code.world_web.presence_runtime import get_presence_runtime_manager
+
+    manager = get_presence_runtime_manager()
+    manager.reset()
+    state = manager.get_state("presence.core.cpu")
+    wallet = state.setdefault("resource_wallet", {})
+    wallet["cpu"] = 32.0  # High enough pressure
+
     simulation = build_simulation_state(
         {
             "items": [],
@@ -442,3 +451,220 @@ def test_simulation_resource_cores_emit_resource_daimoi_to_subsim_wallets(
     wallet = subsim.get("resource_wallet", {}) if isinstance(subsim, dict) else {}
     assert isinstance(wallet, dict)
     assert any(float(value) > 0.0 for value in wallet.values())
+
+
+def test_simulation_only_cpu_core_emits_without_cpu_wallet(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setenv("SIM_PARTICLE_BACKEND", "python")
+    monkeypatch.setenv("SIMULATION_CORE_RESOURCES", "cpu,ram")
+    monkeypatch.setenv("SIMULATION_RESET_DAIMOI_ON_BOOT", "1")
+    monkeypatch.setattr(
+        simulation_module,
+        "_resource_monitor_snapshot",
+        lambda: {
+            "devices": {
+                "cpu": {"utilization": 11.0},
+                "gpu1": {"utilization": 8.0},
+                "gpu2": {"utilization": 9.0},
+                "npu0": {"utilization": 7.0},
+            },
+            "resource_monitor": {
+                "cpu_percent": 11.0,
+                "memory_percent": 24.0,
+                "disk_percent": 21.0,
+                "network_percent": 14.0,
+            },
+        },
+    )
+
+    # Mock PresenceRuntimeManager to provide enough CPU resource for pressure > 0.15
+    from code.world_web.presence_runtime import get_presence_runtime_manager
+
+    manager = get_presence_runtime_manager()
+    manager.reset()
+    state = manager.get_state("presence.core.cpu")
+    wallet = state.setdefault("resource_wallet", {})
+    wallet["cpu"] = 32.0  # High enough pressure
+
+    simulation = build_simulation_state(
+        {
+            "items": [],
+            "counts": {"audio": 0, "image": 0, "video": 0},
+            "file_graph": {"file_nodes": []},
+        },
+        influence_snapshot={
+            "clicks_45s": 0,
+            "file_changes_120s": 0,
+            "recent_click_targets": [],
+            "recent_file_paths": [],
+        },
+        queue_snapshot={"pending_count": 0, "event_count": 0},
+    )
+
+    particles = (
+        simulation.get("presence_dynamics", {}).get("field_particles", [])
+        if isinstance(simulation, dict)
+        else []
+    )
+    assert isinstance(particles, list)
+
+    cpu_emitters = [
+        row
+        for row in particles
+        if str(row.get("presence_id", "")).strip() == "presence.core.cpu"
+        and bool(row.get("resource_daimoi", False))
+    ]
+    assert cpu_emitters
+
+    ram_rows = [
+        row
+        for row in particles
+        if str(row.get("presence_id", "")).strip() == "presence.core.ram"
+    ]
+    assert ram_rows
+    assert all(not bool(row.get("resource_daimoi", False)) for row in ram_rows)
+    assert any(
+        str(row.get("resource_block_reason", "")).strip()
+        == "cpu_wallet_required_for_emit"
+        for row in ram_rows
+    )
+
+    non_core_rows = [
+        row
+        for row in particles
+        if not str(row.get("presence_id", "")).startswith("presence.core.")
+    ]
+    assert non_core_rows
+    consume_rows = [row for row in non_core_rows if "resource_consume_type" in row]
+    assert consume_rows
+    assert all(
+        str(row.get("resource_consume_type", "")).strip() == "cpu"
+        for row in consume_rows
+    )
+
+
+def test_simulation_minimal_presence_profile_uses_concept_and_cpu_presences(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setenv("SIM_PARTICLE_BACKEND", "python")
+    monkeypatch.setenv("SIMULATION_PRESENCE_PROFILE", "concept_cpu")
+    monkeypatch.setenv("SIMULATION_CORE_RESOURCES", "cpu")
+    monkeypatch.setenv("SIMULATION_CPU_DAIMOI_STOP_PERCENT", "75")
+    monkeypatch.setattr(
+        simulation_module,
+        "_resource_monitor_snapshot",
+        lambda: {
+            "devices": {
+                "cpu": {"utilization": 18.0},
+                "gpu1": {"utilization": 21.0},
+                "gpu2": {"utilization": 19.0},
+                "npu0": {"utilization": 17.0},
+            },
+            "resource_monitor": {
+                "cpu_percent": 18.0,
+                "memory_percent": 30.0,
+                "disk_percent": 24.0,
+                "network_percent": 16.0,
+            },
+        },
+    )
+
+    simulation = build_simulation_state(
+        {
+            "items": [],
+            "counts": {"audio": 0, "image": 0, "video": 0},
+            "file_graph": {"file_nodes": []},
+        },
+        influence_snapshot={
+            "clicks_45s": 1,
+            "file_changes_120s": 1,
+            "recent_click_targets": ["witness_thread"],
+            "recent_file_paths": ["receipts.log"],
+        },
+        queue_snapshot={"pending_count": 0, "event_count": 0},
+    )
+
+    dynamics = simulation.get("presence_dynamics", {})
+    impacts = dynamics.get("presence_impacts", [])
+    impact_ids = {
+        str(row.get("id", "")).strip()
+        for row in impacts
+        if isinstance(row, dict) and str(row.get("id", "")).strip()
+    }
+
+    assert "receipt_river" in impact_ids
+    assert "witness_thread" in impact_ids
+    assert "anchor_registry" in impact_ids
+    assert "gates_of_truth" in impact_ids
+    assert "health_sentinel_cpu" in impact_ids
+    assert "presence.core.cpu" in impact_ids
+    assert "health_sentinel_gpu1" not in impact_ids
+    assert "health_sentinel_npu0" not in impact_ids
+
+    policy = dynamics.get("emission_policy", {})
+    assert policy.get("presence_profile") == "concept_cpu"
+    assert policy.get("cpu_core_emitter_enabled") is True
+    assert policy.get("core_resource_emitters") == ["cpu"]
+
+
+def test_simulation_cpu_daimoi_gate_disables_cpu_core_emitter_at_threshold(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setenv("SIM_PARTICLE_BACKEND", "python")
+    monkeypatch.setenv("SIMULATION_PRESENCE_PROFILE", "concept_cpu")
+    monkeypatch.setenv("SIMULATION_CORE_RESOURCES", "cpu")
+    monkeypatch.setenv("SIMULATION_CPU_DAIMOI_STOP_PERCENT", "75")
+    monkeypatch.setattr(
+        simulation_module,
+        "_resource_monitor_snapshot",
+        lambda: {
+            "devices": {
+                "cpu": {"utilization": 88.0},
+                "gpu1": {"utilization": 24.0},
+                "gpu2": {"utilization": 18.0},
+                "npu0": {"utilization": 22.0},
+            },
+            "resource_monitor": {
+                "cpu_percent": 88.0,
+                "memory_percent": 42.0,
+                "disk_percent": 36.0,
+                "network_percent": 20.0,
+            },
+        },
+    )
+
+    simulation = build_simulation_state(
+        {
+            "items": [],
+            "counts": {"audio": 0, "image": 0, "video": 0},
+            "file_graph": {"file_nodes": []},
+        },
+        influence_snapshot={
+            "clicks_45s": 0,
+            "file_changes_120s": 0,
+            "recent_click_targets": [],
+            "recent_file_paths": [],
+        },
+        queue_snapshot={"pending_count": 0, "event_count": 0},
+    )
+
+    dynamics = simulation.get("presence_dynamics", {})
+    impacts = dynamics.get("presence_impacts", [])
+    impact_ids = {
+        str(row.get("id", "")).strip()
+        for row in impacts
+        if isinstance(row, dict) and str(row.get("id", "")).strip()
+    }
+    assert "presence.core.cpu" not in impact_ids
+
+    core_emitters = [
+        row
+        for row in dynamics.get("field_particles", [])
+        if str(row.get("presence_id", "")) == "presence.core.cpu"
+    ]
+    assert core_emitters == []
+
+    policy = dynamics.get("emission_policy", {})
+    assert policy.get("cpu_core_emitter_enabled") is False
+    assert policy.get("cpu_daimoi_stop_percent") == 75.0

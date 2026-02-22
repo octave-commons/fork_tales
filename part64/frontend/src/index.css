@@ -615,6 +615,8 @@ body {
 
 .world-council-grid > .world-focus-pane:not(.world-focus-pane-glass),
 .world-council-grid > .world-focus-pane:not(.world-focus-pane-glass) *,
+.world-council-grid > .world-focus-pane.world-focus-pane-primary.world-focus-pane-glass,
+.world-council-grid > .world-focus-pane.world-focus-pane-primary.world-focus-pane-glass *,
 .world-council-grid > .world-council-seam,
 .world-council-grid > .world-council-seam * {
   pointer-events: auto;
@@ -928,32 +930,41 @@ body {
   margin: 0.4rem 0.5rem 0.34rem;
 }
 
-.world-focus-pane-glass {
+.world-focus-pane-glass:not(.world-focus-pane-primary) {
   pointer-events: none !important;
   touch-action: auto !important;
   user-select: none;
   cursor: default;
 }
 
-.world-focus-pane-glass,
-.world-focus-pane-glass * {
+.world-focus-pane-glass:not(.world-focus-pane-primary),
+.world-focus-pane-glass:not(.world-focus-pane-primary) * {
   pointer-events: none !important;
 }
 
-.world-focus-pane-glass .world-focus-pane-header,
-.world-focus-pane-glass .world-focus-meta-row,
-.world-focus-pane-glass .world-focus-dial-row,
-.world-focus-pane-glass .world-focus-reason,
-.world-focus-pane-glass .world-focus-actions,
-.world-focus-pane-glass .world-glass-grid,
-.world-focus-pane-glass .world-glass-title,
-.world-focus-pane-glass .world-glass-row,
-.world-focus-pane-glass .world-glass-tool-row {
+.world-focus-pane-glass:not(.world-focus-pane-primary) .world-focus-pane-header,
+.world-focus-pane-glass:not(.world-focus-pane-primary) .world-focus-meta-row,
+.world-focus-pane-glass:not(.world-focus-pane-primary) .world-focus-dial-row,
+.world-focus-pane-glass:not(.world-focus-pane-primary) .world-focus-reason,
+.world-focus-pane-glass:not(.world-focus-pane-primary) .world-focus-actions,
+.world-focus-pane-glass:not(.world-focus-pane-primary) .world-glass-grid,
+.world-focus-pane-glass:not(.world-focus-pane-primary) .world-glass-title,
+.world-focus-pane-glass:not(.world-focus-pane-primary) .world-glass-row,
+.world-focus-pane-glass:not(.world-focus-pane-primary) .world-glass-tool-row {
   pointer-events: none;
 }
 
 .world-focus-pane-glass.world-focus-pane-glass-dragging {
   cursor: default;
+}
+
+.world-focus-pane.world-focus-pane-primary.world-focus-pane-glass {
+  touch-action: none;
+  /* No grab cursor - left click is click, middle click is drag */
+}
+
+.world-focus-pane.world-focus-pane-primary.world-focus-pane-glass.world-focus-pane-glass-dragging {
+  cursor: grabbing;
 }
 
 .world-focus-action {
