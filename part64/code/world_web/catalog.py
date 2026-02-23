@@ -46,12 +46,15 @@ from .constants import (
     ETA_MU_INGEST_VECSTORE_ID,
     ETA_MU_INGEST_INCLUDE_TEXT_MIME,
     ETA_MU_INGEST_INCLUDE_IMAGE_MIME,
+    ETA_MU_INGEST_INCLUDE_AUDIO_MIME,
     ETA_MU_INGEST_INCLUDE_TEXT_EXT,
     ETA_MU_INGEST_INCLUDE_IMAGE_EXT,
+    ETA_MU_INGEST_INCLUDE_AUDIO_EXT,
     ETA_MU_INGEST_EXCLUDE_REL_PATHS,
     ETA_MU_INGEST_EXCLUDE_GLOBS,
     ETA_MU_INGEST_MAX_TEXT_BYTES,
     ETA_MU_INGEST_MAX_IMAGE_BYTES,
+    ETA_MU_INGEST_MAX_AUDIO_BYTES,
     ETA_MU_INGEST_MAX_SCAN_FILES,
     ETA_MU_INGEST_MAX_SCAN_DEPTH,
     ETA_MU_INGEST_SAFE_MODE,
@@ -812,7 +815,7 @@ def sync_eta_mu_inbox(vault_root: Path) -> dict[str, Any]:
         vecstore_call_ms,
         packets,
         manifest_sources,
-    ) = [], "", {"text": 0, "image": 0}, [], [], [], []
+    ) = [], "", {"text": 0, "image": 0, "audio": 0}, [], [], [], []
     registry_entries = _load_eta_mu_registry_entries(vault_root)
     registry_known, registry_known_idempotence = (
         _eta_mu_registry_known_entries(registry_entries),
@@ -910,8 +913,10 @@ def sync_eta_mu_inbox(vault_root: Path) -> dict[str, Any]:
             )
             continue
 
-        if (modality == "text" and source_bytes > ETA_MU_INGEST_MAX_TEXT_BYTES) or (
-            modality == "image" and source_bytes > ETA_MU_INGEST_MAX_IMAGE_BYTES
+        if (
+            (modality == "text" and source_bytes > ETA_MU_INGEST_MAX_TEXT_BYTES)
+            or (modality == "image" and source_bytes > ETA_MU_INGEST_MAX_IMAGE_BYTES)
+            or (modality == "audio" and source_bytes > ETA_MU_INGEST_MAX_AUDIO_BYTES)
         ):
             rejected_count += 1
             rejected_at = datetime.now(timezone.utc).isoformat()
@@ -950,7 +955,7 @@ def sync_eta_mu_inbox(vault_root: Path) -> dict[str, Any]:
             )
             excerpt = (" ".join(can_text.split()))[:1599] + "…"
             space = spaces["text"]
-        else:
+        elif modality == "image":
             segments = [
                 _eta_mu_image_derive_segment(
                     source_hash=source_hash,
@@ -962,6 +967,20 @@ def sync_eta_mu_inbox(vault_root: Path) -> dict[str, Any]:
             ]
             excerpt = ""
             space = spaces["image"]
+        elif modality == "audio":
+            segments = [
+                {
+                    "text": f"audio artifact: {file_path.name} ({mime})",
+                    "source_hash": source_hash,
+                }
+            ]
+            excerpt = f"Audio file: {file_path.name}"
+            space = spaces["audio"]
+        else:
+            # Fallback for unexpected modality
+            segments = []
+            excerpt = ""
+            space = spaces["text"]
 
         segment_plans = []
         for seg in segments:

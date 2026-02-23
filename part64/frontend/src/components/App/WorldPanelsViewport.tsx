@@ -59,7 +59,13 @@ interface Props {
   onAdjustPanelCouncilRank: (panelId: string, delta: number) => void;
   onPinPanelToTertiary: (panelId: string) => void;
   onFlyCameraToAnchor: (anchor: WorldAnchorTarget) => void;
-  onGlassInteractAt: (xRatio: number, yRatio: number) => void;
+  onGlassInteractAt: (payload: {
+    panelId: string;
+    xRatio: number;
+    yRatio: number;
+    clientX?: number;
+    clientY?: number;
+  }) => void;
   onNudgeCameraPan: (xRatioDelta: number, yRatioDelta: number, sourcePanelId?: string) => void;
   onWorldPanelDragEnd: (panelId: string, info: PanInfo) => void;
 }
@@ -71,6 +77,7 @@ interface PanelRenderTarget {
 type FocusPaneMode = "panel" | "glass";
 type OperationalState = "running" | "paused" | "blocked";
 const GLASS_VIEWPORT_PANEL_ID = "nexus.ui.glass_viewport";
+const RUNTIME_CONFIG_PANEL_ID = "nexus.ui.runtime_config";
 const PANEL_LABEL_CACHE = new Map<string, string>();
 const GLASS_MIDDLE_PAN_GAIN = 2.8;
 const GLASS_MIDDLE_PAN_CLAMP = 0.32;
@@ -310,7 +317,7 @@ function WorldPanelsViewportInner({
   >({});
   const [paneCountPreference, setPaneCountPreference] = useState<1 | 2 | 3>(3);
   const [detailsPanelId, setDetailsPanelId] = useState<string | null>(null);
-  const [isPresenceRailCollapsed, setIsPresenceRailCollapsed] = useState(() => viewportWidth < 1460);
+  const [isPresenceRailCollapsed, setIsPresenceRailCollapsed] = useState(() => viewportWidth < 1180);
   const [presenceQuery, setPresenceQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<OperationalState | "all">("all");
   const [seamDrag, setSeamDrag] = useState<null | {
@@ -813,7 +820,13 @@ function WorldPanelsViewportInner({
       const yRatio = clampRatio((event.clientY - paneRect.top) / Math.max(1, paneRect.height), 0, 1);
       onActivatePanel(panelId);
       onSelectPanel(panelId);
-      onGlassInteractAt(xRatio, yRatio);
+      onGlassInteractAt({
+        panelId,
+        xRatio,
+        yRatio,
+        clientX: event.clientX,
+        clientY: event.clientY,
+      });
       event.preventDefault();
       event.stopPropagation();
     }
@@ -922,6 +935,16 @@ function WorldPanelsViewportInner({
     () => new Map(sortedPanels.map((panel) => [panel.id, panel])),
     [sortedPanels],
   );
+
+  const runtimeConfigPanelVisible = panelById.has(RUNTIME_CONFIG_PANEL_ID);
+
+  const focusRuntimeConfigPanel = useCallback(() => {
+    if (!runtimeConfigPanelVisible) {
+      return;
+    }
+    onActivatePanel(RUNTIME_CONFIG_PANEL_ID);
+    onSelectPanel(RUNTIME_CONFIG_PANEL_ID);
+  }, [onActivatePanel, onSelectPanel, runtimeConfigPanelVisible]);
 
   const rankByPanelId = useMemo(() => {
     const map = new Map<string, number>();
@@ -1238,6 +1261,16 @@ function WorldPanelsViewportInner({
   const smartPilePreviewPanels = useMemo(
     () => smartPilePanels.slice(0, 10),
     [smartPilePanels],
+  );
+
+  const pinnedDeckPanels = useMemo(
+    () => iconPanels.filter((panel) => panel.id !== GLASS_VIEWPORT_PANEL_ID && Boolean(pinnedPanels[panel.id])),
+    [iconPanels, pinnedPanels],
+  );
+
+  const pinnedDeckPreviewPanels = useMemo(
+    () => pinnedDeckPanels.slice(0, 8),
+    [pinnedDeckPanels],
   );
 
   const iconRenderMetaByPanelId = useMemo(() => {
@@ -1971,6 +2004,56 @@ function WorldPanelsViewportInner({
     );
   };
 
+  const renderPinnedDeckCard = (panel: SortedPanel): ReactNode => {
+    const panelId = panel.id;
+    const rank = Math.max(1, rankByPanelId.get(panelId) ?? 1);
+    const panelState = panelWindowStateById[panelId] ?? { open: true, minimized: false };
+    const panelStateLabel = panelState.open ? (panelState.minimized ? "min" : "open") : "closed";
+    const anchor = anchorByPanelId.get(panelId) ?? null;
+    const operationalMeta = operationalMetaByPanelId.get(panelId);
+    const operationalState = operationalMeta?.state ?? "running";
+    const operationalReason = operationalMeta?.reason ?? "no detail";
+
+    return (
+      <article key={`pinned-deck-${panelId}`} className="world-smart-card world-smart-card-compact">
+        <header className="world-smart-card-header">
+          <p className="world-smart-card-rank">#{rank}</p>
+          <p className="world-smart-card-title">{panelLabelFromId(panelId)}</p>
+          <p className="world-smart-card-score">{panel.councilScore.toFixed(2)}</p>
+        </header>
+        <p className="world-smart-card-presence">{panel.presenceLabel}</p>
+        <p className="world-smart-card-reason">
+          <span className={`world-smart-card-status world-smart-card-status-${operationalState}`}>
+            {operationalState}
+          </span>
+          {" "}· state {panelStateLabel}
+        </p>
+        <p className="world-smart-card-reason">{operationalReason}</p>
+        <div className="world-smart-card-actions" data-panel-interactive="true">
+          <button
+            type="button"
+            title="focus pinned panel"
+            onClick={() => {
+              onActivatePanel(panelId);
+              onSelectPanel(panelId);
+            }}
+          >
+            focus
+          </button>
+          <button type="button" title="raise rank" onClick={() => onAdjustPanelCouncilRank(panelId, 1)}>+rank</button>
+          <button type="button" title="lower rank" onClick={() => onAdjustPanelCouncilRank(panelId, -1)}>-rank</button>
+          <button type="button" title="open as tray card" onClick={() => movePanelToTray(panelId)}>tray</button>
+          <button type="button" title="remove pin" onClick={() => onTogglePanelPin(panelId)}>unpin</button>
+          {anchor ? (
+            <button type="button" title="guide camera" onDoubleClick={() => guidePanelThroughGlass(panel, anchor)} onClick={() => onFlyCameraToAnchor(anchor)}>
+              look
+            </button>
+          ) : null}
+        </div>
+      </article>
+    );
+  };
+
   const renderSmartPileCard = (panel: SortedPanel): ReactNode => {
     const panelId = panel.id;
     const rank = Math.max(1, rankByPanelId.get(panelId) ?? 1);
@@ -2046,6 +2129,16 @@ function WorldPanelsViewportInner({
               </button>
             ))}
           </div>
+          {runtimeConfigPanelVisible ? (
+            <button
+              type="button"
+              onClick={focusRuntimeConfigPanel}
+              className={`world-council-edit-btn ${selectedPanelId === RUNTIME_CONFIG_PANEL_ID ? "world-council-edit-btn-on" : ""}`}
+              title="open runtime config panel"
+            >
+              config
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={onToggleEditMode}
@@ -2157,6 +2250,26 @@ function WorldPanelsViewportInner({
               <span>block {panelStatusCounts.blocked}</span>
             </div>
           )}
+
+          {!isPresenceRailCollapsed ? (
+            <section className="world-pinned-pile" aria-label="pinned panel deck">
+              <header className="world-pinned-pile-header">
+                <p>pinned deck</p>
+                <p>{pinnedDeckPanels.length} cards</p>
+              </header>
+              <div className="world-pinned-pile-list">
+                {pinnedDeckPreviewPanels.map((panel) => renderPinnedDeckCard(panel))}
+                {pinnedDeckPanels.length <= 0 ? (
+                  <p className="world-pinned-empty">no pinned cards yet. pin any panel from lane actions.</p>
+                ) : null}
+                {pinnedDeckPanels.length > pinnedDeckPreviewPanels.length ? (
+                  <p className="world-pinned-empty">
+                    showing top {pinnedDeckPreviewPanels.length} of {pinnedDeckPanels.length}; unpin cards to reduce queue.
+                  </p>
+                ) : null}
+              </div>
+            </section>
+          ) : null}
 
           {!isPresenceRailCollapsed ? (
             <section className="world-smart-pile" aria-label="smart card pile">

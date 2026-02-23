@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 #include <exception>
 #include <mutex>
 #include <stdexcept>
@@ -58,6 +59,18 @@ static bool wants_gpu_device(const std::string& value) {
 static bool is_hardware_device(const std::string& value) {
   const std::string probe = to_upper(value);
   return probe == "NPU" || probe == "CUDA" || probe == "GPU";
+}
+
+static bool env_true(const char* key) {
+  if (key == nullptr || std::strlen(key) == 0) {
+    return false;
+  }
+  const char* raw = std::getenv(key);
+  if (raw == nullptr) {
+    return false;
+  }
+  const std::string probe = to_lower(std::string(raw));
+  return probe == "1" || probe == "true" || probe == "yes" || probe == "on";
 }
 
 struct InputMeta {
@@ -124,6 +137,15 @@ struct CEmbedRuntime {
   std::mutex run_lock;
   std::mutex status_lock;
 
+  // Pooled buffers to avoid per-call allocation.
+  std::vector<int64_t> pooled_default_mask;
+  std::vector<int64_t> pooled_default_type;
+  std::vector<int64_t> pooled_position_ids;
+  std::vector<std::vector<int64_t>> pooled_extra_i64;
+  std::vector<std::vector<float>> pooled_extra_f32;
+  std::vector<float> pooled_hidden;
+  size_t run_inputs_capacity;
+
   CEmbedRuntime(const char* model_path,
                 const char* requested_device,
                 int64_t seq,
@@ -187,7 +209,7 @@ struct CEmbedRuntime {
         return false;
       }
       try {
-        OrtCUDAProviderOptions cuda_opts;
+        OrtCUDAProviderOptions cuda_opts{};
         cuda_opts.device_id = 0;
         options.AppendExecutionProvider_CUDA(cuda_opts);
         selected_device = "CUDA";
@@ -198,16 +220,44 @@ struct CEmbedRuntime {
       }
     };
 
+    auto append_openvino_gpu_provider = [&]() {
+      if (!env_true("CDB_EMBED_GPU_ALLOW_OPENVINO_FALLBACK")) {
+        push_provider_failure("OpenVINO GPU fallback disabled");
+        return false;
+      }
+      if (!provider_exists("OpenVINOExecutionProvider")) {
+        push_provider_failure("OpenVINOExecutionProvider unavailable for GPU");
+        return false;
+      }
+      try {
+        std::unordered_map<std::string, std::string> ov_opts;
+        ov_opts["device_type"] = "GPU";
+        ov_opts["disable_dynamic_shapes"] = "True";
+        options.AppendExecutionProvider_OpenVINO_V2(ov_opts);
+        selected_device = "GPU";
+        return true;
+      } catch (const std::exception& ex) {
+        push_provider_failure(std::string("OpenVINOExecutionProvider GPU error:") + ex.what());
+        return false;
+      }
+    };
+
     bool provider_selected = false;
     if (wanted == "AUTO") {
       provider_selected = append_npu_provider();
       if (!provider_selected) {
         provider_selected = append_cuda_provider();
       }
+      if (!provider_selected) {
+        provider_selected = append_openvino_gpu_provider();
+      }
     } else if (wants_npu_device(wanted)) {
       provider_selected = append_npu_provider();
     } else if (wants_gpu_device(wanted)) {
       provider_selected = append_cuda_provider();
+      if (!provider_selected) {
+        provider_selected = append_openvino_gpu_provider();
+      }
     } else {
       throw std::runtime_error("unsupported requested_device (expected AUTO|NPU|GPU|CUDA)");
     }
@@ -301,6 +351,35 @@ struct CEmbedRuntime {
     for (const auto& meta : inputs) {
       input_name_ptrs.push_back(meta.name.c_str());
     }
+
+    // Initialize pooled buffers to avoid per-call allocation.
+    pooled_default_mask.assign(static_cast<size_t>(seq_len), 1);
+    pooled_default_type.assign(static_cast<size_t>(seq_len), 0);
+    pooled_position_ids.resize(static_cast<size_t>(seq_len));
+    for (int64_t i = 0; i < seq_len; ++i) {
+      pooled_position_ids[static_cast<size_t>(i)] = i;
+    }
+
+    // Pre-allocate extra input buffers based on model input types.
+    size_t extra_i64_count = 0;
+    size_t extra_f32_count = 0;
+    for (const auto& meta : inputs) {
+      if (meta.name == "input_ids" || meta.name == "attention_mask" ||
+          meta.name == "token_type_ids" || meta.name == "position_ids") {
+        continue;
+      }
+      if (meta.elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64) {
+        ++extra_i64_count;
+      } else if (meta.elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+        ++extra_f32_count;
+      }
+    }
+    pooled_extra_i64.resize(extra_i64_count);
+    pooled_extra_f32.resize(extra_f32_count);
+    run_inputs_capacity = inputs.size();
+
+    // Pre-allocate hidden buffer to max expected dimension.
+    pooled_hidden.assign(2048, 0.0f);
   }
 };
 
@@ -369,20 +448,51 @@ static int run_embed(CEmbedRuntime* runtime,
     return 0;
   }
 
-  std::vector<int64_t> default_mask(static_cast<size_t>(runtime->seq_len), 1);
-  std::vector<int64_t> default_type(static_cast<size_t>(runtime->seq_len), 0);
-  const int64_t* mask_ptr = attention_mask ? attention_mask : default_mask.data();
-  const int64_t* type_ptr = token_type_ids ? token_type_ids : default_type.data();
-
-  std::vector<int64_t> position_ids(static_cast<size_t>(runtime->seq_len), 0);
-  for (int64_t i = 0; i < runtime->seq_len; ++i) {
-    position_ids[static_cast<size_t>(i)] = i;
+  // Use pooled buffers instead of per-call allocation.
+  int64_t* mask_ptr = const_cast<int64_t*>(attention_mask);
+  if (mask_ptr == nullptr) {
+    mask_ptr = runtime->pooled_default_mask.data();
+  }
+  int64_t* type_ptr = const_cast<int64_t*>(token_type_ids);
+  if (type_ptr == nullptr) {
+    type_ptr = runtime->pooled_default_type.data();
   }
 
-  std::vector<std::vector<int64_t>> extra_i64;
-  std::vector<std::vector<float>> extra_f32;
+  int64_t* position_ids_ptr = runtime->pooled_position_ids.data();
+
+  // Reset and reuse extra input buffers.
+  size_t extra_i64_idx = 0;
+  size_t extra_f32_idx = 0;
+  for (const auto& meta : runtime->inputs) {
+    if (meta.name == "input_ids" || meta.name == "attention_mask" ||
+        meta.name == "token_type_ids" || meta.name == "position_ids") {
+      continue;
+    }
+    if (meta.elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64) {
+      if (extra_i64_idx < runtime->pooled_extra_i64.size()) {
+        auto& buf = runtime->pooled_extra_i64[extra_i64_idx];
+        if (buf.size() != meta.element_count) {
+          buf.assign(meta.element_count, 0);
+        } else {
+          std::fill(buf.begin(), buf.end(), 0);
+        }
+        ++extra_i64_idx;
+      }
+    } else if (meta.elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+      if (extra_f32_idx < runtime->pooled_extra_f32.size()) {
+        auto& buf = runtime->pooled_extra_f32[extra_f32_idx];
+        if (buf.size() != meta.element_count) {
+          buf.assign(meta.element_count, 0.0f);
+        } else {
+          std::fill(buf.begin(), buf.end(), 0.0f);
+        }
+        ++extra_f32_idx;
+      }
+    }
+  }
+
   std::vector<Ort::Value> run_inputs;
-  run_inputs.reserve(runtime->inputs.size());
+  run_inputs.reserve(runtime->run_inputs_capacity);
 
   {
     std::lock_guard<std::mutex> status_lock(runtime->status_lock);
@@ -422,26 +532,34 @@ static int run_embed(CEmbedRuntime* runtime,
       } else if (meta.name == "position_ids") {
         run_inputs.emplace_back(Ort::Value::CreateTensor<int64_t>(
             runtime->mem_info,
-            position_ids.data(),
-            position_ids.size(),
+            position_ids_ptr,
+            static_cast<size_t>(runtime->seq_len),
             shape.data(),
             shape.size()));
       } else if (meta.elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64) {
-        extra_i64.emplace_back(meta.element_count, 0);
-        run_inputs.emplace_back(Ort::Value::CreateTensor<int64_t>(
-            runtime->mem_info,
-            extra_i64.back().data(),
-            extra_i64.back().size(),
-            shape.data(),
-            shape.size()));
+        // Use pooled buffer for extra int64 inputs.
+        if (extra_i64_idx < runtime->pooled_extra_i64.size()) {
+          auto& buf = runtime->pooled_extra_i64[extra_i64_idx];
+          run_inputs.emplace_back(Ort::Value::CreateTensor<int64_t>(
+              runtime->mem_info,
+              buf.data(),
+              buf.size(),
+              shape.data(),
+              shape.size()));
+          ++extra_i64_idx;
+        }
       } else if (meta.elem_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
-        extra_f32.emplace_back(meta.element_count, 0.0f);
-        run_inputs.emplace_back(Ort::Value::CreateTensor<float>(
-            runtime->mem_info,
-            extra_f32.back().data(),
-            extra_f32.back().size(),
-            shape.data(),
-            shape.size()));
+        // Use pooled buffer for extra float inputs.
+        if (extra_f32_idx < runtime->pooled_extra_f32.size()) {
+          auto& buf = runtime->pooled_extra_f32[extra_f32_idx];
+          run_inputs.emplace_back(Ort::Value::CreateTensor<float>(
+              runtime->mem_info,
+              buf.data(),
+              buf.size(),
+              shape.data(),
+              shape.size()));
+          ++extra_f32_idx;
+        }
       } else {
         runtime->last_error = "unsupported_input_type";
         return 0;
@@ -487,7 +605,14 @@ static int run_embed(CEmbedRuntime* runtime,
     }
 
     const int hidden_dim = static_cast<int>(hidden);
-    std::vector<float> pooled(static_cast<size_t>(hidden_dim), 0.0f);
+    // Use pooled hidden buffer, resize if needed.
+    if (runtime->pooled_hidden.size() < static_cast<size_t>(hidden_dim)) {
+      runtime->pooled_hidden.assign(static_cast<size_t>(hidden_dim), 0.0f);
+    } else {
+      std::fill(runtime->pooled_hidden.begin(),
+                runtime->pooled_hidden.begin() + hidden_dim, 0.0f);
+    }
+    float* pooled = runtime->pooled_hidden.data();
 
     if (out_shape.size() >= 3) {
       int64_t token_dim = out_shape[out_shape.size() - 2];
@@ -529,7 +654,7 @@ static int run_embed(CEmbedRuntime* runtime,
       return 0;
     }
 
-    fold_and_normalize(pooled.data(), hidden_dim, out_vec, runtime->out_dim);
+    fold_and_normalize(pooled, hidden_dim, out_vec, runtime->out_dim);
     runtime->last_error.clear();
     return 1;
   } catch (const Ort::Exception& ex) {

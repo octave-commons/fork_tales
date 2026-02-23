@@ -1504,6 +1504,18 @@ export interface PresenceDynamics {
   }>;
   field_particles_record?: string;
   field_particles?: BackendFieldParticle[];
+  graph_node_positions?: Record<string, {
+    x: number;
+    y: number;
+    vx?: number;
+    vy?: number;
+    samples?: number;
+  }>;
+  presence_anchor_positions?: Record<string, {
+    x: number;
+    y: number;
+    count?: number;
+  }>;
   resource_daimoi?: ResourceDaimoiSummary;
   resource_consumption?: ResourceConsumptionSummary;
   nooi_field?: NooiFieldGrid;

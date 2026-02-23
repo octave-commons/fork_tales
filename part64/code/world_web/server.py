@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import base64
 import hashlib
 import json
@@ -24,6 +25,8 @@ from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
 from urllib.request import Request, urlopen
 
+from . import daimoi_probabilistic as daimoi_probabilistic_module
+from . import simulation as simulation_module
 from .ai import (
     _apply_embedding_provider_options,
     _embedding_provider_options,
@@ -197,6 +200,12 @@ _SIMULATION_HTTP_DISK_COLD_START_SECONDS = max(
     0.0,
     float(os.getenv("SIMULATION_HTTP_DISK_COLD_START_SECONDS", "180.0") or "180.0"),
 )
+_SIMULATION_HTTP_DISK_FALLBACK_MAX_AGE_SECONDS = max(
+    0.0,
+    float(
+        os.getenv("SIMULATION_HTTP_DISK_FALLBACK_MAX_AGE_SECONDS", "180.0") or "180.0"
+    ),
+)
 _SIMULATION_HTTP_FAILURE_COOLDOWN_SECONDS = max(
     0.0,
     float(os.getenv("SIMULATION_HTTP_FAILURE_COOLDOWN_SECONDS", "45.0") or "45.0"),
@@ -354,6 +363,28 @@ _SIMULATION_WS_STREAM_PARTICLE_MAX = max(
     48,
     int(float(os.getenv("SIMULATION_WS_STREAM_PARTICLE_MAX", "180") or "180")),
 )
+_SIMULATION_WS_CHUNK_ENABLED = str(
+    os.getenv("SIMULATION_WS_CHUNK_ENABLED", "1") or "1"
+).strip().lower() in {"1", "true", "yes", "on"}
+_SIMULATION_WS_CHUNK_CHARS = max(
+    4096,
+    int(float(os.getenv("SIMULATION_WS_CHUNK_CHARS", "48000") or "48000")),
+)
+_SIMULATION_WS_CHUNK_MAX_CHUNKS = max(
+    8,
+    int(float(os.getenv("SIMULATION_WS_CHUNK_MAX_CHUNKS", "256") or "256")),
+)
+_SIMULATION_WS_CHUNK_MESSAGE_TYPES = {
+    str(item).strip().lower()
+    for item in str(
+        os.getenv(
+            "SIMULATION_WS_CHUNK_MESSAGE_TYPES",
+            "catalog,simulation,simulation_delta",
+        )
+        or "catalog,simulation,simulation_delta"
+    ).split(",")
+    if str(item).strip()
+}
 _WS_WIRE_ARRAY_SCHEMA = "eta-mu.ws.arr.v1"
 _WS_WIRE_MODE_DEFAULT = str(os.getenv("WS_WIRE_MODE", "json") or "json").strip().lower()
 _WS_PACK_TAG_OBJECT = -1
@@ -460,6 +491,540 @@ def _runtime_health_payload(part_root: Path) -> dict[str, Any]:
         "guard": guard,
         "websocket": ws,
         "degraded": str(guard.get("mode", "normal")) != "normal",
+    }
+
+
+_CONFIG_MODULE_SPECS: dict[str, dict[str, Any]] = {
+    "daimoi_probabilistic": {
+        "module": daimoi_probabilistic_module,
+        "prefixes": (
+            "DAIMOI_",
+            "NEXUS_",
+            "_DAIMOI_",
+            "_ABSORB_",
+            "_ROLE_PRIOR_WEIGHTS",
+        ),
+        "exact_names": (),
+    },
+    "simulation": {
+        "module": simulation_module,
+        "prefixes": (
+            "SIMULATION_",
+            "_RESOURCE_DAIMOI_",
+        ),
+        "exact_names": (),
+    },
+    "server": {
+        "module": sys.modules[__name__],
+        "prefixes": (
+            "_SIMULATION_HTTP_",
+            "_SIMULATION_WS_",
+            "_RUNTIME_GUARD_",
+            "_WS_PACK_TAG_",
+        ),
+        "exact_names": (
+            "_RUNTIME_ETA_MU_SYNC_SECONDS",
+            "_RUNTIME_CATALOG_CACHE_SECONDS",
+            "_RUNTIME_CATALOG_SUBPROCESS_TIMEOUT_SECONDS",
+            "_RUNTIME_WS_MAX_CLIENTS",
+            "_WS_CLIENT_FRAME_MAX_BYTES",
+        ),
+    },
+}
+
+_CONFIG_RUNTIME_EDIT_LOCK = threading.Lock()
+_CONFIG_RUNTIME_BASELINE: dict[str, dict[str, Any]] = {}
+_CONFIG_RUNTIME_VERSION_LOCK = threading.Lock()
+_CONFIG_RUNTIME_VERSION = 0
+
+
+def _config_runtime_version_snapshot() -> int:
+    with _CONFIG_RUNTIME_VERSION_LOCK:
+        return int(_CONFIG_RUNTIME_VERSION)
+
+
+def _config_runtime_version_bump() -> int:
+    global _CONFIG_RUNTIME_VERSION
+    with _CONFIG_RUNTIME_VERSION_LOCK:
+        _CONFIG_RUNTIME_VERSION = int(_CONFIG_RUNTIME_VERSION) + 1
+        return int(_CONFIG_RUNTIME_VERSION)
+
+
+def _config_numeric_scalar(value: Any) -> float | int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return None
+        return float(value)
+    return None
+
+
+def _config_numeric_only(value: Any) -> Any:
+    scalar = _config_numeric_scalar(value)
+    if scalar is not None:
+        return scalar
+
+    if isinstance(value, dict):
+        nested: dict[str, Any] = {}
+        for key in sorted(value.keys(), key=lambda item: str(item)):
+            numeric_value = _config_numeric_only(value[key])
+            if numeric_value is None:
+                continue
+            nested[str(key)] = numeric_value
+        return nested or None
+
+    if isinstance(value, (list, tuple, set)):
+        nested_list: list[Any] = []
+        sequence = value
+        if isinstance(value, set):
+            sequence = sorted(value, key=lambda item: str(item))
+        for item in sequence:
+            numeric_value = _config_numeric_only(item)
+            if numeric_value is None:
+                continue
+            nested_list.append(numeric_value)
+        return nested_list or None
+
+    return None
+
+
+def _config_numeric_leaf_count(value: Any) -> int:
+    scalar = _config_numeric_scalar(value)
+    if scalar is not None:
+        return 1
+    if isinstance(value, dict):
+        return sum(_config_numeric_leaf_count(item) for item in value.values())
+    if isinstance(value, (list, tuple, set)):
+        return sum(_config_numeric_leaf_count(item) for item in value)
+    return 0
+
+
+def _config_collect_module_constants(
+    module: Any,
+    *,
+    prefixes: tuple[str, ...],
+    exact_names: tuple[str, ...],
+) -> tuple[dict[str, Any], int]:
+    names = sorted(str(name) for name in vars(module).keys())
+    selected: dict[str, Any] = {}
+    numeric_leaf_count = 0
+    for name in names:
+        include = name in exact_names
+        if not include:
+            include = any(name.startswith(prefix) for prefix in prefixes)
+        if not include:
+            continue
+        numeric_value = _config_numeric_only(getattr(module, name, None))
+        if numeric_value is None:
+            continue
+        selected[name] = numeric_value
+        numeric_leaf_count += _config_numeric_leaf_count(numeric_value)
+    return selected, numeric_leaf_count
+
+
+def _config_collect_selected_names(
+    module: Any,
+    *,
+    prefixes: tuple[str, ...],
+    exact_names: tuple[str, ...],
+) -> list[str]:
+    names = sorted(str(name) for name in vars(module).keys())
+    selected: list[str] = []
+    for name in names:
+        include = name in exact_names
+        if not include:
+            include = any(name.startswith(prefix) for prefix in prefixes)
+        if not include:
+            continue
+        numeric_value = _config_numeric_only(getattr(module, name, None))
+        if numeric_value is None:
+            continue
+        selected.append(name)
+    return selected
+
+
+def _config_capture_runtime_baseline() -> dict[str, dict[str, Any]]:
+    baseline: dict[str, dict[str, Any]] = {}
+    for module_name, spec in _CONFIG_MODULE_SPECS.items():
+        module = spec.get("module")
+        if module is None:
+            continue
+        selected_names = _config_collect_selected_names(
+            module,
+            prefixes=tuple(spec.get("prefixes", ())),
+            exact_names=tuple(spec.get("exact_names", ())),
+        )
+        module_baseline: dict[str, Any] = {}
+        for name in selected_names:
+            module_baseline[name] = copy.deepcopy(getattr(module, name, None))
+        baseline[module_name] = module_baseline
+    return baseline
+
+
+def _config_normalize_path_tokens(path_raw: Any) -> list[str]:
+    if path_raw is None:
+        return []
+    if isinstance(path_raw, list):
+        return [str(item).strip() for item in path_raw if str(item).strip()]
+    if isinstance(path_raw, str):
+        clean = path_raw.strip()
+        if not clean:
+            return []
+        normalized = clean.replace("[", ".").replace("]", "")
+        return [token for token in normalized.split(".") if token]
+    return []
+
+
+def _config_resolve_dict_key(container: dict[Any, Any], token: str) -> Any:
+    if token in container:
+        return token
+    for key in container.keys():
+        if str(key) == token:
+            return key
+    raise KeyError(token)
+
+
+def _config_parse_list_index(token: str, length: int) -> int:
+    try:
+        index = int(token)
+    except Exception as exc:
+        raise ValueError(f"invalid_index:{token}") from exc
+    if index < 0:
+        index = length + index
+    if index < 0 or index >= length:
+        raise IndexError(f"index_out_of_range:{token}")
+    return index
+
+
+def _config_coerce_numeric_like(reference: Any, value: float | int) -> float | int:
+    if isinstance(reference, bool):
+        return int(round(float(value)))
+    if isinstance(reference, int):
+        return int(round(float(value)))
+    return float(value)
+
+
+_CONFIG_SCALAR_LIMITS: dict[tuple[str, str], tuple[float, float]] = {
+    ("simulation", "SIMULATION_STREAM_DAIMOI_FRICTION"): (0.0, 2.0),
+    ("simulation", "SIMULATION_STREAM_NEXUS_FRICTION"): (0.0, 2.0),
+    ("simulation", "SIMULATION_STREAM_FRICTION"): (0.0, 2.0),
+}
+
+
+def _config_clamp_scalar_update(
+    *,
+    module_name: str,
+    key_name: str,
+    value: float | int,
+) -> float | int:
+    limits = _CONFIG_SCALAR_LIMITS.get((module_name, key_name))
+    if limits is None:
+        return value
+    lower, upper = limits
+    clamped = max(lower, min(upper, float(value)))
+    return clamped
+
+
+def _config_get_at_path(root: Any, path_tokens: list[str]) -> Any:
+    value = root
+    for token in path_tokens:
+        if isinstance(value, dict):
+            value = value[_config_resolve_dict_key(value, token)]
+            continue
+        if isinstance(value, (list, tuple)):
+            index = _config_parse_list_index(token, len(value))
+            value = value[index]
+            continue
+        raise TypeError(f"non_container_at:{token}")
+    return value
+
+
+def _config_set_at_path(
+    root: Any, path_tokens: list[str], new_scalar: float | int
+) -> Any:
+    if not path_tokens:
+        scalar = _config_numeric_scalar(root)
+        if scalar is None:
+            raise TypeError("target_not_numeric")
+        return _config_coerce_numeric_like(root, new_scalar)
+
+    token = path_tokens[0]
+    tail = path_tokens[1:]
+    if isinstance(root, dict):
+        key = _config_resolve_dict_key(root, token)
+        updated = dict(root)
+        updated[key] = _config_set_at_path(root[key], tail, new_scalar)
+        return updated
+
+    if isinstance(root, list):
+        index = _config_parse_list_index(token, len(root))
+        updated_list = list(root)
+        updated_list[index] = _config_set_at_path(root[index], tail, new_scalar)
+        return updated_list
+
+    if isinstance(root, tuple):
+        index = _config_parse_list_index(token, len(root))
+        updated_list = list(root)
+        updated_list[index] = _config_set_at_path(root[index], tail, new_scalar)
+        return tuple(updated_list)
+
+    raise TypeError(f"non_container_at:{token}")
+
+
+def _config_apply_update(
+    *,
+    module_name: str,
+    key_name: str,
+    path_tokens: list[str],
+    value: Any,
+) -> dict[str, Any]:
+    requested_module = str(module_name or "").strip().lower()
+    requested_key = str(key_name or "").strip()
+    if not requested_module:
+        return {"ok": False, "error": "module_required"}
+    if not requested_key:
+        return {"ok": False, "error": "key_required"}
+    if requested_module not in _CONFIG_MODULE_SPECS:
+        return {
+            "ok": False,
+            "error": "unknown_module",
+            "module": requested_module,
+            "available_modules": sorted(_CONFIG_MODULE_SPECS.keys()),
+        }
+
+    next_scalar = _config_numeric_scalar(value)
+    if next_scalar is None and isinstance(value, str):
+        text = value.strip()
+        if text:
+            try:
+                next_scalar = float(text)
+            except Exception:
+                next_scalar = None
+    if next_scalar is None:
+        return {
+            "ok": False,
+            "error": "numeric_value_required",
+            "module": requested_module,
+            "key": requested_key,
+        }
+    next_scalar_value: float | int = next_scalar
+    next_scalar_value = _config_clamp_scalar_update(
+        module_name=requested_module,
+        key_name=requested_key,
+        value=next_scalar_value,
+    )
+
+    spec = _CONFIG_MODULE_SPECS[requested_module]
+    module = spec.get("module")
+    if module is None:
+        return {
+            "ok": False,
+            "error": "module_unavailable",
+            "module": requested_module,
+        }
+
+    selected_names = set(
+        _config_collect_selected_names(
+            module,
+            prefixes=tuple(spec.get("prefixes", ())),
+            exact_names=tuple(spec.get("exact_names", ())),
+        )
+    )
+    if requested_key not in selected_names:
+        return {
+            "ok": False,
+            "error": "unknown_constant",
+            "module": requested_module,
+            "key": requested_key,
+        }
+
+    try:
+        with _CONFIG_RUNTIME_EDIT_LOCK:
+            current_value = copy.deepcopy(getattr(module, requested_key, None))
+            previous_leaf = _config_get_at_path(current_value, path_tokens)
+            updated_value = _config_set_at_path(
+                current_value,
+                path_tokens,
+                next_scalar_value,
+            )
+            setattr(module, requested_key, updated_value)
+            current_after = copy.deepcopy(getattr(module, requested_key, None))
+            current_leaf = _config_get_at_path(current_after, path_tokens)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": "config_update_failed",
+            "detail": f"{exc.__class__.__name__}: {exc}",
+            "module": requested_module,
+            "key": requested_key,
+            "path": path_tokens,
+        }
+
+    return {
+        "ok": True,
+        "record": "eta-mu.runtime-config.update.v1",
+        "schema_version": "runtime.config.update.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "module": requested_module,
+        "key": requested_key,
+        "path": path_tokens,
+        "previous": _config_numeric_only(previous_leaf),
+        "current": _config_numeric_only(current_leaf),
+    }
+
+
+def _config_reset_updates(
+    *,
+    module_name: str = "",
+    key_name: str = "",
+    path_tokens: list[str] | None = None,
+) -> dict[str, Any]:
+    requested_module = str(module_name or "").strip().lower()
+    requested_key = str(key_name or "").strip()
+    normalized_path = path_tokens or []
+
+    if normalized_path and not requested_key:
+        return {
+            "ok": False,
+            "error": "key_required_for_path_reset",
+        }
+
+    available_modules = sorted(_CONFIG_MODULE_SPECS.keys())
+    if requested_module and requested_module not in _CONFIG_MODULE_SPECS:
+        return {
+            "ok": False,
+            "error": "unknown_module",
+            "module": requested_module,
+            "available_modules": available_modules,
+        }
+
+    module_names = [requested_module] if requested_module else available_modules
+    applied: list[dict[str, Any]] = []
+
+    with _CONFIG_RUNTIME_EDIT_LOCK:
+        for module_item in module_names:
+            spec = _CONFIG_MODULE_SPECS[module_item]
+            module = spec.get("module")
+            if module is None:
+                continue
+            baseline_module = _CONFIG_RUNTIME_BASELINE.get(module_item, {})
+            if not baseline_module:
+                continue
+            selected_names = set(
+                _config_collect_selected_names(
+                    module,
+                    prefixes=tuple(spec.get("prefixes", ())),
+                    exact_names=tuple(spec.get("exact_names", ())),
+                )
+            )
+            key_names = (
+                [requested_key] if requested_key else sorted(baseline_module.keys())
+            )
+            for key_item in key_names:
+                if key_item not in selected_names:
+                    continue
+                if key_item not in baseline_module:
+                    continue
+
+                baseline_value = copy.deepcopy(baseline_module[key_item])
+                if normalized_path:
+                    try:
+                        baseline_leaf = _config_get_at_path(
+                            baseline_value, normalized_path
+                        )
+                        baseline_scalar = _config_numeric_scalar(baseline_leaf)
+                        if baseline_scalar is None:
+                            continue
+                        current_value = copy.deepcopy(getattr(module, key_item, None))
+                        updated_value = _config_set_at_path(
+                            current_value,
+                            normalized_path,
+                            baseline_scalar,
+                        )
+                    except Exception:
+                        continue
+                else:
+                    updated_value = baseline_value
+
+                setattr(module, key_item, updated_value)
+                applied.append(
+                    {
+                        "module": module_item,
+                        "key": key_item,
+                        "path": list(normalized_path),
+                    }
+                )
+
+    if requested_key and not applied:
+        return {
+            "ok": False,
+            "error": "unknown_constant",
+            "module": requested_module,
+            "key": requested_key,
+        }
+
+    return {
+        "ok": True,
+        "record": "eta-mu.runtime-config.reset.v1",
+        "schema_version": "runtime.config.reset.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "module": requested_module,
+        "key": requested_key,
+        "path": normalized_path,
+        "reset_count": len(applied),
+        "resets": applied[:128],
+    }
+
+
+_CONFIG_RUNTIME_BASELINE = _config_capture_runtime_baseline()
+
+
+def _config_payload(*, module_filter: str = "") -> dict[str, Any]:
+    requested = str(module_filter or "").strip().lower()
+    available_modules = sorted(_CONFIG_MODULE_SPECS.keys())
+    if requested and requested not in _CONFIG_MODULE_SPECS:
+        return {
+            "ok": False,
+            "error": "unknown_module",
+            "requested_module": requested,
+            "available_modules": available_modules,
+        }
+
+    module_names = [requested] if requested else available_modules
+
+    modules_payload: dict[str, Any] = {}
+    total_constants = 0
+    total_numeric_leaf_count = 0
+    for module_name in module_names:
+        spec = _CONFIG_MODULE_SPECS[module_name]
+        constants, leaf_count = _config_collect_module_constants(
+            spec["module"],
+            prefixes=tuple(spec["prefixes"]),
+            exact_names=tuple(spec["exact_names"]),
+        )
+        modules_payload[module_name] = {
+            "constants": copy.deepcopy(constants),
+            "constant_count": len(constants),
+            "numeric_leaf_count": leaf_count,
+        }
+        total_constants += len(constants)
+        total_numeric_leaf_count += leaf_count
+
+    return {
+        "ok": True,
+        "record": "eta-mu.runtime-config.v1",
+        "schema_version": "runtime.config.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "runtime_config_version": _config_runtime_version_snapshot(),
+        "available_modules": available_modules,
+        "requested_module": requested,
+        "module_count": len(modules_payload),
+        "constant_count": total_constants,
+        "numeric_leaf_count": total_numeric_leaf_count,
+        "modules": modules_payload,
     }
 
 
@@ -615,11 +1180,12 @@ def _simulation_http_cache_key(
     else:
         user_signal = ""
     user_signal_hash = hashlib.sha1(user_signal.encode("utf-8")).hexdigest()[:10]
+    config_version = max(0, _config_runtime_version_snapshot())
     return (
         f"{perspective}|{fingerprint}|"
         f"q:{max(0, queue_pending)}:{max(0, queue_events)}|"
         f"i:{max(0, clicks_recent)}:{max(0, user_inputs_recent)}:{user_signal_hash}|"
-        "simulation"
+        f"cfg:{config_version}|simulation"
     )
 
 
@@ -635,6 +1201,32 @@ def _simulation_http_cache_store(cache_key: str, body: bytes) -> None:
         _SIMULATION_HTTP_CACHE["key"] = cache_key
         _SIMULATION_HTTP_CACHE["prepared_monotonic"] = time.monotonic()
         _SIMULATION_HTTP_CACHE["body"] = body_bytes
+
+
+def _simulation_http_cache_invalidate(*, part_root: Path | None = None) -> None:
+    with _SIMULATION_HTTP_CACHE_LOCK:
+        _SIMULATION_HTTP_CACHE["key"] = ""
+        _SIMULATION_HTTP_CACHE["prepared_monotonic"] = 0.0
+        _SIMULATION_HTTP_CACHE["body"] = b""
+
+    if part_root is None or not _SIMULATION_HTTP_DISK_CACHE_ENABLED:
+        return
+
+    perspectives: set[str] = set()
+    default_perspective = str(PROJECTION_DEFAULT_PERSPECTIVE or "").strip().lower()
+    if default_perspective:
+        perspectives.add(default_perspective)
+    for option in projection_perspective_options():
+        if isinstance(option, dict):
+            option_id = str(option.get("id", "") or "").strip().lower()
+            if option_id:
+                perspectives.add(option_id)
+    for perspective in perspectives:
+        cache_path = _simulation_http_disk_cache_path(part_root, perspective)
+        try:
+            cache_path.unlink(missing_ok=True)
+        except Exception:
+            continue
 
 
 def _simulation_http_cached_body(
@@ -1271,7 +1863,9 @@ def _simulation_ws_load_cached_payload(
     *,
     part_root: Path,
     perspective: str,
+    payload_mode: str = "trimmed",
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    payload_mode_key = _simulation_ws_normalize_payload_mode(payload_mode)
     cached_body = _simulation_http_cached_body(
         perspective=perspective,
         max_age_seconds=_SIMULATION_WS_CACHE_MAX_AGE_SECONDS,
@@ -1282,6 +1876,15 @@ def _simulation_ws_load_cached_payload(
             perspective=perspective,
             max_age_seconds=_SIMULATION_WS_CACHE_MAX_AGE_SECONDS,
         )
+    if cached_body is None and payload_mode_key == "full":
+        stale_cache_path = _simulation_http_disk_cache_path(part_root, perspective)
+        try:
+            if stale_cache_path.exists() and stale_cache_path.is_file():
+                stale_body = stale_cache_path.read_bytes()
+                if stale_body:
+                    cached_body = stale_body
+        except Exception:
+            cached_body = None
     if cached_body is None:
         return None
 
@@ -1292,6 +1895,14 @@ def _simulation_ws_load_cached_payload(
     if not isinstance(payload, dict):
         return None
 
+    projection = payload.get("projection", {})
+    if not isinstance(projection, dict):
+        projection = {}
+    if payload_mode_key == "full":
+        simulation_payload = dict(payload)
+        simulation_payload.pop("projection", None)
+        return simulation_payload, projection
+
     node_positions, node_text_chars = _simulation_ws_collect_node_positions(payload)
     simulation_payload = _simulation_ws_trim_simulation_payload(payload)
     simulation_payload.pop("projection", None)
@@ -1300,9 +1911,17 @@ def _simulation_ws_load_cached_payload(
         node_positions=node_positions,
         node_text_chars=node_text_chars,
     )
-    projection = payload.get("projection", {})
-    if not isinstance(projection, dict):
-        projection = {}
+    dynamics = simulation_payload.get("presence_dynamics", {})
+    if isinstance(dynamics, dict) and node_positions:
+        dynamics["graph_node_positions"] = {
+            node_id: {
+                "x": round(max(0.0, min(1.0, _safe_float(coords[0], 0.5))), 5),
+                "y": round(max(0.0, min(1.0, _safe_float(coords[1], 0.5))), 5),
+            }
+            for node_id, coords in list(node_positions.items())[:2200]
+            if isinstance(coords, tuple) and len(coords) >= 2
+        }
+        simulation_payload["presence_dynamics"] = dynamics
     return simulation_payload, projection
 
 
@@ -1322,6 +1941,64 @@ def _simulation_ws_normalize_delta_stream_mode(mode: str) -> str:
     }:
         return "workers"
     return "world"
+
+
+def _simulation_ws_normalize_payload_mode(mode: str) -> str:
+    clean = str(mode or "").strip().lower()
+    if clean in {"full", "complete", "debug", "debug-full"}:
+        return "full"
+    return "trimmed"
+
+
+def _simulation_ws_chunk_messages(
+    payload: dict[str, Any],
+    *,
+    chunk_chars: int,
+    message_seq: int,
+) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    payload_type = str(payload.get("type", "") or "").strip().lower()
+    if not payload_type or payload_type == "ws_chunk":
+        return []
+    if payload_type not in _SIMULATION_WS_CHUNK_MESSAGE_TYPES:
+        return []
+
+    chunk_size = max(4096, int(_safe_float(chunk_chars, _SIMULATION_WS_CHUNK_CHARS)))
+    payload_text = _json_compact(payload)
+    payload_chars = len(payload_text)
+    if payload_chars <= chunk_size:
+        return []
+
+    chunk_total = int(math.ceil(payload_chars / float(chunk_size)))
+    if chunk_total <= 1:
+        return []
+    if chunk_total > _SIMULATION_WS_CHUNK_MAX_CHUNKS:
+        chunk_total = _SIMULATION_WS_CHUNK_MAX_CHUNKS
+        chunk_size = int(math.ceil(payload_chars / float(chunk_total)))
+
+    digest = hashlib.sha1(payload_text.encode("utf-8")).hexdigest()[:16]
+    chunk_id = f"ws:{payload_type}:{int(message_seq)}:{digest}"
+
+    rows: list[dict[str, Any]] = []
+    for index in range(chunk_total):
+        start = index * chunk_size
+        end = min(payload_chars, (index + 1) * chunk_size)
+        chunk_payload = payload_text[start:end]
+        rows.append(
+            {
+                "type": "ws_chunk",
+                "record": "eta-mu.ws.chunk.v1",
+                "schema_version": "ws.chunk.v1",
+                "chunk_id": chunk_id,
+                "chunk_payload_type": payload_type,
+                "chunk_index": index,
+                "chunk_total": chunk_total,
+                "payload_chars": payload_chars,
+                "payload": chunk_payload,
+            }
+        )
+    return rows
 
 
 def _simulation_ws_worker_for_top_level_key(key: str) -> str:
@@ -1352,7 +2029,12 @@ def _simulation_ws_worker_for_top_level_key(key: str) -> str:
 
 def _simulation_ws_worker_for_presence_key(key: str) -> str:
     clean = str(key or "").strip().lower()
-    if clean in {"field_particles", "nooi_field"}:
+    if clean in {
+        "field_particles",
+        "nooi_field",
+        "graph_node_positions",
+        "presence_anchor_positions",
+    }:
         return "sim-particles"
     if clean in {
         "simulation_budget",
@@ -1574,6 +2256,24 @@ def _simulation_http_disk_cache_path(part_root: Path, perspective: str) -> Path:
     return (part_root / "world_state" / f"simulation_http_cache_{safe}.json").resolve()
 
 
+def _simulation_http_runtime_reference_mtime(part_root: Path) -> float:
+    candidate_paths = [
+        part_root / "code" / "world_web" / "server.py",
+        part_root / "code" / "world_web" / "simulation.py",
+        part_root / "code" / "world_web" / "c_double_buffer_backend.py",
+        part_root / "code" / "world_web" / "daimoi_probabilistic.py",
+        part_root / "code" / "world_web" / "native" / "libc_double_buffer_sim.so",
+    ]
+    newest = 0.0
+    for path in candidate_paths:
+        try:
+            if path.exists() and path.is_file():
+                newest = max(newest, float(path.stat().st_mtime))
+        except Exception:
+            continue
+    return newest
+
+
 def _simulation_http_disk_cache_load(
     part_root: Path,
     *,
@@ -1591,6 +2291,12 @@ def _simulation_http_disk_cache_load(
         if not cache_path.exists() or not cache_path.is_file():
             return None
         stat = cache_path.stat()
+        runtime_reference_mtime = _simulation_http_runtime_reference_mtime(part_root)
+        if (
+            runtime_reference_mtime > 0.0
+            and float(stat.st_mtime) < runtime_reference_mtime
+        ):
+            return None
         age = time.time() - float(stat.st_mtime)
         if age < 0.0 or age > cache_age_limit:
             return None
@@ -1646,7 +2352,11 @@ _RUNTIME_CATALOG_SUBPROCESS_SCRIPT = (
 
 def _effective_request_embed_model(model: str | None) -> str | None:
     force_nomic = str(
-        os.getenv("OLLAMA_EMBED_FORCE_NOMIC", "0") or "0"
+        os.getenv(
+            "EMBED_FORCE_NOMIC",
+            os.getenv("OLLAMA_EMBED_FORCE_NOMIC", "0"),
+        )
+        or "0"
     ).strip().lower() in {"1", "true", "yes", "on"}
     if force_nomic:
         return "nomic-embed-text"
@@ -2384,7 +3094,7 @@ class WorldHandler(BaseHTTPRequestHandler):
     ) -> dict[str, Any]:
         del turn_id
         model_mode = (
-            "canonical" if str(mode).strip().lower() == "deterministic" else "ollama"
+            "canonical" if str(mode).strip().lower() == "deterministic" else "llm"
         )
         clean_muse_id = str(muse_id or "").strip() or "witness_thread"
         response = build_chat_reply(
@@ -2730,6 +3440,8 @@ class WorldHandler(BaseHTTPRequestHandler):
         perspective: str,
         delta_stream_mode: str,
         wire_mode: str,
+        payload_mode: str,
+        chunk_stream_enabled: bool,
     ) -> None:
         ws_key = str(self.headers.get("Sec-WebSocket-Key", "")).strip()
         if not ws_key:
@@ -2770,11 +3482,30 @@ class WorldHandler(BaseHTTPRequestHandler):
 
         perspective_key = normalize_projection_perspective(perspective)
         stream_mode = _simulation_ws_normalize_delta_stream_mode(delta_stream_mode)
+        payload_mode_key = _simulation_ws_normalize_payload_mode(payload_mode)
+        use_cached_snapshots = _SIMULATION_WS_USE_CACHED_SNAPSHOTS
         ws_wire_mode = _normalize_ws_wire_mode(wire_mode)
-        if _SIMULATION_WS_USE_CACHED_SNAPSHOTS and ws_wire_mode == "arr":
+        if use_cached_snapshots and ws_wire_mode == "arr":
             ws_wire_mode = "json"
+        ws_chunk_enabled = bool(chunk_stream_enabled)
+        ws_chunk_chars = _SIMULATION_WS_CHUNK_CHARS
+        ws_chunk_message_seq = 0
 
         def send_ws(payload: dict[str, Any]) -> None:
+            nonlocal ws_chunk_message_seq
+
+            if ws_chunk_enabled:
+                ws_chunk_message_seq += 1
+                chunk_rows = _simulation_ws_chunk_messages(
+                    payload,
+                    chunk_chars=ws_chunk_chars,
+                    message_seq=ws_chunk_message_seq,
+                )
+                if chunk_rows:
+                    for chunk_row in chunk_rows:
+                        self._send_ws_event(chunk_row, wire_mode=ws_wire_mode)
+                    return
+
             self._send_ws_event(payload, wire_mode=ws_wire_mode)
 
         # Use poll for non-blocking socket reads
@@ -2791,6 +3522,43 @@ class WorldHandler(BaseHTTPRequestHandler):
         last_cached_simulation_timestamp = ""
         stream_particles: list[dict[str, Any]] = []
         last_muse_poll = 0.0
+        last_config_runtime_version = _config_runtime_version_snapshot()
+
+        def _build_ws_snapshot_payload(simulation: dict[str, Any]) -> dict[str, Any]:
+            if payload_mode_key == "full":
+                snapshot_payload = dict(simulation)
+                snapshot_payload.pop("projection", None)
+                return snapshot_payload
+
+            snapshot_payload = _simulation_ws_trim_simulation_payload(simulation)
+            snapshot_payload.pop("projection", None)
+            _simulation_ws_extract_stream_particles(snapshot_payload)
+            return snapshot_payload
+
+        def _build_ws_delta_payload(simulation: dict[str, Any]) -> dict[str, Any]:
+            delta_payload = _simulation_ws_trim_simulation_payload(simulation)
+            delta_payload.pop("projection", None)
+            _simulation_ws_extract_stream_particles(delta_payload)
+            return delta_payload
+
+        def rebuild_live_simulation_payload():
+            nonlocal catalog
+            nonlocal queue_snapshot
+            nonlocal influence_snapshot
+
+            catalog, queue_snapshot, _, influence_snapshot, _ = self._runtime_catalog(
+                perspective=perspective_key,
+                include_projection=False,
+            )
+            simulation, projection = self._runtime_simulation(
+                catalog,
+                queue_snapshot,
+                influence_snapshot,
+                perspective=perspective_key,
+            )
+            snapshot_payload = _build_ws_snapshot_payload(simulation)
+            delta_payload = _build_ws_delta_payload(simulation)
+            return snapshot_payload, delta_payload, projection
 
         def maybe_send_muse_events(now_monotonic: float) -> None:
             nonlocal muse_event_seq
@@ -2824,10 +3592,7 @@ class WorldHandler(BaseHTTPRequestHandler):
             last_muse_poll = now_monotonic
 
         try:
-            if (
-                _SIMULATION_WS_USE_CACHED_SNAPSHOTS
-                and _SIMULATION_WS_SKIP_CATALOG_BOOTSTRAP
-            ):
+            if use_cached_snapshots and _SIMULATION_WS_SKIP_CATALOG_BOOTSTRAP:
                 catalog = {}
                 queue_snapshot = {}
                 influence_snapshot = {}
@@ -2868,10 +3633,11 @@ class WorldHandler(BaseHTTPRequestHandler):
                     }
                 )
 
-            if _SIMULATION_WS_USE_CACHED_SNAPSHOTS:
+            if use_cached_snapshots:
                 cached_payload = _simulation_ws_load_cached_payload(
                     part_root=self.part_root,
                     perspective=perspective_key,
+                    payload_mode=payload_mode_key,
                 )
                 if cached_payload is None:
                     simulation_payload, projection = _simulation_ws_placeholder_payload(
@@ -2879,6 +3645,23 @@ class WorldHandler(BaseHTTPRequestHandler):
                     )
                 else:
                     simulation_payload, projection = cached_payload
+
+                if payload_mode_key == "full":
+                    simulation_delta_payload = _build_ws_delta_payload(
+                        simulation_payload
+                    )
+                else:
+                    simulation_delta_payload = simulation_payload
+                stream_particles = _simulation_ws_extract_stream_particles(
+                    simulation_delta_payload
+                )
+                if not stream_particles and payload_mode_key != "full":
+                    simulation_payload, simulation_delta_payload, projection = (
+                        rebuild_live_simulation_payload()
+                    )
+                    stream_particles = _simulation_ws_extract_stream_particles(
+                        simulation_delta_payload
+                    )
             else:
                 simulation, projection = self._runtime_simulation(
                     catalog,
@@ -2886,8 +3669,8 @@ class WorldHandler(BaseHTTPRequestHandler):
                     influence_snapshot,
                     perspective=perspective_key,
                 )
-                simulation_payload = _simulation_ws_trim_simulation_payload(simulation)
-                simulation_payload.pop("projection", None)
+                simulation_payload = _build_ws_snapshot_payload(simulation)
+                simulation_delta_payload = _build_ws_delta_payload(simulation)
             send_ws(
                 {
                     "type": "simulation",
@@ -2895,9 +3678,9 @@ class WorldHandler(BaseHTTPRequestHandler):
                     "projection": projection,
                 }
             )
-            last_simulation_for_delta = simulation_payload
+            last_simulation_for_delta = simulation_delta_payload
             stream_particles = _simulation_ws_extract_stream_particles(
-                simulation_payload
+                simulation_delta_payload
             )
             last_cached_simulation_timestamp = str(
                 simulation_payload.get("timestamp", "") or ""
@@ -2907,7 +3690,7 @@ class WorldHandler(BaseHTTPRequestHandler):
             last_projection_delta_broadcast = boot_tick
             last_simulation_cache_refresh = boot_tick
 
-            if not _SIMULATION_WS_USE_CACHED_SNAPSHOTS:
+            if not use_cached_snapshots:
                 docker_snapshot = collect_docker_simulation_snapshot()
                 send_ws(
                     {
@@ -2948,8 +3731,50 @@ class WorldHandler(BaseHTTPRequestHandler):
         try:
             while True:
                 now_monotonic = time.monotonic()
+                current_config_runtime_version = _config_runtime_version_snapshot()
+                if current_config_runtime_version != last_config_runtime_version:
+                    last_config_runtime_version = current_config_runtime_version
+                    try:
+                        (
+                            simulation_payload,
+                            simulation_delta_payload,
+                            projection,
+                        ) = rebuild_live_simulation_payload()
+                    except Exception:
+                        pass
+                    else:
+                        stream_particles = _simulation_ws_extract_stream_particles(
+                            simulation_delta_payload
+                        )
+                        last_simulation_for_delta = simulation_delta_payload
+                        last_cached_simulation_timestamp = str(
+                            simulation_payload.get("timestamp", "") or ""
+                        )
+                        send_ws(
+                            {
+                                "type": "simulation",
+                                "simulation": simulation_payload,
+                                "projection": projection,
+                            }
+                        )
+                        ws_cache_payload = dict(simulation_delta_payload)
+                        ws_cache_payload["projection"] = projection
+                        _simulation_http_cache_store(
+                            f"{perspective_key}|ws-stream|simulation",
+                            _json_compact(ws_cache_payload).encode("utf-8"),
+                        )
+                        _simulation_http_disk_cache_store(
+                            self.part_root,
+                            perspective=perspective_key,
+                            body=_json_compact(ws_cache_payload).encode("utf-8"),
+                        )
+                        last_simulation_full_broadcast = now_monotonic
+                        last_projection_delta_broadcast = now_monotonic
+                        last_simulation_cache_refresh = now_monotonic
+                        last_sim_tick = now_monotonic
+
                 if (
-                    not _SIMULATION_WS_USE_CACHED_SNAPSHOTS
+                    not use_cached_snapshots
                 ) and now_monotonic - last_catalog_refresh >= CATALOG_REFRESH_SECONDS:
                     catalog, queue_snapshot, _, influence_snapshot, _ = (
                         self._runtime_catalog(
@@ -2960,7 +3785,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                     last_catalog_refresh = now_monotonic
 
                 if (
-                    (not _SIMULATION_WS_USE_CACHED_SNAPSHOTS)
+                    (not use_cached_snapshots)
                     and now_monotonic - last_runtime_guard_broadcast
                     >= _RUNTIME_GUARD_HEARTBEAT_SECONDS
                 ):
@@ -2986,7 +3811,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                 )
                 sim_tick_interval = (
                     SIM_TICK_SECONDS
-                    if _SIMULATION_WS_USE_CACHED_SNAPSHOTS
+                    if use_cached_snapshots
                     else (SIM_TICK_SECONDS * load_scale)
                 )
                 docker_refresh_interval = (
@@ -3014,7 +3839,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                     last_catalog_broadcast = now_monotonic
 
                 if now_monotonic - last_sim_tick >= sim_tick_interval:
-                    if _SIMULATION_WS_USE_CACHED_SNAPSHOTS:
+                    if use_cached_snapshots:
                         cache_refresh_due = (
                             _SIMULATION_WS_CACHE_REFRESH_SECONDS <= 0.0
                             or (
@@ -3026,42 +3851,60 @@ class WorldHandler(BaseHTTPRequestHandler):
                             cached_payload = _simulation_ws_load_cached_payload(
                                 part_root=self.part_root,
                                 perspective=perspective_key,
+                                payload_mode=payload_mode_key,
                             )
                             if cached_payload is not None:
                                 simulation_payload, projection = cached_payload
-                                stream_particles = (
-                                    _simulation_ws_extract_stream_particles(
+                                if payload_mode_key == "full":
+                                    simulation_delta_payload = _build_ws_delta_payload(
                                         simulation_payload
                                     )
-                                )
-                                cached_timestamp = str(
-                                    simulation_payload.get("timestamp", "") or ""
-                                )
-                                full_snapshot_due = (
-                                    _SIMULATION_WS_FULL_SNAPSHOT_HEARTBEAT_SECONDS
-                                    <= 0.0
-                                    or (
-                                        now_monotonic - last_simulation_full_broadcast
-                                        >= _SIMULATION_WS_FULL_SNAPSHOT_HEARTBEAT_SECONDS
+                                else:
+                                    simulation_delta_payload = simulation_payload
+                                stream_particles = (
+                                    _simulation_ws_extract_stream_particles(
+                                        simulation_delta_payload
                                     )
                                 )
-                                if (
-                                    full_snapshot_due
-                                    and cached_timestamp
-                                    and cached_timestamp
-                                    != last_cached_simulation_timestamp
-                                ):
-                                    send_ws(
-                                        {
-                                            "type": "simulation",
-                                            "simulation": simulation_payload,
-                                            "projection": projection,
-                                        }
+                            if payload_mode_key != "full" and (
+                                cached_payload is None or not stream_particles
+                            ):
+                                (
+                                    simulation_payload,
+                                    simulation_delta_payload,
+                                    projection,
+                                ) = rebuild_live_simulation_payload()
+                                stream_particles = (
+                                    _simulation_ws_extract_stream_particles(
+                                        simulation_delta_payload
                                     )
-                                    last_simulation_full_broadcast = now_monotonic
-                                    last_projection_delta_broadcast = now_monotonic
-                                    last_simulation_for_delta = simulation_payload
-                                    last_cached_simulation_timestamp = cached_timestamp
+                                )
+                            cached_timestamp = str(
+                                simulation_payload.get("timestamp", "") or ""
+                            )
+                            full_snapshot_due = (
+                                _SIMULATION_WS_FULL_SNAPSHOT_HEARTBEAT_SECONDS <= 0.0
+                                or (
+                                    now_monotonic - last_simulation_full_broadcast
+                                    >= _SIMULATION_WS_FULL_SNAPSHOT_HEARTBEAT_SECONDS
+                                )
+                            )
+                            if (
+                                full_snapshot_due
+                                and cached_timestamp
+                                and cached_timestamp != last_cached_simulation_timestamp
+                            ):
+                                send_ws(
+                                    {
+                                        "type": "simulation",
+                                        "simulation": simulation_payload,
+                                        "projection": projection,
+                                    }
+                                )
+                                last_simulation_full_broadcast = now_monotonic
+                                last_projection_delta_broadcast = now_monotonic
+                                last_simulation_for_delta = simulation_delta_payload
+                                last_cached_simulation_timestamp = cached_timestamp
                             last_simulation_cache_refresh = now_monotonic
 
                         tick_timestamp = datetime.now(timezone.utc).isoformat()
@@ -3077,29 +3920,80 @@ class WorldHandler(BaseHTTPRequestHandler):
                             dynamics["generated_at"] = tick_timestamp
                             simulation_payload["presence_dynamics"] = dynamics
 
-                        ws_cache_payload = dict(simulation_payload)
-                        ws_cache_payload["projection"] = projection
-                        _simulation_http_cache_store(
-                            f"{perspective_key}|ws-stream|simulation",
-                            _json_compact(ws_cache_payload).encode("utf-8"),
+                        cache_source_payload = (
+                            simulation_delta_payload
+                            if payload_mode_key == "full"
+                            else simulation_payload
                         )
+                        ws_cache_payload = dict(cache_source_payload)
+                        ws_cache_payload["projection"] = projection
+                        cache_dynamics = simulation_payload.get("presence_dynamics", {})
+                        cache_stream_particles = (
+                            cache_dynamics.get("field_particles", [])
+                            if isinstance(cache_dynamics, dict)
+                            and isinstance(
+                                cache_dynamics.get("field_particles", []), list
+                            )
+                            else []
+                        )
+                        cache_total = max(
+                            0,
+                            int(_safe_float(simulation_payload.get("total", 0), 0.0)),
+                        )
+                        if cache_stream_particles or cache_total > 0:
+                            _simulation_http_cache_store(
+                                f"{perspective_key}|ws-stream|simulation",
+                                _json_compact(ws_cache_payload).encode("utf-8"),
+                            )
 
                         dynamics = simulation_payload.get("presence_dynamics", {})
+                        stream_particles = []
                         if isinstance(dynamics, dict) and isinstance(
                             dynamics.get("field_particles"), list
                         ):
                             stream_particles = dynamics.get("field_particles", [])
+                        graph_node_positions = (
+                            dynamics.get("graph_node_positions", {})
+                            if isinstance(dynamics, dict)
+                            else {}
+                        )
+                        presence_anchor_positions = (
+                            dynamics.get("presence_anchor_positions", {})
+                            if isinstance(dynamics, dict)
+                            else {}
+                        )
                         tick_patch: dict[str, Any] = {
                             "timestamp": tick_timestamp,
                         }
                         tick_changed_keys = ["timestamp"]
+                        dynamics_patch: dict[str, Any] = {}
                         if stream_particles:
-                            tick_patch["presence_dynamics"] = {
-                                "field_particles": stream_particles,
-                            }
+                            dynamics_patch["field_particles"] = stream_particles
                             tick_changed_keys.append(
                                 "presence_dynamics.field_particles"
                             )
+                        if (
+                            isinstance(graph_node_positions, dict)
+                            and graph_node_positions
+                        ):
+                            dynamics_patch["graph_node_positions"] = (
+                                graph_node_positions
+                            )
+                            tick_changed_keys.append(
+                                "presence_dynamics.graph_node_positions"
+                            )
+                        if (
+                            isinstance(presence_anchor_positions, dict)
+                            and presence_anchor_positions
+                        ):
+                            dynamics_patch["presence_anchor_positions"] = (
+                                presence_anchor_positions
+                            )
+                            tick_changed_keys.append(
+                                "presence_dynamics.presence_anchor_positions"
+                            )
+                        if dynamics_patch:
+                            tick_patch["presence_dynamics"] = dynamics_patch
 
                         if stream_mode == "workers":
                             simulation_worker_seq += 1
@@ -3162,13 +4056,13 @@ class WorldHandler(BaseHTTPRequestHandler):
                             influence_snapshot,
                             perspective=perspective_key,
                         )
-                        simulation_payload = _simulation_ws_trim_simulation_payload(
+                        simulation_snapshot_payload = _build_ws_snapshot_payload(
                             simulation
                         )
-                        simulation_payload.pop("projection", None)
+                        simulation_delta_payload = _build_ws_delta_payload(simulation)
                         delta = build_simulation_delta(
                             last_simulation_for_delta,
-                            simulation_payload,
+                            simulation_delta_payload,
                         )
                         delta_patch = (
                             delta.get("patch") if isinstance(delta, dict) else None
@@ -3196,7 +4090,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                             send_ws(
                                 {
                                     "type": "simulation",
-                                    "simulation": simulation_payload,
+                                    "simulation": simulation_snapshot_payload,
                                     "projection": projection,
                                 }
                             )
@@ -3262,7 +4156,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                             projection_patch: dict[str, Any] = {
                                 "projection": projection,
                             }
-                            timestamp_value = simulation_payload.get("timestamp")
+                            timestamp_value = simulation_delta_payload.get("timestamp")
                             if timestamp_value is not None:
                                 projection_patch["timestamp"] = timestamp_value
                             send_ws(
@@ -3289,13 +4183,13 @@ class WorldHandler(BaseHTTPRequestHandler):
                                 }
                             )
                             last_projection_delta_broadcast = now_monotonic
-                        last_simulation_for_delta = simulation_payload
+                        last_simulation_for_delta = simulation_delta_payload
 
                     maybe_send_muse_events(now_monotonic)
                     last_sim_tick = now_monotonic
 
                 if (
-                    not _SIMULATION_WS_USE_CACHED_SNAPSHOTS
+                    not use_cached_snapshots
                 ) and now_monotonic - last_docker_refresh >= docker_refresh_interval:
                     docker_snapshot = collect_docker_simulation_snapshot()
                     docker_fingerprint = str(
@@ -3364,17 +4258,36 @@ class WorldHandler(BaseHTTPRequestHandler):
             delta_stream = str(
                 params.get("delta_stream", [params.get("sim_stream", [""])[0]])[0] or ""
             )
+            payload_mode = str(
+                params.get(
+                    "simulation_payload",
+                    [params.get("sim_payload", [""])[0]],
+                )[0]
+                or ""
+            )
+            ws_chunk = _safe_bool_query(
+                str(
+                    params.get(
+                        "ws_chunk",
+                        [params.get("chunk", [""])[0]],
+                    )[0]
+                    or ""
+                ),
+                default=_SIMULATION_WS_CHUNK_ENABLED,
+            )
             self._handle_websocket(
                 perspective=perspective,
                 delta_stream_mode=delta_stream,
                 wire_mode=wire_mode,
+                payload_mode=payload_mode,
+                chunk_stream_enabled=ws_chunk,
             )
             return
 
         if parsed.path == "/api/voice-lines":
             mode = str(params.get("mode", ["canonical"])[0] or "canonical")
             payload_voice = build_voice_lines(
-                "ollama" if mode.strip().lower() == "ollama" else "canonical"
+                "llm" if mode.strip().lower() in {"ollama", "llm"} else "canonical"
             )
             self._send_json(payload_voice)
             return
@@ -3614,6 +4527,13 @@ class WorldHandler(BaseHTTPRequestHandler):
                 self._send_bytes(res.encode("utf-8"), "application/json")
             except Exception as exc:
                 self._send_json({"ok": False, "error": str(exc)})
+            return
+
+        if parsed.path == "/api/config":
+            module_filter = str(params.get("module", [""])[0] or "").strip().lower()
+            payload = _config_payload(module_filter=module_filter)
+            status = HTTPStatus.OK if payload.get("ok") else HTTPStatus.BAD_REQUEST
+            self._send_json(payload, status=status)
             return
 
         if parsed.path == "/api/catalog":
@@ -4104,10 +5024,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                     cold_disk_body = _simulation_http_disk_cache_load(
                         self.part_root,
                         perspective=perspective,
-                        max_age_seconds=max(
-                            _SIMULATION_HTTP_STALE_FALLBACK_SECONDS,
-                            _SIMULATION_HTTP_DISK_CACHE_SECONDS,
-                        ),
+                        max_age_seconds=_SIMULATION_HTTP_DISK_COLD_START_SECONDS,
                     )
                     if cold_disk_body is not None:
                         _simulation_http_cache_store(
@@ -4155,7 +5072,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                         perspective=perspective,
                         max_age_seconds=max(
                             _SIMULATION_HTTP_STALE_FALLBACK_SECONDS,
-                            _SIMULATION_HTTP_DISK_CACHE_SECONDS,
+                            _SIMULATION_HTTP_DISK_FALLBACK_MAX_AGE_SECONDS,
                         ),
                     )
                     if disk_cached_body is not None:
@@ -4473,6 +5390,43 @@ class WorldHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+
+        if parsed.path == "/api/config/update":
+            req = self._read_json_body() or {}
+            result = _config_apply_update(
+                module_name=str(req.get("module", "") or ""),
+                key_name=str(req.get("key", "") or ""),
+                path_tokens=_config_normalize_path_tokens(req.get("path")),
+                value=req.get("value"),
+            )
+            if bool(result.get("ok", False)):
+                _config_runtime_version_bump()
+                _simulation_http_cache_invalidate(part_root=self.part_root)
+            status = (
+                HTTPStatus.OK
+                if bool(result.get("ok", False))
+                else HTTPStatus.BAD_REQUEST
+            )
+            self._send_json(result, status=status)
+            return
+
+        if parsed.path == "/api/config/reset":
+            req = self._read_json_body() or {}
+            result = _config_reset_updates(
+                module_name=str(req.get("module", "") or ""),
+                key_name=str(req.get("key", "") or ""),
+                path_tokens=_config_normalize_path_tokens(req.get("path")),
+            )
+            if bool(result.get("ok", False)):
+                _config_runtime_version_bump()
+                _simulation_http_cache_invalidate(part_root=self.part_root)
+            status = (
+                HTTPStatus.OK
+                if bool(result.get("ok", False))
+                else HTTPStatus.BAD_REQUEST
+            )
+            self._send_json(result, status=status)
+            return
 
         if parsed.path == "/api/docker/simulations/control":
             req = self._read_json_body() or {}
@@ -5711,7 +6665,7 @@ class WorldHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/chat":
             req = self._read_json_body() or {}
             messages_raw = req.get("messages", [])
-            mode = str(req.get("mode", "ollama") or "ollama")
+            mode = str(req.get("mode", "llm") or "llm")
             multi_entity = bool(req.get("multi_entity", False))
             raw_presence_ids = req.get("presence_ids", [])
 

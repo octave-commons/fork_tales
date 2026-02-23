@@ -157,7 +157,9 @@ describe('useWorldState websocket worker streams', () => {
     const ws = MockWebSocket.instances[0];
 
     expect(ws).toBeDefined();
-    expect(ws.url).toContain('/ws?perspective=hybrid&delta_stream=workers&wire=json');
+    expect(ws.url).toContain(
+      '/ws?perspective=hybrid&delta_stream=workers&wire=json&simulation_payload=full&ws_chunk=1',
+    );
 
     act(() => {
       ws.emitOpen();
@@ -270,6 +272,51 @@ describe('useWorldState websocket worker streams', () => {
         perspective: 'hybrid',
       });
       expect(result.current.simulation?.timestamp).toBe('2026-02-21T18:00:02Z');
+    });
+  });
+
+  it('reassembles chunked websocket simulation payloads', async () => {
+    const { result } = renderHook(() => useWorldState('hybrid'));
+    const ws = MockWebSocket.instances[0];
+    act(() => {
+      ws.emitOpen();
+    });
+
+    const chunkedPayload = {
+      type: 'simulation',
+      simulation: simulationFixture({
+        timestamp: '2026-02-21T18:00:04Z',
+        total: 3,
+      }),
+    };
+    const payloadText = JSON.stringify(chunkedPayload);
+    const chunkSize = Math.max(1, Math.floor(payloadText.length / 3));
+    const chunks: string[] = [];
+    for (let offset = 0; offset < payloadText.length; offset += chunkSize) {
+      chunks.push(payloadText.slice(offset, offset + chunkSize));
+    }
+    const emitOrder = chunks.map((_, index) => index);
+    if (emitOrder.length >= 2) {
+      const first = emitOrder[0];
+      emitOrder[0] = emitOrder[1];
+      emitOrder[1] = first;
+    }
+
+    act(() => {
+      emitOrder.forEach((chunkIndex) => {
+        ws.emitMessage({
+          type: 'ws_chunk',
+          chunk_id: 'sim:chunk:1',
+          chunk_index: chunkIndex,
+          chunk_total: chunks.length,
+          payload: chunks[chunkIndex],
+        });
+      });
+    });
+
+    await waitFor(() => {
+      expect(result.current.simulation?.timestamp).toBe('2026-02-21T18:00:04Z');
+      expect(result.current.simulation?.total).toBe(3);
     });
   });
 

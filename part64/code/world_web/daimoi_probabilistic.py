@@ -60,10 +60,30 @@ DAIMOI_JOB_KEYS_SORTED = tuple(sorted(DAIMOI_JOB_KEYS))
 DAIMOI_JOB_KEYS_SET = set(DAIMOI_JOB_KEYS)
 DAIMOI_NODE_INFLUENCE_RADIUS = 0.32
 DAIMOI_NODE_INFLUENCE_RADIUS_EPS = 1e-8
+DAIMOI_SEMANTIC_CHARGE_ALPHA = 2.4
+DAIMOI_SEMANTIC_CHARGE_SOFTENING = 0.01
+DAIMOI_SEMANTIC_CHARGE_GAIN = 1.0
+DAIMOI_SEMANTIC_PARTICLE_NEAR_RADIUS = 0.11
+DAIMOI_SEMANTIC_BARNES_HUT_THETA = 0.62
+DAIMOI_SEMANTIC_PARTICLE_STRENGTH = 0.00013
 DAIMOI_WORLD_EDGE_BAND = 0.12
 DAIMOI_WORLD_EDGE_PRESSURE = 0.0015
 DAIMOI_WORLD_EDGE_BOUNCE = 0.78
 NEXUS_PASSIVE_ACTION_PROBS = {"deflect": 0.92, "diffuse": 0.08}
+NEXUS_ROUTE_NEIGHBOR_FALLBACK = 2
+NEXUS_ROUTE_BALANCE_RADIUS = 0.12
+NEXUS_ROUTE_BALANCE_EPS = 0.015
+NEXUS_ROUTE_GUIDE_SPEED_BASE = 0.002
+NEXUS_ROUTE_GUIDE_SPEED_GAIN = 0.0013
+NEXUS_ROUTE_MAX_SPEED = 0.0046
+NEXUS_ROUTE_TANGENT_KICK = 0.00075
+NEXUS_CURRENT_FLOW_GAIN = 0.26
+NEXUS_PREF_RETURN_GAIN = 0.0065
+NEXUS_SIMPLEX_GAIN = 0.00036
+NEXUS_GRAVITY_FLOW_GAIN = 0.0037
+NEXUS_DAMPING = 0.89
+NEXUS_SPEED_CAP_BASE = 0.0019
+NEXUS_SPEED_CAP_GRAVITY_GAIN = 0.001
 
 DAIMOI_PACKET_COMPONENT_RECORD = "eta-mu.daimoi-packet-components.v1"
 DAIMOI_PACKET_COMPONENT_SCHEMA = "daimoi.packet-components.v1"
@@ -473,6 +493,246 @@ def _quadtree_query_radius(
                 _quadtree_query_radius(child, x, y, radius, out)
 
 
+def _quadtree_semantic_aggregate(
+    node: dict[str, Any], *, vector_dims: int = DAIMOI_EMBED_DIMS
+) -> dict[str, Any]:
+    if not isinstance(node, dict):
+        return {
+            "weight": 0.0,
+            "count": 0,
+            "cx": 0.5,
+            "cy": 0.5,
+            "vector_sum": [0.0] * max(1, int(vector_dims)),
+            "single_id": "",
+        }
+
+    dims = max(1, int(vector_dims))
+    weight_sum = 0.0
+    count_sum = 0
+    weighted_x = 0.0
+    weighted_y = 0.0
+    vector_sum = [0.0] * dims
+    single_id = ""
+
+    items = node.get("items", [])
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            source_weight = max(0.0, _safe_float(item.get("weight", 1.0), 1.0))
+            if source_weight <= 1e-8:
+                continue
+            sx = _clamp01(_safe_float(item.get("x", 0.5), 0.5))
+            sy = _clamp01(_safe_float(item.get("y", 0.5), 0.5))
+            source_vector_raw = item.get("vector", [])
+            source_vector = (
+                source_vector_raw if isinstance(source_vector_raw, list) else []
+            )
+            source_id = str(item.get("id", "")).strip()
+            weighted_x += sx * source_weight
+            weighted_y += sy * source_weight
+            for index in range(min(dims, len(source_vector))):
+                vector_sum[index] += (
+                    _finite_float(source_vector[index], 0.0) * source_weight
+                )
+            weight_sum += source_weight
+            count_sum += 1
+            single_id = source_id if count_sum == 1 else ""
+
+    children = node.get("children")
+    if isinstance(children, list):
+        for child in children:
+            if not isinstance(child, dict):
+                continue
+            child_agg = _quadtree_semantic_aggregate(child, vector_dims=dims)
+            child_weight = max(0.0, _safe_float(child_agg.get("weight", 0.0), 0.0))
+            if child_weight <= 1e-8:
+                continue
+            child_count = max(0, _safe_int(child_agg.get("count", 0), 0))
+            child_cx = _clamp01(_safe_float(child_agg.get("cx", 0.5), 0.5))
+            child_cy = _clamp01(_safe_float(child_agg.get("cy", 0.5), 0.5))
+            child_vector_sum_raw = child_agg.get("vector_sum", [])
+            child_vector_sum = (
+                child_vector_sum_raw if isinstance(child_vector_sum_raw, list) else []
+            )
+            weighted_x += child_cx * child_weight
+            weighted_y += child_cy * child_weight
+            for index in range(min(dims, len(child_vector_sum))):
+                vector_sum[index] += _finite_float(child_vector_sum[index], 0.0)
+            previous_count = count_sum
+            count_sum += child_count
+            if previous_count == 0 and child_count == 1:
+                single_id = str(child_agg.get("single_id", "")).strip()
+            elif count_sum > 1:
+                single_id = ""
+            weight_sum += child_weight
+
+    center_x = 0.5
+    center_y = 0.5
+    if weight_sum > 1e-8:
+        center_x = _clamp01(weighted_x / weight_sum)
+        center_y = _clamp01(weighted_y / weight_sum)
+    aggregate = {
+        "weight": weight_sum,
+        "count": count_sum,
+        "cx": center_x,
+        "cy": center_y,
+        "vector_sum": vector_sum,
+        "single_id": single_id if count_sum == 1 else "",
+    }
+    node["semantic_agg"] = aggregate
+    return aggregate
+
+
+def _semantic_pair_force(
+    *,
+    target_unit: list[float],
+    dx: float,
+    dy: float,
+    distance_sq: float,
+    source_vector: list[float],
+    source_weight: float,
+    strength_base: float,
+) -> tuple[float, float]:
+    if distance_sq <= DAIMOI_NODE_INFLUENCE_RADIUS_EPS:
+        return 0.0, 0.0
+    similarity = _safe_cosine_unit(target_unit, source_vector)
+    charge = math.tanh(similarity * _safe_float(DAIMOI_SEMANTIC_CHARGE_ALPHA, 2.4))
+    if abs(charge) <= 1e-8:
+        return 0.0, 0.0
+
+    softened_dist_sq = distance_sq + max(
+        1e-6,
+        _safe_float(DAIMOI_SEMANTIC_CHARGE_SOFTENING, 0.01),
+    )
+    inv_dist_cubed = 1.0 / (softened_dist_sq * math.sqrt(softened_dist_sq))
+    strength = (
+        max(0.0, _safe_float(strength_base, DAIMOI_SEMANTIC_PARTICLE_STRENGTH))
+        * max(0.0, _safe_float(source_weight, 1.0))
+        * _safe_float(DAIMOI_SEMANTIC_CHARGE_GAIN, 1.0)
+    )
+    force_scale = strength * charge * inv_dist_cubed
+    return dx * force_scale, dy * force_scale
+
+
+def _barnes_hut_semantic_force(
+    *,
+    node: dict[str, Any],
+    target_id: str,
+    target_x: float,
+    target_y: float,
+    target_unit: list[float],
+    near_radius: float,
+    theta: float,
+    strength_base: float,
+    exclude_ids: set[str] | None = None,
+) -> tuple[float, float]:
+    if not isinstance(node, dict):
+        return 0.0, 0.0
+    aggregate = node.get("semantic_agg", {})
+    if not isinstance(aggregate, dict):
+        return 0.0, 0.0
+
+    total_weight = max(0.0, _safe_float(aggregate.get("weight", 0.0), 0.0))
+    if total_weight <= 1e-8:
+        return 0.0, 0.0
+
+    bounds = node.get("bounds", (0.0, 0.0, 1.0, 1.0))
+    if not isinstance(bounds, tuple) or len(bounds) != 4:
+        bounds = (0.0, 0.0, 1.0, 1.0)
+    x0, y0, x1, y1 = bounds
+    size = max(1e-6, max(x1 - x0, y1 - y0))
+
+    cx = _clamp01(_safe_float(aggregate.get("cx", 0.5), 0.5))
+    cy = _clamp01(_safe_float(aggregate.get("cy", 0.5), 0.5))
+    dx = cx - target_x
+    dy = cy - target_y
+    distance_sq = (dx * dx) + (dy * dy)
+    distance = math.sqrt(distance_sq) if distance_sq > 1e-12 else 0.0
+
+    near = max(0.0, _safe_float(near_radius, DAIMOI_SEMANTIC_PARTICLE_NEAR_RADIUS))
+    safe_theta = max(0.05, _safe_float(theta, DAIMOI_SEMANTIC_BARNES_HUT_THETA))
+    excludes = exclude_ids or set()
+
+    children_raw = node.get("children")
+    children_list = children_raw if isinstance(children_raw, list) else []
+    has_children = bool(children_list)
+    intersects_near = _rect_intersects_circle(bounds, target_x, target_y, near)
+    can_approximate = (
+        has_children
+        and not intersects_near
+        and distance > 1e-8
+        and ((size / distance) <= safe_theta)
+    )
+    if can_approximate:
+        vector_sum_raw = aggregate.get("vector_sum", [])
+        vector_sum = vector_sum_raw if isinstance(vector_sum_raw, list) else []
+        mean_vector = [0.0] * DAIMOI_EMBED_DIMS
+        for index in range(min(DAIMOI_EMBED_DIMS, len(vector_sum))):
+            mean_vector[index] = _finite_float(vector_sum[index], 0.0) / total_weight
+        return _semantic_pair_force(
+            target_unit=target_unit,
+            dx=dx,
+            dy=dy,
+            distance_sq=max(distance_sq, 1e-12),
+            source_vector=mean_vector,
+            source_weight=total_weight,
+            strength_base=strength_base,
+        )
+
+    force_x = 0.0
+    force_y = 0.0
+
+    if has_children:
+        for child in children_list:
+            if not isinstance(child, dict):
+                continue
+            child_fx, child_fy = _barnes_hut_semantic_force(
+                node=child,
+                target_id=target_id,
+                target_x=target_x,
+                target_y=target_y,
+                target_unit=target_unit,
+                near_radius=near,
+                theta=safe_theta,
+                strength_base=strength_base,
+                exclude_ids=excludes,
+            )
+            force_x += child_fx
+            force_y += child_fy
+
+    items = node.get("items", [])
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            source_id = str(item.get("id", "")).strip()
+            if not source_id or source_id == target_id or source_id in excludes:
+                continue
+            sx = _clamp01(_safe_float(item.get("x", 0.5), 0.5))
+            sy = _clamp01(_safe_float(item.get("y", 0.5), 0.5))
+            sdx = sx - target_x
+            sdy = sy - target_y
+            pair_dist_sq = (sdx * sdx) + (sdy * sdy)
+            if pair_dist_sq <= 1e-12:
+                continue
+            source_vector = list(item.get("vector", []))
+            source_weight = max(0.0, _safe_float(item.get("weight", 1.0), 1.0))
+            item_fx, item_fy = _semantic_pair_force(
+                target_unit=target_unit,
+                dx=sdx,
+                dy=sdy,
+                distance_sq=pair_dist_sq,
+                source_vector=source_vector,
+                source_weight=source_weight,
+                strength_base=strength_base,
+            )
+            force_x += item_fx
+            force_y += item_fy
+
+    return force_x, force_y
+
+
 def _finite_float(value: Any, default: float = 0.0) -> float:
     if isinstance(value, float):
         return value if math.isfinite(value) else default
@@ -759,7 +1019,7 @@ def _semantic_embedding_cached(text: str) -> tuple[float, ...] | None:
         from .ai import _embed_text, _embedding_backend
 
         backend = str(_embedding_backend()).strip().lower()
-        if backend == "ollama" and not _semantic_embed_ollama_reachable():
+        if backend not in {"openvino", "torch", "auto"}:
             with _SEMANTIC_EMBED_GUARD_LOCK:
                 _SEMANTIC_EMBED_FAIL_STREAK = min(64, _SEMANTIC_EMBED_FAIL_STREAK + 1)
                 cooldown_seconds = min(90.0, 2.0 * float(_SEMANTIC_EMBED_FAIL_STREAK))
@@ -767,24 +1027,8 @@ def _semantic_embedding_cached(text: str) -> tuple[float, ...] | None:
             return None
 
         vec: Any = None
-        if backend == "ollama":
-            result: dict[str, Any] = {"vec": None, "error": None}
-
-            def _run_embed() -> None:
-                try:
-                    result["vec"] = _embed_text(text)
-                except Exception as exc:  # pragma: no cover - defensive
-                    result["error"] = exc
-
-            worker = threading.Thread(target=_run_embed, daemon=True)
-            worker.start()
-            worker.join(timeout=0.35)
-            if worker.is_alive():
-                raise TimeoutError("semantic_embed_ollama_timeout")
-            vec = result.get("vec")
-        else:
-            # _embed_text handles backend selection (NPU/OpenVINO/Ollama/Tensorflow)
-            vec = _embed_text(text)
+        # _embed_text handles backend selection (NPU/OpenVINO/Torch auto routing)
+        vec = _embed_text(text)
         if vec:
             with _SEMANTIC_EMBED_GUARD_LOCK:
                 _SEMANTIC_EMBED_FAIL_STREAK = 0
@@ -1856,6 +2100,8 @@ def _file_node_rows(file_graph: dict[str, Any] | None) -> list[dict[str, Any]]:
         rows.append(
             {
                 "id": node_id,
+                "node_type": str(node.get("node_type", "file")).strip().lower()
+                or "file",
                 "x": _clamp01(_safe_float(node.get("x", 0.5), 0.5)),
                 "y": _clamp01(_safe_float(node.get("y", 0.5), 0.5)),
                 "importance": _clamp01(_safe_float(node.get("importance", 0.3), 0.3)),
@@ -1869,10 +2115,286 @@ def _file_node_rows(file_graph: dict[str, Any] | None) -> list[dict[str, Any]]:
                 ),
                 "dominant_field": str(node.get("dominant_field", "")).strip(),
                 "dominant_presence": str(node.get("dominant_presence", "")).strip(),
+                "balance_hint": max(
+                    0.0,
+                    _safe_float(
+                        node.get("balance", node.get("node_balance", 0.0)),
+                        0.0,
+                    ),
+                ),
                 "vector": _node_semantic_vector(node),
             }
         )
     return rows
+
+
+def _file_edge_rows(file_graph: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(file_graph, dict):
+        return []
+    edges_raw = file_graph.get("edges", [])
+    if not isinstance(edges_raw, list):
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for edge in edges_raw:
+        if not isinstance(edge, dict):
+            continue
+        source_id = str(edge.get("source", "")).strip()
+        target_id = str(edge.get("target", "")).strip()
+        if not source_id or not target_id or source_id == target_id:
+            continue
+        rows.append(
+            {
+                "source": source_id,
+                "target": target_id,
+                "weight": _clamp01(_safe_float(edge.get("weight", 0.5), 0.5)),
+                "kind": str(edge.get("kind", "relates")).strip().lower() or "relates",
+            }
+        )
+    return rows
+
+
+def _build_nexus_adjacency(
+    *,
+    file_nodes: list[dict[str, Any]],
+    edge_rows: list[dict[str, Any]],
+    fallback_neighbors: int = NEXUS_ROUTE_NEIGHBOR_FALLBACK,
+) -> dict[str, list[str]]:
+    node_by_id = {
+        str(row.get("id", "")).strip(): row
+        for row in file_nodes
+        if isinstance(row, dict) and str(row.get("id", "")).strip()
+    }
+    if not node_by_id:
+        return {}
+
+    adjacency_sets: dict[str, set[str]] = {
+        node_id: set() for node_id in sorted(node_by_id.keys())
+    }
+
+    for edge in edge_rows:
+        if not isinstance(edge, dict):
+            continue
+        source_id = str(edge.get("source", "")).strip()
+        target_id = str(edge.get("target", "")).strip()
+        if source_id not in adjacency_sets or target_id not in adjacency_sets:
+            continue
+        if source_id == target_id:
+            continue
+        adjacency_sets[source_id].add(target_id)
+        adjacency_sets[target_id].add(source_id)
+
+    fallback_count = max(0, int(fallback_neighbors))
+    if fallback_count > 0 and len(node_by_id) > 1:
+        for node_id in sorted(node_by_id.keys()):
+            if adjacency_sets[node_id]:
+                continue
+            node = node_by_id[node_id]
+            nx = _clamp01(_safe_float(node.get("x", 0.5), 0.5))
+            ny = _clamp01(_safe_float(node.get("y", 0.5), 0.5))
+            ranked: list[tuple[float, str]] = []
+            for other_id, other in node_by_id.items():
+                if other_id == node_id:
+                    continue
+                ox = _clamp01(_safe_float(other.get("x", 0.5), 0.5))
+                oy = _clamp01(_safe_float(other.get("y", 0.5), 0.5))
+                distance_sq = ((ox - nx) * (ox - nx)) + ((oy - ny) * (oy - ny))
+                ranked.append((distance_sq, other_id))
+            ranked.sort(key=lambda row: (row[0], row[1]))
+            for _, other_id in ranked[:fallback_count]:
+                adjacency_sets[node_id].add(other_id)
+                adjacency_sets[other_id].add(node_id)
+
+    adjacency: dict[str, list[str]] = {}
+    for node_id in sorted(node_by_id.keys()):
+        node = node_by_id[node_id]
+        nx = _clamp01(_safe_float(node.get("x", 0.5), 0.5))
+        ny = _clamp01(_safe_float(node.get("y", 0.5), 0.5))
+        neighbors = sorted(
+            adjacency_sets[node_id],
+            key=lambda other_id: (
+                (
+                    (
+                        _clamp01(_safe_float(node_by_id[other_id].get("x", 0.5), 0.5))
+                        - nx
+                    )
+                    ** 2
+                )
+                + (
+                    (
+                        _clamp01(_safe_float(node_by_id[other_id].get("y", 0.5), 0.5))
+                        - ny
+                    )
+                    ** 2
+                ),
+                other_id,
+            ),
+        )
+        adjacency[node_id] = neighbors
+    return adjacency
+
+
+def _compute_nexus_balance_maps(
+    *,
+    states: list[dict[str, Any]],
+    collision_tree: dict[str, Any],
+    file_node_lookup: dict[str, dict[str, Any]],
+) -> tuple[dict[str, float], dict[str, tuple[float, float]]]:
+    node_position_by_id: dict[str, tuple[float, float]] = {}
+    state_by_node_id: dict[str, dict[str, Any]] = {}
+
+    for state in states:
+        if not isinstance(state, dict) or not bool(state.get("is_nexus", False)):
+            continue
+        node_id = str(state.get("source_node_id", "")).strip()
+        if not node_id:
+            continue
+        nx = _clamp01(_safe_float(state.get("x", 0.5), 0.5))
+        ny = _clamp01(_safe_float(state.get("y", 0.5), 0.5))
+        node_position_by_id[node_id] = (nx, ny)
+        state_by_node_id[node_id] = state
+
+    if not node_position_by_id:
+        return {}, {}
+
+    balance_by_node_id: dict[str, float] = {}
+    radius = max(0.04, _safe_float(NEXUS_ROUTE_BALANCE_RADIUS, 0.12))
+    radius_sq = radius * radius
+
+    for node_id, (nx, ny) in node_position_by_id.items():
+        state = state_by_node_id[node_id]
+        nearby: list[dict[str, Any]] = []
+        _quadtree_query_radius(collision_tree, nx, ny, radius, nearby)
+
+        flow_load = 0.0
+        for other in nearby:
+            if not isinstance(other, dict):
+                continue
+            if bool(other.get("is_nexus", False)):
+                continue
+            ox = _clamp01(_safe_float(other.get("x", nx), nx))
+            oy = _clamp01(_safe_float(other.get("y", ny), ny))
+            dx = ox - nx
+            dy = oy - ny
+            distance_sq = (dx * dx) + (dy * dy)
+            if distance_sq > radius_sq:
+                continue
+            distance = math.sqrt(distance_sq)
+            falloff = _clamp01(1.0 - (distance / radius))
+            flow_load += 0.72 + (falloff * 0.9)
+            route_node_id = str(other.get("route_node_id", "")).strip()
+            if route_node_id == node_id:
+                flow_load += 0.34
+
+        node_meta = file_node_lookup.get(node_id, {})
+        importance = _clamp01(_safe_float(node_meta.get("importance", 0.3), 0.3))
+        embedded_bonus = _clamp01(
+            _safe_float(node_meta.get("embedded_bonus", 0.0), 0.0)
+        )
+        balance_hint = max(0.0, _safe_float(node_meta.get("balance_hint", 0.0), 0.0))
+        capacity = 1.0 + (importance * 3.4) + (embedded_bonus * 1.2)
+        raw_balance = max(
+            0.0, (flow_load / max(0.35, capacity)) + (balance_hint * 0.12)
+        )
+        previous = _safe_float(state.get("node_balance_ema", raw_balance), raw_balance)
+        balance = (previous * 0.72) + (raw_balance * 0.28)
+        balance_by_node_id[node_id] = balance
+
+        state["graph_node_id"] = node_id
+        state["node_balance_ema"] = balance
+        state["node_balance"] = round(balance, 6)
+        state["node_saturation"] = round(_clamp01(balance / 4.0), 6)
+
+    return balance_by_node_id, node_position_by_id
+
+
+def _select_downhill_adjacent_nexus(
+    *,
+    current_node_id: str,
+    adjacency_by_node: dict[str, list[str]],
+    node_balance_by_node: dict[str, float],
+    node_position_by_node: dict[str, tuple[float, float]],
+    target_xy: tuple[float, float] | None,
+    semantic_vector: list[float],
+    node_vector_by_id: dict[str, list[float]],
+    previous_node_id: str = "",
+) -> tuple[str, float]:
+    current_id = str(current_node_id).strip()
+    if not current_id:
+        return "", 0.0
+
+    neighbors = list(adjacency_by_node.get(current_id, []))
+    if not neighbors:
+        return "", 0.0
+
+    current_balance = max(
+        0.0, _safe_float(node_balance_by_node.get(current_id, 0.0), 0.0)
+    )
+    current_position = node_position_by_node.get(current_id)
+    semantic_unit = _normalize_vector(list(semantic_vector))
+
+    current_target_distance: float | None = None
+    if (
+        isinstance(target_xy, tuple)
+        and len(target_xy) == 2
+        and isinstance(current_position, tuple)
+    ):
+        current_target_distance = math.sqrt(
+            ((target_xy[0] - current_position[0]) ** 2)
+            + ((target_xy[1] - current_position[1]) ** 2)
+        )
+
+    best_node = ""
+    best_score = -1e9
+    best_drop = 0.0
+    for neighbor_id in neighbors:
+        candidate_id = str(neighbor_id).strip()
+        if not candidate_id:
+            continue
+        candidate_balance = max(
+            0.0,
+            _safe_float(
+                node_balance_by_node.get(candidate_id, current_balance), current_balance
+            ),
+        )
+        balance_drop = current_balance - candidate_balance
+        if balance_drop <= NEXUS_ROUTE_BALANCE_EPS:
+            continue
+
+        score = balance_drop
+        if (
+            current_target_distance is not None
+            and isinstance(target_xy, tuple)
+            and len(target_xy) == 2
+            and candidate_id in node_position_by_node
+        ):
+            candidate_position = node_position_by_node[candidate_id]
+            target_distance = math.sqrt(
+                ((target_xy[0] - candidate_position[0]) ** 2)
+                + ((target_xy[1] - candidate_position[1]) ** 2)
+            )
+            score += (current_target_distance - target_distance) * 0.6
+
+        node_vector = node_vector_by_id.get(candidate_id)
+        if isinstance(node_vector, list) and node_vector:
+            score += (
+                _safe_cosine_unit(semantic_unit, _normalize_vector(list(node_vector)))
+                * 0.22
+            )
+
+        if previous_node_id and candidate_id == previous_node_id:
+            score -= 0.18
+
+        if score > best_score:
+            best_score = score
+            best_node = candidate_id
+            best_drop = balance_drop
+
+    if not best_node:
+        return "", 0.0
+
+    route_probability = _clamp01(0.35 + (best_drop / max(0.05, current_balance + 0.5)))
+    return best_node, route_probability
 
 
 def _presence_density(
@@ -2148,6 +2670,7 @@ def _spawn_nexus_particle(
     alpha_pkg = {key: DAIMOI_ALPHA_BASELINE for key in DAIMOI_JOB_KEYS}
     alpha_msg = {"deliver": 0.8, "hold": 1.2}
     size = 0.72 + (importance * 1.1)
+    source_node_id = str(node.get("id", "")).strip()
 
     return {
         "id": particle_id,
@@ -2176,7 +2699,14 @@ def _spawn_nexus_particle(
         "ts": time.monotonic(),
         "is_nexus": True,
         "is_static_daimoi": True,
-        "source_node_id": str(node.get("id", "")).strip(),
+        "source_node_id": source_node_id,
+        "graph_node_id": source_node_id,
+        "route_node_id": "",
+        "route_prev_node_id": "",
+        "route_probability": 0.0,
+        "node_balance": 0.0,
+        "node_balance_ema": 0.0,
+        "node_saturation": 0.0,
         "preferred_x": node_x,
         "preferred_y": node_y,
     }
@@ -2304,10 +2834,57 @@ def build_probabilistic_daimoi_particles(
         if isinstance(row, dict) and str(row.get("id", "")).strip()
     }
     file_nodes = _file_node_rows(file_graph)
+    file_node_lookup = {
+        str(row.get("id", "")).strip(): row
+        for row in file_nodes
+        if isinstance(row, dict) and str(row.get("id", "")).strip()
+    }
+    file_node_vectors_by_id = {
+        node_id: list(row.get("vector", []))
+        for node_id, row in file_node_lookup.items()
+        if isinstance(row.get("vector", []), list)
+    }
+    file_edge_rows = _file_edge_rows(file_graph)
+    nexus_adjacency_by_node = _build_nexus_adjacency(
+        file_nodes=file_nodes,
+        edge_rows=file_edge_rows,
+    )
     local_density_map = {
         presence_id: _presence_density(anchors[presence_id], file_nodes, presence_id)
         for presence_id in presence_ids
     }
+    default_graph_node_by_presence: dict[str, str] = {}
+    if file_nodes:
+        for presence_id in presence_ids:
+            anchor = anchors.get(presence_id, {"x": 0.5, "y": 0.5})
+            ax = _clamp01(_safe_float(anchor.get("x", 0.5), 0.5))
+            ay = _clamp01(_safe_float(anchor.get("y", 0.5), 0.5))
+            scoped_nodes = [
+                row
+                for row in file_nodes
+                if str(row.get("dominant_presence", "")).strip() == presence_id
+            ]
+            if not scoped_nodes:
+                scoped_nodes = file_nodes
+            if not scoped_nodes:
+                continue
+            nearest = min(
+                scoped_nodes,
+                key=lambda row: (
+                    (
+                        (_clamp01(_safe_float(row.get("x", 0.5), 0.5)) - ax)
+                        * (_clamp01(_safe_float(row.get("x", 0.5), 0.5)) - ax)
+                    )
+                    + (
+                        (_clamp01(_safe_float(row.get("y", 0.5), 0.5)) - ay)
+                        * (_clamp01(_safe_float(row.get("y", 0.5), 0.5)) - ay)
+                    ),
+                    str(row.get("id", "")),
+                ),
+            )
+            nearest_id = str(nearest.get("id", "")).strip()
+            if nearest_id:
+                default_graph_node_by_presence[presence_id] = nearest_id
 
     now_seconds = _safe_float(now, time.time())
     now_seconds_int = _safe_int(now_seconds, 0)
@@ -2562,6 +3139,23 @@ def build_probabilistic_daimoi_particles(
                         "resource_wallet"
                     ),  # Pass wallet for cost check
                 )
+                graph_node_id = str(
+                    default_graph_node_by_presence.get(presence_id, "")
+                ).strip()
+                if graph_node_id:
+                    route_meta = file_node_lookup.get(graph_node_id, {})
+                    particles[particle_id]["graph_node_id"] = graph_node_id
+                    particles[particle_id]["route_node_id"] = ""
+                    particles[particle_id]["route_prev_node_id"] = ""
+                    particles[particle_id]["route_probability"] = 0.0
+                    particles[particle_id]["route_x"] = round(
+                        _clamp01(_safe_float(route_meta.get("x", 0.5), 0.5)),
+                        6,
+                    )
+                    particles[particle_id]["route_y"] = round(
+                        _clamp01(_safe_float(route_meta.get("y", 0.5), 0.5)),
+                        6,
+                    )
                 owned_ids.append(particle_id)
                 spawned_count += 1
 
@@ -2631,6 +3225,27 @@ def build_probabilistic_daimoi_particles(
                 existing["is_nexus"] = True
                 existing["is_static_daimoi"] = True
                 existing["source_node_id"] = node_id
+                existing["graph_node_id"] = node_id
+                existing["route_node_id"] = str(
+                    existing.get("route_node_id", "")
+                ).strip()
+                existing["route_prev_node_id"] = str(
+                    existing.get("route_prev_node_id", "")
+                ).strip()
+                existing["route_probability"] = _clamp01(
+                    _safe_float(existing.get("route_probability", 0.0), 0.0)
+                )
+                existing["node_balance"] = max(
+                    0.0,
+                    _safe_float(existing.get("node_balance", 0.0), 0.0),
+                )
+                existing["node_balance_ema"] = max(
+                    0.0,
+                    _safe_float(existing.get("node_balance_ema", 0.0), 0.0),
+                )
+                existing["node_saturation"] = _clamp01(
+                    _safe_float(existing.get("node_saturation", 0.0), 0.0)
+                )
                 existing["ts"] = now_monotonic
             else:
                 particles[particle_id] = _spawn_nexus_particle(
@@ -2666,38 +3281,14 @@ def build_probabilistic_daimoi_particles(
             if isinstance(particles.get(particle_id), dict)
         ]
 
-        node_items: list[dict[str, Any]] = []
-        for node in node_rows:
-            nx = _clamp01(_safe_float(node.get("x", 0.5), 0.5))
-            ny = _clamp01(_safe_float(node.get("y", 0.5), 0.5))
-            node_items.append(
-                {
-                    "x": nx,
-                    "y": ny,
-                    "vector": list(node.get("vector", [])),
-                    "embedded_bonus": _safe_float(node.get("embedded_bonus", 0.0), 0.0),
-                    "strength_base": 0.00018
-                    + (_safe_float(node.get("importance", 0.3), 0.3) * 0.00044)
-                    + (_safe_float(node.get("embedded_bonus", 0.0), 0.0) * 0.00036),
-                }
-            )
-
         state_count = len(states)
-        node_tree_max_items = 20
         state_tree_max_items = 20
         if state_count > 760:
-            node_tree_max_items = 30
             state_tree_max_items = 32
         elif state_count > 520:
-            node_tree_max_items = 26
             state_tree_max_items = 28
         elif state_count > 320:
-            node_tree_max_items = 24
             state_tree_max_items = 24
-
-        node_tree = _quadtree_build(
-            node_items, bounds=(0.0, 0.0, 1.0, 1.0), max_items=node_tree_max_items
-        )
         anchor_entries = [
             (
                 presence_id,
@@ -2712,6 +3303,46 @@ def build_probabilistic_daimoi_particles(
             bounds=(0.0, 0.0, 1.0, 1.0),
             max_items=state_tree_max_items,
         )
+
+        semantic_source_items: list[dict[str, Any]] = []
+        for source_state in states:
+            if not isinstance(source_state, dict) or bool(
+                source_state.get("is_nexus", False)
+            ):
+                continue
+            source_id = str(source_state.get("id", "")).strip()
+            if not source_id:
+                continue
+            source_x = _clamp01(_safe_float(source_state.get("x", 0.5), 0.5))
+            source_y = _clamp01(_safe_float(source_state.get("y", 0.5), 0.5))
+            source_mass = max(0.2, _safe_float(source_state.get("mass", 0.8), 0.8))
+            source_pressure = _clamp01(
+                _safe_float(
+                    source_state.get(
+                        "resource_pressure", source_state.get("resource_influence", 0.0)
+                    ),
+                    0.0,
+                )
+            )
+            source_weight = max(
+                0.1, source_mass * (0.65 + ((1.0 - source_pressure) * 0.35))
+            )
+            semantic_source_items.append(
+                {
+                    "id": source_id,
+                    "x": source_x,
+                    "y": source_y,
+                    "weight": source_weight,
+                    "vector": _state_unit_vector(source_state, "e_curr"),
+                }
+            )
+
+        semantic_tree = _quadtree_build(
+            semantic_source_items,
+            bounds=(0.0, 0.0, 1.0, 1.0),
+            max_items=state_tree_max_items,
+        )
+        _quadtree_semantic_aggregate(semantic_tree, vector_dims=DAIMOI_EMBED_DIMS)
 
         nexus_current_stride = 1
         if state_count > 640:
@@ -2731,27 +3362,39 @@ def build_probabilistic_daimoi_particles(
         elif prior_tick_ms >= 72.0:
             chaos_perturb_stride += 1
 
-        node_force_stride = 1
-        if state_count > 760:
-            node_force_stride = 5
-        elif state_count > 520:
-            node_force_stride = 4
-        elif state_count > 320:
-            node_force_stride = 3
-        elif state_count > 260:
-            node_force_stride = 2
-        if prior_tick_ms >= 96.0:
-            node_force_stride += 2
-        elif prior_tick_ms >= 72.0:
-            node_force_stride += 1
-
-        node_nearby_limit = 28
-        if state_count > 760:
-            node_nearby_limit = 12
-        elif state_count > 520:
-            node_nearby_limit = 16
-        elif state_count > 320:
-            node_nearby_limit = 20
+        nexus_position_by_node_id: dict[str, tuple[float, float]] = {}
+        nexus_balance_seed_by_node_id: dict[str, float] = {}
+        for row in states:
+            if not isinstance(row, dict) or not bool(row.get("is_nexus", False)):
+                continue
+            node_id = str(row.get("source_node_id", "")).strip()
+            if not node_id:
+                continue
+            nexus_position_by_node_id[node_id] = (
+                _clamp01(_safe_float(row.get("x", 0.5), 0.5)),
+                _clamp01(_safe_float(row.get("y", 0.5), 0.5)),
+            )
+            node_meta = file_node_lookup.get(node_id, {})
+            seed_balance = max(
+                0.0,
+                _safe_float(
+                    row.get("node_balance_ema", row.get("node_balance", 0.0)),
+                    max(0.0, _safe_float(node_meta.get("balance_hint", 0.0), 0.0)),
+                ),
+            )
+            if seed_balance <= 1e-8 and isinstance(node_meta, dict):
+                seed_balance = max(
+                    0.0,
+                    (
+                        _clamp01(_safe_float(node_meta.get("importance", 0.3), 0.3))
+                        * 0.72
+                    )
+                    + (
+                        _clamp01(_safe_float(node_meta.get("embedded_bonus", 0.0), 0.0))
+                        * 0.28
+                    ),
+                )
+            nexus_balance_seed_by_node_id[node_id] = seed_balance
 
         for state in states:
             owner_id = str(state.get("owner", "")).strip()
@@ -2776,9 +3419,48 @@ def build_probabilistic_daimoi_particles(
             is_chaos = bool(state.get("is_chaos_butterfly", False))
             msg_prob = _message_probability(state) if not is_nexus else 0.0
 
+            if not is_nexus:
+                graph_node_id = str(state.get("graph_node_id", "")).strip()
+                if not graph_node_id:
+                    fallback_graph_node_id = str(
+                        default_graph_node_by_presence.get(
+                            owner_id,
+                            default_graph_node_by_presence.get(target_id, ""),
+                        )
+                    ).strip()
+                    if fallback_graph_node_id:
+                        state["graph_node_id"] = fallback_graph_node_id
+                        fallback_meta = file_node_lookup.get(fallback_graph_node_id, {})
+                        state["route_x"] = round(
+                            _clamp01(_safe_float(fallback_meta.get("x", 0.5), 0.5)),
+                            6,
+                        )
+                        state["route_y"] = round(
+                            _clamp01(_safe_float(fallback_meta.get("y", 0.5), 0.5)),
+                            6,
+                        )
+
             if is_nexus:
                 fx = 0.0
                 fy = 0.0
+                current_node_id = str(state.get("source_node_id", "")).strip()
+                current_balance = max(
+                    0.0,
+                    _safe_float(
+                        nexus_balance_seed_by_node_id.get(
+                            current_node_id,
+                            state.get(
+                                "node_balance_ema", state.get("node_balance", 0.0)
+                            ),
+                        ),
+                        0.0,
+                    ),
+                )
+                if current_node_id:
+                    state["graph_node_id"] = current_node_id
+                state["node_balance"] = round(current_balance, 6)
+                state["node_saturation"] = round(_clamp01(current_balance / 4.0), 6)
+
                 current_stride = nexus_current_stride
                 should_sample_current = current_stride <= 1 or (
                     age % current_stride == 0
@@ -2815,16 +3497,78 @@ def build_probabilistic_daimoi_particles(
                         sampled_vy = current_y / current_weight
                         state["cached_current_vx"] = sampled_vx
                         state["cached_current_vy"] = sampled_vy
-                        fx += sampled_vx * 0.58
-                        fy += sampled_vy * 0.58
+                        fx += sampled_vx * NEXUS_CURRENT_FLOW_GAIN
+                        fy += sampled_vy * NEXUS_CURRENT_FLOW_GAIN
                 else:
-                    fx += _safe_float(state.get("cached_current_vx", 0.0), 0.0) * 0.58
-                    fy += _safe_float(state.get("cached_current_vy", 0.0), 0.0) * 0.58
+                    fx += (
+                        _safe_float(state.get("cached_current_vx", 0.0), 0.0)
+                        * NEXUS_CURRENT_FLOW_GAIN
+                    )
+                    fy += (
+                        _safe_float(state.get("cached_current_vy", 0.0), 0.0)
+                        * NEXUS_CURRENT_FLOW_GAIN
+                    )
+
+                if current_node_id and current_node_id in nexus_adjacency_by_node:
+                    route_node_id, route_probability = _select_downhill_adjacent_nexus(
+                        current_node_id=current_node_id,
+                        adjacency_by_node=nexus_adjacency_by_node,
+                        node_balance_by_node=nexus_balance_seed_by_node_id,
+                        node_position_by_node=nexus_position_by_node_id,
+                        target_xy=(owner_anchor_x, owner_anchor_y),
+                        semantic_vector=_state_unit_vector(state, "e_curr"),
+                        node_vector_by_id=file_node_vectors_by_id,
+                        previous_node_id=str(
+                            state.get("route_prev_node_id", "")
+                        ).strip(),
+                    )
+
+                    if route_node_id:
+                        route_position = nexus_position_by_node_id.get(route_node_id)
+                        if route_position is None and route_node_id in file_node_lookup:
+                            route_meta = file_node_lookup[route_node_id]
+                            route_position = (
+                                _clamp01(_safe_float(route_meta.get("x", px), px)),
+                                _clamp01(_safe_float(route_meta.get("y", py), py)),
+                            )
+                        if isinstance(route_position, tuple):
+                            route_x = _clamp01(_safe_float(route_position[0], px))
+                            route_y = _clamp01(_safe_float(route_position[1], py))
+                            route_dx = route_x - px
+                            route_dy = route_y - py
+                            route_distance = math.sqrt(
+                                (route_dx * route_dx) + (route_dy * route_dy)
+                            )
+                            if route_distance > 1e-6:
+                                gravity_gain = NEXUS_GRAVITY_FLOW_GAIN * (
+                                    0.7
+                                    + (_clamp01(route_probability) * 0.9)
+                                    + (_clamp01(current_balance / 3.0) * 0.6)
+                                )
+                                fx += (route_dx / route_distance) * gravity_gain
+                                fy += (route_dy / route_distance) * gravity_gain
+                                state["route_node_id"] = route_node_id
+                                state["route_probability"] = round(
+                                    _clamp01(route_probability),
+                                    6,
+                                )
+                                state["route_x"] = round(route_x, 6)
+                                state["route_y"] = round(route_y, 6)
+                                state["route_prev_node_id"] = current_node_id
+                    else:
+                        state["route_node_id"] = ""
+                        state["route_probability"] = round(
+                            _clamp01(
+                                _safe_float(state.get("route_probability", 0.0), 0.0)
+                                * 0.82
+                            ),
+                            6,
+                        )
 
                 pref_x = _clamp01(_safe_float(state.get("preferred_x", px), px))
                 pref_y = _clamp01(_safe_float(state.get("preferred_y", py), py))
-                fx += (pref_x - px) * 0.01
-                fy += (pref_y - py) * 0.01
+                fx += (pref_x - px) * NEXUS_PREF_RETURN_GAIN
+                fy += (pref_y - py) * NEXUS_PREF_RETURN_GAIN
                 simplex_phase = now_seconds * 0.23
                 fx += (
                     _simplex_noise_2d(
@@ -2832,7 +3576,7 @@ def build_probabilistic_daimoi_particles(
                         (py * 4.2) + (simplex_phase * 0.67),
                         seed=31,
                     )
-                    * 0.00028
+                    * NEXUS_SIMPLEX_GAIN
                 )
                 fy += (
                     _simplex_noise_2d(
@@ -2840,10 +3584,15 @@ def build_probabilistic_daimoi_particles(
                         (py * 4.2) + 7.0 + simplex_phase,
                         seed=43,
                     )
-                    * 0.00028
+                    * NEXUS_SIMPLEX_GAIN
                 )
-                damping = 0.95
-                speed_cap = 0.0048
+                route_signal = _clamp01(
+                    _safe_float(state.get("route_probability", 0.0), 0.0)
+                )
+                damping = NEXUS_DAMPING
+                speed_cap = NEXUS_SPEED_CAP_BASE + (
+                    route_signal * NEXUS_SPEED_CAP_GRAVITY_GAIN
+                )
             elif is_chaos:
                 fx, fy = _chaos_field_perturbation(px, py, now_seconds, amplitude=0.025)
                 noise_freq = 3.0
@@ -2900,11 +3649,54 @@ def build_probabilistic_daimoi_particles(
                     target_pull = 0.004 + (msg_prob * 0.016)
                     fx += (target_anchor_x - px) * target_pull
                     fy += (target_anchor_y - py) * target_pull
+
+                route_node_id = str(state.get("route_node_id", "")).strip()
+                route_anchor: tuple[float, float] | None = None
+                if route_node_id:
+                    route_anchor = nexus_position_by_node_id.get(route_node_id)
+                    if route_anchor is None and route_node_id in file_node_lookup:
+                        route_meta = file_node_lookup[route_node_id]
+                        route_anchor = (
+                            _clamp01(_safe_float(route_meta.get("x", 0.5), 0.5)),
+                            _clamp01(_safe_float(route_meta.get("y", 0.5), 0.5)),
+                        )
+
+                if route_anchor is not None:
+                    route_x, route_y = route_anchor
+                    route_dx = route_x - px
+                    route_dy = route_y - py
+                    route_distance = math.sqrt(
+                        (route_dx * route_dx) + (route_dy * route_dy)
+                    )
+                    if route_distance > 1e-6:
+                        route_pull = 0.014 + (msg_prob * 0.011)
+                        fx += (route_dx / route_distance) * route_pull
+                        fy += (route_dy / route_distance) * route_pull
+                        state["route_x"] = round(route_x, 6)
+                        state["route_y"] = round(route_y, 6)
+                        state["route_distance"] = round(route_distance, 6)
+                        state["route_probability"] = round(
+                            _clamp01(
+                                _safe_float(state.get("route_probability", 0.0), 0.0)
+                            ),
+                            6,
+                        )
+                        if route_distance <= max(
+                            0.016,
+                            _safe_float(state.get("radius", 0.014), 0.014) * 1.4,
+                        ):
+                            previous_node_id = str(
+                                state.get("graph_node_id", "")
+                            ).strip()
+                            state["graph_node_id"] = route_node_id
+                            state["route_prev_node_id"] = previous_node_id
+                            state["route_node_id"] = ""
+                orbit_gain = 0.00062 if route_anchor is None else 0.00022
                 orbit_phase = (
                     _safe_float(now_seconds, 0.0) * (0.5 + (msg_prob * 0.9))
                 ) + (_stable_ratio(f"{state.get('id', '')}|orbit", age + 1) * math.tau)
-                fx += math.cos(orbit_phase) * 0.00062
-                fy += math.sin(orbit_phase) * 0.00062
+                fx += math.cos(orbit_phase) * orbit_gain
+                fy += math.sin(orbit_phase) * orbit_gain
                 simplex_amp = (
                     0.0002
                     + (msg_prob * 0.00042)
@@ -2933,89 +3725,66 @@ def build_probabilistic_daimoi_particles(
                     0.0052 + ((1.0 - resource_pressure) * 0.0026) + (msg_prob * 0.0014)
                 )
 
-            if not is_chaos and not is_nexus:
-                should_sample_nodes = node_force_stride <= 1 or (
-                    age % node_force_stride == 0
+            if not is_nexus:
+                semantic_vector = _state_unit_vector(state, "e_curr")
+                near_radius = max(
+                    0.03,
+                    _safe_float(
+                        DAIMOI_SEMANTIC_PARTICLE_NEAR_RADIUS,
+                        DAIMOI_SEMANTIC_PARTICLE_NEAR_RADIUS,
+                    ),
                 )
-                if should_sample_nodes:
-                    semantic_vector = _state_unit_vector(state, "e_curr")
-                    nearby_nodes: list[dict[str, Any]] = []
-                    _quadtree_query_radius(
-                        node_tree,
-                        px,
-                        py,
-                        DAIMOI_NODE_INFLUENCE_RADIUS,
-                        nearby_nodes,
+                local_sources: list[dict[str, Any]] = []
+                _quadtree_query_radius(
+                    semantic_tree, px, py, near_radius, local_sources
+                )
+                excluded_ids = {str(state.get("id", "")).strip()}
+                semantic_fx = 0.0
+                semantic_fy = 0.0
+                for local_source in local_sources:
+                    if not isinstance(local_source, dict):
+                        continue
+                    source_id = str(local_source.get("id", "")).strip()
+                    if not source_id or source_id in excluded_ids:
+                        continue
+                    sx = _clamp01(_safe_float(local_source.get("x", px), px))
+                    sy = _clamp01(_safe_float(local_source.get("y", py), py))
+                    sdx = sx - px
+                    sdy = sy - py
+                    pair_dist_sq = (sdx * sdx) + (sdy * sdy)
+                    if pair_dist_sq <= 1e-12 or pair_dist_sq > (
+                        near_radius * near_radius
+                    ):
+                        continue
+                    local_fx, local_fy = _semantic_pair_force(
+                        target_unit=semantic_vector,
+                        dx=sdx,
+                        dy=sdy,
+                        distance_sq=pair_dist_sq,
+                        source_vector=list(local_source.get("vector", [])),
+                        source_weight=max(
+                            0.0,
+                            _safe_float(local_source.get("weight", 1.0), 1.0),
+                        ),
+                        strength_base=DAIMOI_SEMANTIC_PARTICLE_STRENGTH,
                     )
-                    nearby_limit = node_nearby_limit
-                    if len(nearby_nodes) > nearby_limit and nearby_limit > 0:
-                        step = max(
-                            2,
-                            int(
-                                math.ceil(
-                                    float(len(nearby_nodes)) / float(nearby_limit)
-                                )
-                            ),
-                        )
-                        nearby_nodes = nearby_nodes[::step]
+                    semantic_fx += local_fx
+                    semantic_fy += local_fy
+                    excluded_ids.add(source_id)
 
-                    node_fx = 0.0
-                    node_fy = 0.0
-                    for node_data in nearby_nodes:
-                        nx = _safe_float(node_data.get("x", 0.5), 0.5)
-                        ny = _safe_float(node_data.get("y", 0.5), 0.5)
-                        dx = nx - px
-                        if (
-                            dx > DAIMOI_NODE_INFLUENCE_RADIUS
-                            or dx < -DAIMOI_NODE_INFLUENCE_RADIUS
-                        ):
-                            continue
-                        dy = ny - py
-                        if (
-                            dy > DAIMOI_NODE_INFLUENCE_RADIUS
-                            or dy < -DAIMOI_NODE_INFLUENCE_RADIUS
-                        ):
-                            continue
-                        distance_sq = (dx * dx) + (dy * dy)
-                        if distance_sq > (
-                            DAIMOI_NODE_INFLUENCE_RADIUS * DAIMOI_NODE_INFLUENCE_RADIUS
-                        ):
-                            continue
-                        distance = math.sqrt(distance_sq)
-                        if (
-                            distance <= DAIMOI_NODE_INFLUENCE_RADIUS_EPS
-                            or distance > DAIMOI_NODE_INFLUENCE_RADIUS
-                        ):
-                            continue
-                        node_vector = list(node_data.get("vector", []))
-                        embedded_bonus = _safe_float(
-                            node_data.get("embedded_bonus", 0.0), 0.0
-                        )
-                        strength_base = _safe_float(
-                            node_data.get("strength_base", 0.00018), 0.00018
-                        )
-                        similarity = _safe_cosine_unit(semantic_vector, node_vector)
-                        falloff = _clamp01(
-                            1.0 - (distance / DAIMOI_NODE_INFLUENCE_RADIUS)
-                        )
-                        signed = max(
-                            -1.0,
-                            min(
-                                1.0,
-                                (similarity * 0.72) + (embedded_bonus * 0.28) - 0.08,
-                            ),
-                        )
-                        strength = strength_base * falloff
-                        direction = 1.0 if signed >= 0.0 else -1.0
-                        node_fx += (dx / distance) * strength * direction
-                        node_fy += (dy / distance) * strength * direction
-                    state["cached_node_fx"] = node_fx
-                    state["cached_node_fy"] = node_fy
-                    fx += node_fx
-                    fy += node_fy
-                else:
-                    fx += _safe_float(state.get("cached_node_fx", 0.0), 0.0)
-                    fy += _safe_float(state.get("cached_node_fy", 0.0), 0.0)
+                far_fx, far_fy = _barnes_hut_semantic_force(
+                    node=semantic_tree,
+                    target_id=str(state.get("id", "")).strip(),
+                    target_x=px,
+                    target_y=py,
+                    target_unit=semantic_vector,
+                    near_radius=near_radius,
+                    theta=DAIMOI_SEMANTIC_BARNES_HUT_THETA,
+                    strength_base=DAIMOI_SEMANTIC_PARTICLE_STRENGTH,
+                    exclude_ids=excluded_ids,
+                )
+                fx += semantic_fx + far_fx
+                fy += semantic_fy + far_fy
 
             fx += _world_edge_inward_pressure(
                 px,
@@ -3053,6 +3822,10 @@ def build_probabilistic_daimoi_particles(
             state["x"] = next_x
             state["y"] = next_y
             state["ts"] = now_monotonic
+            if is_nexus:
+                node_id = str(state.get("source_node_id", "")).strip()
+                if node_id:
+                    nexus_position_by_node_id[node_id] = (next_x, next_y)
 
         collision_tree_max_items = 16
         if state_count > 760:
@@ -3073,6 +3846,14 @@ def build_probabilistic_daimoi_particles(
             max_radius = max(max_radius, radius_value)
             if not bool(state.get("is_nexus", False)):
                 max_dynamic_radius = max(max_dynamic_radius, radius_value)
+
+        nexus_balance_by_node, nexus_position_by_node = _compute_nexus_balance_maps(
+            states=states,
+            collision_tree=collision_tree,
+            file_node_lookup=file_node_lookup,
+        )
+        if nexus_position_by_node:
+            nexus_position_by_node_id.update(nexus_position_by_node)
 
         semantic_budget = max(220, min(1200, state_count * 2))
         semantic_updates = 0
@@ -3209,72 +3990,200 @@ def build_probabilistic_daimoi_particles(
 
                 # --- COLLISION RESOLUTION ---
 
+                impulse = 0.0
                 if overlap > 0.0:
-                    left_share = mass_right / mass_total
-                    right_share = left_mass / mass_total
-                    left_x = _clamp01(left_x - (nx * overlap * left_share))
-                    left_y = _clamp01(left_y - (ny * overlap * left_share))
-                    right_x = _clamp01(right_x + (nx * overlap * right_share))
-                    right_y = _clamp01(right_y + (ny * overlap * right_share))
-                    left["x"] = left_x
-                    left["y"] = left_y
-                    right["x"] = right_x
-                    right["y"] = right_y
+                    if right_is_nexus:
+                        left_x = _clamp01(left_x - (nx * overlap))
+                        left_y = _clamp01(left_y - (ny * overlap))
+                        left["x"] = left_x
+                        left["y"] = left_y
+                    else:
+                        left_share = mass_right / mass_total
+                        right_share = left_mass / mass_total
+                        left_x = _clamp01(left_x - (nx * overlap * left_share))
+                        left_y = _clamp01(left_y - (ny * overlap * left_share))
+                        right_x = _clamp01(right_x + (nx * overlap * right_share))
+                        right_y = _clamp01(right_y + (ny * overlap * right_share))
+                        left["x"] = left_x
+                        left["y"] = left_y
+                        right["x"] = right_x
+                        right["y"] = right_y
 
                 rvx = _safe_float(right.get("vx", 0.0), 0.0)
                 rvy = _safe_float(right.get("vy", 0.0), 0.0)
 
-                # Special Nexus Handling: Slingshot
+                # Special Nexus handling: collidable routing node.
                 if right_is_nexus:
-                    # If hitting a nexus, check if we should be routed.
-                    # Look up target anchor
+                    current_node_id = str(right.get("source_node_id", "")).strip()
+                    previous_node_id = str(left.get("graph_node_id", "")).strip()
+                    if current_node_id:
+                        left["graph_node_id"] = current_node_id
+                        left["route_prev_node_id"] = previous_node_id
+                        node_balance = max(
+                            0.0,
+                            _safe_float(
+                                nexus_balance_by_node.get(current_node_id, 0.0),
+                                0.0,
+                            ),
+                        )
+                        left["node_balance"] = round(node_balance, 6)
+                        left["node_saturation"] = round(_clamp01(node_balance / 4.0), 6)
+
                     target_id = str(left.get("target", "")).strip()
                     if not target_id:
                         target_id = str(left.get("owner", "")).strip()
 
                     target_anchor = anchors.get(target_id)
-                    slingshot_vx = 0.0
-                    slingshot_vy = 0.0
-
+                    target_xy: tuple[float, float] | None = None
                     if isinstance(target_anchor, dict):
                         tx = _safe_float(target_anchor.get("x", 0.5), 0.5)
                         ty = _safe_float(target_anchor.get("y", 0.5), 0.5)
-                        tdx = tx - right_x
-                        tdy = ty - right_y
-                        tdist = math.sqrt((tdx * tdx) + (tdy * tdy))
-                        if tdist > 1e-6:
-                            # Direction towards target
-                            slingshot_vx = (tdx / tdist) * 0.008
-                            slingshot_vy = (tdy / tdist) * 0.008
+                        target_xy = (_clamp01(tx), _clamp01(ty))
 
-                    # Blend reflection with slingshot
-                    # Calculate reflection first
+                    semantic_connected = False
+                    node_meta = file_node_lookup.get(current_node_id, {})
+                    dominant_presence = str(
+                        node_meta.get("dominant_presence", "")
+                    ).strip()
+                    if (
+                        target_id
+                        and dominant_presence
+                        and dominant_presence == target_id
+                    ):
+                        semantic_connected = True
+
+                    if isinstance(target_anchor, dict):
+                        target_embedding = _normalize_vector(
+                            list(target_anchor.get("embedding", []))
+                        )
+                        semantic_similarity = _safe_cosine_unit(
+                            _state_unit_vector(left, "e_curr"), target_embedding
+                        )
+                        if semantic_similarity >= 0.08:
+                            semantic_connected = True
+
+                    route_node_id = ""
+                    route_probability = 0.0
+                    route_target_x: float | None = None
+                    route_target_y: float | None = None
+                    if (
+                        semantic_connected
+                        and current_node_id
+                        and current_node_id in nexus_adjacency_by_node
+                    ):
+                        route_node_id, route_probability = (
+                            _select_downhill_adjacent_nexus(
+                                current_node_id=current_node_id,
+                                adjacency_by_node=nexus_adjacency_by_node,
+                                node_balance_by_node=nexus_balance_by_node,
+                                node_position_by_node=nexus_position_by_node_id,
+                                target_xy=target_xy,
+                                semantic_vector=_state_unit_vector(left, "e_curr"),
+                                node_vector_by_id=file_node_vectors_by_id,
+                                previous_node_id=str(
+                                    left.get("route_prev_node_id", previous_node_id)
+                                ).strip(),
+                            )
+                        )
+
+                    if route_node_id:
+                        route_position = nexus_position_by_node_id.get(route_node_id)
+                        if route_position is None and route_node_id in file_node_lookup:
+                            route_meta = file_node_lookup[route_node_id]
+                            route_position = (
+                                _clamp01(
+                                    _safe_float(route_meta.get("x", left_x), left_x)
+                                ),
+                                _clamp01(
+                                    _safe_float(route_meta.get("y", left_y), left_y)
+                                ),
+                            )
+                        if isinstance(route_position, tuple):
+                            route_target_x = _clamp01(
+                                _safe_float(route_position[0], left_x)
+                            )
+                            route_target_y = _clamp01(
+                                _safe_float(route_position[1], left_y)
+                            )
+                            left["route_node_id"] = route_node_id
+                            left["route_probability"] = round(route_probability, 6)
+                    else:
+                        left["route_node_id"] = ""
+                        left["route_probability"] = round(
+                            _clamp01(
+                                _safe_float(left.get("route_probability", 0.0), 0.0)
+                                * 0.4
+                            ),
+                            6,
+                        )
+
+                    if route_target_x is None or route_target_y is None:
+                        if isinstance(target_xy, tuple) and len(target_xy) == 2:
+                            route_target_x = _clamp01(_safe_float(target_xy[0], left_x))
+                            route_target_y = _clamp01(_safe_float(target_xy[1], left_y))
+
+                    if route_target_x is not None and route_target_y is not None:
+                        left["route_x"] = round(route_target_x, 6)
+                        left["route_y"] = round(route_target_y, 6)
+                    else:
+                        left.pop("route_x", None)
+                        left.pop("route_y", None)
+
                     relative_normal = ((rvx - left_vx) * nx) + ((rvy - left_vy) * ny)
-                    restitution = 0.5  # Less bouncy on nexus
+                    restitution = 0.42
 
                     if relative_normal < 0.0:
-                        # Bounce
                         impulse = (-(1.0 + restitution) * relative_normal) / (
                             (1.0 / left_mass) + (1.0 / mass_right)
                         )
                         left_vx = left_vx - ((impulse / left_mass) * nx)
                         left_vy = left_vy - ((impulse / left_mass) * ny)
+                    else:
+                        impulse = overlap * 0.01
 
-                    # Apply slingshot (kick)
-                    left_vx = (left_vx * 0.4) + slingshot_vx
-                    left_vy = (left_vy * 0.4) + slingshot_vy
+                    normal_component = (left_vx * nx) + (left_vy * ny)
+                    if normal_component > 0.0:
+                        left_vx = left_vx - (normal_component * nx * 0.82)
+                        left_vy = left_vy - (normal_component * ny * 0.82)
 
-                    # Add a random kick to prevent sticking
-                    kick_angle = (
-                        _stable_ratio(f"{left_id}|kick", left_collision_count)
-                        * math.tau
+                    guide_vx = 0.0
+                    guide_vy = 0.0
+                    if route_target_x is not None and route_target_y is not None:
+                        guide_dx = route_target_x - left_x
+                        guide_dy = route_target_y - left_y
+                        guide_distance = math.sqrt(
+                            (guide_dx * guide_dx) + (guide_dy * guide_dy)
+                        )
+                        if guide_distance > 1e-6:
+                            guide_speed = NEXUS_ROUTE_GUIDE_SPEED_BASE + (
+                                _clamp01(route_probability)
+                                * NEXUS_ROUTE_GUIDE_SPEED_GAIN
+                            )
+                            guide_vx = (guide_dx / guide_distance) * guide_speed
+                            guide_vy = (guide_dy / guide_distance) * guide_speed
+
+                    tangent_sign = (
+                        1.0
+                        if _stable_ratio(
+                            f"{left_id}|{current_node_id}|tangent",
+                            left_collision_count + 17,
+                        )
+                        >= 0.5
+                        else -1.0
                     )
-                    left_vx += math.cos(kick_angle) * 0.002
-                    left_vy += math.sin(kick_angle) * 0.002
+                    tangent_vx = (-ny) * NEXUS_ROUTE_TANGENT_KICK * tangent_sign
+                    tangent_vy = nx * NEXUS_ROUTE_TANGENT_KICK * tangent_sign
+
+                    left_vx = (left_vx * 0.22) + guide_vx + tangent_vx
+                    left_vy = (left_vy * 0.22) + guide_vy + tangent_vy
+                    guided_speed = math.sqrt((left_vx * left_vx) + (left_vy * left_vy))
+                    if guided_speed > NEXUS_ROUTE_MAX_SPEED and guided_speed > 1e-8:
+                        guided_scale = NEXUS_ROUTE_MAX_SPEED / guided_speed
+                        left_vx *= guided_scale
+                        left_vy *= guided_scale
 
                     left["vx"] = left_vx
                     left["vy"] = left_vy
-                    # Nexus doesn't move
 
                 else:
                     # Standard Particle-Particle Collision
@@ -3838,78 +4747,93 @@ def build_probabilistic_daimoi_particles(
                 ),
             }
 
-            output_rows.append(
-                {
-                    "id": str(state.get("id", "")),
-                    "presence_id": owner_id,
-                    "owner_presence_id": owner_id,
-                    "target_presence_id": str(state.get("target", owner_id)),
-                    "source_node_id": str(state.get("source_node_id", "")),
-                    "presence_role": role,
-                    "particle_mode": mode,
-                    "is_nexus": is_nexus,
-                    "record": DAIMOI_PROBABILISTIC_RECORD,
-                    "schema_version": DAIMOI_PROBABILISTIC_SCHEMA,
-                    "packet_record": DAIMOI_PACKET_COMPONENT_RECORD,
-                    "packet_schema_version": DAIMOI_PACKET_COMPONENT_SCHEMA,
-                    "x": round(_clamp01(_safe_float(state.get("x", 0.5), 0.5)), 5),
-                    "y": round(_clamp01(_safe_float(state.get("y", 0.5), 0.5)), 5),
-                    "size": round(
-                        max(0.6, _safe_float(state.get("size", 1.0), 1.0)), 5
-                    ),
-                    "mass": round(
-                        max(0.35, _safe_float(state.get("mass", 0.8), 0.8)), 6
-                    ),
-                    "radius": round(
-                        max(0.01, _safe_float(state.get("radius", 0.014), 0.014)), 6
-                    ),
-                    "vx": round(_safe_float(state.get("vx", 0.0), 0.0), 6),
-                    "vy": round(_safe_float(state.get("vy", 0.0), 0.0), 6),
-                    "r": round(_clamp01(r_raw), 5),
-                    "g": round(_clamp01(g_raw), 5),
-                    "b": round(_clamp01(b_raw), 5),
-                    "message_probability": round(message_prob, 6),
-                    "job_probabilities": _rounded_distribution(job_probs),
-                    "packet_components": packet_components,
-                    "resource_signature": {
-                        resource: round(_clamp01(_safe_float(value, 0.0)), 6)
-                        for resource, value in resource_signature.items()
-                        if str(resource).strip()
-                    },
-                    "absorb_sampler": absorb_sampler_row,
-                    "action_probabilities": _rounded_distribution(
-                        {
-                            "deflect": action_probs.get("deflect", 0.5),
-                            "diffuse": action_probs.get("diffuse", 0.5),
-                        }
-                    ),
-                    "behavior_actions": list(
-                        state.get("behaviors", list(DAIMOI_BEHAVIOR_DEFAULTS))
-                    ),
-                    "top_job": max(
-                        sorted(job_probs.keys()),
-                        key=lambda key: _safe_float(job_probs.get(key, 0.0), 0.0),
-                    )
-                    if job_probs
-                    else "deliver_message",
-                    "package_entropy": round(package_entropy, 6),
-                    "embedding_seed_preview": [
-                        round(_safe_float(value, 0.0), 6)
-                        for value in list(state.get("e_seed", []))[:3]
-                    ],
-                    "embedding_curr_preview": [
-                        round(_safe_float(value, 0.0), 6)
-                        for value in list(state.get("e_curr", []))[:3]
-                    ],
-                    "collision_count": _safe_int(state.get("collisions", 0), 0),
-                    "last_collision_matrix": {
-                        key: round(_safe_float(value, 0.0), 6)
-                        for key, value in dict(
-                            state.get("last_collision_matrix", {})
-                        ).items()
-                    },
-                }
-            )
+            output_row = {
+                "id": str(state.get("id", "")),
+                "presence_id": owner_id,
+                "owner_presence_id": owner_id,
+                "target_presence_id": str(state.get("target", owner_id)),
+                "source_node_id": str(state.get("source_node_id", "")),
+                "graph_node_id": str(state.get("graph_node_id", "")).strip(),
+                "route_node_id": str(state.get("route_node_id", "")).strip(),
+                "node_balance": round(
+                    max(0.0, _safe_float(state.get("node_balance", 0.0), 0.0)),
+                    6,
+                ),
+                "node_saturation": round(
+                    _clamp01(_safe_float(state.get("node_saturation", 0.0), 0.0)),
+                    6,
+                ),
+                "route_probability": round(
+                    _clamp01(_safe_float(state.get("route_probability", 0.0), 0.0)),
+                    6,
+                ),
+                "presence_role": role,
+                "particle_mode": mode,
+                "is_nexus": is_nexus,
+                "record": DAIMOI_PROBABILISTIC_RECORD,
+                "schema_version": DAIMOI_PROBABILISTIC_SCHEMA,
+                "packet_record": DAIMOI_PACKET_COMPONENT_RECORD,
+                "packet_schema_version": DAIMOI_PACKET_COMPONENT_SCHEMA,
+                "x": round(_clamp01(_safe_float(state.get("x", 0.5), 0.5)), 5),
+                "y": round(_clamp01(_safe_float(state.get("y", 0.5), 0.5)), 5),
+                "size": round(max(0.6, _safe_float(state.get("size", 1.0), 1.0)), 5),
+                "mass": round(max(0.35, _safe_float(state.get("mass", 0.8), 0.8)), 6),
+                "radius": round(
+                    max(0.01, _safe_float(state.get("radius", 0.014), 0.014)),
+                    6,
+                ),
+                "vx": round(_safe_float(state.get("vx", 0.0), 0.0), 6),
+                "vy": round(_safe_float(state.get("vy", 0.0), 0.0), 6),
+                "r": round(_clamp01(r_raw), 5),
+                "g": round(_clamp01(g_raw), 5),
+                "b": round(_clamp01(b_raw), 5),
+                "message_probability": round(message_prob, 6),
+                "job_probabilities": _rounded_distribution(job_probs),
+                "packet_components": packet_components,
+                "resource_signature": {
+                    resource: round(_clamp01(_safe_float(value, 0.0)), 6)
+                    for resource, value in resource_signature.items()
+                    if str(resource).strip()
+                },
+                "absorb_sampler": absorb_sampler_row,
+                "action_probabilities": _rounded_distribution(
+                    {
+                        "deflect": action_probs.get("deflect", 0.5),
+                        "diffuse": action_probs.get("diffuse", 0.5),
+                    }
+                ),
+                "behavior_actions": list(
+                    state.get("behaviors", list(DAIMOI_BEHAVIOR_DEFAULTS))
+                ),
+                "top_job": max(
+                    sorted(job_probs.keys()),
+                    key=lambda key: _safe_float(job_probs.get(key, 0.0), 0.0),
+                )
+                if job_probs
+                else "deliver_message",
+                "package_entropy": round(package_entropy, 6),
+                "embedding_seed_preview": [
+                    round(_safe_float(value, 0.0), 6)
+                    for value in list(state.get("e_seed", []))[:3]
+                ],
+                "embedding_curr_preview": [
+                    round(_safe_float(value, 0.0), 6)
+                    for value in list(state.get("e_curr", []))[:3]
+                ],
+                "collision_count": _safe_int(state.get("collisions", 0), 0),
+                "last_collision_matrix": {
+                    key: round(_safe_float(value, 0.0), 6)
+                    for key, value in dict(
+                        state.get("last_collision_matrix", {})
+                    ).items()
+                },
+            }
+            route_x = _safe_float(state.get("route_x", float("nan")), float("nan"))
+            route_y = _safe_float(state.get("route_y", float("nan")), float("nan"))
+            if math.isfinite(route_x) and math.isfinite(route_y):
+                output_row["route_x"] = round(_clamp01(route_x), 6)
+                output_row["route_y"] = round(_clamp01(route_y), 6)
+            output_rows.append(output_row)
 
     active_count = len(output_rows)
     mean_entropy = (

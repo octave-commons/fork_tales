@@ -120,7 +120,6 @@ def main() -> int:
             "-d",
             "--build",
             "chroma",
-            "ollama-loopback-proxy",
             *services,
         ]
         return _run(command, cwd=part_root)

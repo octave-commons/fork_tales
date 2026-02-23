@@ -141,6 +141,12 @@ export const PANEL_ANCHOR_PRESETS: Record<string, PanelAnchorPreset> = {
     pinnedByDefault: true,
     anchorId: "fork_tax_canticle",
   },
+  "nexus.ui.runtime_config": {
+    kind: "region",
+    worldSize: "m",
+    pinnedByDefault: true,
+    anchorId: "health_sentinel_cpu",
+  },
   "nexus.ui.daimoi_presence": {
     kind: "node",
     worldSize: "l",

@@ -364,12 +364,16 @@ def test_canvas_file_graph_positions_are_server_authoritative() -> None:
     assert "computeDocumentLayout" not in canvas_source
     assert "documentLayoutState" not in canvas_source
     assert "fileLayoutById" not in canvas_source
+    assert "normalizeGraphNodePositionMap(" in canvas_source
+    assert "normalizePresenceAnchorPositionMap(" in canvas_source
+    assert "currentSimulation?.presence_dynamics?.graph_node_positions" in canvas_source
     assert (
-        "const graphPositionForNode = (node: any): { x: number; y: number } => ({"
+        "simulationRef.current?.presence_dynamics?.presence_anchor_positions"
         in canvas_source
     )
-    assert "x: clamp01(Number(node?.x ?? 0.5))" in canvas_source
-    assert "y: clamp01(Number(node?.y ?? 0.5))" in canvas_source
+    assert (
+        "const backendNodePosition = graphNodePositionMap.get(nodeId);" in canvas_source
+    )
     assert "p += vec3(" not in canvas_source
     assert "clip.xy += forceDir" not in canvas_source
     assert "vec3 p = aPos;" in canvas_source
@@ -522,33 +526,33 @@ def test_chat_reply_multi_entity_canonical_trace() -> None:
     assert payload["trace"]["entities"][0]["status"] == "ok"
 
 
-def test_chat_reply_multi_entity_ollama_trace_with_stub() -> None:
+def test_chat_reply_multi_entity_llm_trace_with_stub() -> None:
     def fake_generate(_prompt: str) -> tuple[str | None, str]:
         return "[[PULSE]] I sing in mirrored witness.", "test-model"
 
     payload = build_chat_reply(
         [{"role": "user", "text": "witness this"}],
-        mode="ollama",
+        mode="llm",
         multi_entity=True,
         presence_ids=["witness_thread"],
         generate_text_fn=fake_generate,
     )
 
-    assert payload["mode"] == "ollama"
+    assert payload["mode"] == "llm"
     assert payload["model"] == "test-model"
     assert "trace" in payload
-    assert payload["trace"]["entities"][0]["mode"] == "ollama"
+    assert payload["trace"]["entities"][0]["mode"] == "llm"
     assert payload["trace"]["entities"][0]["status"] == "ok"
     assert "[[PULSE]]" in payload["trace"]["overlay_tags"]
 
 
-def test_chat_reply_multi_entity_ollama_falls_back_per_presence() -> None:
+def test_chat_reply_multi_entity_llm_falls_back_per_presence() -> None:
     def fake_generate(_prompt: str) -> tuple[str | None, str]:
         return None, "test-model"
 
     payload = build_chat_reply(
         [{"role": "user", "text": "tell me about receipts"}],
-        mode="ollama",
+        mode="llm",
         multi_entity=True,
         presence_ids=["receipt_river"],
         generate_text_fn=fake_generate,
@@ -661,9 +665,11 @@ def test_witness_lineage_payload_reports_ahead_behind_when_upstream_present(
     assert payload["continuity_drift"]["code"] == "behind_upstream"
 
 
-def test_embedding_backend_accepts_tensorflow(monkeypatch: Any) -> None:
+def test_embedding_backend_maps_legacy_values_to_auto(monkeypatch: Any) -> None:
     monkeypatch.setenv("EMBEDDINGS_BACKEND", "tensorflow")
-    assert world_web_module._embedding_backend() == "tensorflow"
+    assert world_web_module._embedding_backend() == "auto"
+    monkeypatch.setenv("EMBEDDINGS_BACKEND", "ollama")
+    assert world_web_module._embedding_backend() == "auto"
 
 
 def test_text_generation_backend_accepts_tensorflow(monkeypatch: Any) -> None:
@@ -685,34 +691,46 @@ def test_ollama_generate_text_uses_tensorflow_backend_when_selected(
 ) -> None:
     monkeypatch.setenv("TEXT_GENERATION_BACKEND", "tensorflow")
 
-    def _fake_tf_generate(
-        prompt: str, model: str | None = None, timeout_s: float | None = None
+    def _fake_tf(
+        prompt: str,
+        model: str | None = None,
+        timeout_s: float | None = None,
     ) -> tuple[str | None, str]:
-        assert "blocked" in prompt
+        assert prompt == "blocked gate signal"
         assert model is None
         assert timeout_s is None
-        return "tf line", "tensorflow-hash-v1"
+        return "tf-route", "tensorflow-hash-v1"
 
-    monkeypatch.setattr(
-        world_web_module, "_tensorflow_generate_text", _fake_tf_generate
-    )
+    monkeypatch.setattr(world_web_module, "_tensorflow_generate_text", _fake_tf)
+
     text, model = world_web_module._ollama_generate_text("blocked gate signal")
-    assert text == "tf line"
+    assert text == "tf-route"
     assert model == "tensorflow-hash-v1"
 
 
-def test_ollama_embed_uses_tensorflow_backend_when_selected(
+def test_ollama_embed_uses_torch_backend_when_selected(
     monkeypatch: Any,
 ) -> None:
-    monkeypatch.setenv("EMBEDDINGS_BACKEND", "tensorflow")
+    monkeypatch.setenv("EMBEDDINGS_BACKEND", "torch")
     expected = [0.1, 0.2, 0.3]
 
-    def _fake_tf_embed(text: str, model: str | None = None) -> list[float] | None:
+    def _fake_torch_embed(
+        text: str,
+        model: str | None = None,
+        *,
+        record_job: bool = True,
+    ) -> list[float] | None:
         assert text == "drift gate"
         assert model is None
+        assert record_job is False
         return expected
 
-    monkeypatch.setattr(world_web_module, "_tensorflow_embed", _fake_tf_embed)
+    monkeypatch.setattr(
+        world_web_module,
+        "_torch_embed",
+        _fake_torch_embed,
+        raising=False,
+    )
     result = world_web_module._ollama_embed("drift gate")
     assert result == expected
 
@@ -720,11 +738,14 @@ def test_ollama_embed_uses_tensorflow_backend_when_selected(
 def test_ollama_embed_records_compute_job_event(monkeypatch: Any) -> None:
     tracker = RuntimeInfluenceTracker()
     monkeypatch.setattr(world_web_module, "_INFLUENCE_TRACKER", tracker)
-    monkeypatch.setenv("EMBEDDINGS_BACKEND", "tensorflow")
+    monkeypatch.setenv("EMBEDDINGS_BACKEND", "torch")
     monkeypatch.setattr(
         world_web_module,
-        "_tensorflow_embed",
-        lambda text, model=None: [0.2, 0.4] if text == "job probe" else None,
+        "_torch_embed",
+        lambda text, model=None, record_job=True: [0.2, 0.4]
+        if text == "job probe"
+        else None,
+        raising=False,
     )
 
     result = world_web_module._ollama_embed("job probe")
@@ -742,26 +763,43 @@ def test_ollama_generate_text_records_compute_job_event(monkeypatch: Any) -> Non
     monkeypatch.setattr(world_web_module, "_INFLUENCE_TRACKER", tracker)
     monkeypatch.setenv("TEXT_GENERATION_BACKEND", "tensorflow")
 
-    def _fake_tf_generate(
-        prompt: str, model: str | None = None, timeout_s: float | None = None
-    ) -> tuple[str | None, str]:
-        del model, timeout_s
-        if "gate" not in prompt:
-            return None, "tensorflow-hash-v1"
-        return "tf guidance", "tensorflow-hash-v1"
-
     monkeypatch.setattr(
-        world_web_module, "_tensorflow_generate_text", _fake_tf_generate
+        world_web_module,
+        "_tensorflow_generate_text",
+        lambda prompt, model=None, timeout_s=None: ("tf-route", "tensorflow-hash-v1"),
     )
+
     text, model = world_web_module._ollama_generate_text("gate remains blocked")
-    assert text == "tf guidance"
+    assert text == "tf-route"
     assert model == "tensorflow-hash-v1"
     snapshot = tracker.snapshot(queue_snapshot={"pending_count": 0, "event_count": 0})
     assert snapshot.get("compute_summary", {}).get("llm_jobs") == 1
     jobs = snapshot.get("compute_jobs", [])
     assert isinstance(jobs, list)
     assert jobs[0].get("kind") == "llm"
-    assert str(jobs[0].get("op", "")).startswith("text_generate.")
+    assert jobs[0].get("op") == "text_generate.tensorflow"
+    assert jobs[0].get("status") == "ok"
+
+
+def test_ollama_generate_text_uses_vllm_backend_when_selected(monkeypatch: Any) -> None:
+    monkeypatch.setenv("TEXT_GENERATION_BACKEND", "vllm")
+    monkeypatch.setenv("TEXT_GENERATION_MODEL", "qwen3-vl:local")
+
+    def _fake_remote(
+        prompt: str,
+        model: str | None = None,
+        timeout_s: float | None = None,
+    ) -> tuple[str | None, str]:
+        assert prompt == "vllm runtime prompt"
+        assert model is None
+        assert timeout_s is None
+        return "vllm-runtime-output", "qwen3-vl:local"
+
+    monkeypatch.setattr(world_web_module, "_ollama_generate_text_remote", _fake_remote)
+
+    text, model = world_web_module._ollama_generate_text("vllm runtime prompt")
+    assert text == "vllm-runtime-output"
+    assert model == "qwen3-vl:local"
 
 
 def test_resource_monitor_snapshot_reports_devices_and_auto_backend(
@@ -799,13 +837,19 @@ def test_ollama_embed_auto_uses_resource_selected_order(monkeypatch: Any) -> Non
     monkeypatch.setattr(
         world_web_module,
         "_resource_auto_embedding_order",
-        lambda snapshot=None: ["tensorflow", "openvino", "ollama"],
+        lambda snapshot=None: ["torch", "openvino"],
     )
 
-    def _fake_tf_embed(text: str, model: str | None = None) -> list[float] | None:
+    def _fake_torch_embed(
+        text: str,
+        model: str | None = None,
+        *,
+        record_job: bool = True,
+    ) -> list[float] | None:
         assert text == "resource route"
         assert model is None
-        calls.append("tensorflow")
+        assert record_job is False
+        calls.append("torch")
         return [0.6, 0.8]
 
     def _fake_openvino_embed(
@@ -815,37 +859,38 @@ def test_ollama_embed_auto_uses_resource_selected_order(monkeypatch: Any) -> Non
         calls.append("openvino")
         return None
 
-    def _fake_remote_embed(text: str, model: str | None = None) -> list[float] | None:
-        calls.append("ollama")
-        return None
-
-    monkeypatch.setattr(world_web_module, "_tensorflow_embed", _fake_tf_embed)
+    monkeypatch.setattr(
+        world_web_module,
+        "_torch_embed",
+        _fake_torch_embed,
+        raising=False,
+    )
     monkeypatch.setattr(world_web_module, "_openvino_embed", _fake_openvino_embed)
-    monkeypatch.setattr(world_web_module, "_ollama_embed_remote", _fake_remote_embed)
 
     result = world_web_module._ollama_embed("resource route")
     assert result == [0.6, 0.8]
-    assert calls == ["tensorflow"]
+    assert calls == ["torch"]
 
 
 def test_ollama_generate_text_auto_uses_resource_selected_order(
     monkeypatch: Any,
 ) -> None:
     monkeypatch.setenv("TEXT_GENERATION_BACKEND", "auto")
+    monkeypatch.setenv("TEXT_GENERATION_MODEL", "qwen3-vl:local")
     calls: list[str] = []
 
     monkeypatch.setattr(
         world_web_module,
         "_resource_auto_text_order",
-        lambda snapshot=None: ["ollama", "tensorflow"],
+        lambda snapshot=None: ["openvino", "tensorflow"],
     )
 
     def _fake_remote(
         prompt: str, model: str | None = None, timeout_s: float | None = None
     ) -> tuple[str | None, str]:
         assert "route" in prompt
-        calls.append("ollama")
-        return None, "ollama-route"
+        calls.append("openvino")
+        return None, "openvino-route"
 
     def _fake_tf(
         prompt: str, model: str | None = None, timeout_s: float | None = None
@@ -859,7 +904,7 @@ def test_ollama_generate_text_auto_uses_resource_selected_order(
     text, model = world_web_module._ollama_generate_text("route this prompt")
     assert text == "tf-route"
     assert model == "tensorflow-hash-v1"
-    assert calls == ["ollama", "tensorflow"]
+    assert calls == ["openvino", "tensorflow"]
 
 
 def test_presence_say_payload_supports_health_sentinel_resource_facts() -> None:
@@ -1055,7 +1100,7 @@ def test_build_image_commentary_falls_back_without_ollama(
         prompt="Summarize this image",
     )
     assert payload["ok"] is True
-    assert payload["backend"] == "tensorflow-fallback"
+    assert payload["backend"] == "vllm-fallback"
     assert "witness_thread" in str(payload.get("commentary", ""))
 
 
@@ -1119,16 +1164,14 @@ def test_eta_mu_image_derive_segment_adds_vllm_caption_for_embedding(
 
     assert segment.get("vision_backend") == "vllm"
     assert segment.get("vision_model") == "Qwen/Qwen2.5-VL-3B-Instruct"
-    assert "vision-caption=" in str(segment.get("text", ""))
+    assert segment.get("vision_error") in {"", None}
     assert "rocky coastline" in str(segment.get("vision_caption", "")).lower()
-
+    assert "vision-caption=" in str(segment.get("text", ""))
     assert len(calls) == 1
     assert calls[0]["url"] == "http://vllm.local:8001/v1/chat/completions"
-    assert calls[0]["headers"].get("authorization") == "Bearer test-key"
     assert calls[0]["timeout"] == 7.0
-    content_rows = calls[0]["payload"]["messages"][0]["content"]
-    assert content_rows[1]["type"] == "image_url"
-    assert str(content_rows[1]["image_url"]["url"]).startswith("data:image/png;base64,")
+    assert calls[0]["payload"].get("model") == "Qwen/Qwen2.5-VL-3B-Instruct"
+    assert calls[0]["headers"].get("x-api-key") == "test-key"
 
 
 def test_eta_mu_image_derive_segment_reports_vllm_unconfigured_when_enabled(
@@ -1138,6 +1181,9 @@ def test_eta_mu_image_derive_segment_reports_vllm_unconfigured_when_enabled(
 
     monkeypatch.setenv("ETA_MU_IMAGE_VISION_ENABLED", "1")
     monkeypatch.delenv("ETA_MU_IMAGE_VISION_BASE_URL", raising=False)
+    monkeypatch.delenv("TEXT_GENERATION_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENVINO_CHAT_ENDPOINT", raising=False)
+    monkeypatch.delenv("OPENVINO_EMBED_ENDPOINT", raising=False)
 
     segment = ai_module._eta_mu_image_derive_segment(
         source_hash="abc123",
@@ -1148,7 +1194,7 @@ def test_eta_mu_image_derive_segment_reports_vllm_unconfigured_when_enabled(
     )
 
     assert segment.get("vision_backend") == "vllm"
-    assert segment.get("vision_error") == "vllm_base_url_unset"
+    assert segment.get("vision_error") == "vision_unconfigured"
     assert "vision-caption=" not in str(segment.get("text", ""))
 
 
@@ -3510,6 +3556,47 @@ def test_simulation_ws_normalize_delta_stream_mode_aliases() -> None:
     assert server_module._simulation_ws_normalize_delta_stream_mode("world") == "world"
 
 
+def test_simulation_ws_normalize_payload_mode_aliases() -> None:
+    from code.world_web import server as server_module
+
+    assert server_module._simulation_ws_normalize_payload_mode("full") == "full"
+    assert server_module._simulation_ws_normalize_payload_mode("debug") == "full"
+    assert server_module._simulation_ws_normalize_payload_mode("trimmed") == "trimmed"
+    assert server_module._simulation_ws_normalize_payload_mode("") == "trimmed"
+
+
+def test_simulation_ws_chunk_messages_round_trip() -> None:
+    from code.world_web import server as server_module
+
+    payload: dict[str, Any] = {
+        "type": "simulation",
+        "simulation": {
+            "timestamp": "2026-02-23T00:00:00Z",
+            "points": [
+                {
+                    "id": f"pt:{index}",
+                    "x": round(index / 300.0, 6),
+                    "y": round((300 - index) / 300.0, 6),
+                }
+                for index in range(320)
+            ],
+        },
+    }
+
+    rows = server_module._simulation_ws_chunk_messages(
+        payload,
+        chunk_chars=320,
+        message_seq=11,
+    )
+    assert len(rows) > 1
+    assert all(str(row.get("type", "")) == "ws_chunk" for row in rows)
+    assert all(str(row.get("chunk_payload_type", "")) == "simulation" for row in rows)
+
+    ordered_rows = sorted(rows, key=lambda row: int(row.get("chunk_index", -1)))
+    merged_text = "".join(str(row.get("payload", "")) for row in ordered_rows)
+    assert json.loads(merged_text) == payload
+
+
 def test_ws_wire_mode_normalization_aliases() -> None:
     from code.world_web import server as server_module
 
@@ -3590,6 +3677,8 @@ def test_simulation_ws_split_delta_by_worker_splits_presence_dynamics() -> None:
             "daimoi": {"active": 1},
             "presence_dynamics": {
                 "field_particles": [{"id": "dm-1"}],
+                "graph_node_positions": {"node-1": {"x": 0.3, "y": 0.7}},
+                "presence_anchor_positions": {"witness_thread": {"x": 0.6, "y": 0.4}},
                 "resource_heartbeat": {"devices": {"cpu": {"utilization": 12.0}}},
                 "user_presence": {"id": "user"},
             },
@@ -3620,6 +3709,12 @@ def test_simulation_ws_split_delta_by_worker_splits_presence_dynamics() -> None:
     assert by_worker["sim-particles"]["patch"].get("presence_dynamics", {}).get(
         "field_particles", []
     ) == [{"id": "dm-1"}]
+    assert by_worker["sim-particles"]["patch"].get("presence_dynamics", {}).get(
+        "graph_node_positions", {}
+    ) == {"node-1": {"x": 0.3, "y": 0.7}}
+    assert by_worker["sim-particles"]["patch"].get("presence_dynamics", {}).get(
+        "presence_anchor_positions", {}
+    ) == {"witness_thread": {"x": 0.6, "y": 0.4}}
     assert by_worker["sim-resource"]["patch"].get("presence_dynamics", {}).get(
         "resource_heartbeat", {}
     ) == {"devices": {"cpu": {"utilization": 12.0}}}
@@ -4210,7 +4305,92 @@ def test_embeddings_db_upsert_is_idempotent_for_same_payload() -> None:
         assert len(upsert_rows) == 1
 
 
-def test_ollama_embed_falls_back_to_api_embed(monkeypatch: Any) -> None:
+def test_ollama_embed_remote_falls_back_to_api_embed(monkeypatch: Any) -> None:
+    calls: list[dict[str, str]] = []
+
+    def fake_c_embed(text: str, *, requested_device: str | None = None) -> list[float]:
+        calls.append({"text": text, "device": str(requested_device or "")})
+        return [0.1, 0.2, 0.3]
+
+    monkeypatch.setitem(
+        world_web_module._ollama_embed_remote.__globals__,
+        "_c_embed_text_24",
+        fake_c_embed,
+    )
+    monkeypatch.setenv("EMBEDDINGS_BACKEND", "openvino")
+
+    vector = world_web_module._ollama_embed_remote("witness probe")
+
+    assert vector == [0.1, 0.2, 0.3]
+    assert calls == [{"text": "witness probe", "device": "NPU"}]
+
+
+def test_ollama_embed_remote_prefers_explicit_model_over_env(monkeypatch: Any) -> None:
+    calls: list[dict[str, str]] = []
+
+    def fake_c_embed(text: str, *, requested_device: str | None = None) -> list[float]:
+        calls.append({"text": text, "device": str(requested_device or "")})
+        return [0.4, 0.5, 0.6]
+
+    monkeypatch.setitem(
+        world_web_module._ollama_embed_remote.__globals__,
+        "_c_embed_text_24",
+        fake_c_embed,
+    )
+    monkeypatch.setenv("EMBEDDINGS_BACKEND", "torch")
+
+    vector = world_web_module._ollama_embed_remote("gate probe", model="arg-model")
+
+    assert vector == [0.4, 0.5, 0.6]
+    assert calls == [{"text": "gate probe", "device": "GPU"}]
+
+
+def test_ollama_embed_remote_force_nomic_with_small_context(monkeypatch: Any) -> None:
+    seen_rows: list[dict[str, str]] = []
+
+    def fake_c_embed(text: str, *, requested_device: str | None = None) -> list[float]:
+        seen_rows.append({"text": text, "device": str(requested_device or "")})
+        return [0.7, 0.8, 0.9]
+
+    monkeypatch.setitem(
+        world_web_module._ollama_embed_remote.__globals__,
+        "_c_embed_text_24",
+        fake_c_embed,
+    )
+    monkeypatch.setenv("EMBEDDINGS_BACKEND", "openvino")
+    monkeypatch.setenv("OLLAMA_EMBED_MAX_CHARS", "6")
+
+    vector = world_web_module._ollama_embed_remote("abcdefghi", model="arg-model")
+
+    assert vector == [0.7, 0.8, 0.9]
+    assert seen_rows == [{"text": "abcdef", "device": "NPU"}]
+
+
+def test_ollama_embed_remote_includes_gpu_options_when_configured(
+    monkeypatch: Any,
+) -> None:
+    calls: list[dict[str, str]] = []
+
+    def fake_c_embed(text: str, *, requested_device: str | None = None) -> list[float]:
+        calls.append({"text": text, "device": str(requested_device or "")})
+        return [0.3, 0.4, 0.5]
+
+    monkeypatch.setitem(
+        world_web_module._ollama_embed_remote.__globals__,
+        "_c_embed_text_24",
+        fake_c_embed,
+    )
+    monkeypatch.setenv("EMBEDDINGS_BACKEND", "torch")
+
+    vector = world_web_module._ollama_embed_remote("gpu configured")
+
+    assert vector == [0.3, 0.4, 0.5]
+    assert calls == [{"text": "gpu configured", "device": "GPU"}]
+
+
+def test_ollama_generate_remote_includes_gpu_options_when_configured(
+    monkeypatch: Any,
+) -> None:
     class _FakeResponse:
         def __init__(self, payload: dict[str, Any]) -> None:
             self._payload = payload
@@ -4235,169 +4415,30 @@ def test_ollama_embed_falls_back_to_api_embed(monkeypatch: Any) -> None:
                 "payload": payload,
             }
         )
-        if str(req.full_url).endswith("/api/embeddings"):
-            raise world_web_module.URLError("not found")
-        if str(req.full_url).endswith("/api/embed"):
-            return _FakeResponse({"embeddings": [[0.1, 0.2, 0.3]]})
-        raise AssertionError(f"unexpected url: {req.full_url}")
+        return _FakeResponse(
+            {
+                "model": "qwen3-vl:4b-instruct",
+                "choices": [{"message": {"content": "gpu response"}}],
+            }
+        )
 
     monkeypatch.setattr(world_web_module, "urlopen", fake_urlopen)
-    monkeypatch.setenv("OLLAMA_BASE_URL", "http://stub.local:11434")
-    monkeypatch.setenv("OLLAMA_EMBED_MODEL", "stub-embed-model")
-    monkeypatch.setenv("OLLAMA_TIMEOUT_SEC", "2")
-
-    vector = world_web_module._ollama_embed("witness probe")
-
-    assert vector == [0.1, 0.2, 0.3]
-    assert len(calls) == 2
-    assert calls[0]["url"].endswith("/api/embeddings")
-    assert calls[0]["payload"] == {
-        "model": "stub-embed-model",
-        "prompt": "witness probe",
-    }
-    assert calls[1]["url"].endswith("/api/embed")
-    assert calls[1]["payload"] == {
-        "model": "stub-embed-model",
-        "input": "witness probe",
-    }
-
-
-def test_ollama_embed_prefers_explicit_model_over_env(monkeypatch: Any) -> None:
-    class _FakeResponse:
-        def __enter__(self) -> "_FakeResponse":
-            return self
-
-        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return json.dumps({"embedding": [0.4, 0.5, 0.6]}).encode("utf-8")
-
-    seen_models: list[str] = []
-
-    def fake_urlopen(req: Any, timeout: float = 0.0) -> _FakeResponse:
-        _ = timeout
-        payload = json.loads((req.data or b"{}").decode("utf-8"))
-        seen_models.append(str(payload.get("model", "")))
-        return _FakeResponse()
-
-    monkeypatch.setattr(world_web_module, "urlopen", fake_urlopen)
-    monkeypatch.setenv("OLLAMA_BASE_URL", "http://stub.local:11434")
-    monkeypatch.setenv("OLLAMA_EMBED_MODEL", "env-model")
-
-    vector = world_web_module._ollama_embed("gate probe", model="arg-model")
-
-    assert vector == [0.4, 0.5, 0.6]
-    assert seen_models == ["arg-model"]
-
-
-def test_ollama_embed_force_nomic_with_small_context(monkeypatch: Any) -> None:
-    class _FakeResponse:
-        def __enter__(self) -> "_FakeResponse":
-            return self
-
-        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return json.dumps({"embedding": [0.7, 0.8, 0.9]}).encode("utf-8")
-
-    seen_payloads: list[dict[str, Any]] = []
-
-    def fake_urlopen(req: Any, timeout: float = 0.0) -> _FakeResponse:
-        _ = timeout
-        payload = json.loads((req.data or b"{}").decode("utf-8"))
-        seen_payloads.append(payload)
-        return _FakeResponse()
-
-    monkeypatch.setattr(world_web_module, "urlopen", fake_urlopen)
-    monkeypatch.setenv("OLLAMA_BASE_URL", "http://stub.local:11434")
-    monkeypatch.setenv("OLLAMA_EMBED_MODEL", "qwen3-embedding:8b")
-    monkeypatch.setenv("OLLAMA_EMBED_FORCE_NOMIC", "1")
-    monkeypatch.setenv("OLLAMA_EMBED_NUM_CTX", "512")
-    monkeypatch.setenv("OLLAMA_EMBED_MAX_CHARS", "6")
-
-    vector = world_web_module._ollama_embed("abcdefghi", model="arg-model")
-
-    assert vector == [0.7, 0.8, 0.9]
-    assert seen_payloads[0]["model"] == "nomic-embed-text"
-    assert seen_payloads[0]["prompt"] == "abcdef"
-    assert seen_payloads[0]["options"] == {"num_ctx": 512}
-
-
-def test_ollama_embed_includes_gpu_options_when_configured(monkeypatch: Any) -> None:
-    class _FakeResponse:
-        def __enter__(self) -> "_FakeResponse":
-            return self
-
-        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return json.dumps({"embedding": [0.3, 0.4, 0.5]}).encode("utf-8")
-
-    seen_payloads: list[dict[str, Any]] = []
-
-    def fake_urlopen(req: Any, timeout: float = 0.0) -> _FakeResponse:
-        _ = timeout
-        payload = json.loads((req.data or b"{}").decode("utf-8"))
-        seen_payloads.append(payload)
-        return _FakeResponse()
-
-    monkeypatch.setattr(world_web_module, "urlopen", fake_urlopen)
-    monkeypatch.setenv("OLLAMA_BASE_URL", "http://stub.local:11434")
-    monkeypatch.setenv("OLLAMA_NUM_GPU", "2")
-    monkeypatch.setenv("OLLAMA_MAIN_GPU", "1")
-    monkeypatch.setenv("OLLAMA_EMBED_NUM_CTX", "256")
-
-    vector = world_web_module._ollama_embed("gpu configured")
-
-    assert vector == [0.3, 0.4, 0.5]
-    assert seen_payloads[0].get("options") == {
-        "num_gpu": 2,
-        "main_gpu": 1,
-        "num_ctx": 256,
-    }
-
-
-def test_ollama_generate_remote_includes_gpu_options_when_configured(
-    monkeypatch: Any,
-) -> None:
-    class _FakeResponse:
-        def __enter__(self) -> "_FakeResponse":
-            return self
-
-        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return json.dumps({"response": "gpu path active"}).encode("utf-8")
-
-    seen_payloads: list[dict[str, Any]] = []
-
-    def fake_urlopen(req: Any, timeout: float = 0.0) -> _FakeResponse:
-        _ = timeout
-        payload = json.loads((req.data or b"{}").decode("utf-8"))
-        seen_payloads.append(payload)
-        return _FakeResponse()
-
-    monkeypatch.setattr(world_web_module, "urlopen", fake_urlopen)
-    monkeypatch.setenv("OLLAMA_BASE_URL", "http://stub.local:11434")
-    monkeypatch.setenv("OLLAMA_MODEL", "qwen3-vl:4b-instruct")
-    monkeypatch.setenv("OLLAMA_NUM_GPU", "1")
-    monkeypatch.setenv("OLLAMA_MAIN_GPU", "0")
+    monkeypatch.setenv("TEXT_GENERATION_BASE_URL", "http://vllm.local:8000")
+    monkeypatch.setenv("TEXT_GENERATION_MODEL", "qwen3-vl:4b-instruct")
+    monkeypatch.setenv("TEXT_GENERATION_DEVICE", "GPU")
 
     text, model = world_web_module._ollama_generate_text_remote("gpu prompt")
 
-    assert text == "gpu path active"
+    assert text == "gpu response"
     assert model == "qwen3-vl:4b-instruct"
-    assert seen_payloads[0].get("options") == {"num_gpu": 1, "main_gpu": 0}
+    assert len(calls) == 1
+    assert calls[0]["url"] == "http://vllm.local:8000/v1/chat/completions"
+    assert calls[0]["payload"].get("extra_body", {}).get("device") == "GPU"
 
 
 def test_resource_auto_embedding_order_prefers_hardware_backends(
     monkeypatch: Any,
 ) -> None:
-    monkeypatch.delenv("EMBED_ALLOW_CPU_FALLBACK", raising=False)
     order = world_web_module._resource_auto_embedding_order(
         snapshot={
             "devices": {
@@ -4409,8 +4450,7 @@ def test_resource_auto_embedding_order_prefers_hardware_backends(
     )
 
     assert order[0] == "openvino"
-    assert "ollama" in order
-    assert "tensorflow" not in order
+    assert "torch" in order
 
 
 def test_effective_request_embed_model_honors_force_nomic(monkeypatch: Any) -> None:
@@ -4432,53 +4472,26 @@ def test_effective_request_embed_model_honors_force_nomic(monkeypatch: Any) -> N
 def test_openvino_embed_uses_local_endpoint_device_and_normalization(
     monkeypatch: Any,
 ) -> None:
-    class _FakeResponse:
-        def __init__(self, payload: dict[str, Any]) -> None:
-            self._payload = payload
+    calls: list[dict[str, str]] = []
 
-        def __enter__(self) -> "_FakeResponse":
-            return self
+    def fake_c_embed(text: str, *, requested_device: str | None = None) -> list[float]:
+        calls.append({"text": text, "device": str(requested_device or "")})
+        return [0.6, 0.8]
 
-        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return json.dumps(self._payload).encode("utf-8")
-
-    calls: list[dict[str, Any]] = []
-
-    def fake_urlopen(req: Any, timeout: float = 0.0) -> _FakeResponse:
-        payload = json.loads((req.data or b"{}").decode("utf-8"))
-        headers = {str(k).lower(): str(v) for k, v in req.header_items()}
-        calls.append(
-            {
-                "url": str(req.full_url),
-                "timeout": timeout,
-                "payload": payload,
-                "headers": headers,
-            }
-        )
-        return _FakeResponse({"embedding": [3.0, 4.0]})
-
-    monkeypatch.setattr(world_web_module, "urlopen", fake_urlopen)
-    monkeypatch.setenv("OPENVINO_EMBED_ENDPOINT", "http://ov.local:18000/v1/embeddings")
+    monkeypatch.setitem(
+        world_web_module._openvino_embed.__globals__,
+        "_c_embed_text_24",
+        fake_c_embed,
+    )
     monkeypatch.setenv("OPENVINO_EMBED_DEVICE", "NPU")
-    monkeypatch.setenv("OPENVINO_EMBED_MODEL", "nomic-embed-text")
-    monkeypatch.setenv("OPENVINO_EMBED_TIMEOUT_SEC", "7")
     monkeypatch.setenv("OPENVINO_EMBED_MAX_CHARS", "5")
-    monkeypatch.setenv("OPENVINO_EMBED_NORMALIZE", "1")
-    monkeypatch.setenv("OPENVINO_EMBED_BEARER_TOKEN", "secret-token")
 
     vector = world_web_module._openvino_embed("abcdefghi")
 
     assert vector is not None
-    assert len(calls) >= 1
-    assert calls[0]["url"].endswith("/v1/embeddings")
-    assert calls[0]["payload"]["model"] == "nomic-embed-text"
-    assert calls[0]["payload"]["input"] == ["abcde"]
-    assert calls[0]["payload"]["options"]["device"] == "NPU"
-    assert calls[0]["headers"]["authorization"] == "Bearer secret-token"
-    assert calls[0]["timeout"] == 7.0
+    assert len(calls) == 1
+    assert calls[0]["text"] == "abcde"
+    assert calls[0]["device"] == "NPU"
     assert abs(vector[0] - 0.6) < 1e-6
     assert abs(vector[1] - 0.8) < 1e-6
 
@@ -4486,20 +4499,19 @@ def test_openvino_embed_uses_local_endpoint_device_and_normalization(
 def test_apply_embedding_provider_options_supports_gpu_and_npu_presets(
     monkeypatch: Any,
 ) -> None:
-    monkeypatch.setenv("EMBEDDINGS_BACKEND", "ollama")
+    monkeypatch.setenv("EMBEDDINGS_BACKEND", "auto")
     monkeypatch.setenv("OLLAMA_EMBED_FORCE_NOMIC", "0")
     monkeypatch.setenv("OPENVINO_EMBED_DEVICE", "CPU")
 
     gpu_result = world_web_module._apply_embedding_provider_options(
         {
             "preset": "gpu_local",
-            "ollama_embed_num_ctx": 384,
+            "cuda_model": "nomic-ai/nomic-embed-text-v1.5",
         }
     )
     assert gpu_result.get("ok") is True
-    assert os.getenv("EMBEDDINGS_BACKEND") == "ollama"
-    assert os.getenv("OLLAMA_EMBED_FORCE_NOMIC") == "1"
-    assert os.getenv("OLLAMA_EMBED_NUM_CTX") == "384"
+    assert os.getenv("EMBEDDINGS_BACKEND") == "torch"
+    assert os.getenv("TORCH_EMBED_MODEL") == "nomic-ai/nomic-embed-text-v1.5"
 
     npu_result = world_web_module._apply_embedding_provider_options(
         {

@@ -277,7 +277,8 @@ async function installRuntimeMocks(page: Page): Promise<void> {
         onclose: ((event: Event) => void) | null = null;
         onerror: ((event: Event) => void) | null = null;
 
-        constructor(_url: string | URL) {
+        constructor(url: string | URL) {
+          void url;
           window.setTimeout(() => {
             this.readyState = MockWebSocket.OPEN;
             if (typeof this.onopen === "function") {
@@ -298,7 +299,8 @@ async function installRuntimeMocks(page: Page): Promise<void> {
           }
         }
 
-        send(_payload: unknown) {
+        send(payload: unknown) {
+          void payload;
           // no-op for deterministic tests
         }
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 import os
 import time
 import math
+import random
 import hashlib
 import threading
 import colorsys
@@ -233,19 +234,210 @@ SIMULATION_STREAM_SIMPLEX_SCALE = max(
         2.4,
     ),
 )
-SIMULATION_STREAM_FRICTION = max(
-    0.8,
+_SIMULATION_STREAM_FRICTION_LEGACY = _safe_float(
+    os.getenv("SIMULATION_WS_STREAM_FRICTION", "0.997") or "0.997",
+    0.997,
+)
+SIMULATION_STREAM_DAIMOI_FRICTION = max(
+    0.0,
     min(
-        0.9999,
+        2.0,
         _safe_float(
-            os.getenv("SIMULATION_WS_STREAM_FRICTION", "0.997") or "0.997",
-            0.997,
+            os.getenv(
+                "SIMULATION_WS_STREAM_DAIMOI_FRICTION",
+                str(_SIMULATION_STREAM_FRICTION_LEGACY),
+            )
+            or str(_SIMULATION_STREAM_FRICTION_LEGACY),
+            _SIMULATION_STREAM_FRICTION_LEGACY,
+        ),
+    ),
+)
+SIMULATION_STREAM_NEXUS_FRICTION = max(
+    0.0,
+    min(
+        2.0,
+        _safe_float(
+            os.getenv(
+                "SIMULATION_WS_STREAM_NEXUS_FRICTION",
+                str(max(0.0, _SIMULATION_STREAM_FRICTION_LEGACY - 0.06)),
+            )
+            or str(max(0.0, _SIMULATION_STREAM_FRICTION_LEGACY - 0.06)),
+            max(0.0, _SIMULATION_STREAM_FRICTION_LEGACY - 0.06),
         ),
     ),
 )
 SIMULATION_STREAM_MAX_SPEED = max(
     0.005,
     _safe_float(os.getenv("SIMULATION_WS_STREAM_MAX_SPEED", "0.095") or "0.095", 0.095),
+)
+SIMULATION_DISABLE_DAIMOI = max(
+    0.0,
+    min(
+        1.0,
+        _safe_float(os.getenv("SIMULATION_DISABLE_DAIMOI", "0") or "0", 0.0),
+    ),
+)
+SIMULATION_RANDOM_FIELD_VECTORS_ON_BOOT = max(
+    0.0,
+    min(
+        1.0,
+        _safe_float(
+            os.getenv("SIMULATION_RANDOM_FIELD_VECTORS_ON_BOOT", "0") or "0",
+            0.0,
+        ),
+    ),
+)
+SIMULATION_RANDOM_FIELD_VECTOR_COUNT = max(
+    0,
+    min(
+        10000,
+        _safe_int(
+            os.getenv("SIMULATION_RANDOM_FIELD_VECTOR_COUNT", "320") or "320",
+            320,
+        ),
+    ),
+)
+SIMULATION_RANDOM_FIELD_VECTOR_MAGNITUDE = max(
+    0.0,
+    min(
+        1.0,
+        _safe_float(
+            os.getenv("SIMULATION_RANDOM_FIELD_VECTOR_MAGNITUDE", "0.22") or "0.22",
+            0.22,
+        ),
+    ),
+)
+SIMULATION_RANDOM_FIELD_VECTOR_SEED = _safe_int(
+    os.getenv("SIMULATION_RANDOM_FIELD_VECTOR_SEED", "0") or "0",
+    0,
+)
+SIMULATION_STREAM_NOOI_FLOW_GAIN = max(
+    0.0,
+    min(
+        1.0,
+        _safe_float(
+            os.getenv("SIMULATION_WS_STREAM_NOOI_FLOW_GAIN", "0.24") or "0.24", 0.24
+        ),
+    ),
+)
+SIMULATION_STREAM_NOOI_NEXUS_FLOW_GAIN = max(
+    0.0,
+    min(
+        1.0,
+        _safe_float(
+            os.getenv("SIMULATION_WS_STREAM_NOOI_NEXUS_FLOW_GAIN", "0.2") or "0.2",
+            0.2,
+        ),
+    ),
+)
+SIMULATION_STREAM_OVERLAY_NOOI_GAIN = max(
+    0.0,
+    min(
+        1.0,
+        _safe_float(
+            os.getenv("SIMULATION_WS_STREAM_OVERLAY_NOOI_GAIN", "0.016") or "0.016",
+            0.016,
+        ),
+    ),
+)
+SIMULATION_STREAM_OVERLAY_ANCHOR_NOOI_GAIN = max(
+    0.0,
+    min(
+        1.0,
+        _safe_float(
+            os.getenv("SIMULATION_WS_STREAM_OVERLAY_ANCHOR_NOOI_GAIN", "0.02")
+            or "0.02",
+            0.02,
+        ),
+    ),
+)
+SIMULATION_STREAM_SEMANTIC_WALLET_SCALE = max(
+    1.0,
+    _safe_float(
+        os.getenv("SIMULATION_WS_STREAM_SEMANTIC_WALLET_SCALE", "24") or "24",
+        24.0,
+    ),
+)
+SIMULATION_STREAM_NEXUS_SEMANTIC_WEIGHT = max(
+    0.0,
+    min(
+        2.0,
+        _safe_float(
+            os.getenv("SIMULATION_WS_STREAM_NEXUS_SEMANTIC_WEIGHT", "0.78") or "0.78",
+            0.78,
+        ),
+    ),
+)
+SIMULATION_STREAM_DAIMOI_ORBIT_DAMPING = max(
+    0.0,
+    min(
+        2.0,
+        _safe_float(
+            os.getenv("SIMULATION_WS_STREAM_DAIMOI_ORBIT_DAMPING", "1.2") or "1.2",
+            1.2,
+        ),
+    ),
+)
+SIMULATION_STREAM_NEXUS_MAX_SPEED_SCALE = max(
+    0.2,
+    min(
+        1.0,
+        _safe_float(
+            os.getenv("SIMULATION_WS_STREAM_NEXUS_MAX_SPEED_SCALE", "0.26") or "0.26",
+            0.26,
+        ),
+    ),
+)
+SIMULATION_STREAM_NEXUS_STATIC_FRICTION = max(
+    0.0,
+    min(
+        1.0,
+        _safe_float(
+            os.getenv("SIMULATION_WS_STREAM_NEXUS_STATIC_FRICTION", "0.024") or "0.024",
+            0.024,
+        ),
+    ),
+)
+SIMULATION_STREAM_NEXUS_STATIC_RELEASE_SPEED = max(
+    0.0,
+    min(
+        0.25,
+        _safe_float(
+            os.getenv("SIMULATION_WS_STREAM_NEXUS_STATIC_RELEASE_SPEED", "0.03")
+            or "0.03",
+            0.03,
+        ),
+    ),
+)
+SIMULATION_STREAM_NEXUS_STATIC_CREEP = max(
+    0.0,
+    min(
+        1.0,
+        _safe_float(
+            os.getenv("SIMULATION_WS_STREAM_NEXUS_STATIC_CREEP", "0.2") or "0.2",
+            0.2,
+        ),
+    ),
+)
+SIMULATION_STREAM_NEXUS_QUADRATIC_DRAG = max(
+    0.0,
+    min(
+        16.0,
+        _safe_float(
+            os.getenv("SIMULATION_WS_STREAM_NEXUS_QUADRATIC_DRAG", "6.2") or "6.2",
+            6.2,
+        ),
+    ),
+)
+SIMULATION_STREAM_NEXUS_DRAG_SPEED_REF = max(
+    0.005,
+    min(
+        0.5,
+        _safe_float(
+            os.getenv("SIMULATION_WS_STREAM_NEXUS_DRAG_SPEED_REF", "0.045") or "0.045",
+            0.045,
+        ),
+    ),
 )
 
 
@@ -410,6 +602,59 @@ _SIMULATION_LAYOUT_CACHE: dict[str, Any] = {
     "embedding_points": [],
 }
 _NOOI_FIELD = NooiField()
+_NOOI_RANDOM_BOOT_LOCK = threading.Lock()
+_NOOI_RANDOM_BOOT_APPLIED = False
+
+
+def _reset_nooi_field_state() -> None:
+    global _NOOI_FIELD, _NOOI_RANDOM_BOOT_APPLIED
+    _NOOI_FIELD = NooiField()
+    _NOOI_RANDOM_BOOT_APPLIED = False
+
+
+def _maybe_seed_random_nooi_field_vectors(*, force: bool = False) -> None:
+    global _NOOI_RANDOM_BOOT_APPLIED
+    if _safe_float(SIMULATION_RANDOM_FIELD_VECTORS_ON_BOOT, 0.0) < 0.5:
+        return
+    with _NOOI_RANDOM_BOOT_LOCK:
+        if _NOOI_RANDOM_BOOT_APPLIED and not force:
+            return
+        count = max(0, _safe_int(SIMULATION_RANDOM_FIELD_VECTOR_COUNT, 0))
+        magnitude = max(0.0, _safe_float(SIMULATION_RANDOM_FIELD_VECTOR_MAGNITUDE, 0.0))
+        if count <= 0 or magnitude <= 0.0:
+            _NOOI_RANDOM_BOOT_APPLIED = True
+            return
+        seed = _safe_int(SIMULATION_RANDOM_FIELD_VECTOR_SEED, 0)
+        if seed <= 0:
+            seed = int(time.time_ns() & 0xFFFFFFFF)
+        rng = random.Random(seed)
+        for _ in range(count):
+            x_value = _clamp01(rng.random())
+            y_value = _clamp01(rng.random())
+            theta = rng.random() * math.tau
+            speed = magnitude * (0.35 + (rng.random() * 0.65))
+            _NOOI_FIELD.deposit(
+                x_value,
+                y_value,
+                math.cos(theta) * speed,
+                math.sin(theta) * speed,
+            )
+        _NOOI_RANDOM_BOOT_APPLIED = True
+
+
+def _particle_influences_nooi(row: dict[str, Any]) -> bool:
+    return not bool(row.get("is_nexus", False))
+
+
+def _nooi_flow_at(x_value: float, y_value: float) -> tuple[float, float, float]:
+    flow_x, flow_y = _NOOI_FIELD.sample_vector(
+        _clamp01(_safe_float(x_value, 0.5)),
+        _clamp01(_safe_float(y_value, 0.5)),
+    )
+    magnitude = math.hypot(flow_x, flow_y)
+    if magnitude <= 1e-8:
+        return (0.0, 0.0, 0.0)
+    return (flow_x / magnitude, flow_y / magnitude, min(1.0, magnitude))
 
 
 def _world_web_symbol(name: str, default: Any) -> Any:
@@ -5215,6 +5460,8 @@ def _build_unified_nexus_graph(
 _NEXUS_ROLE_MAP: dict[str, str] = {
     "field": "field",
     "file": "file",
+    "image": "image",
+    "audio": "audio",
     "tag": "tag",
     "crawler": "crawler",
     "presence": "presence",
@@ -7770,6 +8017,8 @@ def _maybe_reset_simulation_runtime_state() -> None:
         get_presence_runtime_manager().reset()
         with _DAIMO_DYNAMICS_LOCK:
             _DAIMO_DYNAMICS_CACHE.clear()
+        _reset_nooi_field_state()
+        _maybe_seed_random_nooi_field_vectors(force=True)
         _SIMULATION_BOOT_RESET_APPLIED = True
 
 
@@ -8671,6 +8920,7 @@ def build_simulation_state(
 ) -> dict[str, Any]:
     _prof_start = time.perf_counter()
     _maybe_reset_simulation_runtime_state()
+    _maybe_seed_random_nooi_field_vectors()
     now = time.time()
     resource_budget_snapshot = _resource_monitor_snapshot()
     budget_devices = (
@@ -9587,12 +9837,31 @@ def build_simulation_state(
                 normalized_row[key] = value
         normalized_field_particles.append(normalized_row)
 
-    user_embedded_daimoi = _build_user_presence_embedded_daimoi_rows(
-        user_presence_state,
-        now=now,
-    )
-    if user_embedded_daimoi:
-        normalized_field_particles.extend(user_embedded_daimoi)
+    disable_daimoi = _safe_float(SIMULATION_DISABLE_DAIMOI, 0.0) >= 0.5
+    user_embedded_daimoi: list[dict[str, Any]] = []
+    if not disable_daimoi:
+        user_embedded_daimoi = _build_user_presence_embedded_daimoi_rows(
+            user_presence_state,
+            now=now,
+        )
+        if user_embedded_daimoi:
+            normalized_field_particles.extend(user_embedded_daimoi)
+    else:
+        normalized_field_particles = []
+        if isinstance(daimoi_probabilistic, dict):
+            for key in (
+                "active",
+                "spawned",
+                "collisions",
+                "deflects",
+                "diffuses",
+                "handoffs",
+                "deliveries",
+            ):
+                daimoi_probabilistic[key] = 0
+            daimoi_probabilistic["job_triggers"] = {}
+            daimoi_probabilistic["disabled"] = True
+            daimoi_probabilistic["disabled_reason"] = "SIMULATION_DISABLE_DAIMOI"
 
     resource_daimoi = _apply_resource_daimoi_emissions(
         field_particles=normalized_field_particles,
@@ -9624,8 +9893,14 @@ def build_simulation_state(
 
     emitted_field_particles = normalized_field_particles
 
+    nooi_driver_particles = [
+        row
+        for row in emitted_field_particles
+        if isinstance(row, dict) and _particle_influences_nooi(row)
+    ]
+
     _NOOI_FIELD.decay(DAIMO_DT_SECONDS)
-    for particle in emitted_field_particles:
+    for particle in nooi_driver_particles:
         if not isinstance(particle, dict):
             continue
         _NOOI_FIELD.deposit(
@@ -9634,7 +9909,7 @@ def build_simulation_state(
             _safe_float(particle.get("vx", 0.0), 0.0),
             _safe_float(particle.get("vy", 0.0), 0.0),
         )
-    nooi_field = _NOOI_FIELD.get_grid_snapshot()
+    nooi_field = _NOOI_FIELD.get_grid_snapshot(nooi_driver_particles)
 
     distributed_runtime = sync_presence_runtime_state(
         field_particles=emitted_field_particles,
@@ -9724,6 +9999,14 @@ def build_simulation_state(
         "daimoi_behavior_defaults": ["deflect", "diffuse"],
         "distributed_runtime": distributed_runtime,
     }
+    _update_stream_motion_overlays(
+        presence_dynamics,
+        dt_seconds=max(
+            0.001,
+            _safe_float(os.getenv("SIM_TICK_SECONDS", "0.08") or "0.08", 0.08),
+        ),
+        now_seconds=time.monotonic(),
+    )
 
     default_truth_state = {
         "record": "ημ.truth-state.v1",
@@ -9876,11 +10159,91 @@ def _stream_particle_collision_radius(row: dict[str, Any], mass_value: float) ->
     )
 
 
+def _resolve_semantic_particle_collisions_native(
+    particle_rows: list[dict[str, Any]],
+) -> bool:
+    if len(particle_rows) < 2:
+        return True
+
+    try:
+        from . import c_double_buffer_backend
+    except Exception:
+        return False
+
+    resolver = getattr(
+        c_double_buffer_backend, "resolve_semantic_collisions_native", None
+    )
+    if not callable(resolver):
+        return False
+
+    x_values: list[float] = []
+    y_values: list[float] = []
+    vx_values: list[float] = []
+    vy_values: list[float] = []
+    radius_values: list[float] = []
+    mass_values: list[float] = []
+
+    for row in particle_rows:
+        x_value = _clamp01(_safe_float(row.get("x", 0.5), 0.5))
+        y_value = _clamp01(_safe_float(row.get("y", 0.5), 0.5))
+        vx_value = _safe_float(row.get("vx", 0.0), 0.0)
+        vy_value = _safe_float(row.get("vy", 0.0), 0.0)
+        mass_value = _stream_particle_effective_mass(row)
+        radius_value = _stream_particle_collision_radius(row, mass_value)
+        x_values.append(x_value)
+        y_values.append(y_value)
+        vx_values.append(vx_value)
+        vy_values.append(vy_value)
+        mass_values.append(mass_value)
+        radius_values.append(radius_value)
+
+    resolved = resolver(
+        x=x_values,
+        y=y_values,
+        vx=vx_values,
+        vy=vy_values,
+        radius=radius_values,
+        mass=mass_values,
+        restitution=0.88,
+        separation_percent=0.72,
+        cell_size=0.04,
+    )
+    if not (isinstance(resolved, tuple) and len(resolved) == 5):
+        return False
+
+    x_next, y_next, vx_next, vy_next, collisions = resolved
+    count = len(particle_rows)
+    if not (
+        isinstance(x_next, list)
+        and isinstance(y_next, list)
+        and isinstance(vx_next, list)
+        and isinstance(vy_next, list)
+        and isinstance(collisions, list)
+        and len(x_next) == count
+        and len(y_next) == count
+        and len(vx_next) == count
+        and len(vy_next) == count
+        and len(collisions) == count
+    ):
+        return False
+
+    for idx, row in enumerate(particle_rows):
+        row["x"] = round(_clamp01(_safe_float(x_next[idx], x_values[idx])), 5)
+        row["y"] = round(_clamp01(_safe_float(y_next[idx], y_values[idx])), 5)
+        row["vx"] = round(_safe_float(vx_next[idx], vx_values[idx]), 6)
+        row["vy"] = round(_safe_float(vy_next[idx], vy_values[idx]), 6)
+        row["collision_count"] = max(0, int(_safe_float(collisions[idx], 0.0)))
+    return True
+
+
 def _resolve_semantic_particle_collisions(rows: list[dict[str, Any]]) -> None:
     if not isinstance(rows, list):
         return
     particle_rows = [row for row in rows if isinstance(row, dict)]
     if len(particle_rows) < 2:
+        return
+
+    if _resolve_semantic_particle_collisions_native(particle_rows):
         return
 
     mass_by_id: dict[str, float] = {}
@@ -10019,6 +10382,383 @@ def _resolve_semantic_particle_collisions(rows: list[dict[str, Any]]) -> None:
         row["collision_count"] = collisions
 
 
+def _stream_motion_tick_scale(dt_seconds: float) -> float:
+    dt = max(0.001, _safe_float(dt_seconds, 0.08))
+    return max(0.55, min(3.0, dt / 0.0166667))
+
+
+def _update_stream_motion_overlays(
+    presence_dynamics: dict[str, Any],
+    *,
+    dt_seconds: float,
+    now_seconds: float | None = None,
+) -> None:
+    if not isinstance(presence_dynamics, dict):
+        return
+
+    rows = presence_dynamics.get("field_particles", [])
+    if not isinstance(rows, list) or not rows:
+        presence_dynamics.pop("graph_node_positions", None)
+        presence_dynamics.pop("presence_anchor_positions", None)
+        return
+
+    now_mono = _safe_float(now_seconds, 0.0)
+    if now_mono <= 0.0:
+        now_mono = time.monotonic()
+    frame_scale = _stream_motion_tick_scale(dt_seconds)
+
+    node_acc: dict[str, dict[str, float]] = {}
+    presence_acc: dict[str, dict[str, float]] = {}
+    max_nodes = 2200
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        x_value = _clamp01(_safe_float(row.get("x", 0.5), 0.5))
+        y_value = _clamp01(_safe_float(row.get("y", 0.5), 0.5))
+        vx_value = _safe_float(row.get("vx", 0.0), 0.0)
+        vy_value = _safe_float(row.get("vy", 0.0), 0.0)
+
+        presence_id = str(row.get("presence_id", "") or "").strip()
+        if presence_id:
+            presence_bucket = presence_acc.get(presence_id)
+            if not isinstance(presence_bucket, dict):
+                presence_bucket = {
+                    "sum_x": 0.0,
+                    "sum_y": 0.0,
+                    "count": 0.0,
+                }
+                presence_acc[presence_id] = presence_bucket
+            presence_bucket["sum_x"] += x_value
+            presence_bucket["sum_y"] += y_value
+            presence_bucket["count"] += 1.0
+
+        route_probability = _clamp01(
+            _safe_float(row.get("route_probability", 0.0), 0.0)
+        )
+        influence_power = _clamp01(_safe_float(row.get("influence_power", 0.0), 0.0))
+        semantic_signal = _clamp01(
+            abs(_safe_float(row.get("drift_cost_semantic_term", 0.0), 0.0))
+            + (_safe_float(row.get("message_probability", 0.0), 0.0) * 0.4)
+            + (_safe_float(row.get("package_entropy", 0.0), 0.0) * 0.15)
+        )
+        base_weight = max(
+            0.08,
+            0.2
+            + (route_probability * 0.38)
+            + (influence_power * 0.28)
+            + (semantic_signal * 0.2),
+        )
+
+        node_refs = (
+            (
+                str(row.get("route_node_id", "") or "").strip(),
+                _safe_float(row.get("route_x", x_value), x_value),
+                _safe_float(row.get("route_y", y_value), y_value),
+                1.0,
+            ),
+            (
+                str(row.get("graph_node_id", "") or "").strip(),
+                _safe_float(row.get("graph_x", x_value), x_value),
+                _safe_float(row.get("graph_y", y_value), y_value),
+                0.76,
+            ),
+        )
+
+        for node_id, anchor_x_raw, anchor_y_raw, role_weight in node_refs:
+            if not node_id:
+                continue
+            if node_id not in node_acc and len(node_acc) >= max_nodes:
+                continue
+
+            anchor_x = _clamp01(
+                anchor_x_raw if math.isfinite(anchor_x_raw) else x_value
+            )
+            anchor_y = _clamp01(
+                anchor_y_raw if math.isfinite(anchor_y_raw) else y_value
+            )
+            weight = max(0.05, base_weight * max(0.05, _safe_float(role_weight, 1.0)))
+
+            bucket = node_acc.get(node_id)
+            if not isinstance(bucket, dict):
+                bucket = {
+                    "sum_x": 0.0,
+                    "sum_y": 0.0,
+                    "weight": 0.0,
+                    "flow_x": 0.0,
+                    "flow_y": 0.0,
+                    "flow_weight": 0.0,
+                    "anchor_x": 0.0,
+                    "anchor_y": 0.0,
+                    "anchor_weight": 0.0,
+                    "samples": 0.0,
+                }
+                node_acc[node_id] = bucket
+
+            bucket["sum_x"] += x_value * weight
+            bucket["sum_y"] += y_value * weight
+            bucket["weight"] += weight
+            bucket["flow_x"] += vx_value * weight
+            bucket["flow_y"] += vy_value * weight
+            bucket["flow_weight"] += weight
+            bucket["anchor_x"] += anchor_x * weight
+            bucket["anchor_y"] += anchor_y * weight
+            bucket["anchor_weight"] += weight
+            bucket["samples"] += 1.0
+
+    graph_positions: dict[str, dict[str, Any]] = {}
+    presence_positions: dict[str, dict[str, Any]] = {}
+
+    with _DAIMO_DYNAMICS_LOCK:
+        graph_cache = _DAIMO_DYNAMICS_CACHE.get("graph_nodes", {})
+        if not isinstance(graph_cache, dict):
+            graph_cache = {}
+
+        ranked_nodes = sorted(
+            node_acc.items(),
+            key=lambda item: (-_safe_float(item[1].get("samples", 0.0), 0.0), item[0]),
+        )
+        for node_id, acc in ranked_nodes:
+            weight_total = max(1e-6, _safe_float(acc.get("weight", 0.0), 0.0))
+            target_x = _clamp01(_safe_float(acc.get("sum_x", 0.0), 0.0) / weight_total)
+            target_y = _clamp01(_safe_float(acc.get("sum_y", 0.0), 0.0) / weight_total)
+
+            anchor_weight = max(1e-6, _safe_float(acc.get("anchor_weight", 0.0), 0.0))
+            anchor_x = _clamp01(
+                _safe_float(acc.get("anchor_x", 0.0), 0.0) / anchor_weight
+            )
+            anchor_y = _clamp01(
+                _safe_float(acc.get("anchor_y", 0.0), 0.0) / anchor_weight
+            )
+
+            flow_weight = max(1e-6, _safe_float(acc.get("flow_weight", 0.0), 0.0))
+            flow_x = _safe_float(acc.get("flow_x", 0.0), 0.0) / flow_weight
+            flow_y = _safe_float(acc.get("flow_y", 0.0), 0.0) / flow_weight
+
+            state = graph_cache.get(node_id, {})
+            if not isinstance(state, dict):
+                state = {}
+
+            x_value = _clamp01(_safe_float(state.get("x", anchor_x), anchor_x))
+            y_value = _clamp01(_safe_float(state.get("y", anchor_y), anchor_y))
+            vx_value = _safe_float(state.get("vx", 0.0), 0.0)
+            vy_value = _safe_float(state.get("vy", 0.0), 0.0)
+
+            sample_count = max(1.0, _safe_float(acc.get("samples", 1.0), 1.0))
+            density_signal = _clamp01(sample_count / 24.0)
+            node_seed = _safe_int(state.get("seed", 0), 0)
+            if node_seed <= 0:
+                node_seed = int(
+                    hashlib.sha1(f"stream-node:{node_id}".encode("utf-8")).hexdigest()[
+                        :8
+                    ],
+                    16,
+                )
+
+            drift_scale = 0.0012 + (density_signal * 0.002)
+            drift_time = now_mono * (0.18 + (density_signal * 0.16))
+            drift_x = _simplex_noise_2d(
+                (anchor_x * 7.6) + (sample_count * 0.033),
+                drift_time,
+                seed=(node_seed % 251) + 17,
+            )
+            drift_y = _simplex_noise_2d(
+                (anchor_y * 7.2) + 41.0 + (sample_count * 0.027),
+                drift_time * 1.13,
+                seed=(node_seed % 251) + 79,
+            )
+            target_x = _clamp01(target_x + (drift_x * drift_scale))
+            target_y = _clamp01(target_y + (drift_y * drift_scale))
+
+            spring_gain = 0.028 + (density_signal * 0.018)
+            anchor_gain = 0.015 + ((1.0 - density_signal) * 0.01)
+            flow_gain = 0.39 + (density_signal * 0.18)
+
+            vx_value += (
+                ((target_x - x_value) * spring_gain)
+                + ((anchor_x - x_value) * anchor_gain)
+                + (flow_x * flow_gain)
+            ) * frame_scale
+            vy_value += (
+                ((target_y - y_value) * spring_gain)
+                + ((anchor_y - y_value) * anchor_gain)
+                + (flow_y * flow_gain)
+            ) * frame_scale
+
+            nooi_dir_x, nooi_dir_y, nooi_signal = _nooi_flow_at(x_value, y_value)
+            if nooi_signal > 0.0:
+                nooi_gain = (
+                    _safe_float(SIMULATION_STREAM_OVERLAY_NOOI_GAIN, 0.0)
+                    * nooi_signal
+                    * frame_scale
+                )
+                vx_value += nooi_dir_x * nooi_gain
+                vy_value += nooi_dir_y * nooi_gain
+
+            damping_tick = math.pow(0.81, frame_scale)
+            vx_value *= damping_tick
+            vy_value *= damping_tick
+
+            speed = math.hypot(vx_value, vy_value)
+            max_speed = 0.0036 + (density_signal * 0.0039)
+            if speed > max_speed and speed > 0.0:
+                speed_scale = max_speed / speed
+                vx_value *= speed_scale
+                vy_value *= speed_scale
+
+            x_value = _clamp01(x_value + (vx_value * frame_scale))
+            y_value = _clamp01(y_value + (vy_value * frame_scale))
+
+            graph_cache[node_id] = {
+                "x": x_value,
+                "y": y_value,
+                "vx": vx_value,
+                "vy": vy_value,
+                "samples": int(sample_count),
+                "seed": node_seed,
+                "ts": now_mono,
+            }
+            graph_positions[node_id] = {
+                "x": round(x_value, 5),
+                "y": round(y_value, 5),
+                "vx": round(vx_value, 6),
+                "vy": round(vy_value, 6),
+                "samples": int(sample_count),
+            }
+
+        graph_stale_before = now_mono - 120.0
+        for node_id in list(graph_cache.keys()):
+            state = graph_cache.get(node_id)
+            if not isinstance(state, dict):
+                graph_cache.pop(node_id, None)
+                continue
+            ts_value = _safe_float(state.get("ts", now_mono), now_mono)
+            if node_id not in node_acc and ts_value < graph_stale_before:
+                graph_cache.pop(node_id, None)
+
+        _DAIMO_DYNAMICS_CACHE["graph_nodes"] = graph_cache
+
+        anchor_cache = _DAIMO_DYNAMICS_CACHE.get("presence_anchors", {})
+        if not isinstance(anchor_cache, dict):
+            anchor_cache = {}
+
+        ranked_presences = sorted(
+            presence_acc.items(),
+            key=lambda item: (-_safe_float(item[1].get("count", 0.0), 0.0), item[0]),
+        )
+        for presence_id, acc in ranked_presences[:240]:
+            count_value = max(1.0, _safe_float(acc.get("count", 1.0), 1.0))
+            target_x = _clamp01(_safe_float(acc.get("sum_x", 0.0), 0.0) / count_value)
+            target_y = _clamp01(_safe_float(acc.get("sum_y", 0.0), 0.0) / count_value)
+
+            state = anchor_cache.get(presence_id, {})
+            if not isinstance(state, dict):
+                state = {}
+
+            x_value = _clamp01(_safe_float(state.get("x", target_x), target_x))
+            y_value = _clamp01(_safe_float(state.get("y", target_y), target_y))
+            vx_value = _safe_float(state.get("vx", 0.0), 0.0)
+            vy_value = _safe_float(state.get("vy", 0.0), 0.0)
+            presence_seed = _safe_int(state.get("seed", 0), 0)
+            if presence_seed <= 0:
+                presence_seed = int(
+                    hashlib.sha1(
+                        f"stream-presence:{presence_id}".encode("utf-8")
+                    ).hexdigest()[:8],
+                    16,
+                )
+
+            density_signal = _clamp01(count_value / 40.0)
+            drift_scale = 0.0011 + (density_signal * 0.0018)
+            drift_time = now_mono * (0.14 + (density_signal * 0.11))
+            target_x = _clamp01(
+                target_x
+                + (
+                    _simplex_noise_2d(
+                        (target_x * 6.3) + 17.0,
+                        drift_time,
+                        seed=(presence_seed % 251) + 23,
+                    )
+                    * drift_scale
+                )
+            )
+            target_y = _clamp01(
+                target_y
+                + (
+                    _simplex_noise_2d(
+                        (target_y * 6.1) + 53.0,
+                        drift_time * 1.09,
+                        seed=(presence_seed % 251) + 61,
+                    )
+                    * drift_scale
+                )
+            )
+            pull_gain = 0.18 + (density_signal * 0.12)
+            vx_value += (target_x - x_value) * pull_gain * frame_scale
+            vy_value += (target_y - y_value) * pull_gain * frame_scale
+
+            nooi_dir_x, nooi_dir_y, nooi_signal = _nooi_flow_at(x_value, y_value)
+            if nooi_signal > 0.0:
+                nooi_gain = (
+                    _safe_float(SIMULATION_STREAM_OVERLAY_ANCHOR_NOOI_GAIN, 0.0)
+                    * nooi_signal
+                    * frame_scale
+                )
+                vx_value += nooi_dir_x * nooi_gain
+                vy_value += nooi_dir_y * nooi_gain
+
+            vx_value *= math.pow(0.84, frame_scale)
+            vy_value *= math.pow(0.84, frame_scale)
+
+            speed = math.hypot(vx_value, vy_value)
+            max_speed = 0.016 + (density_signal * 0.01)
+            if speed > max_speed and speed > 0.0:
+                speed_scale = max_speed / speed
+                vx_value *= speed_scale
+                vy_value *= speed_scale
+
+            x_value = _clamp01(x_value + (vx_value * frame_scale))
+            y_value = _clamp01(y_value + (vy_value * frame_scale))
+
+            anchor_cache[presence_id] = {
+                "x": x_value,
+                "y": y_value,
+                "vx": vx_value,
+                "vy": vy_value,
+                "count": int(count_value),
+                "seed": presence_seed,
+                "ts": now_mono,
+            }
+            presence_positions[presence_id] = {
+                "x": round(x_value, 5),
+                "y": round(y_value, 5),
+                "count": int(count_value),
+            }
+
+        anchor_stale_before = now_mono - 90.0
+        for presence_id in list(anchor_cache.keys()):
+            state = anchor_cache.get(presence_id)
+            if not isinstance(state, dict):
+                anchor_cache.pop(presence_id, None)
+                continue
+            ts_value = _safe_float(state.get("ts", now_mono), now_mono)
+            if presence_id not in presence_acc and ts_value < anchor_stale_before:
+                anchor_cache.pop(presence_id, None)
+
+        _DAIMO_DYNAMICS_CACHE["presence_anchors"] = anchor_cache
+
+    if graph_positions:
+        presence_dynamics["graph_node_positions"] = graph_positions
+    else:
+        presence_dynamics.pop("graph_node_positions", None)
+
+    if presence_positions:
+        presence_dynamics["presence_anchor_positions"] = presence_positions
+    else:
+        presence_dynamics.pop("presence_anchor_positions", None)
+
+
 def advance_simulation_field_particles(
     simulation: dict[str, Any],
     *,
@@ -10030,8 +10770,30 @@ def advance_simulation_field_particles(
     presence_dynamics = simulation.get("presence_dynamics", {})
     if not isinstance(presence_dynamics, dict):
         return
+    disable_daimoi = _safe_float(SIMULATION_DISABLE_DAIMOI, 0.0) >= 0.5
     rows = presence_dynamics.get("field_particles", [])
-    if not isinstance(rows, list) or not rows:
+    if not isinstance(rows, list):
+        return
+    if disable_daimoi:
+        if rows:
+            _reset_nooi_field_state()
+        _maybe_seed_random_nooi_field_vectors()
+        dt = max(0.001, _safe_float(dt_seconds, 0.08))
+        _NOOI_FIELD.decay(dt)
+        presence_dynamics["field_particles"] = []
+        presence_dynamics["nooi_field"] = _NOOI_FIELD.get_grid_snapshot([])
+        presence_dynamics.pop("graph_node_positions", None)
+        presence_dynamics.pop("presence_anchor_positions", None)
+        simulation["presence_dynamics"] = presence_dynamics
+        return
+    if not rows:
+        _maybe_seed_random_nooi_field_vectors()
+        dt = max(0.001, _safe_float(dt_seconds, 0.08))
+        _NOOI_FIELD.decay(dt)
+        presence_dynamics["nooi_field"] = _NOOI_FIELD.get_grid_snapshot([])
+        presence_dynamics.pop("graph_node_positions", None)
+        presence_dynamics.pop("presence_anchor_positions", None)
+        simulation["presence_dynamics"] = presence_dynamics
         return
 
     dt = max(0.001, _safe_float(dt_seconds, 0.08))
@@ -10039,9 +10801,30 @@ def advance_simulation_field_particles(
         0.001, _safe_float(os.getenv("SIM_TICK_SECONDS", "0.08") or "0.08", 0.08)
     )
     now_value = _safe_float(now_seconds, time.time())
-    friction_tick = max(
-        0.8,
-        min(0.99995, SIMULATION_STREAM_FRICTION ** (dt / base_dt)),
+    daimoi_friction_base = max(
+        0.0,
+        min(
+            2.0,
+            _safe_float(SIMULATION_STREAM_DAIMOI_FRICTION, 0.997),
+        ),
+    )
+    nexus_friction_base = max(
+        0.0,
+        min(
+            2.0,
+            _safe_float(
+                SIMULATION_STREAM_NEXUS_FRICTION,
+                daimoi_friction_base,
+            ),
+        ),
+    )
+    daimoi_friction_tick = max(
+        0.0,
+        min(1.2, daimoi_friction_base ** (dt / base_dt)),
+    )
+    nexus_friction_tick = max(
+        0.0,
+        min(1.2, nexus_friction_base ** (dt / base_dt)),
     )
 
     gravity_max = 1e-6
@@ -10104,6 +10887,8 @@ def advance_simulation_field_particles(
         particle_id = str(row.get("id", "") or f"field:{index}")
         x_value = _clamp01(_safe_float(row.get("x", 0.5), 0.5))
         y_value = _clamp01(_safe_float(row.get("y", 0.5), 0.5))
+        is_nexus = bool(row.get("is_nexus", False))
+        friction_tick = nexus_friction_tick if is_nexus else daimoi_friction_tick
         vx_value = (
             _safe_float(row.get("vx", 0.0), 0.0) * SIMULATION_STREAM_VELOCITY_SCALE
         )
@@ -10191,23 +10976,42 @@ def advance_simulation_field_particles(
             0.0,
             _safe_float(row.get("semantic_text_chars", 0.0), 0.0),
         )
-        semantic_mass = max(0.0, _safe_float(row.get("semantic_mass", 0.0), 0.0))
+        semantic_mass = max(
+            0.0,
+            _safe_float(row.get("semantic_mass", 0.0), 0.0),
+            _safe_float(row.get("mass", 0.0), 0.0) * (1.1 if is_nexus else 0.65),
+        )
         daimoi_energy = max(0.0, _safe_float(row.get("daimoi_energy", 0.0), 0.0))
         message_probability = max(
             0.0,
             _safe_float(row.get("message_probability", 0.0), 0.0),
         )
         package_entropy = max(0.0, _safe_float(row.get("package_entropy", 0.0), 0.0))
+        wallet_total = max(
+            0.0,
+            _safe_float(row.get("resource_wallet_total", 0.0), 0.0),
+            _safe_float(row.get("resource_balance_after", 0.0), 0.0),
+        )
 
         gravity_signal = _clamp01(gravity_potential / max(1e-6, gravity_max))
         semantic_text_signal = _clamp01(math.log1p(semantic_text_chars) / 8.0)
         semantic_mass_signal = _clamp01(semantic_mass / 6.0)
+        wallet_signal = _clamp01(
+            wallet_total
+            / max(1.0, _safe_float(SIMULATION_STREAM_SEMANTIC_WALLET_SCALE, 24.0))
+        )
+        semantic_payload_signal = _clamp01(
+            (semantic_text_signal * 0.55)
+            + (semantic_mass_signal * 0.72)
+            + (wallet_signal * 0.58)
+        )
         energy_signal = _clamp01((daimoi_energy * 0.35) + (message_probability * 0.45))
         entropy_signal = _clamp01(package_entropy / 3.0)
         semantic_signal = _clamp01(
             abs(drift_cost_semantic_term)
             + (semantic_text_signal * 0.6)
             + (semantic_mass_signal * 0.5)
+            + (semantic_payload_signal * (0.64 if is_nexus else 0.28))
             + (energy_signal * 0.45)
             + (entropy_signal * 0.25)
         )
@@ -10227,6 +11031,12 @@ def advance_simulation_field_particles(
             + (route_probability * 0.34)
             + min(0.24, abs(focus_contribution) * 0.08)
         )
+        if is_nexus:
+            semantic_gain *= 1.0 + min(
+                1.35,
+                semantic_payload_signal
+                * _safe_float(SIMULATION_STREAM_NEXUS_SEMANTIC_WEIGHT, 0.78),
+            )
         presence_gain = SIMULATION_STREAM_FIELD_FORCE * (
             0.03 + ((1.0 - route_probability) * 0.08) + ((1.0 - semantic_signal) * 0.06)
         )
@@ -10246,6 +11056,8 @@ def advance_simulation_field_particles(
             + (edge_signal * 0.24)
             + min(0.62, abs(focus_contribution) * 0.22)
         )
+        if is_nexus:
+            jitter_gain *= 0.38
 
         seed = int(hashlib.sha1(particle_id.encode("utf-8")).hexdigest()[:8], 16)
         noise_frequency = 2.8 + (semantic_signal * 4.2) + (route_probability * 1.1)
@@ -10294,6 +11106,52 @@ def advance_simulation_field_particles(
             + jitter_y
         )
 
+        nooi_dir_x, nooi_dir_y, nooi_signal = _nooi_flow_at(x_value, y_value)
+        if nooi_signal > 0.0:
+            nooi_gain = (
+                _safe_float(SIMULATION_STREAM_NOOI_NEXUS_FLOW_GAIN, 0.0)
+                if is_nexus
+                else _safe_float(SIMULATION_STREAM_NOOI_FLOW_GAIN, 0.0)
+            )
+            nooi_gain = max(0.0, nooi_gain) * nooi_signal
+            ax += nooi_dir_x * nooi_gain
+            ay += nooi_dir_y * nooi_gain
+
+        if is_nexus:
+            drive_mag = math.hypot(ax, ay)
+            current_speed = math.hypot(vx_value, vy_value)
+            payload_unlock = _clamp01(
+                (semantic_payload_signal * 0.68)
+                + (wallet_signal * 0.56)
+                + (route_probability * 0.12)
+            )
+            static_threshold = max(
+                1e-6,
+                _safe_float(SIMULATION_STREAM_NEXUS_STATIC_FRICTION, 0.015),
+            )
+            effective_drive = drive_mag * (1.0 + (payload_unlock * 1.15))
+            release_speed = _safe_float(
+                SIMULATION_STREAM_NEXUS_STATIC_RELEASE_SPEED,
+                0.03,
+            )
+            if (
+                current_speed < max(0.0, release_speed)
+                and effective_drive < static_threshold
+            ):
+                creep_floor = _clamp01(
+                    _safe_float(SIMULATION_STREAM_NEXUS_STATIC_CREEP, 0.2)
+                )
+                slip = max(
+                    creep_floor,
+                    min(1.0, effective_drive / static_threshold),
+                )
+                slip = _clamp01(slip + (payload_unlock * 0.2))
+                ax *= slip
+                ay *= slip
+                static_damp = max(0.0, min(1.0, 1.0 - ((1.0 - slip) * 0.74)))
+                vx_value *= static_damp
+                vy_value *= static_damp
+
         vx_value += ax * dt
         vy_value += ay * dt
         lateral_velocity = (vx_value * lateral_nx) + (vy_value * lateral_ny)
@@ -10304,11 +11162,51 @@ def advance_simulation_field_particles(
         vx_value -= lateral_velocity * lateral_nx * lateral_damping
         vy_value -= lateral_velocity * lateral_ny * lateral_damping
 
+        radial_velocity = (vx_value * semantic_nx) + (vy_value * semantic_ny)
+        orbit_ratio = abs(lateral_velocity) / max(1e-6, abs(radial_velocity))
+        if not is_nexus and orbit_ratio > 1.05:
+            orbit_damping = min(
+                0.94,
+                _safe_float(SIMULATION_STREAM_DAIMOI_ORBIT_DAMPING, 1.2)
+                * dt
+                * min(3.2, orbit_ratio),
+            )
+            vx_value -= lateral_velocity * lateral_nx * orbit_damping
+            vy_value -= lateral_velocity * lateral_ny * orbit_damping
+            inward_boost = min(0.24, (orbit_ratio - 1.0) * 0.08)
+            vx_value += semantic_nx * inward_boost * SIMULATION_STREAM_FIELD_FORCE * dt
+            vy_value += semantic_ny * inward_boost * SIMULATION_STREAM_FIELD_FORCE * dt
+
         base_drag = 1.0 - min(
             0.08, (node_saturation * 0.03) + (drift_cost_signal * 0.02)
         )
         vx_value *= friction_tick * base_drag
         vy_value *= friction_tick * base_drag
+
+        if is_nexus:
+            payload_drag = 1.0 - min(
+                0.08,
+                (semantic_payload_signal * 0.04) + (wallet_signal * 0.02),
+            )
+            vx_value *= payload_drag
+            vy_value *= payload_drag
+            speed_sq = (vx_value * vx_value) + (vy_value * vy_value)
+            if speed_sq > 0.0:
+                speed_now = math.sqrt(speed_sq)
+                drag_speed_ref = max(
+                    1e-6,
+                    _safe_float(SIMULATION_STREAM_NEXUS_DRAG_SPEED_REF, 0.07),
+                )
+                drag_ratio = speed_now / drag_speed_ref
+                quadratic_drag = _safe_float(
+                    SIMULATION_STREAM_NEXUS_QUADRATIC_DRAG,
+                    3.8,
+                )
+                extra_drag = 1.0 / (
+                    1.0 + ((drag_ratio * drag_ratio) * quadratic_drag * dt)
+                )
+                vx_value *= extra_drag
+                vy_value *= extra_drag
 
         dynamic_max_speed = SIMULATION_STREAM_MAX_SPEED * (
             0.68
@@ -10317,6 +11215,14 @@ def advance_simulation_field_particles(
             + (semantic_signal * 0.22)
             + (energy_signal * 0.08)
         )
+        if is_nexus:
+            nexus_speed_scale = _safe_float(
+                SIMULATION_STREAM_NEXUS_MAX_SPEED_SCALE, 0.68
+            )
+            dynamic_max_speed *= max(
+                0.2,
+                min(1.0, nexus_speed_scale + ((1.0 - semantic_payload_signal) * 0.08)),
+            )
         speed = math.hypot(vx_value, vy_value)
         if speed > dynamic_max_speed and speed > 0.0:
             speed_scale = dynamic_max_speed / speed
@@ -10404,9 +11310,30 @@ def advance_simulation_field_particles(
     _resolve_semantic_particle_collisions(rows)
 
     # Remove absorbed
-    presence_dynamics["field_particles"] = [r for r in rows if not r.get("_absorbed")]
-    if len(presence_dynamics["field_particles"]) != len(rows):
-        simulation["presence_dynamics"] = presence_dynamics
+    field_particles = [r for r in rows if not r.get("_absorbed")]
+    presence_dynamics["field_particles"] = field_particles
+
+    nooi_driver_rows = [
+        row
+        for row in field_particles
+        if isinstance(row, dict) and _particle_influences_nooi(row)
+    ]
+    _NOOI_FIELD.decay(dt)
+    for row in nooi_driver_rows:
+        _NOOI_FIELD.deposit(
+            _safe_float(row.get("x", 0.5), 0.5),
+            _safe_float(row.get("y", 0.5), 0.5),
+            _safe_float(row.get("vx", 0.0), 0.0),
+            _safe_float(row.get("vy", 0.0), 0.0),
+        )
+    presence_dynamics["nooi_field"] = _NOOI_FIELD.get_grid_snapshot(nooi_driver_rows)
+
+    _update_stream_motion_overlays(
+        presence_dynamics,
+        dt_seconds=dt,
+        now_seconds=now_value,
+    )
+    simulation["presence_dynamics"] = presence_dynamics
 
 
 def build_simulation_delta(

@@ -463,11 +463,9 @@ def _resource_auto_embedding_order(
     payload = snapshot if isinstance(snapshot, dict) else _resource_monitor_snapshot()
     devices = payload.get("devices", {}) if isinstance(payload, dict) else {}
     npu = devices.get("npu0", {}) if isinstance(devices, dict) else {}
-    cpu = devices.get("cpu", {}) if isinstance(devices, dict) else {}
     gpu1 = devices.get("gpu1", {}) if isinstance(devices, dict) else {}
 
     npu_status = str(npu.get("status", "ok")).strip().lower()
-    cpu_utilization = _safe_float(cpu.get("utilization", 0.0), 0.0)
     gpu_utilization = _safe_float(gpu1.get("utilization", 0.0), 0.0)
     openvino_ready = bool(str(os.getenv("OPENVINO_EMBED_ENDPOINT", "") or "").strip())
     if not openvino_ready:
@@ -476,26 +474,18 @@ def _resource_auto_embedding_order(
         ).upper()
         openvino_ready = "NPU" in openvino_device
 
-    allow_cpu_fallback = str(
-        os.getenv("EMBED_ALLOW_CPU_FALLBACK", "0") or "0"
-    ).strip().lower() in {"1", "true", "yes", "on"}
-
     order: list[str] = []
     if openvino_ready and npu_status != "hot":
         order.append("openvino")
     if gpu_utilization < 97.0:
-        order.append("ollama")
-    if allow_cpu_fallback and cpu_utilization < 95.0:
-        order.append("tensorflow")
-    order.extend(["openvino", "ollama"])
-    if allow_cpu_fallback:
-        order.append("tensorflow")
+        order.append("torch")
+    order.extend(["openvino", "torch"])
 
     deduped: list[str] = []
     seen: set[str] = set()
     for item in order:
         key = str(item).strip().lower()
-        if key not in {"openvino", "tensorflow", "ollama"}:
+        if key not in {"openvino", "torch"}:
             continue
         if key in seen:
             continue
@@ -510,23 +500,36 @@ def _resource_auto_text_order(
     payload = snapshot if isinstance(snapshot, dict) else _resource_monitor_snapshot()
     devices = payload.get("devices", {}) if isinstance(payload, dict) else {}
     cpu = devices.get("cpu", {}) if isinstance(devices, dict) else {}
+    npu = devices.get("npu0", {}) if isinstance(devices, dict) else {}
     gpu1 = devices.get("gpu1", {}) if isinstance(devices, dict) else {}
     log_watch = payload.get("log_watch", {}) if isinstance(payload, dict) else {}
 
     cpu_utilization = _safe_float(cpu.get("utilization", 0.0), 0.0)
+    npu_status = str(npu.get("status", "ok")).strip().lower()
     gpu_utilization = _safe_float(gpu1.get("utilization", 0.0), 0.0)
     error_ratio = _safe_float(log_watch.get("error_ratio", 0.0), 0.0)
+    openvino_ready = bool(str(os.getenv("TEXT_GENERATION_BASE_URL", "") or "").strip())
+    if not openvino_ready:
+        openvino_ready = bool(
+            str(os.getenv("OPENVINO_CHAT_ENDPOINT", "") or "").strip()
+        )
+    if not openvino_ready:
+        openvino_ready = bool(
+            str(os.getenv("ETA_MU_IMAGE_VISION_BASE_URL", "") or "").strip()
+        )
 
-    if gpu_utilization >= 97.0 and cpu_utilization < 70.0 and error_ratio < 0.25:
-        preferred = ["tensorflow", "ollama"]
+    if openvino_ready and npu_status != "hot":
+        preferred = ["openvino", "tensorflow"]
+    elif gpu_utilization >= 97.0 and cpu_utilization < 70.0 and error_ratio < 0.25:
+        preferred = ["tensorflow", "openvino"]
     else:
-        preferred = ["ollama", "tensorflow"]
+        preferred = ["openvino", "tensorflow"]
 
     deduped: list[str] = []
     seen: set[str] = set()
-    for item in [*preferred, "tensorflow", "ollama"]:
+    for item in [*preferred, "openvino", "tensorflow"]:
         key = str(item).strip().lower()
-        if key not in {"tensorflow", "ollama"}:
+        if key not in {"openvino", "tensorflow"}:
             continue
         if key in seen:
             continue

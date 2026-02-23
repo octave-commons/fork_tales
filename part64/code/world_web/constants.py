@@ -380,40 +380,40 @@ PI_ARCHIVE_REQUIRED_RECEIPT_FIELDS = (
 
 # File and Ingest
 ETA_MU_TEXT_SUFFIXES = {
-    ".md",
-    ".txt",
-    ".json",
-    ".jsonl",
-    ".ndjson",
-    ".lisp",
-    ".sexp",
-    ".yaml",
-    ".yml",
-    ".toml",
-    ".csv",
-    ".tsv",
-    ".xml",
-    ".html",
-    ".js",
-    ".ts",
-    ".tsx",
-    ".jsx",
-    ".py",
-    ".c",
-    ".cc",
-    ".cpp",
+    ".graphql",
     ".h",
     ".hpp",
-    ".java",
-    ".go",
-    ".rs",
-    ".sh",
-    ".bat",
-    ".ps1",
+    ".html",
     ".ini",
-    ".cfg",
-    ".conf",
+    ".java",
+    ".js",
+    ".json",
+    ".jsonl",
+    ".jsx",
+    ".less",
+    ".lisp",
+    ".log",
+    ".md",
+    ".ndjson",
+    ".php",
+    ".pl",
+    ".pm",
+    ".proto",
+    ".ps1",
+    ".py",
+    ".rs",
     ".rtf",
+    ".sass",
+    ".scss",
+    ".sexp",
+    ".sh",
+    ".sql",
+    ".ts",
+    ".tsx",
+    ".txt",
+    ".xml",
+    ".yaml",
+    ".yml",
 }
 ETA_MU_INGEST_INCLUDE_TEXT_MIME = {
     "application/javascript",
@@ -438,6 +438,16 @@ ETA_MU_INGEST_INCLUDE_IMAGE_MIME = {
     "image/png",
     "image/webp",
 }
+ETA_MU_INGEST_INCLUDE_AUDIO_MIME = {
+    "audio/aac",
+    "audio/flac",
+    "audio/mpeg",
+    "audio/ogg",
+    "audio/wav",
+    "audio/x-aiff",
+    "audio/x-m4a",
+    "audio/x-ms-wma",
+}
 ETA_MU_INGEST_INCLUDE_TEXT_EXT = {
     ".bash",
     ".c",
@@ -447,8 +457,10 @@ ETA_MU_INGEST_INCLUDE_TEXT_EXT = {
     ".cs",
     ".edn",
     ".go",
+    ".graphql",
     ".h",
     ".hpp",
+    ".html",
     ".hy",
     ".java",
     ".js",
@@ -456,18 +468,27 @@ ETA_MU_INGEST_INCLUDE_TEXT_EXT = {
     ".jsonl",
     ".jsx",
     ".kt",
+    ".less",
     ".lisp",
+    ".log",
     ".markdown",
     ".md",
     ".org",
     ".php",
+    ".pl",
+    ".pm",
+    ".proto",
     ".py",
     ".rb",
     ".rs",
+    ".sass",
     ".scm",
+    ".scss",
     ".sh",
     ".sibilant",
+    ".sql",
     ".ss",
+    ".t",
     ".toml",
     ".ts",
     ".tsx",
@@ -484,12 +505,43 @@ ETA_MU_INGEST_INCLUDE_IMAGE_EXT = {
     ".png",
     ".webp",
 }
+ETA_MU_INGEST_INCLUDE_AUDIO_EXT = {
+    ".aac",
+    ".aiff",
+    ".flac",
+    ".m4a",
+    ".mp3",
+    ".ogg",
+    ".wav",
+    ".wma",
+}
 ETA_MU_INGEST_EXCLUDE_REL_PATHS = {
-    "_notes",
-    "_rejected",
+    "__pycache__",
+    ".cache",
     ".DS_Store",
     ".git",
+    ".gradle",
+    ".idea",
+    ".next",
+    ".npm",
+    ".nuxt",
+    ".pytest_cache",
+    ".sass-cache",
+    ".svelte-kit",
+    ".vite",
+    ".vscode",
+    ".yarn",
+    "_notes",
+    "_rejected",
+    "bin",
+    "bower_components",
+    "build",
+    "dist",
     "node_modules",
+    "obj",
+    "out",
+    "target",
+    "vendor",
 }
 ETA_MU_INGEST_EXCLUDE_GLOBS = (
     "**/*.lock",
@@ -503,6 +555,10 @@ ETA_MU_INGEST_MAX_TEXT_BYTES = max(
 ETA_MU_INGEST_MAX_IMAGE_BYTES = max(
     4096,
     int(os.getenv("ETA_MU_INGEST_MAX_IMAGE_BYTES", "20000000") or "20000000"),
+)
+ETA_MU_INGEST_MAX_AUDIO_BYTES = max(
+    4096,
+    int(os.getenv("ETA_MU_INGEST_MAX_AUDIO_BYTES", "100000000") or "100000000"),
 )
 ETA_MU_INGEST_MAX_SCAN_FILES = max(
     1,
@@ -532,6 +588,7 @@ ETA_MU_INGEST_TEXT_CHUNK_MAX = max(
 # Vecstore Spaces
 ETA_MU_INGEST_SPACE_TEXT_ID = "ημ.text.v1"
 ETA_MU_INGEST_SPACE_IMAGE_ID = "ημ.image.v1"
+ETA_MU_INGEST_SPACE_AUDIO_ID = "ημ.audio.v1"
 ETA_MU_INGEST_SPACE_SET_ID = "ημ.nexus.v1"
 ETA_MU_INGEST_VECSTORE_ID = "vecstore.main"
 ETA_MU_INGEST_VECSTORE_COLLECTION = "ημ_nexus_v1"
@@ -555,6 +612,16 @@ ETA_MU_INGEST_IMAGE_DIMS = max(
     64,
     int(os.getenv("ETA_MU_IMAGE_EMBED_DIMS", "768") or "768"),
 )
+ETA_MU_INGEST_AUDIO_MODEL = str(
+    os.getenv("ETA_MU_AUDIO_EMBED_MODEL", "nomic-embed-text") or "nomic-embed-text"
+).strip()
+ETA_MU_INGEST_AUDIO_MODEL_DIGEST = str(
+    os.getenv("ETA_MU_AUDIO_EMBED_DIGEST", "none") or "none"
+).strip()
+ETA_MU_INGEST_AUDIO_DIMS = max(
+    64,
+    int(os.getenv("ETA_MU_AUDIO_EMBED_DIMS", "768") or "768"),
+)
 ETA_MU_INGEST_EMBED_TIMEOUT_SECONDS = max(
     0.1,
     float(os.getenv("ETA_MU_INGEST_EMBED_TIMEOUT_SECONDS", "30") or "30"),
@@ -574,7 +641,7 @@ ETA_MU_INGEST_STABILITY = str(
 ETA_MU_INGEST_SAFE_MODE = (
     ETA_MU_INGEST_HEALTH != "活" or ETA_MU_INGEST_STABILITY != "安"
 )
-ETA_MU_INGEST_CONTRACT_ID = "ημ.ingest.text+image.v1"
+ETA_MU_INGEST_CONTRACT_ID = "ημ.ingest.text+image+audio.v1"
 ETA_MU_INGEST_PACKET_RECORD = "ημ.packet.v1"
 ETA_MU_INGEST_MANIFEST_PREFIX = "ημ_ingest_manifest_"
 ETA_MU_INGEST_STATS_PREFIX = "ημ_ingest_stats_"

@@ -143,6 +143,11 @@ const StabilityObservatoryPanel = lazy(() =>
     default: module.StabilityObservatoryPanel,
   })),
 );
+const RuntimeConfigPanel = lazy(() =>
+  import("./components/Panels/RuntimeConfigPanel").then((module) => ({
+    default: module.RuntimeConfigPanel,
+  })),
+);
 const DaimoiPresencePanel = lazy(() =>
   import("./components/Panels/DaimoiPresencePanel").then((module) => ({
     default: module.DaimoiPresencePanel,
@@ -163,7 +168,12 @@ interface OverlayApi {
     xRatio: number,
     yRatio: number,
     options?: { openWorldscreen?: boolean },
-  ) => { hitNode: boolean; openedWorldscreen: boolean; target: string };
+  ) => { hitNode: boolean; openedWorldscreen: boolean; target: string; xRatio: number; yRatio: number };
+  interactClientAt?: (
+    clientX: number,
+    clientY: number,
+    options?: { openWorldscreen?: boolean },
+  ) => { hitNode: boolean; openedWorldscreen: boolean; target: string; xRatio: number; yRatio: number };
 }
 
 interface UiToast {
@@ -225,6 +235,7 @@ const PANEL_TOOL_HINTS: Record<string, string[]> = {
   "nexus.ui.autopilot_ledger": ["autopilot", "risk", "gates"],
   "nexus.ui.world_log": ["receipts", "events", "review"],
   "nexus.ui.stability_observatory": ["study", "drift", "council"],
+  "nexus.ui.runtime_config": ["config", "constants", "tuning"],
   "nexus.ui.daimoi_presence": ["daimoi", "presence", "focus"],
   "nexus.ui.omni_archive": ["catalog", "memories", "artifacts"],
   "nexus.ui.myth_commons": ["interact", "pray", "speak"],
@@ -237,6 +248,7 @@ const TERTIARY_PIN_STORAGE_KEY = "eta_mu.tertiary_pin.v1";
 const MUSE_WORKSPACE_STORAGE_KEY = "eta_mu.muse_workspace.v1";
 const INTERFACE_OPACITY_STORAGE_KEY = "eta_mu.interface_opacity.v1";
 const GLASS_VIEWPORT_PANEL_ID = "nexus.ui.glass_viewport";
+const RUNTIME_CONFIG_PANEL_ID = "nexus.ui.runtime_config";
 const INTERFACE_OPACITY_MIN = 0.38;
 const INTERFACE_OPACITY_MAX = 1;
 const FIXED_MUSE_PRESENCES = [
@@ -2896,7 +2908,8 @@ export default function App() {
 
   const projectionElementById = useMemo(() => {
     const map = new Map<string, { presence?: string; binds_to?: string[]; kind?: string }>();
-    activeProjection?.elements.forEach((element) => {
+    const elements = Array.isArray(activeProjection?.elements) ? activeProjection.elements : [];
+    elements.forEach((element) => {
       map.set(element.id, {
         presence: element.presence,
         binds_to: element.binds_to,
@@ -3135,7 +3148,8 @@ export default function App() {
     if (!activeProjection) {
       return map;
     }
-    activeProjection.states.forEach((state) => {
+    const states = Array.isArray(activeProjection.states) ? activeProjection.states : [];
+    states.forEach((state) => {
       map.set(state.element_id, state);
     });
     return map;
@@ -3464,6 +3478,27 @@ export default function App() {
       ),
     },
     {
+      id: "nexus.ui.runtime_config",
+      fallbackSpan: 6,
+      className: "card relative overflow-hidden",
+      render: () => (
+        <>
+          <div className="absolute top-0 left-0 w-1 h-full bg-[#ae81ff] opacity-70" />
+          <h2 className="text-2xl font-bold mb-2">Runtime Config / 実行設定</h2>
+          <p className="text-muted mb-4">
+            Inspect live numeric constants exposed by <code>/api/config</code> for simulation and runtime tuning.
+          </p>
+          {deferredPanelsReady ? (
+            <Suspense fallback={<DeferredPanelPlaceholder title="Runtime Config" />}>
+              <RuntimeConfigPanel />
+            </Suspense>
+          ) : (
+            <DeferredPanelPlaceholder title="Runtime Config" />
+          )}
+        </>
+      ),
+    },
+    {
       id: "nexus.ui.daimoi_presence",
       fallbackSpan: 6,
       className: "card relative overflow-hidden",
@@ -3743,6 +3778,22 @@ export default function App() {
     }));
     setSelectedPanelId((prev) => (prev === panelId ? null : prev));
     setHoveredPanelId((prev) => (prev === panelId ? null : prev));
+  }, []);
+
+  const openRuntimeConfigPanel = useCallback(() => {
+    setPanelWindowStates((prev) => ({
+      ...prev,
+      [RUNTIME_CONFIG_PANEL_ID]: {
+        open: true,
+        minimized: false,
+      },
+    }));
+    setPinnedPanels((prev) => ({
+      ...prev,
+      [RUNTIME_CONFIG_PANEL_ID]: true,
+    }));
+    setSelectedPanelId(RUNTIME_CONFIG_PANEL_ID);
+    setHoveredPanelId(null);
   }, []);
 
   const panelAnchorById = useMemo(() => {
@@ -4340,25 +4391,36 @@ export default function App() {
 
   const lastGlassClickRef = useRef<{ ts: number; x: number; y: number } | null>(null);
 
-  const handleGlassInteractAt = useCallback((xRatio: number, yRatio: number) => {
-    const anchorX = clamp(Number(xRatio ?? 0.5), 0, 1);
-    const anchorY = clamp(Number(yRatio ?? 0.5), 0, 1);
-    const result = overlayApi?.interactAt?.(anchorX, anchorY, { openWorldscreen: true });
+  const handleGlassInteractAt = useCallback((payload: {
+    panelId: string;
+    xRatio: number;
+    yRatio: number;
+    clientX?: number;
+    clientY?: number;
+  }) => {
+    const anchorX = clamp(Number(payload.xRatio ?? 0.5), 0, 1);
+    const anchorY = clamp(Number(payload.yRatio ?? 0.5), 0, 1);
+    const hasClientPoint = Number.isFinite(payload.clientX) && Number.isFinite(payload.clientY);
+    const result = hasClientPoint && overlayApi?.interactClientAt
+      ? overlayApi.interactClientAt(Number(payload.clientX), Number(payload.clientY), { openWorldscreen: true })
+      : overlayApi?.interactAt?.(anchorX, anchorY, { openWorldscreen: true });
+    const resolvedX = clamp(Number(result?.xRatio ?? anchorX), 0, 1);
+    const resolvedY = clamp(Number(result?.yRatio ?? anchorY), 0, 1);
     if (result?.hitNode) {
       return;
     }
 
     const now = performance.now();
     const last = lastGlassClickRef.current;
-    if (last && (now - last.ts) < 320 && Math.abs(last.x - anchorX) < 0.05 && Math.abs(last.y - anchorY) < 0.05) {
+    if (last && (now - last.ts) < 320 && Math.abs(last.x - resolvedX) < 0.05 && Math.abs(last.y - resolvedY) < 0.05) {
       // Double click on glass -> fly camera
-      flyCameraToRatios(anchorX, anchorY, "node", glassCenterRatio.x, glassCenterRatio.y);
+      flyCameraToRatios(resolvedX, resolvedY, "node", glassCenterRatio.x, glassCenterRatio.y);
       lastGlassClickRef.current = null;
       return;
     }
-    lastGlassClickRef.current = { ts: now, x: anchorX, y: anchorY };
+    lastGlassClickRef.current = { ts: now, x: resolvedX, y: resolvedY };
 
-    overlayApi?.pulseAt?.(anchorX, anchorY, 0.88, result?.target ?? "glass_click");
+    overlayApi?.pulseAt?.(resolvedX, resolvedY, 0.88, result?.target ?? payload.panelId ?? "glass_click");
   }, [flyCameraToRatios, glassCenterRatio.x, glassCenterRatio.y, overlayApi]);
 
   const handleNexusInteraction = useCallback((event: NexusInteractionEvent) => {
@@ -4418,7 +4480,7 @@ export default function App() {
       />
 
       <main
-        className="relative z-20 w-full px-1 py-2 md:px-2 md:py-4 pb-20 transition-colors pointer-events-none"
+        className="relative z-20 w-full px-1 py-2 md:px-2 md:py-4 pb-20 lg:pr-[24rem] transition-colors pointer-events-none"
         style={{ opacity: interfaceOpacity }}
       >
         <header className="mb-4 border-b border-[rgba(166,205,235,0.28)] pb-3 flex flex-col gap-2 bg-[rgba(8,14,22,0.18)] rounded-xl px-3 shadow-[0_6px_16px_rgba(2,8,14,0.16)] pointer-events-auto">
@@ -4485,6 +4547,7 @@ export default function App() {
             onSetCoreSimulationDial={setCoreSimulationDial}
             onSetCoreOrbitSpeed={(value) => setCoreOrbitSpeed(clamp(value, CORE_ORBIT_SPEED_MIN, CORE_ORBIT_SPEED_MAX))}
             onSetMouseDaimonTuning={updateMouseDaimonTuning}
+            onOpenRuntimeConfig={openRuntimeConfigPanel}
           />
 
           <div className="mt-3">

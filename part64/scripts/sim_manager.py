@@ -178,26 +178,25 @@ class SimulationManager:
         # But wait, if I can't use 'docker run', I HAVE to use the API for spawning too.
 
         # Let's try API create + start.
-        openvino_api_key = _load_proxy_api_key()
         extra_env = [
             "CHROMA_HOST=chroma",
             "CHROMA_PORT=8000",
-            "OLLAMA_BASE_URL=http://host.docker.internal:11435",
-            "OPENVINO_EMBED_ENDPOINT=http://host.docker.internal:18000/v1/embeddings",
+            "TEXT_GENERATION_BACKEND=vllm",
+            "TEXT_GENERATION_BASE_URL=http://host.docker.internal:18000",
+            "TEXT_GENERATION_MODEL=qwen3-vl:4b-instruct",
+            "TEXT_GENERATION_DEVICE=GPU",
+            "ETA_MU_IMAGE_VISION_ENABLED=1",
+            "ETA_MU_IMAGE_VISION_BASE_URL=http://host.docker.internal:18000",
             "OPENVINO_EMBED_MODEL=nomic-embed-text",
             "OPENVINO_EMBED_DEVICE=NPU",
-            "OPENVINO_EMBED_TIMEOUT_SEC=10",
-            "OPENVINO_EMBED_API_KEY_HEADER=X-API-Key",
             "EMBEDDINGS_BACKEND=openvino",
             "CDB_EMBED_IN_C=1",
             "CDB_EMBED_REQUIRE_C=1",
             "CDB_EMBED_DEVICE=NPU",
+            "CDB_EMBED_GPU_REQUIRE_CUDA=1",
             "CDB_EMBED_STRICT_DEVICE=1",
             "CDB_EMBED_PRELOAD_ORT_CORE=1",
         ]
-        if openvino_api_key:
-            extra_env.append(f"OPENVINO_EMBED_API_KEY={openvino_api_key}")
-            extra_env.append(f"OPENVINO_EMBED_BEARER_TOKEN={openvino_api_key}")
 
         config = {
             "Image": image_name,

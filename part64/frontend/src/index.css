@@ -1178,7 +1178,13 @@ body {
     linear-gradient(180deg, rgba(8, 19, 31, 0.18), rgba(7, 13, 22, 0.12));
   box-shadow: 0 8px 18px rgba(0, 8, 16, 0.2);
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) minmax(0, auto);
+  grid-template-rows: auto auto minmax(0, 0.92fr) minmax(0, 0.92fr) minmax(0, auto);
+}
+
+.world-unity-sidebar .world-pinned-pile,
+.world-unity-sidebar .world-smart-pile {
+  min-height: 0;
+  max-height: none;
 }
 
 .world-unity-sidebar-collapsed {
@@ -1674,7 +1680,7 @@ body {
   .world-unity-sidebar {
     min-height: 19rem;
     max-height: none;
-    grid-template-rows: auto auto minmax(0, auto) minmax(0, auto);
+    grid-template-rows: auto auto minmax(0, auto) minmax(0, auto) minmax(0, auto);
   }
 
   .world-unity-sidebar-filters {

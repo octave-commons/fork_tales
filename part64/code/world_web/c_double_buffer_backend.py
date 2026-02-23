@@ -20,6 +20,8 @@ print("DEBUG: c_double_buffer_backend imported", flush=True)
 
 CDB_FLAG_NEXUS = 0x1
 CDB_FLAG_CHAOS = 0x2
+_CDB_NOOI_FLOAT_COUNT = 64 * 64 * 8 * 2
+_CDB_EMBED_DIM = 24
 
 _CDB_GRAPH_RUNTIME_RECORD = "eta-mu.graph-runtime.cdb.v1"
 _CDB_GRAPH_RUNTIME_SCHEMA = "graph.runtime.cdb.v1"
@@ -29,6 +31,20 @@ _EDGE_HEALTH_REPAIR_GAIN = 0.085
 _EDGE_HEALTH_QUEUE_PENALTY = 0.045
 _EDGE_HEALTH_FLOOR = 0.05
 _EDGE_HEALTH_REGISTRY: dict[str, float] = {}
+try:
+    _EDGE_HEALTH_REGISTRY_MAX = max(
+        1024,
+        int(float(os.getenv("CDB_EDGE_HEALTH_REGISTRY_MAX", "32768") or "32768")),
+    )
+except Exception:
+    _EDGE_HEALTH_REGISTRY_MAX = 32768
+_EDGE_HEALTH_REGISTRY_TRIM_TARGET = max(
+    768,
+    min(
+        _EDGE_HEALTH_REGISTRY_MAX,
+        int(float(_EDGE_HEALTH_REGISTRY_MAX) * 0.88),
+    ),
+)
 
 _VALVE_ALPHA_PRESSURE = 0.44
 _VALVE_ALPHA_GRAVITY = 1.0
@@ -146,6 +162,14 @@ def _safe_float(value: Any, fallback: float) -> float:
         return float(value)
     except Exception:
         return fallback
+
+
+def _coerce_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return []
 
 
 def _clamp01(value: float) -> float:
@@ -349,6 +373,27 @@ def _edge_health_key(node_ids: list[str], source_index: int, target_index: int) 
     ):
         return f"edge:{source_index}->{target_index}"
     return f"{node_ids[source_index]}->{node_ids[target_index]}"
+
+
+def _prune_edge_health_registry(*, active_keys: set[str]) -> None:
+    if len(_EDGE_HEALTH_REGISTRY) <= _EDGE_HEALTH_REGISTRY_MAX:
+        return
+    trim_target = max(
+        1,
+        min(_EDGE_HEALTH_REGISTRY_MAX, _EDGE_HEALTH_REGISTRY_TRIM_TARGET),
+    )
+    for key in list(_EDGE_HEALTH_REGISTRY.keys()):
+        if len(_EDGE_HEALTH_REGISTRY) <= trim_target:
+            break
+        if key in active_keys:
+            continue
+        _EDGE_HEALTH_REGISTRY.pop(key, None)
+    if len(_EDGE_HEALTH_REGISTRY) <= trim_target:
+        return
+    for key in list(_EDGE_HEALTH_REGISTRY.keys()):
+        if len(_EDGE_HEALTH_REGISTRY) <= trim_target:
+            break
+        _EDGE_HEALTH_REGISTRY.pop(key, None)
 
 
 def _derive_edge_cost_components(
@@ -643,6 +688,112 @@ def _route_terms_for_edge(
         "valve_health_term": valve_health_term,
         "valve_score_proxy": valve_score_proxy,
     }
+
+
+def _route_score_for_edge(
+    *,
+    source: int,
+    target: int,
+    edge_index: int | None,
+    gravity: list[float],
+    edge_latency_component: list[float],
+    edge_congestion_component: list[float],
+    edge_semantic_component: list[float],
+    edge_upkeep_penalty: list[float],
+    resource_gravity_maps: dict[str, list[float]] | None = None,
+    resource_signature: dict[str, float] | None = None,
+    eta: float,
+    upsilon: float,
+) -> float:
+    eta_value = _safe_float(eta, 1.0)
+    upsilon_value = _safe_float(upsilon, 0.72)
+
+    gravity_delta = _safe_float(
+        gravity[target] if target < len(gravity) else 0.0,
+        0.0,
+    ) - _safe_float(
+        gravity[source] if source < len(gravity) else 0.0,
+        0.0,
+    )
+
+    maps = resource_gravity_maps if isinstance(resource_gravity_maps, dict) else {}
+    signature = resource_signature if isinstance(resource_signature, dict) else {}
+    if maps and signature:
+        weighted_delta = 0.0
+        matched = False
+        for raw_resource, raw_weight in signature.items():
+            resource = _canonical_resource_type(str(raw_resource)) or str(raw_resource)
+            map_values = maps.get(resource)
+            if not isinstance(map_values, list):
+                continue
+            if source >= len(map_values) or target >= len(map_values):
+                continue
+            weight = max(0.0, _safe_float(raw_weight, 0.0))
+            if weight <= 1e-8:
+                continue
+            delta = _safe_float(map_values[target], 0.0) - _safe_float(
+                map_values[source],
+                0.0,
+            )
+            weighted_delta += weight * delta
+            matched = True
+        if matched:
+            gravity_delta = weighted_delta
+
+    if edge_index is None:
+        latency_component = 0.0
+        congestion_component = 0.0
+        semantic_component = 0.0
+        upkeep_component = 0.0
+    else:
+        latency_component = max(
+            0.0,
+            _safe_float(
+                edge_latency_component[edge_index]
+                if edge_index < len(edge_latency_component)
+                else 0.0,
+                0.0,
+            ),
+        )
+        congestion_component = max(
+            0.0,
+            _safe_float(
+                edge_congestion_component[edge_index]
+                if edge_index < len(edge_congestion_component)
+                else 0.0,
+                0.0,
+            ),
+        )
+        semantic_component = max(
+            0.0,
+            _safe_float(
+                edge_semantic_component[edge_index]
+                if edge_index < len(edge_semantic_component)
+                else 0.0,
+                0.0,
+            ),
+        )
+        upkeep_component = max(
+            0.0,
+            _safe_float(
+                edge_upkeep_penalty[edge_index]
+                if edge_index < len(edge_upkeep_penalty)
+                else 0.0,
+                0.0,
+            ),
+        )
+
+    drift_gravity_term = eta_value * gravity_delta
+    drift_cost_term = -(
+        upsilon_value
+        * (
+            latency_component
+            + congestion_component
+            + semantic_component
+            + upkeep_component
+        )
+    )
+    return drift_gravity_term + drift_cost_term
 
 
 def _canonical_resource_type(resource_type: str) -> str:
@@ -1160,6 +1311,10 @@ def _load_native_lib() -> ctypes.CDLL:
         lib.cdb_engine_destroy.argtypes = [ctypes.c_void_p]
         lib.cdb_engine_destroy.restype = None
 
+        if hasattr(lib, "cdb_release_thread_scratch"):
+            lib.cdb_release_thread_scratch.argtypes = []
+            lib.cdb_release_thread_scratch.restype = None
+
         lib.cdb_engine_snapshot.argtypes = [
             ctypes.c_void_p,
             ctypes.POINTER(ctypes.c_float),
@@ -1281,6 +1436,23 @@ def _load_native_lib() -> ctypes.CDLL:
             ]
             lib.cdb_graph_route_step.restype = ctypes.c_int
 
+        if hasattr(lib, "cdb_resolve_semantic_collisions"):
+            lib.cdb_resolve_semantic_collisions.argtypes = [
+                ctypes.c_uint32,
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.c_float,
+                ctypes.c_float,
+                ctypes.c_float,
+                ctypes.c_uint32,
+                ctypes.POINTER(ctypes.c_uint32),
+            ]
+            lib.cdb_resolve_semantic_collisions.restype = ctypes.c_uint32
+
         _LIB = lib
         return lib
 
@@ -1301,6 +1473,71 @@ def _int_env(name: str, default: int, *, minimum: int, maximum: int) -> int:
     except Exception:
         value = default
     return max(minimum, min(maximum, value))
+
+
+def _resolve_force_runtime_config(*, particle_count: int) -> dict[str, Any]:
+    count = max(1, int(particle_count))
+
+    cpu_count = int(os.cpu_count() or 1)
+    cpu_count = max(1, min(64, cpu_count))
+    default_workers = cpu_count
+    if default_workers > 4:
+        default_workers -= 3
+    default_workers = max(1, min(32, default_workers))
+
+    requested_workers = _int_env(
+        "CDB_FORCE_WORKERS",
+        default_workers,
+        minimum=1,
+        maximum=32,
+    )
+    effective_workers = max(1, min(requested_workers, count))
+    requested_collision_workers = _int_env(
+        "CDB_COLLISION_WORKERS",
+        requested_workers,
+        minimum=1,
+        maximum=32,
+    )
+    effective_collision_workers = max(1, min(requested_collision_workers, count))
+
+    bh_theta = _safe_float(os.getenv("CDB_BH_THETA", "0.62"), 0.62)
+    bh_theta = max(0.2, min(1.4, bh_theta))
+
+    bh_leaf_capacity = _int_env("CDB_BH_LEAF_CAP", 8, minimum=1, maximum=64)
+    bh_max_depth = _int_env("CDB_BH_MAX_DEPTH", 12, minimum=4, maximum=24)
+
+    collision_spring = _safe_float(os.getenv("CDB_COLLISION_SPRING", "80.0"), 80.0)
+    collision_spring = max(1.0, min(250.0, collision_spring))
+
+    cluster_theta = _safe_float(os.getenv("CDB_CLUSTER_THETA", "0.68"), 0.68)
+    cluster_theta = max(0.2, min(1.6, cluster_theta))
+    cluster_rest_length = _safe_float(
+        os.getenv("CDB_CLUSTER_REST_LENGTH", "0.08"),
+        0.08,
+    )
+    cluster_rest_length = max(0.01, min(0.4, cluster_rest_length))
+    cluster_stiffness = _safe_float(
+        os.getenv("CDB_CLUSTER_STIFFNESS", "1.0"),
+        1.0,
+    )
+    cluster_stiffness = max(0.1, min(4.0, cluster_stiffness))
+
+    quadtree_capacity_estimate = max(256, (count * 16) + 128)
+
+    return {
+        "barnes_hut_theta": round(bh_theta, 6),
+        "barnes_hut_leaf_capacity": int(bh_leaf_capacity),
+        "barnes_hut_max_depth": int(bh_max_depth),
+        "collision_spring": round(collision_spring, 6),
+        "cluster_theta": round(cluster_theta, 6),
+        "cluster_rest_length": round(cluster_rest_length, 6),
+        "cluster_stiffness": round(cluster_stiffness, 6),
+        "force_workers_requested": int(requested_workers),
+        "force_workers_effective": int(effective_workers),
+        "collision_workers_requested": int(requested_collision_workers),
+        "collision_workers_effective": int(effective_collision_workers),
+        "quadtree_capacity_estimate": int(quadtree_capacity_estimate),
+    }
 
 
 def _maybe_download_embed_model_path() -> Path | None:
@@ -1711,7 +1948,17 @@ def _prepare_npu_level_zero_env() -> None:
     )
 
 
-def _embed_buildinfo_matches(*, include_dir: Path, capi_dir: Path, soname: str) -> bool:
+def _embed_source_signature() -> str:
+    try:
+        stat = _EMBED_NATIVE_SOURCE.stat()
+    except Exception:
+        return "missing"
+    return f"{int(stat.st_mtime_ns)}:{int(stat.st_size)}"
+
+
+def _embed_buildinfo_matches(
+    *, include_dir: Path, capi_dir: Path, soname: str, source_signature: str
+) -> bool:
     if not _EMBED_NATIVE_BUILDINFO.exists() or not _EMBED_NATIVE_BUILDINFO.is_file():
         return False
     try:
@@ -1722,12 +1969,17 @@ def _embed_buildinfo_matches(*, include_dir: Path, capi_dir: Path, soname: str) 
         str(include_dir.resolve()),
         str(capi_dir.resolve()),
         str(soname),
+        str(source_signature),
     ]
-    return rows[:3] == expected
+    return rows[:4] == expected
 
 
-def _write_embed_buildinfo(*, include_dir: Path, capi_dir: Path, soname: str) -> None:
-    payload = f"{include_dir.resolve()}\n{capi_dir.resolve()}\n{soname}\n"
+def _write_embed_buildinfo(
+    *, include_dir: Path, capi_dir: Path, soname: str, source_signature: str
+) -> None:
+    payload = (
+        f"{include_dir.resolve()}\n{capi_dir.resolve()}\n{soname}\n{source_signature}\n"
+    )
     _EMBED_NATIVE_BUILDINFO.write_text(payload, encoding="utf-8")
 
 
@@ -1745,6 +1997,7 @@ def _build_embed_shared_library() -> None:
     soname = _resolve_ort_soname(capi_dir)
     if not soname:
         raise RuntimeError("missing libonnxruntime.so in capi directory")
+    source_signature = _embed_source_signature()
 
     command = [
         "g++",
@@ -1763,7 +2016,12 @@ def _build_embed_shared_library() -> None:
         str(_EMBED_NATIVE_LIB),
     ]
     subprocess.run(command, check=True, capture_output=True, text=True)
-    _write_embed_buildinfo(include_dir=include_dir, capi_dir=capi_dir, soname=soname)
+    _write_embed_buildinfo(
+        include_dir=include_dir,
+        capi_dir=capi_dir,
+        soname=soname,
+        source_signature=source_signature,
+    )
 
 
 def _load_embed_lib() -> ctypes.CDLL:
@@ -1771,6 +2029,9 @@ def _load_embed_lib() -> ctypes.CDLL:
     with _EMBED_LIB_LOCK:
         if _EMBED_LIB is not None:
             return _EMBED_LIB
+
+        capi_dir_for_links = _resolve_ort_capi_dir()
+        _ensure_ort_soname_links(capi_dir_for_links)
 
         can_build = shutil.which("g++") is not None
 
@@ -1787,6 +2048,7 @@ def _load_embed_lib() -> ctypes.CDLL:
                 include_dir=include_dir,
                 capi_dir=capi_dir,
                 soname=soname,
+                source_signature=_embed_source_signature(),
             ):
                 needs_build = True
 
@@ -2035,6 +2297,11 @@ def _get_c_embed_runtime() -> Any:
                     raise RuntimeError(
                         f"invalid_runtime_device:selected_device={selected_device or 'unknown'}"
                     )
+                if candidate == "GPU" and _bool_env("CDB_EMBED_GPU_REQUIRE_CUDA", True):
+                    if selected_device != "CUDA":
+                        raise RuntimeError(
+                            f"cuda_required_for_gpu:selected_device={selected_device or 'unknown'}"
+                        )
 
                 fallback_detected = bool(runtime.cpu_fallback_detected())
                 fallback_detail = str(runtime.cpu_fallback_detail() or "").strip()
@@ -2082,6 +2349,79 @@ def _get_c_embed_runtime() -> Any:
         _EMBED_RUNTIME_CPU_FALLBACK_DETAIL = (
             _EMBED_RUNTIME_ERROR if _EMBED_RUNTIME_CPU_FALLBACK else ""
         )
+        return None
+
+
+def _reset_c_embed_runtime() -> None:
+    global _EMBED_RUNTIME
+    global _EMBED_RUNTIME_ERROR
+    global _EMBED_RUNTIME_SOURCE
+    global _EMBED_RUNTIME_CPU_FALLBACK
+    global _EMBED_RUNTIME_CPU_FALLBACK_DETAIL
+
+    runtime: Any = None
+    with _EMBED_RUNTIME_LOCK:
+        runtime = _EMBED_RUNTIME
+        _EMBED_RUNTIME = None
+        _EMBED_RUNTIME_ERROR = ""
+        _EMBED_RUNTIME_SOURCE = "pending"
+        _EMBED_RUNTIME_CPU_FALLBACK = False
+        _EMBED_RUNTIME_CPU_FALLBACK_DETAIL = ""
+    if runtime is not None:
+        try:
+            runtime.close()
+        except Exception:
+            pass
+    _clear_embed_seed_cache()
+
+
+def embed_runtime_snapshot() -> dict[str, Any]:
+    runtime = _get_c_embed_runtime()
+    selected_device = ""
+    if runtime is not None:
+        try:
+            selected_device = str(runtime.selected_device() or "").strip().upper()
+        except Exception:
+            selected_device = ""
+    return {
+        "source": str(_EMBED_RUNTIME_SOURCE or "pending"),
+        "error": str(_EMBED_RUNTIME_ERROR or ""),
+        "cpu_fallback": bool(_EMBED_RUNTIME_CPU_FALLBACK),
+        "cpu_fallback_detail": str(_EMBED_RUNTIME_CPU_FALLBACK_DETAIL or ""),
+        "selected_device": selected_device,
+    }
+
+
+def embed_text_24_local(
+    text: str,
+    *,
+    requested_device: str | None = None,
+) -> list[float] | None:
+    prompt = str(text or "").strip()
+    if not prompt:
+        return None
+
+    requested = _normalize_embed_device(
+        requested_device or os.getenv("CDB_EMBED_DEVICE", "AUTO")
+    )
+    active = _normalize_embed_device(os.getenv("CDB_EMBED_DEVICE", "AUTO"))
+    if requested != active:
+        os.environ["CDB_EMBED_DEVICE"] = requested
+        _reset_c_embed_runtime()
+
+    runtime = _get_c_embed_runtime()
+    if runtime is None:
+        return None
+
+    try:
+        vec = runtime.embed_24(prompt)
+    except Exception:
+        vec = None
+    if not isinstance(vec, list) or len(vec) != 24:
+        return None
+    try:
+        return [float(item) for item in vec]
+    except Exception:
         return None
 
 
@@ -2169,6 +2509,16 @@ def _clear_embed_seed_cache() -> None:
         _EMBED_VECTOR_CACHE.clear()
 
 
+def _copy_float_data_to_c_buffer(
+    *, source: list[float], target: Any, target_size: int
+) -> None:
+    limit = min(len(source), max(0, int(target_size)))
+    for index in range(limit):
+        target[index] = _safe_float(source[index], 0.0)
+    for index in range(limit, target_size):
+        target[index] = 0.0
+
+
 class _CDBEngine:
     def __init__(self, lib: ctypes.CDLL) -> None:
         self._lib = lib
@@ -2184,16 +2534,25 @@ class _CDBEngine:
         self._entropy: Any = None
         self._owner: Any = None
         self._flags: Any = None
+        self._nooi_update_buffer: Any = None
+        self._embedding_update_buffer: Any = None
+        self._embedding_update_capacity = 0
         self._lock = threading.Lock()
 
     def close(self) -> None:
         with self._lock:
             if self._ptr is None:
+                self._nooi_update_buffer = None
+                self._embedding_update_buffer = None
+                self._embedding_update_capacity = 0
                 return
             self._lib.cdb_engine_stop(self._ptr)
             self._lib.cdb_engine_destroy(self._ptr)
             self._ptr = None
             self._count = 0
+            self._nooi_update_buffer = None
+            self._embedding_update_buffer = None
+            self._embedding_update_capacity = 0
 
     def ensure(self, *, count: int, seed: int) -> None:
         target_count = max(64, int(count))
@@ -2236,6 +2595,10 @@ class _CDBEngine:
             self._entropy = float_array()
             self._owner = int_array()
             self._flags = int_array()
+            self._nooi_update_buffer = (ctypes.c_float * _CDB_NOOI_FLOAT_COUNT)()
+            embedding_size = max(1, self._count * _CDB_EMBED_DIM)
+            self._embedding_update_buffer = (ctypes.c_float * embedding_size)()
+            self._embedding_update_capacity = embedding_size
 
     def snapshot(
         self,
@@ -2304,20 +2667,15 @@ class _CDBEngine:
         with self._lock:
             if self._ptr is None:
                 return
-
-            # 64*64*8*2 = 65536 floats
-            expected_size = 65536
-            if len(data) != expected_size:
-                # Should we error or silently fail?
-                # Fail for now to be safe, or truncate/pad?
-                # Let's truncate/pad to be robust.
-                if len(data) > expected_size:
-                    data = data[:expected_size]
-                else:
-                    data = data + [0.0] * (expected_size - len(data))
-
-            c_array = (ctypes.c_float * expected_size)(*data)
-            self._lib.cdb_engine_update_nooi(self._ptr, c_array)
+            expected_size = _CDB_NOOI_FLOAT_COUNT
+            if self._nooi_update_buffer is None:
+                self._nooi_update_buffer = (ctypes.c_float * expected_size)()
+            _copy_float_data_to_c_buffer(
+                source=data,
+                target=self._nooi_update_buffer,
+                target_size=expected_size,
+            )
+            self._lib.cdb_engine_update_nooi(self._ptr, self._nooi_update_buffer)
 
     def update_embeddings(self, data: list[float]) -> None:
         if not data:
@@ -2325,14 +2683,21 @@ class _CDBEngine:
         with self._lock:
             if self._ptr is None:
                 return
-            expected_size = self._count * 24
-            if len(data) != expected_size:
-                if len(data) > expected_size:
-                    data = data[:expected_size]
-                else:
-                    data = data + [0.0] * (expected_size - len(data))
-            c_array = (ctypes.c_float * expected_size)(*data)
-            self._lib.cdb_engine_update_embeddings(self._ptr, c_array)
+            expected_size = max(1, self._count * _CDB_EMBED_DIM)
+            if (
+                self._embedding_update_buffer is None
+                or self._embedding_update_capacity != expected_size
+            ):
+                self._embedding_update_buffer = (ctypes.c_float * expected_size)()
+                self._embedding_update_capacity = expected_size
+            _copy_float_data_to_c_buffer(
+                source=data,
+                target=self._embedding_update_buffer,
+                target_size=expected_size,
+            )
+            self._lib.cdb_engine_update_embeddings(
+                self._ptr, self._embedding_update_buffer
+            )
 
     def set_flags(self, flags: int) -> None:
         with self._lock:
@@ -2368,6 +2733,15 @@ def shutdown_c_double_buffer_backend() -> None:
             runtime.close()
         except Exception:
             pass
+
+    with _LIB_LOCK:
+        lib = _LIB
+    if lib is not None and hasattr(lib, "cdb_release_thread_scratch"):
+        try:
+            lib.cdb_release_thread_scratch()
+        except Exception:
+            pass
+
     try:
         _clear_embed_seed_cache()
     except Exception:
@@ -2375,6 +2749,102 @@ def shutdown_c_double_buffer_backend() -> None:
 
 
 atexit.register(shutdown_c_double_buffer_backend)
+
+
+def resolve_semantic_collisions_native(
+    *,
+    x: list[float],
+    y: list[float],
+    vx: list[float],
+    vy: list[float],
+    radius: list[float],
+    mass: list[float],
+    restitution: float = 0.88,
+    separation_percent: float = 0.72,
+    cell_size: float = 0.04,
+    worker_count: int | None = None,
+) -> tuple[list[float], list[float], list[float], list[float], list[int]] | None:
+    count = len(x)
+    if count <= 1:
+        return (
+            list(x),
+            list(y),
+            list(vx),
+            list(vy),
+            [0 for _ in range(max(0, count))],
+        )
+    if not (
+        len(y) == count
+        and len(vx) == count
+        and len(vy) == count
+        and len(radius) == count
+        and len(mass) == count
+    ):
+        return None
+
+    try:
+        lib = _load_native_lib()
+    except Exception:
+        return None
+    if not hasattr(lib, "cdb_resolve_semantic_collisions"):
+        return None
+
+    if worker_count is None:
+        cpu_count = int(os.cpu_count() or 1)
+        cpu_count = max(1, min(64, cpu_count))
+        default_workers = cpu_count
+        if default_workers > 4:
+            default_workers -= 3
+        default_workers = max(1, min(32, default_workers))
+        worker_count = _int_env(
+            "CDB_COLLISION_WORKERS",
+            _int_env("CDB_FORCE_WORKERS", default_workers, minimum=1, maximum=32),
+            minimum=1,
+            maximum=32,
+        )
+    workers = max(1, min(32, int(worker_count)))
+    workers = max(1, min(workers, count))
+
+    bounded_restitution = max(0.0, min(1.0, _safe_float(restitution, 0.88)))
+    bounded_separation = max(0.0, min(1.2, _safe_float(separation_percent, 0.72)))
+    bounded_cell_size = max(0.005, min(0.25, _safe_float(cell_size, 0.04)))
+
+    float_array = ctypes.c_float * count
+    uint32_array = ctypes.c_uint32 * count
+
+    x_arr = float_array(*[_clamp01(_safe_float(value, 0.5)) for value in x])
+    y_arr = float_array(*[_clamp01(_safe_float(value, 0.5)) for value in y])
+    vx_arr = float_array(*[_safe_float(value, 0.0) for value in vx])
+    vy_arr = float_array(*[_safe_float(value, 0.0) for value in vy])
+    radius_arr = float_array(*[max(0.0, _safe_float(value, 0.0)) for value in radius])
+    mass_arr = float_array(*[max(0.2, _safe_float(value, 1.0)) for value in mass])
+    collision_arr = uint32_array()
+
+    try:
+        lib.cdb_resolve_semantic_collisions(
+            ctypes.c_uint32(count),
+            x_arr,
+            y_arr,
+            vx_arr,
+            vy_arr,
+            radius_arr,
+            mass_arr,
+            ctypes.c_float(bounded_restitution),
+            ctypes.c_float(bounded_separation),
+            ctypes.c_float(bounded_cell_size),
+            ctypes.c_uint32(workers),
+            collision_arr,
+        )
+    except Exception:
+        return None
+
+    return (
+        [float(x_arr[i]) for i in range(count)],
+        [float(y_arr[i]) for i in range(count)],
+        [float(vx_arr[i]) for i in range(count)],
+        [float(vy_arr[i]) for i in range(count)],
+        [int(collision_arr[i]) for i in range(count)],
+    )
 
 
 def compute_growth_guard_scores_native(
@@ -2961,10 +3431,12 @@ def compute_graph_runtime_maps_native(
     edge_health: list[float] = []
     edge_upkeep_penalty: list[float] = []
     adjusted_edge_cost: list[float] = []
+    active_edge_health_keys: set[str] = set()
     for edge_index in range(edge_count):
         src = max(0, min(node_count - 1, int(edge_sources[edge_index])))
         dst = max(0, min(node_count - 1, int(edge_targets[edge_index])))
         key = _edge_health_key(node_ids, src, dst)
+        active_edge_health_keys.add(key)
         previous = _EDGE_HEALTH_REGISTRY.get(
             key,
             _edge_health_default(
@@ -3017,6 +3489,8 @@ def compute_graph_runtime_maps_native(
         upkeep_penalty = (1.0 - next_health) * 0.35
         edge_upkeep_penalty.append(upkeep_penalty)
         adjusted_edge_cost.append(base_cost + upkeep_penalty)
+
+    _prune_edge_health_registry(active_keys=active_edge_health_keys)
 
     edge_cost = adjusted_edge_cost
 
@@ -3163,18 +3637,20 @@ def compute_graph_route_step_native(
     if node_count <= 0 or edge_count <= 0 or not particle_source_nodes:
         return None
 
-    edge_src = list(runtime.get("edge_src_index", []))
-    edge_dst = list(runtime.get("edge_dst_index", []))
-    edge_cost = list(runtime.get("edge_cost", []))
-    edge_health = list(runtime.get("edge_health", []))
-    edge_affinity = list(runtime.get("edge_affinity", []))
-    edge_saturation = list(runtime.get("edge_saturation", []))
-    edge_latency_component = list(runtime.get("edge_latency_component", []))
-    edge_congestion_component = list(runtime.get("edge_congestion_component", []))
-    edge_semantic_component = list(runtime.get("edge_semantic_component", []))
-    edge_upkeep_penalty = list(runtime.get("edge_upkeep_penalty", []))
-    gravity = list(runtime.get("gravity", []))
-    node_price = list(runtime.get("node_price", []))
+    edge_src = _coerce_list(runtime.get("edge_src_index", []))
+    edge_dst = _coerce_list(runtime.get("edge_dst_index", []))
+    edge_cost = _coerce_list(runtime.get("edge_cost", []))
+    edge_health = _coerce_list(runtime.get("edge_health", []))
+    edge_affinity = _coerce_list(runtime.get("edge_affinity", []))
+    edge_saturation = _coerce_list(runtime.get("edge_saturation", []))
+    edge_latency_component = _coerce_list(runtime.get("edge_latency_component", []))
+    edge_congestion_component = _coerce_list(
+        runtime.get("edge_congestion_component", [])
+    )
+    edge_semantic_component = _coerce_list(runtime.get("edge_semantic_component", []))
+    edge_upkeep_penalty = _coerce_list(runtime.get("edge_upkeep_penalty", []))
+    gravity = _coerce_list(runtime.get("gravity", []))
+    node_price = _coerce_list(runtime.get("node_price", []))
     if (
         len(edge_src) != edge_count
         or len(edge_dst) != edge_count
@@ -3310,43 +3786,20 @@ def compute_graph_route_step_native(
             )
             candidate_nodes: list[int] = []
             candidate_scores: list[float] = []
-            candidate_meta: list[dict[str, Any]] = []
+            candidate_edge_indices: list[int] = []
             best_node = source
             best_score = -10_000.0
             second_score = -10_000.0
-            best_terms = _route_terms_for_edge(
-                source=source,
-                target=source,
-                edge_index=None,
-                gravity=gravity,
-                node_price=node_price,
-                edge_cost=edge_cost,
-                edge_health=edge_health,
-                edge_affinity=edge_affinity,
-                edge_saturation=edge_saturation,
-                edge_latency_component=edge_latency_component,
-                edge_congestion_component=edge_congestion_component,
-                edge_semantic_component=edge_semantic_component,
-                edge_upkeep_penalty=edge_upkeep_penalty,
-                resource_gravity_maps=resource_gravity_maps,
-                resource_signature=particle_signature,
-                eta=eta,
-                upsilon=upsilon,
-            )
+            best_edge_index: int | None = None
             for edge_index, src in enumerate(edge_src):
                 if int(src) != source:
                     continue
                 dst = max(0, min(node_count - 1, int(edge_dst[edge_index])))
-                terms = _route_terms_for_edge(
+                score = _route_score_for_edge(
                     source=source,
                     target=dst,
                     edge_index=edge_index,
                     gravity=gravity,
-                    node_price=node_price,
-                    edge_cost=edge_cost,
-                    edge_health=edge_health,
-                    edge_affinity=edge_affinity,
-                    edge_saturation=edge_saturation,
                     edge_latency_component=edge_latency_component,
                     edge_congestion_component=edge_congestion_component,
                     edge_semantic_component=edge_semantic_component,
@@ -3356,20 +3809,14 @@ def compute_graph_route_step_native(
                     eta=eta,
                     upsilon=upsilon,
                 )
-                score = _safe_float(
-                    terms.get("drift_gravity_term", 0.0), 0.0
-                ) + _safe_float(
-                    terms.get("drift_cost_term", 0.0),
-                    0.0,
-                )
                 candidate_nodes.append(dst)
                 candidate_scores.append(score)
-                candidate_meta.append(terms)
+                candidate_edge_indices.append(edge_index)
                 if score > best_score:
                     second_score = best_score
                     best_score = score
                     best_node = dst
-                    best_terms = terms
+                    best_edge_index = edge_index
                 elif score > second_score:
                     second_score = score
 
@@ -3388,25 +3835,7 @@ def compute_graph_route_step_native(
                     best_node = source
                     best_score = 0.0
                     second_score = -0.4
-                best_terms = _route_terms_for_edge(
-                    source=source,
-                    target=best_node,
-                    edge_index=None,
-                    gravity=gravity,
-                    node_price=node_price,
-                    edge_cost=edge_cost,
-                    edge_health=edge_health,
-                    edge_affinity=edge_affinity,
-                    edge_saturation=edge_saturation,
-                    edge_latency_component=edge_latency_component,
-                    edge_congestion_component=edge_congestion_component,
-                    edge_semantic_component=edge_semantic_component,
-                    edge_upkeep_penalty=edge_upkeep_penalty,
-                    resource_gravity_maps=resource_gravity_maps,
-                    resource_signature=particle_signature,
-                    eta=eta,
-                    upsilon=upsilon,
-                )
+                best_edge_index = None
             else:
                 margin_seed = (
                     ((step_seed + 1) * 1103515245)
@@ -3428,7 +3857,27 @@ def compute_graph_route_step_native(
                     rank = int((margin_seed >> 8) % len(candidate_nodes))
                     best_node = candidate_nodes[rank]
                     best_score = candidate_scores[rank]
-                    best_terms = candidate_meta[rank]
+                    best_edge_index = candidate_edge_indices[rank]
+
+            best_terms = _route_terms_for_edge(
+                source=source,
+                target=best_node,
+                edge_index=best_edge_index,
+                gravity=gravity,
+                node_price=node_price,
+                edge_cost=edge_cost,
+                edge_health=edge_health,
+                edge_affinity=edge_affinity,
+                edge_saturation=edge_saturation,
+                edge_latency_component=edge_latency_component,
+                edge_congestion_component=edge_congestion_component,
+                edge_semantic_component=edge_semantic_component,
+                edge_upkeep_penalty=edge_upkeep_penalty,
+                resource_gravity_maps=resource_gravity_maps,
+                resource_signature=particle_signature,
+                eta=eta,
+                upsilon=upsilon,
+            )
 
             margin = best_score - second_score if second_score > -9999.0 else 0.0
             probability = 1.0 / (
@@ -3796,6 +4245,81 @@ def build_double_buffer_field_particles(
         if isinstance(file_graph, dict)
         else []
     )
+    file_node_position_by_id: dict[str, tuple[float, float]] = {}
+
+    def _file_node_semantic_payload(row: dict[str, Any]) -> tuple[float, float]:
+        text_chars = 0
+        for key in (
+            "summary",
+            "text_excerpt",
+            "name",
+            "label",
+            "title",
+            "source_rel_path",
+            "archive_rel_path",
+            "archived_rel_path",
+            "url",
+        ):
+            value = row.get(key)
+            if isinstance(value, str):
+                text_chars += len(value)
+            elif isinstance(value, list):
+                text_chars += sum(len(str(item)) for item in value)
+
+        tags = row.get("tags", [])
+        if isinstance(tags, list):
+            text_chars += sum(len(str(tag)) for tag in tags)
+        labels = row.get("labels", [])
+        if isinstance(labels, list):
+            text_chars += sum(len(str(label)) for label in labels)
+
+        embed_layer_count = max(
+            0.0, _safe_float(row.get("embed_layer_count", 0.0), 0.0)
+        )
+        embedding_links = row.get("embedding_links", [])
+        link_count = len(embedding_links) if isinstance(embedding_links, list) else 0
+        importance = _clamp01(_safe_float(row.get("importance", 0.24), 0.24))
+
+        semantic_mass = max(
+            0.4,
+            min(
+                12.0,
+                0.44
+                + (math.log1p(max(0, text_chars)) * 0.22)
+                + (embed_layer_count * 0.13)
+                + (float(link_count) * 0.06)
+                + (importance * 1.6),
+            ),
+        )
+        return float(max(0, text_chars)), float(semantic_mass)
+
+    file_node_semantic_by_id: dict[str, tuple[float, float]] = {}
+    for row in file_nodes:
+        if not isinstance(row, dict):
+            continue
+        node_id = str(row.get("id", "")).strip()
+        if not node_id:
+            continue
+        file_node_position_by_id[node_id] = (
+            _clamp01(_safe_float(row.get("x", 0.5), 0.5)),
+            _clamp01(_safe_float(row.get("y", 0.5), 0.5)),
+        )
+        file_node_semantic_by_id[node_id] = _file_node_semantic_payload(row)
+
+    wallet_total_by_presence: dict[str, float] = {}
+    for impact in presence_rows:
+        if not isinstance(impact, dict):
+            continue
+        presence_id = str(impact.get("id", "")).strip()
+        if not presence_id:
+            continue
+        wallet = impact.get("resource_wallet", {})
+        wallet_total = 0.0
+        if isinstance(wallet, dict):
+            wallet_total = sum(
+                max(0.0, _safe_float(value, 0.0)) for value in wallet.values()
+            )
+        wallet_total_by_presence[presence_id] = max(0.0, wallet_total)
     cpu_util = _safe_float(
         (
             (resource_heartbeat or {}).get("devices", {})
@@ -3901,6 +4425,10 @@ def build_double_buffer_field_particles(
         min_count_floor, len(presence_ids) * max(4, particles_per_presence // 2)
     )
     target_count = max(min_count, min(max_count_floor, target_count))
+    semantic_wallet_scale = max(
+        1.0,
+        _safe_float(os.getenv("CDB_SEMANTIC_WALLET_SCALE", "24") or "24", 24.0),
+    )
 
     seed = _seed_from_layout(
         presence_ids=presence_ids,
@@ -3927,11 +4455,52 @@ def build_double_buffer_field_particles(
     # Resolve embeddings for all particles using C inference runtime when available.
     # Python only receives 24d folded vectors from the runtime boundary.
     _prof_emb_start = time.perf_counter()
+
+    nexus_stride_env = str(os.getenv("CDB_NEXUS_STRIDE", "") or "").strip()
+    if nexus_stride_env:
+        nexus_stride = int(_safe_float(nexus_stride_env, 11.0))
+        if nexus_stride <= 0:
+            nexus_stride = 11
+    else:
+        if file_nodes:
+            target_nexus_count = max(
+                24,
+                min(len(file_nodes), max(24, target_count // 3)),
+            )
+        else:
+            target_nexus_count = max(12, target_count // 8)
+        nexus_stride = max(1, target_count // max(1, target_nexus_count))
+    use_virtual_nexus = target_count >= 96
+
+    nexus_slot_mask: list[bool] = [False for _ in range(target_count)]
+    nexus_seed_node_ids: list[str] = ["" for _ in range(target_count)]
+
     flat_embeddings: list[float] = []
     for i in range(target_count):
         owner_id = i % max(1, len(presence_ids))
         presence_id = presence_ids[owner_id]
-        seed_text = f"CDB Slot {i} Owner {presence_id}"
+
+        is_nexus_slot = use_virtual_nexus and ((i % nexus_stride) == 0)
+        nexus_slot_mask[i] = is_nexus_slot
+        if is_nexus_slot:
+            # Map this nexus particle to a file from .ημ (or the general file graph)
+            # file_nodes are already sorted by recency (ingested_at descending).
+            file_index = i // nexus_stride
+            if file_index < len(file_nodes):
+                file_node = file_nodes[file_index]
+                file_node_id = str(file_node.get("id", "")).strip()
+                if file_node_id:
+                    nexus_seed_node_ids[i] = file_node_id
+                name = str(file_node.get("name", "unknown"))
+                # Use name and excerpt to create a semantically meaningful seed for the embedding.
+                # The hardware runtime will generate a 24d vector that guides Semantic Gravity.
+                excerpt = str(file_node.get("text_excerpt", ""))[:240]
+                seed_text = f"NEXUS File {name} {excerpt}"
+            else:
+                seed_text = f"CDB Slot {i} Owner {presence_id} NEXUS-UNUSED"
+        else:
+            seed_text = f"CDB Slot {i} Owner {presence_id}"
+
         emb = list(_embed_seed_vector_24(seed_text))
         if len(emb) < 24:
             emb = emb + [0.0] * (24 - len(emb))
@@ -4001,37 +4570,42 @@ def build_double_buffer_field_particles(
         cpu_utilization=cpu_util,
     )
     graph_node_ids = (
-        list(graph_runtime.get("node_ids", []))
+        _coerce_list(graph_runtime.get("node_ids", []))
         if isinstance(graph_runtime, dict)
         else []
     )
+    graph_node_index_by_id = {
+        str(node_id): idx
+        for idx, node_id in enumerate(graph_node_ids)
+        if str(node_id).strip()
+    }
     source_node_index_by_presence = (
         dict(graph_runtime.get("source_node_index_by_presence", {}))
         if isinstance(graph_runtime, dict)
         else {}
     )
     graph_distance = (
-        list(graph_runtime.get("min_distance", []))
+        _coerce_list(graph_runtime.get("min_distance", []))
         if isinstance(graph_runtime, dict)
         else []
     )
     graph_gravity = (
-        list(graph_runtime.get("gravity", []))
+        _coerce_list(graph_runtime.get("gravity", []))
         if isinstance(graph_runtime, dict)
         else []
     )
     graph_node_price = (
-        list(graph_runtime.get("node_price", []))
+        _coerce_list(graph_runtime.get("node_price", []))
         if isinstance(graph_runtime, dict)
         else []
     )
     graph_node_saturation = (
-        list(graph_runtime.get("node_saturation", []))
+        _coerce_list(graph_runtime.get("node_saturation", []))
         if isinstance(graph_runtime, dict)
         else []
     )
     graph_node_positions = (
-        list(graph_runtime.get("node_positions", []))
+        _coerce_list(graph_runtime.get("node_positions", []))
         if isinstance(graph_runtime, dict)
         else []
     )
@@ -4049,8 +4623,10 @@ def build_double_buffer_field_particles(
     )
     default_signature = _default_resource_signature(queue_clamped)
 
-    particle_source_nodes: list[int] = []
-    particle_resource_signature: list[dict[str, float]] = []
+    particle_source_nodes: list[int] = [0 for _ in range(count)]
+    particle_resource_signature: list[dict[str, float]] = [
+        default_signature for _ in range(count)
+    ]
     if graph_node_ids:
         source_count = len(graph_node_ids)
         for index in range(count):
@@ -4060,16 +4636,13 @@ def build_double_buffer_field_particles(
                 presence_id,
                 owner_id % source_count,
             )
-            particle_source_nodes.append(
-                max(0, min(source_count - 1, int(mapped_node_index)))
+            particle_source_nodes[index] = max(
+                0,
+                min(source_count - 1, int(mapped_node_index)),
             )
-            particle_resource_signature.append(
-                dict(
-                    presence_resource_signatures.get(
-                        presence_id,
-                        default_signature,
-                    )
-                )
+            particle_resource_signature[index] = presence_resource_signatures.get(
+                presence_id,
+                default_signature,
             )
 
     route_runtime = compute_graph_route_step_native(
@@ -4082,137 +4655,137 @@ def build_double_buffer_field_particles(
         step_seed=int(frame_id),
     )
     route_indices = (
-        list(route_runtime.get("next_node_index", []))
+        _coerce_list(route_runtime.get("next_node_index", []))
         if isinstance(route_runtime, dict)
         else []
     )
     route_scores = (
-        list(route_runtime.get("drift_score", []))
+        _coerce_list(route_runtime.get("drift_score", []))
         if isinstance(route_runtime, dict)
         else []
     )
     route_probabilities = (
-        list(route_runtime.get("route_probability", []))
+        _coerce_list(route_runtime.get("route_probability", []))
         if isinstance(route_runtime, dict)
         else []
     )
     route_gravity_terms = (
-        list(route_runtime.get("drift_gravity_term", []))
+        _coerce_list(route_runtime.get("drift_gravity_term", []))
         if isinstance(route_runtime, dict)
         else []
     )
     route_cost_terms = (
-        list(route_runtime.get("drift_cost_term", []))
+        _coerce_list(route_runtime.get("drift_cost_term", []))
         if isinstance(route_runtime, dict)
         else []
     )
     route_gravity_deltas = (
-        list(route_runtime.get("drift_gravity_delta", []))
+        _coerce_list(route_runtime.get("drift_gravity_delta", []))
         if isinstance(route_runtime, dict)
         else []
     )
     route_gravity_delta_scalar = (
-        list(route_runtime.get("drift_gravity_delta_scalar", []))
+        _coerce_list(route_runtime.get("drift_gravity_delta_scalar", []))
         if isinstance(route_runtime, dict)
         else []
     )
     route_edge_costs = (
-        list(route_runtime.get("selected_edge_cost", []))
+        _coerce_list(route_runtime.get("selected_edge_cost", []))
         if isinstance(route_runtime, dict)
         else []
     )
     route_edge_health = (
-        list(route_runtime.get("selected_edge_health", []))
+        _coerce_list(route_runtime.get("selected_edge_health", []))
         if isinstance(route_runtime, dict)
         else []
     )
     route_cost_latency_terms = (
-        list(route_runtime.get("drift_cost_latency_term", []))
+        _coerce_list(route_runtime.get("drift_cost_latency_term", []))
         if isinstance(route_runtime, dict)
         else []
     )
     route_cost_congestion_terms = (
-        list(route_runtime.get("drift_cost_congestion_term", []))
+        _coerce_list(route_runtime.get("drift_cost_congestion_term", []))
         if isinstance(route_runtime, dict)
         else []
     )
     route_cost_semantic_terms = (
-        list(route_runtime.get("drift_cost_semantic_term", []))
+        _coerce_list(route_runtime.get("drift_cost_semantic_term", []))
         if isinstance(route_runtime, dict)
         else []
     )
     route_cost_upkeep_terms = (
-        list(route_runtime.get("drift_cost_upkeep_term", []))
+        _coerce_list(route_runtime.get("drift_cost_upkeep_term", []))
         if isinstance(route_runtime, dict)
         else []
     )
     route_edge_affinity = (
-        list(route_runtime.get("selected_edge_affinity", []))
+        _coerce_list(route_runtime.get("selected_edge_affinity", []))
         if isinstance(route_runtime, dict)
         else []
     )
     route_edge_saturation = (
-        list(route_runtime.get("selected_edge_saturation", []))
+        _coerce_list(route_runtime.get("selected_edge_saturation", []))
         if isinstance(route_runtime, dict)
         else []
     )
     route_edge_upkeep_penalty = (
-        list(route_runtime.get("selected_edge_upkeep_penalty", []))
+        _coerce_list(route_runtime.get("selected_edge_upkeep_penalty", []))
         if isinstance(route_runtime, dict)
         else []
     )
     route_valve_pressure_terms = (
-        list(route_runtime.get("valve_pressure_term", []))
+        _coerce_list(route_runtime.get("valve_pressure_term", []))
         if isinstance(route_runtime, dict)
         else []
     )
     route_valve_gravity_terms = (
-        list(route_runtime.get("valve_gravity_term", []))
+        _coerce_list(route_runtime.get("valve_gravity_term", []))
         if isinstance(route_runtime, dict)
         else []
     )
     route_valve_affinity_terms = (
-        list(route_runtime.get("valve_affinity_term", []))
+        _coerce_list(route_runtime.get("valve_affinity_term", []))
         if isinstance(route_runtime, dict)
         else []
     )
     route_valve_saturation_terms = (
-        list(route_runtime.get("valve_saturation_term", []))
+        _coerce_list(route_runtime.get("valve_saturation_term", []))
         if isinstance(route_runtime, dict)
         else []
     )
     route_valve_health_terms = (
-        list(route_runtime.get("valve_health_term", []))
+        _coerce_list(route_runtime.get("valve_health_term", []))
         if isinstance(route_runtime, dict)
         else []
     )
     route_valve_score_proxy = (
-        list(route_runtime.get("valve_score_proxy", []))
+        _coerce_list(route_runtime.get("valve_score_proxy", []))
         if isinstance(route_runtime, dict)
         else []
     )
     route_resource_focus = (
-        list(route_runtime.get("route_resource_focus", []))
+        _coerce_list(route_runtime.get("route_resource_focus", []))
         if isinstance(route_runtime, dict)
         else []
     )
     route_resource_focus_weight = (
-        list(route_runtime.get("route_resource_focus_weight", []))
+        _coerce_list(route_runtime.get("route_resource_focus_weight", []))
         if isinstance(route_runtime, dict)
         else []
     )
     route_resource_focus_delta = (
-        list(route_runtime.get("route_resource_focus_delta", []))
+        _coerce_list(route_runtime.get("route_resource_focus_delta", []))
         if isinstance(route_runtime, dict)
         else []
     )
     route_resource_focus_contribution = (
-        list(route_runtime.get("route_resource_focus_contribution", []))
+        _coerce_list(route_runtime.get("route_resource_focus_contribution", []))
         if isinstance(route_runtime, dict)
         else []
     )
     route_gravity_mode = (
-        list(route_runtime.get("route_gravity_mode", []))
+        _coerce_list(route_runtime.get("route_gravity_mode", []))
         if isinstance(route_runtime, dict)
         else []
     )
@@ -4241,11 +4814,17 @@ def build_double_buffer_field_particles(
     route_resource_focus_weight_total = 0.0
     route_resource_focus_contribution_total = 0.0
     resource_route_count = 0
+    virtual_nexus_count = 0
     for index in range(count):
         owner_id = int(owner_arr[index])
         flags = int(flags_arr[index])
-        is_nexus = (flags & CDB_FLAG_NEXUS) != 0
-        is_chaos = (flags & CDB_FLAG_CHAOS) != 0
+        virtual_nexus = (
+            count >= 64 and index < len(nexus_slot_mask) and nexus_slot_mask[index]
+        )
+        if virtual_nexus:
+            virtual_nexus_count += 1
+        is_nexus = ((flags & CDB_FLAG_NEXUS) != 0) or virtual_nexus
+        is_chaos = ((flags & CDB_FLAG_CHAOS) != 0) and not is_nexus
 
         presence_id = presence_ids[owner_id % len(presence_ids)]
         anchor_x, anchor_y, anchor_hue = presence_layout.get(
@@ -4275,13 +4854,13 @@ def build_double_buffer_field_particles(
         cluster_y = anchor_focus_y + ((raw_y - 0.5) * spread)
 
         free_float_blend = 0.2 if is_nexus else (0.42 if is_chaos else 0.36)
-        velocity_influence = 0.12 if is_nexus else (0.2 if is_chaos else 0.16)
+        velocity_influence = 0.07 if is_nexus else (0.2 if is_chaos else 0.16)
         phase = (
             (float(frame_id % 8192) * 0.009)
             + (float(index) * 0.131)
             + (float(owner_id) * 0.17)
         )
-        orbit = 0.0035 if is_nexus else (0.009 if is_chaos else 0.006)
+        orbit = 0.0031 if is_nexus else (0.009 if is_chaos else 0.006)
         x_norm = _clamp01(
             (cluster_x * (1.0 - free_float_blend))
             + (raw_x * free_float_blend)
@@ -4320,6 +4899,10 @@ def build_double_buffer_field_particles(
 
         graph_node_id = ""
         route_node_id = ""
+        graph_x = float("nan")
+        graph_y = float("nan")
+        route_x = float("nan")
+        route_y = float("nan")
         graph_distance_cost = -1.0
         gravity_potential = 0.0
         local_price = 1.0
@@ -4352,14 +4935,41 @@ def build_double_buffer_field_particles(
         route_gravity_mode_value = "scalar-gravity"
         motion_vx = vel_x
         motion_vy = vel_y
+        semantic_text_chars_value = 0.0
+        semantic_mass_value = 0.0
+        semantic_payload_signal_value = 0.0
+        resource_wallet_total_value = max(
+            0.0,
+            _safe_float(wallet_total_by_presence.get(presence_id, 0.0), 0.0),
+        )
+        preferred_nexus_node_id = (
+            nexus_seed_node_ids[index]
+            if virtual_nexus and index < len(nexus_seed_node_ids)
+            else ""
+        )
 
         if graph_node_ids:
-            mapped_node_index = source_node_index_by_presence.get(
+            mapped_node_index_value: Any = source_node_index_by_presence.get(
                 presence_id,
                 owner_id % len(graph_node_ids),
             )
+            if preferred_nexus_node_id:
+                mapped_node_index_value = graph_node_index_by_id.get(
+                    preferred_nexus_node_id,
+                    mapped_node_index_value,
+                )
+            mapped_node_index_fallback = owner_id % len(graph_node_ids)
+            mapped_node_index_float = _safe_float(
+                mapped_node_index_value,
+                float(mapped_node_index_fallback),
+            )
+            mapped_node_index_int = int(mapped_node_index_float)
             mapped_node_index = max(
-                0, min(len(graph_node_ids) - 1, int(mapped_node_index))
+                0,
+                min(
+                    len(graph_node_ids) - 1,
+                    mapped_node_index_int,
+                ),
             )
 
             graph_node_id = str(graph_node_ids[mapped_node_index])
@@ -4379,6 +4989,11 @@ def build_double_buffer_field_particles(
                 node_saturation = _clamp01(
                     _safe_float(graph_node_saturation[mapped_node_index], queue_clamped)
                 )
+            if mapped_node_index < len(graph_node_positions):
+                graph_row = graph_node_positions[mapped_node_index]
+                if isinstance(graph_row, (list, tuple)) and len(graph_row) >= 2:
+                    graph_x = _clamp01(_safe_float(graph_row[0], x_norm))
+                    graph_y = _clamp01(_safe_float(graph_row[1], y_norm))
 
             route_node_index = mapped_node_index
             if index < len(route_indices):
@@ -4500,7 +5115,9 @@ def build_double_buffer_field_particles(
                         + (_clamp01((drift_score + 1.0) * 0.5) * 0.12)
                     )
                     escape_gain = _clamp01(1.0 - route_probability)
-                    roam_radius = 0.004 + (escape_gain * 0.014)
+                    roam_radius = (0.0016 if is_nexus else 0.003) + (
+                        escape_gain * (0.006 if is_nexus else 0.009)
+                    )
                     swirl_phase = (
                         phase * 1.9
                         + (route_probability * 3.1)
@@ -4516,8 +5133,26 @@ def build_double_buffer_field_particles(
                         + (route_y * route_mix)
                         + (math.sin(swirl_phase * 1.07) * roam_radius)
                     )
-                    motion_vx = vel_x + (route_dx * (0.36 + (route_probability * 0.24)))
-                    motion_vy = vel_y + (route_dy * (0.36 + (route_probability * 0.24)))
+                    route_motion_gain = (0.22 if is_nexus else 0.32) + (
+                        route_probability * (0.16 if is_nexus else 0.2)
+                    )
+                    motion_vx = vel_x + (route_dx * route_motion_gain)
+                    motion_vy = vel_y + (route_dy * route_motion_gain)
+
+        if is_nexus and preferred_nexus_node_id:
+            graph_node_id = preferred_nexus_node_id
+            fallback_pos = file_node_position_by_id.get(preferred_nexus_node_id)
+            if isinstance(fallback_pos, tuple) and len(fallback_pos) == 2:
+                fallback_x = _clamp01(_safe_float(fallback_pos[0], 0.5))
+                fallback_y = _clamp01(_safe_float(fallback_pos[1], 0.5))
+                if not (math.isfinite(graph_x) and math.isfinite(graph_y)):
+                    graph_x = fallback_x
+                    graph_y = fallback_y
+            if not route_node_id:
+                route_node_id = graph_node_id
+            if not (math.isfinite(route_x) and math.isfinite(route_y)):
+                route_x = graph_x
+                route_y = graph_y
 
             if not is_nexus:
                 gravity_signal = _clamp01(gravity_potential / graph_gravity_max)
@@ -4540,6 +5175,49 @@ def build_double_buffer_field_particles(
                     6,
                 )
 
+        semantic_node_candidates = [route_node_id, graph_node_id]
+        if preferred_nexus_node_id:
+            semantic_node_candidates.append(preferred_nexus_node_id)
+        for semantic_node_id in semantic_node_candidates:
+            node_id = str(semantic_node_id or "").strip()
+            if not node_id:
+                continue
+            semantic_payload = file_node_semantic_by_id.get(node_id)
+            if not isinstance(semantic_payload, tuple) or len(semantic_payload) < 2:
+                continue
+            semantic_text_chars_value = max(
+                semantic_text_chars_value,
+                max(0.0, _safe_float(semantic_payload[0], 0.0)),
+            )
+            semantic_mass_value = max(
+                semantic_mass_value,
+                max(0.0, _safe_float(semantic_payload[1], 0.0)),
+            )
+
+        wallet_signal_value = _clamp01(
+            resource_wallet_total_value / semantic_wallet_scale
+        )
+        semantic_mass_floor = (1.1 if is_nexus else 0.55) + (
+            wallet_signal_value * (2.6 if is_nexus else 1.2)
+        )
+        semantic_mass_value = max(semantic_mass_value, semantic_mass_floor)
+        if semantic_text_chars_value <= 0.0 and wallet_signal_value > 0.0:
+            semantic_text_chars_value = math.log1p(resource_wallet_total_value) * 18.0
+        semantic_payload_signal_value = _clamp01(
+            (_clamp01(math.log1p(max(0.0, semantic_text_chars_value)) / 8.0) * 0.52)
+            + (_clamp01(semantic_mass_value / 7.5) * 0.63)
+            + (wallet_signal_value * 0.55)
+        )
+
+        mass_base = 1.6 if is_nexus else 1.0
+        mass_value = max(
+            mass_base,
+            min(
+                6.0 if is_nexus else 3.0,
+                mass_base + (semantic_mass_value * (0.22 if is_nexus else 0.08)),
+            ),
+        )
+
         simplex_seed = (
             ((int(frame_id) + 1) * 1315423911)
             ^ ((index + 1) * 2654435761)
@@ -4557,6 +5235,13 @@ def build_double_buffer_field_particles(
         y_norm = _clamp01(y_norm + simplex_dy)
         motion_vx += simplex_dx * 0.92
         motion_vy += simplex_dy * 0.92
+        if is_nexus:
+            nexus_motion_damping = max(
+                0.42,
+                min(0.78, 0.62 - (semantic_payload_signal_value * 0.08)),
+            )
+            motion_vx *= nexus_motion_damping
+            motion_vy *= nexus_motion_damping
 
         gravity_signal = _clamp01(gravity_potential / graph_gravity_max)
         price_signal = _clamp01((local_price - 1.0) / 4.0)
@@ -4625,7 +5310,10 @@ def build_double_buffer_field_particles(
                 "top_job": "observe",
                 "package_entropy": package_entropy,
                 "message_probability": message_probability,
-                "mass": round(1.6 if is_nexus else 1.0, 5),
+                "semantic_text_chars": round(semantic_text_chars_value, 3),
+                "semantic_mass": round(semantic_mass_value, 6),
+                "resource_wallet_total": round(resource_wallet_total_value, 6),
+                "mass": round(mass_value, 5),
                 "radius": round(0.02 if is_nexus else 0.012, 5),
                 "collision_count": 0,
                 "job_probabilities": {
@@ -4643,11 +5331,15 @@ def build_double_buffer_field_particles(
                     else (f"node:{owner_id}" if is_nexus else "")
                 ),
                 "graph_node_id": graph_node_id,
+                "graph_x": round(graph_x, 5) if math.isfinite(graph_x) else None,
+                "graph_y": round(graph_y, 5) if math.isfinite(graph_y) else None,
                 "graph_distance_cost": round(graph_distance_cost, 6),
                 "gravity_potential": round(gravity_potential, 6),
                 "local_price": round(local_price, 6),
                 "node_saturation": round(node_saturation, 6),
                 "route_node_id": route_node_id,
+                "route_x": round(route_x, 5) if math.isfinite(route_x) else None,
+                "route_y": round(route_y, 5) if math.isfinite(route_y) else None,
                 "drift_score": round(drift_score, 6),
                 "drift_gravity_term": round(drift_gravity_term, 6),
                 "drift_cost_term": round(drift_cost_term, 6),
@@ -4770,6 +5462,9 @@ def build_double_buffer_field_particles(
             (resource_route_count / count) if count > 0 else 0.0,
             6,
         ),
+        "nexus_stride": int(max(1, nexus_stride)),
+        "virtual_nexus_enabled": bool(use_virtual_nexus),
+        "virtual_nexus_count": int(virtual_nexus_count),
         "target_count": int(target_count),
         "presence_count": int(len(presence_ids)),
         "presence_profile": str(
@@ -4793,6 +5488,7 @@ def build_double_buffer_field_particles(
         "semantic_frame": int(semantic_frame),
         "double_buffer": True,
         "systems": ["force", "chaos", "semantic", "integrate"],
+        "force_runtime": _resolve_force_runtime_config(particle_count=count),
         "resource_types": list(_RESOURCE_TYPES),
         "queue_ratio": round(_safe_float(queue_ratio, 0.0), 6),
         "compute_jobs": int(len(compute_jobs) if isinstance(compute_jobs, list) else 0),

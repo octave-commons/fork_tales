@@ -85,6 +85,7 @@ interface Props {
   onSetCoreSimulationDial: (dial: keyof CoreSimulationTuning, value: number) => void;
   onSetCoreOrbitSpeed: (value: number) => void;
   onSetMouseDaimonTuning: (tuning: Partial<MouseDaimonTuning>) => void;
+  onOpenRuntimeConfig: () => void;
 }
 
 const INTERFACE_OPACITY_MIN = 0.38;
@@ -129,9 +130,10 @@ export function CoreControlPanel({
   onSetCoreSimulationDial,
   onSetCoreOrbitSpeed,
   onSetMouseDaimonTuning,
+  onOpenRuntimeConfig,
 }: Props) {
-  const [showVisualDials, setShowVisualDials] = useState(true);
-  const [showSimulationControls, setShowSimulationControls] = useState(true);
+  const [showVisualDials, setShowVisualDials] = useState(false);
+  const [showSimulationControls, setShowSimulationControls] = useState(false);
   const interfaceTransparencyPercent = Math.round((1 - interfaceOpacity) * 100);
 
   return (
@@ -255,6 +257,15 @@ export function CoreControlPanel({
           className="border rounded px-2 py-0.5 text-[10px] font-semibold transition-colors bg-[rgba(11,24,36,0.24)] text-[#cbe9ff] border-[rgba(120,178,221,0.32)]"
         >
           {showSimulationControls ? "hide sim" : "show sim"}
+        </button>
+
+        <button
+          type="button"
+          onClick={onOpenRuntimeConfig}
+          className="border rounded px-2 py-0.5 text-[10px] font-semibold transition-colors bg-[rgba(174,129,255,0.2)] text-[#efe2ff] border-[rgba(174,129,255,0.48)]"
+          title="open runtime config interface"
+        >
+          runtime config
         </button>
 
         {projectionOptions.map((option) => (

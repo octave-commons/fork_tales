@@ -82,14 +82,102 @@ def _world_web_symbol(name: str, default: Any) -> Any:
     return getattr(module, name, default)
 
 
+def _c_embed_text_24(
+    text: str,
+    *,
+    requested_device: str | None = None,
+) -> list[float] | None:
+    prompt = str(text or "").strip()
+    if not prompt:
+        return None
+    try:
+        from .c_double_buffer_backend import embed_text_24_local
+    except Exception:
+        return None
+    try:
+        vector = embed_text_24_local(prompt, requested_device=requested_device)
+    except Exception:
+        return None
+    return _normalize_embedding_vector(vector)
+
+
+def _c_embed_runtime_status() -> dict[str, Any]:
+    try:
+        from .c_double_buffer_backend import embed_runtime_snapshot
+    except Exception:
+        return {
+            "source": "unavailable",
+            "error": "c_embed_runtime_import_failed",
+            "cpu_fallback": False,
+            "cpu_fallback_detail": "",
+            "selected_device": "",
+        }
+    try:
+        snapshot = embed_runtime_snapshot()
+        if isinstance(snapshot, dict):
+            return {
+                "source": str(snapshot.get("source", "pending") or "pending"),
+                "error": str(snapshot.get("error", "") or ""),
+                "cpu_fallback": bool(snapshot.get("cpu_fallback", False)),
+                "cpu_fallback_detail": str(
+                    snapshot.get("cpu_fallback_detail", "") or ""
+                ),
+                "selected_device": str(snapshot.get("selected_device", "") or ""),
+            }
+    except Exception:
+        pass
+    return {
+        "source": "unknown",
+        "error": "c_embed_runtime_snapshot_failed",
+        "cpu_fallback": False,
+        "cpu_fallback_detail": "",
+        "selected_device": "",
+    }
+
+
+_C_LLM_RUNTIME_ERROR = "c_llm_runtime_uninitialized"
+
+
+def _c_llm_generate_text_local(
+    prompt: str,
+    *,
+    model: str,
+    timeout_s: float | None = None,
+) -> tuple[str | None, str, str]:
+    global _C_LLM_RUNTIME_ERROR
+    try:
+        from .c_llm_runtime import generate_text_local
+    except Exception:
+        _C_LLM_RUNTIME_ERROR = "c_llm_runtime_import_failed"
+        return None, model, _C_LLM_RUNTIME_ERROR
+
+    try:
+        text, runtime_error = generate_text_local(
+            str(prompt or ""),
+            model=str(model or "").strip(),
+            timeout_s=timeout_s,
+        )
+    except Exception:
+        _C_LLM_RUNTIME_ERROR = "c_llm_runtime_call_failed"
+        return None, model, _C_LLM_RUNTIME_ERROR
+
+    _C_LLM_RUNTIME_ERROR = str(runtime_error or "")
+    if text is None:
+        if not _C_LLM_RUNTIME_ERROR:
+            _C_LLM_RUNTIME_ERROR = "c_llm_generation_failed"
+        return None, model, _C_LLM_RUNTIME_ERROR
+    _C_LLM_RUNTIME_ERROR = ""
+    return str(text), model, ""
+
+
 def _compute_resource_from_backend(backend: str, *, device: str = "") -> str:
     backend_key = str(backend).strip().lower()
     device_key = str(device).strip().lower()
     if "npu" in backend_key or "npu" in device_key:
         return "npu"
-    if "gpu" in backend_key or "gpu" in device_key:
+    if "gpu" in backend_key or "gpu" in device_key or "cuda" in device_key:
         return "gpu"
-    if backend_key in {"ollama", "vllm", "openai"}:
+    if backend_key in {"ollama", "vllm", "openai", "torch"}:
         return "gpu"
     if backend_key in {"tensorflow", "cpu"}:
         return "cpu"
@@ -226,19 +314,7 @@ def _embedding_payload_vector(raw: Any) -> list[float] | None:
 
 
 def _ollama_embed_remote(text: str, model: str | None = None) -> list[float] | None:
-    _, endpoint, _, default_timeout = _ollama_endpoint()
-    embed_default_model = str(
-        os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text") or "nomic-embed-text"
-    ).strip()
-    force_nomic = str(
-        os.getenv("OLLAMA_EMBED_FORCE_NOMIC", "0") or "0"
-    ).strip().lower() in {"1", "true", "yes", "on"}
-    chosen_model = (
-        "nomic-embed-text"
-        if force_nomic
-        else (model or embed_default_model or "nomic-embed-text").strip()
-    )
-
+    del model
     raw_max_chars = str(os.getenv("OLLAMA_EMBED_MAX_CHARS", "0") or "0").strip()
     try:
         max_chars = int(float(raw_max_chars))
@@ -250,75 +326,154 @@ def _ollama_embed_remote(text: str, model: str | None = None) -> list[float] | N
         max_chars = 64000
     sample_text = text[:max_chars] if max_chars > 0 else text
 
-    raw_num_ctx = str(os.getenv("OLLAMA_EMBED_NUM_CTX", "") or "").strip()
-    embed_options: dict[str, Any] = dict(_ollama_gpu_request_options())
-    if raw_num_ctx:
-        try:
-            num_ctx = int(float(raw_num_ctx))
-            if num_ctx > 0:
-                embed_options["num_ctx"] = max(128, min(8192, num_ctx))
-        except (TypeError, ValueError):
-            pass
+    backend = _embedding_backend()
+    requested_device = "NPU"
+    if backend == "torch":
+        requested_device = "GPU"
+    elif backend == "auto":
+        requested_device = str(os.getenv("CDB_EMBED_DEVICE", "AUTO") or "AUTO")
 
-    candidates: list[str] = [endpoint]
-    if endpoint.endswith("/api/embeddings"):
-        candidates.append(f"{endpoint[: -len('/api/embeddings')]}/api/embed")
-
-    opener = _world_web_symbol("urlopen", urlopen)
-    seen: set[str] = set()
-    for candidate in candidates:
-        target = candidate.strip()
-        if not target or target in seen:
-            continue
-        seen.add(target)
-
-        payload: dict[str, Any]
-        if target.endswith("/api/embed"):
-            payload = {
-                "model": chosen_model,
-                "input": sample_text,
-            }
-        else:
-            payload = {
-                "model": chosen_model,
-                "prompt": sample_text,
-            }
-        if embed_options:
-            payload["options"] = embed_options
-
-        req = Request(
-            target,
-            method="POST",
-            headers={"Content-Type": "application/json"},
-            data=json.dumps(payload).encode("utf-8"),
-        )
-
-        try:
-            with opener(req, timeout=default_timeout) as resp:
-                raw = json.loads(resp.read().decode("utf-8", errors="ignore"))
-                embedding = _embedding_payload_vector(raw)
-                if embedding is not None:
-                    return embedding
-        except (URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
-            continue
-
-    return None
+    return _c_embed_text_24(sample_text, requested_device=requested_device)
 
 
 def _embedding_backend() -> str:
-    backend = str(os.getenv("EMBEDDINGS_BACKEND", "ollama") or "ollama").strip().lower()
-    if backend in {"openvino", "ollama", "tensorflow", "auto", "torch"}:
+    backend = str(os.getenv("EMBEDDINGS_BACKEND", "auto") or "auto").strip().lower()
+    if backend in {"openvino", "torch", "auto"}:
         return backend
-    return "ollama"
+    if backend in {"gpu", "cuda"}:
+        return "torch"
+    if backend in {"npu"}:
+        return "openvino"
+    # Legacy values now route to hardware-only embeddings.
+    if backend in {"ollama", "tensorflow"}:
+        return "auto"
+    return "auto"
 
 
 def _text_generation_backend() -> str:
     backend = (
-        str(os.getenv("TEXT_GENERATION_BACKEND", "ollama") or "ollama").strip().lower()
+        str(os.getenv("TEXT_GENERATION_BACKEND", "auto") or "auto").strip().lower()
     )
-    if backend in {"ollama", "tensorflow", "auto"}:
+    if backend in {"vllm", "openai", "openvino", "tensorflow", "auto"}:
+        if backend in {"vllm", "openai", "openvino"}:
+            return "vllm"
         return backend
-    return "ollama"
+    if backend in {"ollama", "gpu", "cuda", "npu"}:
+        return "auto"
+    return "auto"
+
+
+def _openai_chat_endpoint() -> str:
+    configured = (
+        str(os.getenv("TEXT_GENERATION_BASE_URL", "") or "").strip().rstrip("/")
+    )
+    if not configured:
+        configured = (
+            str(os.getenv("OPENVINO_CHAT_ENDPOINT", "") or "").strip().rstrip("/")
+        )
+    if not configured:
+        configured = (
+            str(os.getenv("ETA_MU_IMAGE_VISION_BASE_URL", "") or "").strip().rstrip("/")
+        )
+    if not configured:
+        embed_endpoint = (
+            str(os.getenv("OPENVINO_EMBED_ENDPOINT", "") or "").strip().rstrip("/")
+        )
+        if embed_endpoint.endswith("/v1/embeddings"):
+            configured = embed_endpoint[: -len("/v1/embeddings")]
+        elif embed_endpoint.endswith("/api/embeddings"):
+            configured = embed_endpoint[: -len("/api/embeddings")]
+        elif embed_endpoint.endswith("/api/embed"):
+            configured = embed_endpoint[: -len("/api/embed")]
+
+    endpoint = configured.rstrip("/")
+    if not endpoint:
+        return ""
+    if endpoint.endswith("/v1/chat/completions"):
+        return endpoint
+    if endpoint.endswith("/v1"):
+        return f"{endpoint}/chat/completions"
+    return f"{endpoint}/v1/chat/completions"
+
+
+def _normalize_openai_chat_endpoint(base_url: str) -> str:
+    endpoint = str(base_url or "").strip().rstrip("/")
+    if not endpoint:
+        return ""
+    if endpoint.endswith("/v1/chat/completions"):
+        return endpoint
+    if endpoint.endswith("/v1"):
+        return f"{endpoint}/chat/completions"
+    return f"{endpoint}/v1/chat/completions"
+
+
+def _vision_chat_endpoint() -> str:
+    configured = str(os.getenv("ETA_MU_IMAGE_VISION_BASE_URL", "") or "").strip()
+    if configured:
+        return _normalize_openai_chat_endpoint(configured)
+    return _openai_chat_endpoint()
+
+
+def _openai_chat_headers() -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+
+    raw_header = str(os.getenv("TEXT_GENERATION_AUTH_HEADER", "") or "").strip()
+    if raw_header:
+        if ":" in raw_header:
+            key, value = raw_header.split(":", 1)
+            key = key.strip()
+            value = value.strip()
+            if key and value:
+                headers[key] = value
+                return headers
+        headers["Authorization"] = raw_header
+        return headers
+
+    bearer = str(os.getenv("TEXT_GENERATION_BEARER_TOKEN", "") or "").strip()
+    if bearer:
+        headers["Authorization"] = f"Bearer {bearer}"
+        return headers
+
+    api_key = str(os.getenv("TEXT_GENERATION_API_KEY", "") or "").strip()
+    if api_key:
+        header_name = str(
+            os.getenv("TEXT_GENERATION_API_KEY_HEADER", "X-API-Key") or "X-API-Key"
+        ).strip()
+        headers[header_name or "X-API-Key"] = api_key
+        return headers
+
+    return _openvino_embed_headers()
+
+
+def _vision_chat_headers() -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+
+    raw_header = str(os.getenv("ETA_MU_IMAGE_VISION_AUTH_HEADER", "") or "").strip()
+    if raw_header:
+        if ":" in raw_header:
+            key, value = raw_header.split(":", 1)
+            key = key.strip()
+            value = value.strip()
+            if key and value:
+                headers[key] = value
+                return headers
+        headers["Authorization"] = raw_header
+        return headers
+
+    bearer = str(os.getenv("ETA_MU_IMAGE_VISION_BEARER_TOKEN", "") or "").strip()
+    if bearer:
+        headers["Authorization"] = f"Bearer {bearer}"
+        return headers
+
+    api_key = str(os.getenv("ETA_MU_IMAGE_VISION_API_KEY", "") or "").strip()
+    if api_key:
+        header_name = str(
+            os.getenv("ETA_MU_IMAGE_VISION_API_KEY_HEADER", "X-API-Key") or "X-API-Key"
+        ).strip()
+        headers[header_name or "X-API-Key"] = api_key
+        return headers
+
+    return _openai_chat_headers()
 
 
 def _tensorflow_embed_hash_bins(model: str | None = None) -> int:
@@ -676,6 +831,49 @@ def _embedding_provider_options() -> dict[str, Any]:
         "config": {
             "backend": _embedding_backend(),
             "text_generation_backend": _text_generation_backend(),
+            "embed_model": str(
+                os.getenv("OPENVINO_EMBED_MODEL", "")
+                or os.getenv("TORCH_EMBED_MODEL", "")
+                or os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+                or "nomic-embed-text"
+            ).strip(),
+            "embed_force_nomic": _embedding_flag(
+                "EMBED_FORCE_NOMIC",
+                _embedding_flag("OLLAMA_EMBED_FORCE_NOMIC", False),
+            ),
+            "embed_max_chars": _safe_embedding_int_env(
+                "OPENVINO_EMBED_MAX_CHARS",
+                _safe_embedding_int_env(
+                    "OLLAMA_EMBED_MAX_CHARS",
+                    2400,
+                    min_value=0,
+                    max_value=64000,
+                ),
+                min_value=0,
+                max_value=64000,
+            ),
+            "cuda_model": str(
+                os.getenv("TORCH_EMBED_MODEL", "nomic-ai/nomic-embed-text-v1.5")
+                or "nomic-ai/nomic-embed-text-v1.5"
+            ).strip(),
+            "c_embed_device": str(
+                os.getenv("CDB_EMBED_DEVICE", "AUTO") or "AUTO"
+            ).strip(),
+            "openvino_endpoint": "",
+            "openvino_model": str(os.getenv("OPENVINO_EMBED_MODEL", "") or "").strip(),
+            "openvino_device": _normalize_openvino_device(
+                os.getenv("OPENVINO_EMBED_DEVICE", "NPU")
+            ),
+            "openvino_timeout_sec": _safe_embedding_timeout_env(
+                "OPENVINO_EMBED_TIMEOUT_SEC", 12.0
+            ),
+            "openvino_auth_mode": _openvino_auth_mode(),
+            "openvino_auth_header_name": _openvino_auth_header_name(),
+            "openvino_api_key_header": str(
+                os.getenv("OPENVINO_EMBED_API_KEY_HEADER", "X-API-Key") or "X-API-Key"
+            ).strip()
+            or "X-API-Key",
+            # Legacy visibility for older clients that still display Ollama fields.
             "ollama_base_url": _ollama_base_url(),
             "ollama_embed_model": str(
                 os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
@@ -696,37 +894,25 @@ def _embedding_provider_options() -> dict[str, Any]:
                 min_value=0,
                 max_value=64000,
             ),
-            "openvino_endpoint": str(
-                os.getenv("OPENVINO_EMBED_ENDPOINT", "") or ""
-            ).strip(),
-            "openvino_model": str(os.getenv("OPENVINO_EMBED_MODEL", "") or "").strip(),
-            "openvino_device": _normalize_openvino_device(
-                os.getenv("OPENVINO_EMBED_DEVICE", "NPU")
-            ),
-            "openvino_timeout_sec": _safe_embedding_timeout_env(
-                "OPENVINO_EMBED_TIMEOUT_SEC", 12.0
-            ),
-            "openvino_auth_mode": _openvino_auth_mode(),
-            "openvino_auth_header_name": _openvino_auth_header_name(),
-            "openvino_api_key_header": str(
-                os.getenv("OPENVINO_EMBED_API_KEY_HEADER", "X-API-Key") or "X-API-Key"
-            ).strip()
-            or "X-API-Key",
         },
         "presets": {
             "gpu_local": {
-                "backend": "ollama",
-                "description": "Use local Ollama embeddings (GPU when available).",
+                "backend": "torch",
+                "description": "Use local CUDA embeddings via torch sentence-transformers.",
+            },
+            "cuda_local": {
+                "backend": "torch",
+                "description": "Use local CUDA embeddings via torch sentence-transformers.",
             },
             "npu_local": {
                 "backend": "openvino",
                 "openvino_device": "NPU",
-                "description": "Use OpenVINO embedding endpoint on NPU.",
+                "description": "Use local C embedding runtime on NPU.",
             },
             "hybrid_auto": {
                 "backend": "auto",
                 "openvino_device": "NPU",
-                "description": "Prefer NPU OpenVINO, then local fallbacks.",
+                "description": "Prefer local C NPU first, then local C CUDA embeddings.",
             },
         },
     }
@@ -738,13 +924,11 @@ def _apply_embedding_provider_options(payload: dict[str, Any]) -> dict[str, Any]
 
     req = dict(payload)
     preset = str(req.get("preset", "") or "").strip().lower()
-    if preset in {"gpu", "gpu_local", "local_gpu"}:
-        req.setdefault("backend", "ollama")
-        req.setdefault("ollama_embed_force_nomic", True)
+    if preset in {"gpu", "gpu_local", "local_gpu", "cuda", "cuda_local", "local_cuda"}:
+        req.setdefault("backend", "torch")
     elif preset in {"npu", "npu_local", "local_npu"}:
         req.setdefault("backend", "openvino")
         req.setdefault("openvino_device", "NPU")
-        req.setdefault("ollama_embed_force_nomic", True)
     elif preset in {"hybrid", "auto", "hybrid_auto", "local_auto"}:
         req.setdefault("backend", "auto")
         req.setdefault("openvino_device", "NPU")
@@ -752,12 +936,42 @@ def _apply_embedding_provider_options(payload: dict[str, Any]) -> dict[str, Any]
     backend_raw = req.get("backend")
     if backend_raw is not None:
         backend = str(backend_raw).strip().lower()
-        if backend not in {"openvino", "ollama", "tensorflow", "auto"}:
+        backend = {
+            "cuda": "torch",
+            "gpu": "torch",
+            "npu": "openvino",
+            "ollama": "auto",
+            "tensorflow": "auto",
+        }.get(backend, backend)
+        if backend not in {"openvino", "torch", "auto"}:
             return {
                 "ok": False,
-                "error": "invalid backend (expected openvino|ollama|tensorflow|auto)",
+                "error": "invalid backend (expected openvino|torch|auto)",
             }
         os.environ["EMBEDDINGS_BACKEND"] = backend
+        if backend == "torch":
+            os.environ["CDB_EMBED_DEVICE"] = "GPU"
+        elif backend == "openvino":
+            os.environ["CDB_EMBED_DEVICE"] = "NPU"
+        else:
+            os.environ["CDB_EMBED_DEVICE"] = "AUTO"
+
+    if req.get("embed_model") is not None:
+        model = str(req.get("embed_model") or "").strip()
+        if model:
+            os.environ["OPENVINO_EMBED_MODEL"] = model
+            os.environ["TORCH_EMBED_MODEL"] = model
+            os.environ["OLLAMA_EMBED_MODEL"] = model
+
+    if req.get("cuda_model") is not None:
+        model = str(req.get("cuda_model") or "").strip()
+        if model:
+            os.environ["TORCH_EMBED_MODEL"] = model
+
+    if req.get("embed_force_nomic") is not None:
+        force = bool(req.get("embed_force_nomic"))
+        os.environ["EMBED_FORCE_NOMIC"] = "1" if force else "0"
+        os.environ["OLLAMA_EMBED_FORCE_NOMIC"] = "1" if force else "0"
 
     if req.get("ollama_base_url") is not None:
         base_url = str(req.get("ollama_base_url") or "").strip().rstrip("/")
@@ -788,17 +1002,16 @@ def _apply_embedding_provider_options(payload: dict[str, Any]) -> dict[str, Any]
         os.environ["OLLAMA_EMBED_MAX_CHARS"] = str(max(0, min(64000, max_chars)))
 
     if req.get("openvino_endpoint") is not None:
-        endpoint = str(req.get("openvino_endpoint") or "").strip().rstrip("/")
-        os.environ["OPENVINO_EMBED_ENDPOINT"] = endpoint
+        os.environ["OPENVINO_EMBED_ENDPOINT"] = ""
 
     if req.get("openvino_model") is not None:
         openvino_model = str(req.get("openvino_model") or "").strip()
         os.environ["OPENVINO_EMBED_MODEL"] = openvino_model
 
     if req.get("openvino_device") is not None:
-        os.environ["OPENVINO_EMBED_DEVICE"] = _normalize_openvino_device(
-            str(req.get("openvino_device") or "")
-        )
+        normalized = _normalize_openvino_device(str(req.get("openvino_device") or ""))
+        os.environ["OPENVINO_EMBED_DEVICE"] = normalized
+        os.environ["CDB_EMBED_DEVICE"] = "GPU" if "GPU" in normalized else "NPU"
 
     if req.get("openvino_timeout_sec") is not None:
         try:
@@ -845,32 +1058,89 @@ def _ollama_generate_text_remote(
     model: str | None = None,
     timeout_s: float | None = None,
 ) -> tuple[str | None, str]:
-    endpoint, _, default_model, default_timeout = _ollama_endpoint()
-    chosen_model = model or default_model
-    chosen_timeout = timeout_s or default_timeout
-    payload = {
+    prompt_text = str(prompt or "").strip()
+    chosen_model = str(
+        model
+        or os.getenv("TEXT_GENERATION_MODEL", "")
+        or os.getenv("ETA_MU_IMAGE_VISION_MODEL", "")
+        or "qwen3-vl:2b-instruct"
+    ).strip()
+    if not prompt_text:
+        return None, chosen_model
+
+    endpoint = _openai_chat_endpoint().strip()
+    if not endpoint:
+        return None, chosen_model
+
+    raw_timeout = (
+        timeout_s
+        if timeout_s is not None
+        else os.getenv(
+            "TEXT_GENERATION_TIMEOUT_SEC", os.getenv("OLLAMA_TIMEOUT_SEC", "8")
+        )
+    )
+    try:
+        request_timeout = float(raw_timeout)
+    except (TypeError, ValueError):
+        request_timeout = 8.0
+    request_timeout = max(0.2, min(120.0, request_timeout))
+
+    try:
+        max_tokens = int(
+            float(str(os.getenv("TEXT_GENERATION_MAX_TOKENS", "192") or "192"))
+        )
+    except (TypeError, ValueError):
+        max_tokens = 192
+    max_tokens = max(16, min(4096, max_tokens))
+
+    try:
+        temperature = float(
+            str(os.getenv("TEXT_GENERATION_TEMPERATURE", "0.2") or "0.2")
+        )
+    except (TypeError, ValueError):
+        temperature = 0.2
+    temperature = max(0.0, min(2.0, temperature))
+
+    try:
+        top_p = float(str(os.getenv("TEXT_GENERATION_TOP_P", "0.95") or "0.95"))
+    except (TypeError, ValueError):
+        top_p = 0.95
+    top_p = max(0.01, min(1.0, top_p))
+
+    payload: dict[str, Any] = {
         "model": chosen_model,
-        "prompt": prompt,
+        "messages": [{"role": "user", "content": prompt_text}],
+        "temperature": temperature,
+        "top_p": top_p,
+        "max_tokens": max_tokens,
         "stream": False,
     }
-    ollama_options = _ollama_gpu_request_options()
-    if ollama_options:
-        payload["options"] = ollama_options
+
+    device_hint = str(os.getenv("TEXT_GENERATION_DEVICE", "") or "").strip().upper()
+    if device_hint in {"GPU", "CUDA", "NPU", "CPU"}:
+        payload["extra_body"] = {"device": device_hint}
+
     req = Request(
         endpoint,
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=_openai_chat_headers(),
         data=json.dumps(payload).encode("utf-8"),
     )
     opener = _world_web_symbol("urlopen", urlopen)
     try:
-        with opener(req, timeout=chosen_timeout) as resp:
+        with opener(req, timeout=request_timeout) as resp:
             raw = json.loads(resp.read().decode("utf-8", errors="ignore"))
     except (URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
         return None, chosen_model
 
-    text = str(raw.get("response", "")).strip()
-    return (text or None), chosen_model
+    response_text = _extract_openai_chat_response_text(raw)
+    if not response_text and isinstance(raw, dict):
+        response_text = str(raw.get("response", "") or "").strip()
+    resolved_model = (
+        str((raw.get("model") if isinstance(raw, dict) else "") or chosen_model).strip()
+        or chosen_model
+    )
+    return (response_text or None), resolved_model
 
 
 def _ollama_generate_text(
@@ -880,7 +1150,7 @@ def _ollama_generate_text(
 ) -> tuple[str | None, str]:
     started = time.perf_counter()
     backend_fn = _world_web_symbol("_text_generation_backend", _text_generation_backend)
-    backend = str(backend_fn()).strip().lower()
+    backend = str(backend_fn()).strip().lower() or "auto"
     tf_generate = _world_web_symbol(
         "_tensorflow_generate_text", _tensorflow_generate_text
     )
@@ -901,35 +1171,76 @@ def _ollama_generate_text(
             error="" if text else "tensorflow_no_text",
         )
         return text, chosen_model
+
+    if backend == "vllm":
+        text, chosen_model = remote_generate(
+            prompt,
+            model=model,
+            timeout_s=timeout_s,
+        )
+        _record_compute_job(
+            kind="llm",
+            op="text_generate.vllm",
+            backend="vllm",
+            model=chosen_model,
+            status="ok" if text else "error",
+            latency_ms=(time.perf_counter() - started) * 1000.0,
+            target_presence_id="witness_thread",
+            error="" if text else "vllm_unavailable",
+            device=str(os.getenv("TEXT_GENERATION_DEVICE", "GPU") or "GPU"),
+        )
+        return text, chosen_model
+
     if backend == "auto":
-        chosen_model = model or "auto"
-        last_backend = "auto"
+        chosen_model = str(
+            model
+            or os.getenv("TEXT_GENERATION_MODEL", "")
+            or os.getenv("ETA_MU_IMAGE_VISION_MODEL", "")
+            or "qwen3-vl:2b-instruct"
+        ).strip()
         order_fn = _world_web_symbol(
             "_resource_auto_text_order", _resource_auto_text_order
         )
+        last_backend = "auto"
         for candidate in order_fn():
-            last_backend = str(candidate).strip().lower() or "auto"
-            if candidate == "tensorflow":
-                text, chosen_model = tf_generate(
-                    prompt, model=model, timeout_s=timeout_s
-                )
-            else:
-                text, chosen_model = remote_generate(
+            current = str(candidate).strip().lower()
+            if current == "tensorflow":
+                text, candidate_model = tf_generate(
                     prompt,
                     model=model,
                     timeout_s=timeout_s,
                 )
+                effective_backend = "tensorflow"
+                failure_code = "tensorflow_no_text"
+            else:
+                text, candidate_model = remote_generate(
+                    prompt,
+                    model=model,
+                    timeout_s=timeout_s,
+                )
+                effective_backend = "vllm"
+                failure_code = "vllm_unavailable"
+
+            chosen_model = str(candidate_model or chosen_model)
+            last_backend = effective_backend
             if text:
                 _record_compute_job(
                     kind="llm",
-                    op=f"text_generate.{last_backend}",
-                    backend=last_backend,
+                    op=f"text_generate.{effective_backend}",
+                    backend=effective_backend,
                     model=chosen_model,
                     status="ok",
                     latency_ms=(time.perf_counter() - started) * 1000.0,
                     target_presence_id="witness_thread",
+                    error="",
+                    device=(
+                        str(os.getenv("TEXT_GENERATION_DEVICE", "GPU") or "GPU")
+                        if effective_backend == "vllm"
+                        else "cpu"
+                    ),
                 )
                 return text, chosen_model
+
         _record_compute_job(
             kind="llm",
             op=f"text_generate.{last_backend}",
@@ -939,18 +1250,35 @@ def _ollama_generate_text(
             latency_ms=(time.perf_counter() - started) * 1000.0,
             target_presence_id="witness_thread",
             error="auto_route_no_text",
+            device=(
+                str(os.getenv("TEXT_GENERATION_DEVICE", "GPU") or "GPU")
+                if last_backend == "vllm"
+                else "cpu"
+            ),
         )
         return None, chosen_model
-    text, chosen_model = remote_generate(prompt, model=model, timeout_s=timeout_s)
+
+    chosen_model = str(
+        model
+        or os.getenv("TEXT_GENERATION_MODEL", "")
+        or os.getenv("ETA_MU_IMAGE_VISION_MODEL", "")
+        or "qwen3-vl:2b-instruct"
+    ).strip()
+    text, chosen_model = remote_generate(
+        prompt,
+        model=chosen_model,
+        timeout_s=timeout_s,
+    )
     _record_compute_job(
         kind="llm",
-        op="text_generate.ollama",
-        backend="ollama",
+        op="text_generate.vllm",
+        backend="vllm",
         model=chosen_model,
         status="ok" if text else "error",
         latency_ms=(time.perf_counter() - started) * 1000.0,
         target_presence_id="witness_thread",
-        error="" if text else "ollama_no_text",
+        error="" if text else "vllm_unavailable",
+        device=str(os.getenv("TEXT_GENERATION_DEVICE", "GPU") or "GPU"),
     )
     return text, chosen_model
 
@@ -959,21 +1287,41 @@ def _ollama_embed(text: str, model: str | None = None) -> list[float] | None:
     started = time.perf_counter()
     backend_fn = _world_web_symbol("_embedding_backend", _embedding_backend)
     backend = str(backend_fn()).strip().lower()
-    tf_embed = _world_web_symbol("_tensorflow_embed", _tensorflow_embed)
+    backend = {
+        "cuda": "torch",
+        "gpu": "torch",
+        "npu": "openvino",
+        "ollama": "auto",
+        "tensorflow": "auto",
+    }.get(backend, backend)
+    if backend not in {"openvino", "torch", "auto"}:
+        backend = "auto"
     openvino_embed = _world_web_symbol("_openvino_embed", _openvino_embed)
-    remote_embed = _world_web_symbol("_ollama_embed_remote", _ollama_embed_remote)
+    torch_embed = _world_web_symbol("_torch_embed", _torch_embed)
 
-    if backend == "tensorflow":
-        vector = tf_embed(text, model=model)
+    def _run_torch_embed(prompt: str, chosen_model: str | None) -> list[float] | None:
+        try:
+            return torch_embed(prompt, model=chosen_model, record_job=False)
+        except TypeError:
+            return torch_embed(prompt, model=chosen_model)
+
+    if backend == "torch":
+        vector = _run_torch_embed(text, model)
+        chosen_model = str(
+            model
+            or os.getenv("TORCH_EMBED_MODEL", "nomic-ai/nomic-embed-text-v1.5")
+            or "nomic-ai/nomic-embed-text-v1.5"
+        ).strip()
         _record_compute_job(
             kind="embedding",
-            op="embed.tensorflow",
-            backend="tensorflow",
-            model=str(model or ""),
+            op="embed.torch",
+            backend="torch",
+            model=chosen_model,
             status="ok" if vector is not None else "error",
             latency_ms=(time.perf_counter() - started) * 1000.0,
             target_presence_id="file_organizer",
-            error="" if vector is not None else "tensorflow_no_vector",
+            error="" if vector is not None else "torch_no_vector",
+            device="cuda",
         )
         return vector
     if backend == "openvino":
@@ -1000,21 +1348,29 @@ def _ollama_embed(text: str, model: str | None = None) -> list[float] | None:
             last_backend = str(candidate).strip().lower() or "auto"
             if candidate == "openvino":
                 vector = openvino_embed(text, model=model)
-            elif candidate == "tensorflow":
-                vector = tf_embed(text, model=model)
+            elif candidate == "torch":
+                vector = _run_torch_embed(text, model)
             else:
-                vector = remote_embed(text, model=model)
+                continue
             if vector is not None:
                 if not chosen_model:
                     if last_backend == "openvino":
                         chosen_model = str(
                             os.getenv("OPENVINO_EMBED_MODEL", "")
+                            or os.getenv(
+                                "TORCH_EMBED_MODEL",
+                                "nomic-ai/nomic-embed-text-v1.5",
+                            )
                             or os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
                             or "nomic-embed-text"
                         ).strip()
                     else:
                         chosen_model = str(
                             model
+                            or os.getenv(
+                                "TORCH_EMBED_MODEL",
+                                "nomic-ai/nomic-embed-text-v1.5",
+                            )
                             or os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
                             or "nomic-embed-text"
                         ).strip()
@@ -1029,7 +1385,7 @@ def _ollama_embed(text: str, model: str | None = None) -> list[float] | None:
                     device=(
                         str(os.getenv("OPENVINO_EMBED_DEVICE", "NPU") or "NPU")
                         if last_backend == "openvino"
-                        else ""
+                        else "cuda"
                     ),
                 )
                 return vector
@@ -1045,27 +1401,22 @@ def _ollama_embed(text: str, model: str | None = None) -> list[float] | None:
             device=(
                 str(os.getenv("OPENVINO_EMBED_DEVICE", "NPU") or "NPU")
                 if last_backend == "openvino"
-                else ""
+                else "cuda"
             ),
         )
         return None
-    vector = remote_embed(text, model=model)
-    chosen_model = str(
-        model
-        or os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
-        or "nomic-embed-text"
-    ).strip()
+
     _record_compute_job(
         kind="embedding",
-        op="embed.ollama",
-        backend="ollama",
-        model=chosen_model,
-        status="ok" if vector is not None else "error",
+        op="embed.auto",
+        backend="auto",
+        model=str(model or "").strip(),
+        status="error",
         latency_ms=(time.perf_counter() - started) * 1000.0,
         target_presence_id="file_organizer",
-        error="" if vector is not None else "ollama_no_vector",
+        error="hardware_no_vector",
     )
-    return vector
+    return None
 
 
 def _embedding_provider_status() -> dict[str, Any]:
@@ -1077,12 +1428,13 @@ def _embedding_provider_status() -> dict[str, Any]:
             "key": str(_OPENVINO_EMBED_RUNTIME.get("key", "")),
         }
     resource_snapshot = _resource_monitor_snapshot()
+    c_runtime = _c_embed_runtime_status()
 
     return {
         "backend": _embedding_backend(),
         "text_generation_backend": _text_generation_backend(),
         "openvino": {
-            "endpoint": str(os.getenv("OPENVINO_EMBED_ENDPOINT", "") or "").strip(),
+            "endpoint": "",
             "model": str(os.getenv("OPENVINO_EMBED_MODEL", "") or "").strip(),
             "device": str(os.getenv("OPENVINO_EMBED_DEVICE", "NPU") or "NPU").strip()
             or "NPU",
@@ -1095,6 +1447,13 @@ def _embedding_provider_status() -> dict[str, Any]:
             "hash_bins": _tensorflow_embed_hash_bins(),
             "runtime": _tensorflow_runtime_status(),
         },
+        "torch": {
+            "model": str(
+                os.getenv("TORCH_EMBED_MODEL", "nomic-ai/nomic-embed-text-v1.5")
+                or "nomic-ai/nomic-embed-text-v1.5"
+            ).strip(),
+        },
+        "c_runtime": c_runtime,
         "resource": {
             "record": str(resource_snapshot.get("record", "")),
             "generated_at": str(resource_snapshot.get("generated_at", "")),
@@ -1333,7 +1692,7 @@ def _presence_generate_utterance(
     base_text: str,
     generate_text_fn: Any,
 ):
-    if mode != "ollama":
+    if mode not in {"ollama", "llm", "auto", "openvino"}:
         return base_text, "canonical", "ok", None, None
 
     prompt = _presence_prompt(
@@ -1345,7 +1704,7 @@ def _presence_generate_utterance(
     )
     generated, model_name = generate_text_fn(prompt)
     if generated:
-        return generated, "ollama", "ok", model_name, None
+        return generated, "llm", "ok", model_name, None
 
     return (
         base_text,
@@ -1354,7 +1713,7 @@ def _presence_generate_utterance(
         None,
         {
             "presence_id": presence_id,
-            "error_code": "ollama_unavailable",
+            "error_code": "llm_unavailable",
             "fallback_used": True,
         },
     )
@@ -1466,7 +1825,7 @@ def _compose_presence_response(
     overlay_tags = _extract_overlay_tags(combined_reply)
 
     return {
-        "mode": "ollama" if models else "canonical",
+        "mode": "llm" if models else "canonical",
         "model": models[0] if models else None,
         "reply": combined_reply,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -1535,7 +1894,7 @@ def utterances_to_ledger_rows(
 
 def build_chat_reply(
     messages: list[dict[str, Any]],
-    mode: str = "ollama",
+    mode: str = "llm",
     context: dict[str, Any] | None = None,
     multi_entity: bool = False,
     presence_ids: list[str] | None = None,
@@ -1562,7 +1921,7 @@ def build_chat_reply(
             generate_text_fn,
         )
 
-    if mode == "ollama":
+    if mode in {"ollama", "llm", "auto", "openvino"}:
         user_query = trimmed[-1]["text"]
         history = "\n".join(f"{row['role']}: {row['text']}" for row in trimmed)
 
@@ -1621,7 +1980,7 @@ def build_chat_reply(
         text, model = generate_text_fn(prompt)
         if text:
             return {
-                "mode": "ollama",
+                "mode": "llm",
                 "model": model,
                 "reply": text,
                 "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -2125,7 +2484,11 @@ def build_image_commentary(
     chosen_model = str(
         model or IMAGE_COMMENTARY_MODEL or "qwen3-vl:2b-instruct"
     ).strip()
-    chosen_timeout = float(timeout_s or IMAGE_COMMENTARY_TIMEOUT_SECONDS)
+    try:
+        chosen_timeout = float(timeout_s or IMAGE_COMMENTARY_TIMEOUT_SECONDS)
+    except (TypeError, ValueError):
+        chosen_timeout = float(IMAGE_COMMENTARY_TIMEOUT_SECONDS)
+    chosen_timeout = max(0.2, min(120.0, chosen_timeout))
 
     fingerprint = _tensorflow_image_fingerprint(image_bytes)
     image_sha = hashlib.sha256(image_bytes).hexdigest()
@@ -2143,50 +2506,71 @@ def build_image_commentary(
         prompt_bits.append(f"User request: {clean_prompt}")
     prompt_text = "\n".join(prompt_bits)
 
-    endpoint = f"{_ollama_base_url()}/api/generate"
-    payload = {
-        "model": chosen_model,
-        "prompt": prompt_text,
-        "stream": False,
-        "images": [base64.b64encode(image_bytes).decode("ascii")],
-    }
-    req = Request(
-        endpoint,
-        method="POST",
-        headers={"Content-Type": "application/json"},
-        data=json.dumps(payload).encode("utf-8"),
-    )
-    opener = _world_web_symbol("urlopen", urlopen)
     request_error = ""
-
-    try:
-        with opener(req, timeout=chosen_timeout) as resp:
-            raw = json.loads(resp.read().decode("utf-8", errors="ignore"))
-            commentary = str(raw.get("response", "")).strip()
-            if commentary:
-                _record_compute_job(
-                    kind="llm",
-                    op="image_commentary.ollama",
-                    backend="ollama",
-                    model=chosen_model,
-                    status="ok",
-                    latency_ms=(time.perf_counter() - started) * 1000.0,
-                    target_presence_id=clean_presence_id,
-                )
-                return {
-                    "ok": True,
-                    "error": "",
-                    "commentary": commentary,
-                    "model": chosen_model,
-                    "backend": "ollama+tensorflow-fingerprint",
-                    "analysis": {
-                        "image_sha256": image_sha,
-                        "mime": clean_mime,
-                        "tensorflow": fingerprint,
-                    },
+    endpoint = _vision_chat_endpoint().strip()
+    response_text = ""
+    if endpoint:
+        image_data_url = f"data:{clean_mime};base64," + base64.b64encode(
+            image_bytes
+        ).decode("ascii")
+        payload: dict[str, Any] = {
+            "model": chosen_model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt_text},
+                        {"type": "image_url", "image_url": {"url": image_data_url}},
+                    ],
                 }
-    except (URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError) as exc:
-        request_error = exc.__class__.__name__
+            ],
+            "temperature": 0.2,
+            "max_tokens": 160,
+            "stream": False,
+        }
+        req = Request(
+            endpoint,
+            method="POST",
+            headers=_vision_chat_headers(),
+            data=json.dumps(payload).encode("utf-8"),
+        )
+        opener = _world_web_symbol("urlopen", urlopen)
+        try:
+            with opener(req, timeout=chosen_timeout) as resp:
+                raw = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            response_text = _extract_openai_chat_response_text(raw)
+            if not response_text and isinstance(raw, dict):
+                response_text = str(raw.get("response", "") or "").strip()
+            chosen_model = str(raw.get("model") or chosen_model).strip() or chosen_model
+        except (URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+            request_error = "vision_unavailable"
+    else:
+        request_error = "vision_unconfigured"
+
+    if response_text:
+        _record_compute_job(
+            kind="llm",
+            op="image_commentary.vllm",
+            backend="vllm",
+            model=chosen_model,
+            status="ok",
+            latency_ms=(time.perf_counter() - started) * 1000.0,
+            target_presence_id=clean_presence_id,
+            error="",
+            device=str(os.getenv("TEXT_GENERATION_DEVICE", "GPU") or "GPU"),
+        )
+        return {
+            "ok": True,
+            "error": "",
+            "commentary": response_text,
+            "model": chosen_model,
+            "backend": "vllm",
+            "analysis": {
+                "image_sha256": image_sha,
+                "mime": clean_mime,
+                "tensorflow": fingerprint,
+            },
+        }
 
     fallback_line = (
         f"[{clean_presence_id}] sees image {clean_image_ref or image_sha[:12]} "
@@ -2196,20 +2580,21 @@ def build_image_commentary(
         fallback_line = f"{fallback_line} Request context: {clean_prompt[:180]}"
     _record_compute_job(
         kind="llm",
-        op="image_commentary.ollama",
-        backend="ollama",
+        op="image_commentary.vllm",
+        backend="vllm",
         model=chosen_model,
         status="fallback",
         latency_ms=(time.perf_counter() - started) * 1000.0,
         target_presence_id=clean_presence_id,
         error=request_error or "empty_or_unavailable_response",
+        device=str(os.getenv("TEXT_GENERATION_DEVICE", "GPU") or "GPU"),
     )
     return {
         "ok": True,
         "error": "",
         "commentary": fallback_line,
         "model": chosen_model,
-        "backend": "tensorflow-fallback",
+        "backend": "vllm-fallback",
         "analysis": {
             "image_sha256": image_sha,
             "mime": clean_mime,
@@ -2225,34 +2610,14 @@ def _openvino_embed(
     device: str | None = None,
     **_: Any,
 ) -> list[float] | None:
+    del model, timeout_s
     prompt = str(text or "").strip()
     if not prompt:
         return None
 
-    endpoint = str(os.getenv("OPENVINO_EMBED_ENDPOINT", "") or "").strip()
-    if not endpoint:
-        _record_openvino_runtime(
-            key="",
-            model=None,
-            error="openvino_endpoint_unset",
-        )
-        return None
-
-    chosen_model = str(
-        model
-        or os.getenv("OPENVINO_EMBED_MODEL", "")
-        or os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
-        or "nomic-embed-text"
-    ).strip()
     chosen_device = _normalize_openvino_device(
         device or os.getenv("OPENVINO_EMBED_DEVICE", "NPU")
     )
-    chosen_timeout = (
-        float(timeout_s)
-        if timeout_s is not None
-        else _safe_embedding_timeout_env("OPENVINO_EMBED_TIMEOUT_SEC", 12.0)
-    )
-    normalize = _embedding_flag("OPENVINO_EMBED_NORMALIZE", True)
     max_chars = _safe_embedding_int_env(
         "OPENVINO_EMBED_MAX_CHARS",
         _safe_embedding_int_env(
@@ -2262,83 +2627,24 @@ def _openvino_embed(
         max_value=64000,
     )
     sample_text = prompt[:max_chars] if max_chars > 0 else prompt
-
-    opener = _world_web_symbol("urlopen", urlopen)
-    last_error = "openvino_request_failed"
-    for target in _openvino_embed_candidates(endpoint):
-        payload_variants: list[dict[str, Any]] = []
-        if target.endswith("/v1/embeddings"):
-            payload_variants.append(
-                {
-                    "model": chosen_model,
-                    "input": [sample_text],
-                    "options": {
-                        "device": chosen_device,
-                    },
-                }
-            )
-
-        payload_variants.extend(
-            [
-                {
-                    "model": chosen_model,
-                    "input": sample_text,
-                    "device": chosen_device,
-                    "normalize": normalize,
-                },
-                {
-                    "model": chosen_model,
-                    "text": sample_text,
-                    "device": chosen_device,
-                    "normalize": normalize,
-                },
-                {
-                    "model": chosen_model,
-                    "prompt": sample_text,
-                    "device": chosen_device,
-                    "normalize": normalize,
-                },
-            ]
+    vector = _c_embed_text_24(sample_text, requested_device=chosen_device)
+    if vector is None:
+        runtime = _c_embed_runtime_status()
+        _record_openvino_runtime(
+            key=f"c-runtime|{chosen_device}",
+            model=None,
+            error=str(runtime.get("error", "c_embed_failed"))[:220],
         )
-
-        for payload in payload_variants:
-            req = Request(
-                target,
-                method="POST",
-                headers=_openvino_embed_headers(),
-                data=json.dumps(payload).encode("utf-8"),
-            )
-            try:
-                with opener(req, timeout=chosen_timeout) as resp:
-                    raw = json.loads(resp.read().decode("utf-8", errors="ignore"))
-                embedding = _embedding_payload_vector(raw)
-                if embedding is None:
-                    continue
-                normalized = _normalize_embedding_runtime_vector(embedding, normalize)
-                if not normalized:
-                    continue
-                _record_openvino_runtime(
-                    key=f"{target}|{chosen_model}|{chosen_device}",
-                    model=chosen_model,
-                    error="",
-                )
-                return normalized
-            except (
-                URLError,
-                TimeoutError,
-                OSError,
-                ValueError,
-                json.JSONDecodeError,
-            ) as exc:
-                last_error = f"{exc.__class__.__name__}:{exc}"
-                continue
+        return None
 
     _record_openvino_runtime(
-        key=f"{endpoint}|{chosen_model}|{chosen_device}",
-        model=None,
-        error=last_error[:220],
+        key=f"c-runtime|{chosen_device}",
+        model=str(
+            os.getenv("OPENVINO_EMBED_MODEL", "nomic-embed-text") or "nomic-embed-text"
+        ),
+        error="",
     )
-    return None
+    return vector
 
 
 def _embed_text(text: str, **kwargs) -> list[float] | None:
@@ -2346,7 +2652,7 @@ def _embed_text(text: str, **kwargs) -> list[float] | None:
     model = kwargs.get("model")
     if b == "torch":
         return _torch_embed(text, model=model)
-    if b == "ollama":
+    if b == "auto":
         return _ollama_embed(text, model=model)
     if b == "openvino":
         started = time.perf_counter()
@@ -2354,7 +2660,7 @@ def _embed_text(text: str, **kwargs) -> list[float] | None:
         chosen_model = str(
             model
             or os.getenv("OPENVINO_EMBED_MODEL", "")
-            or os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+            or os.getenv("ETA_MU_TEXT_EMBED_MODEL", "nomic-embed-text")
             or "nomic-embed-text"
         ).strip()
         _record_compute_job(
@@ -2369,20 +2675,6 @@ def _embed_text(text: str, **kwargs) -> list[float] | None:
             device=str(os.getenv("OPENVINO_EMBED_DEVICE", "NPU") or "NPU"),
         )
         return vector
-    if b == "tensorflow":
-        started = time.perf_counter()
-        vector = _tensorflow_embed(text, model=model)
-        _record_compute_job(
-            kind="embedding",
-            op="embed_text.tensorflow",
-            backend="tensorflow",
-            model=str(model or "tf-hash"),
-            status="ok" if vector is not None else "error",
-            latency_ms=(time.perf_counter() - started) * 1000.0,
-            target_presence_id="file_organizer",
-            error="" if vector is not None else "tensorflow_no_vector",
-        )
-        return vector
     return None
 
 
@@ -2394,8 +2686,10 @@ def _eta_mu_detect_modality(
     from .constants import (
         ETA_MU_INGEST_INCLUDE_TEXT_MIME,
         ETA_MU_INGEST_INCLUDE_IMAGE_MIME,
+        ETA_MU_INGEST_INCLUDE_AUDIO_MIME,
         ETA_MU_INGEST_INCLUDE_TEXT_EXT,
         ETA_MU_INGEST_INCLUDE_IMAGE_EXT,
+        ETA_MU_INGEST_INCLUDE_AUDIO_EXT,
     )
 
     normalized_mime = str(mime or "").strip().lower()
@@ -2407,11 +2701,18 @@ def _eta_mu_detect_modality(
         return "text", "mime-text"
     if normalized_mime in ETA_MU_INGEST_INCLUDE_IMAGE_MIME:
         return "image", "mime-image"
+    if (
+        normalized_mime.startswith("audio/")
+        or normalized_mime in ETA_MU_INGEST_INCLUDE_AUDIO_MIME
+    ):
+        return "audio", "mime-audio"
 
     if suffix in ETA_MU_INGEST_INCLUDE_TEXT_EXT:
         return "text", "ext-text"
     if suffix in ETA_MU_INGEST_INCLUDE_IMAGE_EXT:
         return "image", "ext-image"
+    if suffix in ETA_MU_INGEST_INCLUDE_AUDIO_EXT:
+        return "audio", "ext-audio"
 
     return None, "unsupported-modality"
 
@@ -2429,6 +2730,14 @@ def _eta_mu_guess_mime(path: Path, raw: bytes) -> str:
         return "image/gif"
     if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
         return "image/webp"
+    if raw.startswith(b"ID3") or raw.startswith(b"\xff\xfb"):
+        return "audio/mpeg"
+    if raw.startswith(b"fLaC"):
+        return "audio/flac"
+    if raw[:4] == b"OggS":
+        return "audio/ogg"
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WAVE":
+        return "audio/wav"
     if _is_probably_text_bytes(raw[:8192]):
         return "text/plain"
     return "application/octet-stream"
@@ -2456,11 +2765,12 @@ _TORCH_MODEL_CACHE: dict[str, Any] = {}
 _TORCH_LOCK = threading.Lock()
 
 
-def _torch_embed(text: str, model: str | None = None) -> list[float] | None:
-    """
-    Run embedding directly in-process on CPU/GPU via sentence-transformers/PyTorch.
-    This avoids HTTP overhead and leverages local hardware directly.
-    """
+def _torch_embed(
+    text: str,
+    model: str | None = None,
+    *,
+    record_job: bool = True,
+) -> list[float] | None:
     prompt = str(text or "").strip()
     if not prompt:
         return None
@@ -2468,75 +2778,33 @@ def _torch_embed(text: str, model: str | None = None) -> list[float] | None:
     model_name = str(
         model or os.getenv("TORCH_EMBED_MODEL", "nomic-ai/nomic-embed-text-v1.5")
     ).strip()
-
-    device = "cpu"
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            device = "cuda"
-    except ImportError:
-        pass
-
-    cache_key = f"{model_name}|{device}"
-
-    st_model = _TORCH_MODEL_CACHE.get(cache_key)
-    if st_model is None:
-        with _TORCH_LOCK:
-            st_model = _TORCH_MODEL_CACHE.get(cache_key)
-            if st_model is None:
-                try:
-                    from sentence_transformers import SentenceTransformer
-
-                    st_model = SentenceTransformer(
-                        model_name, trust_remote_code=True, device=device
-                    )
-                    _TORCH_MODEL_CACHE[cache_key] = st_model
-                except Exception as e:
-                    # print(f"[Torch Backend Error] Load failed: {e}")
-                    _record_compute_job(
-                        kind="embedding",
-                        op="embed.torch.load_error",
-                        backend="torch",
-                        model=model_name,
-                        status="error",
-                        latency_ms=0.0,
-                        error=str(e)[:120],
-                    )
-                    return None
-
+    max_chars = _safe_embedding_int_env(
+        "OPENVINO_EMBED_MAX_CHARS",
+        _safe_embedding_int_env(
+            "OLLAMA_EMBED_MAX_CHARS",
+            2400,
+            min_value=0,
+            max_value=64000,
+        ),
+        min_value=0,
+        max_value=64000,
+    )
+    sample_text = prompt[:max_chars] if max_chars > 0 else prompt
     started = time.perf_counter()
-    try:
-        # Run inference
-        # If model supports MRL (Matryoshka), we can just take the full vector here
-        # and let the caller slice it if needed.
-        # Nomic v1.5 returns 768 dim by default.
-        embedding = st_model.encode(prompt, convert_to_numpy=True)
-        vector = _normalize_embedding_vector(embedding.tolist())
-
+    vector = _c_embed_text_24(sample_text, requested_device="GPU")
+    if record_job:
         _record_compute_job(
             kind="embedding",
             op="embed.torch",
             backend="torch",
             model=model_name,
-            status="ok",
+            status="ok" if vector is not None else "error",
             latency_ms=(time.perf_counter() - started) * 1000.0,
-            target_presence_id="file_organizer",  # Default
-            device=device,
+            target_presence_id="file_organizer",
+            device="cuda",
+            error="" if vector is not None else "c_embed_no_vector",
         )
-        return vector
-    except Exception as e:
-        # print(f"[Torch Backend Error] Inference failed: {e}")
-        _record_compute_job(
-            kind="embedding",
-            op="embed.torch.infer_error",
-            backend="torch",
-            model=model_name,
-            status="error",
-            latency_ms=(time.perf_counter() - started) * 1000.0,
-            error=str(e)[:120],
-        )
-        return None
+    return vector
 
 
 def _eta_mu_canonicalize_text(raw: bytes) -> str:
@@ -2733,189 +3001,102 @@ def _eta_mu_image_vllm_caption_for_embedding(
     mime: str,
     source_rel_path: str,
 ) -> dict[str, str]:
-    enabled = str(os.getenv("ETA_MU_IMAGE_VISION_ENABLED", "0") or "0").strip().lower()
+    enabled = str(os.getenv("ETA_MU_IMAGE_VISION_ENABLED", "0") or "").strip().lower()
     if enabled not in {"1", "true", "yes", "on"}:
         return {
             "caption": "",
             "model": "",
-            "backend": "vllm-disabled",
-            "error": "image_vision_disabled",
+            "backend": "vision-disabled",
+            "error": "vision_disabled",
         }
 
-    base_url = (
-        str(os.getenv("ETA_MU_IMAGE_VISION_BASE_URL", "") or "").strip().rstrip("/")
-    )
-    if not base_url:
+    endpoint = _vision_chat_endpoint().strip()
+    if not endpoint:
         return {
             "caption": "",
             "model": "",
             "backend": "vllm",
-            "error": "vllm_base_url_unset",
+            "error": "vision_unconfigured",
         }
-
-    endpoint = base_url
-    if endpoint.endswith("/v1/chat/completions"):
-        pass
-    elif endpoint.endswith("/v1"):
-        endpoint = f"{endpoint}/chat/completions"
-    else:
-        endpoint = f"{endpoint}/v1/chat/completions"
-
-    try:
-        max_bytes = int(
-            float(
-                str(
-                    os.getenv("ETA_MU_IMAGE_VISION_MAX_BYTES", "16000000") or "16000000"
-                )
-            )
-        )
-    except (TypeError, ValueError):
-        max_bytes = 16_000_000
-    max_bytes = max(1024, min(40_000_000, max_bytes))
-    if len(image_bytes) > max_bytes:
-        return {
-            "caption": "",
-            "model": "",
-            "backend": "vllm",
-            "error": "image_payload_too_large",
-        }
-
-    try:
-        timeout_s = float(
-            str(os.getenv("ETA_MU_IMAGE_VISION_TIMEOUT_SECONDS", "12") or "12")
-        )
-    except (TypeError, ValueError):
-        timeout_s = 12.0
-    timeout_s = max(0.2, min(120.0, timeout_s))
-
-    try:
-        max_tokens = int(
-            float(str(os.getenv("ETA_MU_IMAGE_VISION_MAX_TOKENS", "180") or "180"))
-        )
-    except (TypeError, ValueError):
-        max_tokens = 180
-    max_tokens = max(32, min(1200, max_tokens))
-
-    try:
-        caption_limit = int(
-            float(
-                str(os.getenv("ETA_MU_IMAGE_VISION_CAPTION_MAX_CHARS", "640") or "640")
-            )
-        )
-    except (TypeError, ValueError):
-        caption_limit = 640
-    caption_limit = max(120, min(4000, caption_limit))
 
     chosen_model = str(
         os.getenv("ETA_MU_IMAGE_VISION_MODEL", "")
-        or IMAGE_COMMENTARY_MODEL
+        or os.getenv("TEXT_GENERATION_MODEL", "")
         or "qwen3-vl:2b-instruct"
     ).strip()
-    prompt = str(
-        os.getenv(
-            "ETA_MU_IMAGE_VISION_PROMPT",
-            "Describe this image for retrieval embeddings in two concise factual sentences. "
-            "Mention objects, setting, any readable text, and salient actions.",
+    try:
+        timeout_s = float(
+            str(os.getenv("ETA_MU_IMAGE_VISION_TIMEOUT_SECONDS", "8") or "8")
         )
-        or ""
-    ).strip()
-    if not prompt:
-        prompt = "Describe this image for retrieval embeddings in two concise factual sentences."
+    except (TypeError, ValueError):
+        timeout_s = 8.0
+    timeout_s = max(0.2, min(120.0, timeout_s))
 
-    image_base64 = base64.b64encode(image_bytes).decode("ascii")
-    data_url = f"data:{mime or 'application/octet-stream'};base64,{image_base64}"
-    payload = {
+    image_data_url = f"data:{mime};base64," + base64.b64encode(image_bytes).decode(
+        "ascii"
+    )
+    prompt_text = (
+        "Create one concise visual caption for embedding retrieval. "
+        "Focus on concrete visible objects, scene context, and distinctive attributes. "
+        "No markdown. Max 24 words. "
+        f"Source path: {source_rel_path}"
+    )
+
+    payload: dict[str, Any] = {
         "model": chosen_model,
         "messages": [
             {
                 "role": "user",
                 "content": [
-                    {
-                        "type": "text",
-                        "text": f"{prompt}\nImage source: {source_rel_path}",
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": data_url},
-                    },
+                    {"type": "text", "text": prompt_text},
+                    {"type": "image_url", "image_url": {"url": image_data_url}},
                 ],
             }
         ],
-        "temperature": 0.0,
-        "max_tokens": max_tokens,
+        "temperature": 0.1,
+        "max_tokens": 96,
         "stream": False,
     }
-
-    headers = {"Content-Type": "application/json"}
-    api_key = str(os.getenv("ETA_MU_IMAGE_VISION_API_KEY", "") or "").strip()
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
 
     req = Request(
         endpoint,
         method="POST",
-        headers=headers,
+        headers=_vision_chat_headers(),
         data=json.dumps(payload).encode("utf-8"),
     )
     opener = _world_web_symbol("urlopen", urlopen)
-    started = time.perf_counter()
-
     try:
         with opener(req, timeout=timeout_s) as resp:
             raw = json.loads(resp.read().decode("utf-8", errors="ignore"))
-    except (URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError) as exc:
-        _record_compute_job(
-            kind="llm",
-            op="image_caption.vllm",
-            backend="vllm",
-            model=chosen_model,
-            status="error",
-            latency_ms=(time.perf_counter() - started) * 1000.0,
-            target_presence_id="file_organizer",
-            error=f"{exc.__class__.__name__}",
-        )
+    except (URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
         return {
             "caption": "",
             "model": chosen_model,
             "backend": "vllm",
-            "error": f"{exc.__class__.__name__}",
+            "error": "vision_unavailable",
         }
 
     caption = _extract_openai_chat_response_text(raw)
-    caption = re.sub(r"\s+", " ", caption).strip()
+    if not caption and isinstance(raw, dict):
+        caption = str(raw.get("response", "") or "").strip()
+    resolved_model = (
+        str((raw.get("model") if isinstance(raw, dict) else "") or chosen_model).strip()
+        or chosen_model
+    )
     if not caption:
-        _record_compute_job(
-            kind="llm",
-            op="image_caption.vllm",
-            backend="vllm",
-            model=chosen_model,
-            status="error",
-            latency_ms=(time.perf_counter() - started) * 1000.0,
-            target_presence_id="file_organizer",
-            error="vllm_empty_caption",
-        )
         return {
             "caption": "",
-            "model": chosen_model,
+            "model": resolved_model,
             "backend": "vllm",
-            "error": "vllm_empty_caption",
+            "error": "empty_caption",
         }
-    if len(caption) > caption_limit:
-        caption = caption[:caption_limit].rstrip() + "..."
 
-    _record_compute_job(
-        kind="llm",
-        op="image_caption.vllm",
-        backend="vllm",
-        model=chosen_model,
-        status="ok",
-        latency_ms=(time.perf_counter() - started) * 1000.0,
-        target_presence_id="file_organizer",
-    )
-
+    normalized_caption = " ".join(str(caption).split())
+    if len(normalized_caption) > 320:
+        normalized_caption = normalized_caption[:320].rstrip()
     return {
-        "caption": caption,
-        "model": chosen_model,
+        "caption": normalized_caption,
+        "model": resolved_model,
         "backend": "vllm",
         "error": "",
     }
@@ -3186,6 +3367,10 @@ def _eta_mu_space_forms() -> dict[str, Any]:
         ETA_MU_INGEST_IMAGE_MODEL,
         ETA_MU_INGEST_IMAGE_MODEL_DIGEST,
         ETA_MU_INGEST_IMAGE_DIMS,
+        ETA_MU_INGEST_SPACE_AUDIO_ID,
+        ETA_MU_INGEST_AUDIO_MODEL,
+        ETA_MU_INGEST_AUDIO_MODEL_DIGEST,
+        ETA_MU_INGEST_AUDIO_DIMS,
         ETA_MU_INGEST_SPACE_SET_ID,
         ETA_MU_INGEST_VECSTORE_ID,
         ETA_MU_INGEST_VECSTORE_COLLECTION,
@@ -3263,16 +3448,43 @@ def _eta_mu_space_forms() -> dict[str, Any]:
     image_space["signature"] = _eta_mu_json_sha256(image_space)
     image_space["collection"] = _eta_mu_vecstore_collection_for_space(image_space)
 
+    audio_space: dict[str, Any] = {
+        "id": ETA_MU_INGEST_SPACE_AUDIO_ID,
+        "modality": "audio",
+        "model": {
+            "provider": "ollama",
+            "name": ETA_MU_INGEST_AUDIO_MODEL,
+            "digest": ETA_MU_INGEST_AUDIO_MODEL_DIGEST or "none",
+        },
+        "dims": ETA_MU_INGEST_AUDIO_DIMS,
+        "metric": "cosine",
+        "normalize": True,
+        "dtype": "f16",
+        "preproc": {
+            "decode": "wav-ish",
+            "strip_metadata": True,
+        },
+        "time": "none",
+    }
+    audio_space["signature"] = _eta_mu_json_sha256(audio_space)
+    audio_space["collection"] = _eta_mu_vecstore_collection_for_space(audio_space)
+
     space_set = {
         "id": ETA_MU_INGEST_SPACE_SET_ID,
-        "members": [ETA_MU_INGEST_SPACE_TEXT_ID, ETA_MU_INGEST_SPACE_IMAGE_ID],
+        "members": [
+            ETA_MU_INGEST_SPACE_TEXT_ID,
+            ETA_MU_INGEST_SPACE_IMAGE_ID,
+            ETA_MU_INGEST_SPACE_AUDIO_ID,
+        ],
         "routing": {
             "text": ETA_MU_INGEST_SPACE_TEXT_ID,
             "image": ETA_MU_INGEST_SPACE_IMAGE_ID,
+            "audio": ETA_MU_INGEST_SPACE_AUDIO_ID,
         },
         "collections": {
             "text": str(text_space.get("collection", vecstore_collection)),
             "image": str(image_space.get("collection", vecstore_collection)),
+            "audio": str(audio_space.get("collection", vecstore_collection)),
         },
         "time": "none",
     }
@@ -3286,6 +3498,7 @@ def _eta_mu_space_forms() -> dict[str, Any]:
         "collections": {
             "text": str(text_space.get("collection", vecstore_collection)),
             "image": str(image_space.get("collection", vecstore_collection)),
+            "audio": str(audio_space.get("collection", vecstore_collection)),
         },
         "space_set": ETA_MU_INGEST_SPACE_SET_ID,
         "index": {
@@ -3310,6 +3523,7 @@ def _eta_mu_space_forms() -> dict[str, Any]:
     return {
         "text": text_space,
         "image": image_space,
+        "audio": audio_space,
         "space_set": space_set,
         "vecstore": vecstore,
     }

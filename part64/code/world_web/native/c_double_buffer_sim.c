@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #define CDB_FLAG_NEXUS 0x1u
 #define CDB_FLAG_CHAOS 0x2u
@@ -33,6 +34,26 @@ typedef struct Vec2DoubleBuffer {
     float *y[2];
     _Atomic int readable;
 } Vec2DoubleBuffer;
+
+typedef struct CDBQuadNode {
+    float min_x;
+    float min_y;
+    float max_x;
+    float max_y;
+    uint32_t child_base;
+    int32_t particle_head;
+    uint16_t particle_count;
+    uint16_t depth;
+    uint32_t total_count;
+    uint32_t nexus_count;
+    float max_radius;
+    float mass;
+    float com_x;
+    float com_y;
+    float emb_sum[24];
+    float emb_norm;
+    uint64_t group_mask;
+} CDBQuadNode;
 
 typedef struct CDBEngine {
     uint32_t particle_count;
@@ -76,6 +97,17 @@ typedef struct CDBEngine {
     int32_t *grid_head;
     int32_t *grid_next;
 
+    CDBQuadNode *quad_nodes;
+    uint32_t quad_capacity;
+    float bh_theta;
+    uint32_t bh_leaf_capacity;
+    uint32_t bh_max_depth;
+    float collision_spring;
+    float cluster_theta;
+    float cluster_rest_length;
+    float cluster_stiffness;
+    uint32_t force_worker_count;
+
     pthread_t force_thread;
     pthread_t chaos_thread;
     pthread_t semantic_thread;
@@ -83,6 +115,7 @@ typedef struct CDBEngine {
 } CDBEngine;
 
 void cdb_engine_destroy(CDBEngine *engine);
+void cdb_release_thread_scratch(void);
 
 void cdb_engine_set_flags(CDBEngine *engine, uint32_t flags) {
     if (engine != NULL) {
@@ -117,6 +150,30 @@ static uint32_t env_u32(const char *name, uint32_t fallback) {
     return (uint32_t)parsed;
 }
 
+static float env_f32(const char *name, float fallback) {
+    const char *value = getenv(name);
+    if (value == NULL || value[0] == '\0') {
+        return fallback;
+    }
+    char *end = NULL;
+    float parsed = strtof(value, &end);
+    if (end == value || !isfinite(parsed)) {
+        return fallback;
+    }
+    return parsed;
+}
+
+static uint32_t detect_cpu_count(void) {
+    long count = sysconf(_SC_NPROCESSORS_ONLN);
+    if (count <= 0) {
+        return 1u;
+    }
+    if (count > 64) {
+        return 64u;
+    }
+    return (uint32_t)count;
+}
+
 static float clamp01(float value) {
     if (value <= 0.0f) {
         return 0.0f;
@@ -125,6 +182,99 @@ static float clamp01(float value) {
         return 1.0f;
     }
     return value;
+}
+
+static _Thread_local float *g_scratch_dist = NULL;
+static _Thread_local uint32_t g_scratch_dist_cap = 0u;
+static _Thread_local uint8_t *g_scratch_visited = NULL;
+static _Thread_local uint32_t g_scratch_visited_cap = 0u;
+static _Thread_local uint32_t *g_scratch_u32_a = NULL;
+static _Thread_local uint32_t g_scratch_u32_a_cap = 0u;
+static _Thread_local uint32_t *g_scratch_u32_b = NULL;
+static _Thread_local uint32_t g_scratch_u32_b_cap = 0u;
+static _Thread_local float *g_scratch_float_a = NULL;
+static _Thread_local uint32_t g_scratch_float_a_cap = 0u;
+static _Thread_local uint32_t *g_scratch_u32_c = NULL;
+static _Thread_local uint32_t g_scratch_u32_c_cap = 0u;
+static _Thread_local float *g_scratch_edge_cost = NULL;
+static _Thread_local uint32_t g_scratch_edge_cost_cap = 0u;
+
+void cdb_release_thread_scratch(void) {
+    free(g_scratch_dist);
+    g_scratch_dist = NULL;
+    g_scratch_dist_cap = 0u;
+
+    free(g_scratch_visited);
+    g_scratch_visited = NULL;
+    g_scratch_visited_cap = 0u;
+
+    free(g_scratch_u32_a);
+    g_scratch_u32_a = NULL;
+    g_scratch_u32_a_cap = 0u;
+
+    free(g_scratch_u32_b);
+    g_scratch_u32_b = NULL;
+    g_scratch_u32_b_cap = 0u;
+
+    free(g_scratch_float_a);
+    g_scratch_float_a = NULL;
+    g_scratch_float_a_cap = 0u;
+
+    free(g_scratch_u32_c);
+    g_scratch_u32_c = NULL;
+    g_scratch_u32_c_cap = 0u;
+
+    free(g_scratch_edge_cost);
+    g_scratch_edge_cost = NULL;
+    g_scratch_edge_cost_cap = 0u;
+}
+
+static int cdb_ensure_scratch_float(float **buffer, uint32_t *capacity, uint32_t count) {
+    if (count == 0u) {
+        return 0;
+    }
+    if (*capacity >= count && *buffer != NULL) {
+        return 0;
+    }
+    float *next = (float *)realloc(*buffer, (size_t)count * sizeof(float));
+    if (next == NULL) {
+        return -1;
+    }
+    *buffer = next;
+    *capacity = count;
+    return 0;
+}
+
+static int cdb_ensure_scratch_u32(uint32_t **buffer, uint32_t *capacity, uint32_t count) {
+    if (count == 0u) {
+        return 0;
+    }
+    if (*capacity >= count && *buffer != NULL) {
+        return 0;
+    }
+    uint32_t *next = (uint32_t *)realloc(*buffer, (size_t)count * sizeof(uint32_t));
+    if (next == NULL) {
+        return -1;
+    }
+    *buffer = next;
+    *capacity = count;
+    return 0;
+}
+
+static int cdb_ensure_scratch_u8(uint8_t **buffer, uint32_t *capacity, uint32_t count) {
+    if (count == 0u) {
+        return 0;
+    }
+    if (*capacity >= count && *buffer != NULL) {
+        return 0;
+    }
+    uint8_t *next = (uint8_t *)realloc(*buffer, (size_t)count * sizeof(uint8_t));
+    if (next == NULL) {
+        return -1;
+    }
+    *buffer = next;
+    *capacity = count;
+    return 0;
 }
 
 static int fast_floor_to_int(float value) {
@@ -254,13 +404,14 @@ static int cdb_graph_runtime_accumulate_gravity(
         return 0;
     }
 
-    float *dist = (float *)calloc((size_t)node_count, sizeof(float));
-    uint8_t *visited = (uint8_t *)calloc((size_t)node_count, sizeof(uint8_t));
-    if (dist == NULL || visited == NULL) {
-        free(dist);
-        free(visited);
+    if (
+        cdb_ensure_scratch_float(&g_scratch_dist, &g_scratch_dist_cap, node_count) != 0
+        || cdb_ensure_scratch_u8(&g_scratch_visited, &g_scratch_visited_cap, node_count) != 0
+    ) {
         return -1;
     }
+    float *dist = g_scratch_dist;
+    uint8_t *visited = g_scratch_visited;
 
     for (uint32_t source_index = 0u; source_index < source_count; source_index += 1u) {
         uint32_t source = source_nodes[source_index];
@@ -343,8 +494,6 @@ static int cdb_graph_runtime_accumulate_gravity(
         }
     }
 
-    free(dist);
-    free(visited);
     return 0;
 }
 
@@ -650,33 +799,36 @@ int cdb_graph_runtime_maps(
     float cpu_01 = clamp01(cpu_ratio);
     float global_sat = clamp01((queue_01 * 0.62f) + (cpu_01 * 0.38f));
 
-    uint32_t *out_degree = (uint32_t *)calloc((size_t)node_count, sizeof(uint32_t));
-    uint32_t *in_degree = (uint32_t *)calloc((size_t)node_count, sizeof(uint32_t));
-    float *node_sat_sum = (float *)calloc((size_t)node_count, sizeof(float));
-    uint32_t *node_sat_count = (uint32_t *)calloc((size_t)node_count, sizeof(uint32_t));
     if (
-        out_degree == NULL
-        || in_degree == NULL
-        || node_sat_sum == NULL
-        || node_sat_count == NULL
+        cdb_ensure_scratch_u32(&g_scratch_u32_a, &g_scratch_u32_a_cap, node_count) != 0
+        || cdb_ensure_scratch_u32(&g_scratch_u32_b, &g_scratch_u32_b_cap, node_count) != 0
+        || cdb_ensure_scratch_float(&g_scratch_float_a, &g_scratch_float_a_cap, node_count) != 0
+        || cdb_ensure_scratch_u32(&g_scratch_u32_c, &g_scratch_u32_c_cap, node_count) != 0
     ) {
-        free(out_degree);
-        free(in_degree);
-        free(node_sat_sum);
-        free(node_sat_count);
         return -1;
     }
+    uint32_t *out_degree = g_scratch_u32_a;
+    uint32_t *in_degree = g_scratch_u32_b;
+    float *node_sat_sum = g_scratch_float_a;
+    uint32_t *node_sat_count = g_scratch_u32_c;
+    memset(out_degree, 0, (size_t)node_count * sizeof(uint32_t));
+    memset(in_degree, 0, (size_t)node_count * sizeof(uint32_t));
+    memset(node_sat_sum, 0, (size_t)node_count * sizeof(float));
+    memset(node_sat_count, 0, (size_t)node_count * sizeof(uint32_t));
 
     float *edge_cost_cache = out_edge_cost;
     if (edge_cost_cache == NULL && edge_count > 0u) {
-        edge_cost_cache = (float *)calloc((size_t)edge_count, sizeof(float));
-        if (edge_cost_cache == NULL) {
-            free(out_degree);
-            free(in_degree);
-            free(node_sat_sum);
-            free(node_sat_count);
+        if (
+            cdb_ensure_scratch_float(
+                &g_scratch_edge_cost,
+                &g_scratch_edge_cost_cap,
+                edge_count
+            ) != 0
+        ) {
             return -1;
         }
+        edge_cost_cache = g_scratch_edge_cost;
+        memset(edge_cost_cache, 0, (size_t)edge_count * sizeof(float));
     }
 
     for (uint32_t node = 0u; node < node_count; node += 1u) {
@@ -733,13 +885,6 @@ int cdb_graph_runtime_maps(
             out_gravity
         ) != 0
     ) {
-        if (out_edge_cost == NULL) {
-            free(edge_cost_cache);
-        }
-        free(out_degree);
-        free(in_degree);
-        free(node_sat_sum);
-        free(node_sat_count);
         return -1;
     }
 
@@ -754,13 +899,6 @@ int cdb_graph_runtime_maps(
         out_node_price
     );
 
-    if (out_edge_cost == NULL) {
-        free(edge_cost_cache);
-    }
-    free(out_degree);
-    free(in_degree);
-    free(node_sat_sum);
-    free(node_sat_count);
     return 0;
 }
 
@@ -973,10 +1111,11 @@ int cdb_build_csr_edges(
     }
 
     // Count edges per node
-    uint32_t *degree = (uint32_t *)calloc((size_t)node_count, sizeof(uint32_t));
-    if (degree == NULL) {
+    if (cdb_ensure_scratch_u32(&g_scratch_u32_a, &g_scratch_u32_a_cap, node_count) != 0) {
         return -1;
     }
+    uint32_t *degree = g_scratch_u32_a;
+    memset(degree, 0, (size_t)node_count * sizeof(uint32_t));
 
     for (uint32_t e = 0u; e < edge_count; e += 1u) {
         uint32_t src = edge_src[e];
@@ -1004,7 +1143,6 @@ int cdb_build_csr_edges(
         }
     }
 
-    free(degree);
     return 0;
 }
 
@@ -1177,6 +1315,479 @@ int cdb_graph_route_step_csr(
     return 0;
 }
 
+typedef struct CDBCollisionResolveContext {
+    uint32_t count;
+    uint32_t cols;
+    uint32_t rows;
+    uint32_t cell_count;
+    const int32_t *cell_head;
+    const int32_t *next;
+    const float *x;
+    const float *y;
+    const float *vx;
+    const float *vy;
+    const float *radius;
+    const float *mass;
+    float restitution;
+    float separation_percent;
+} CDBCollisionResolveContext;
+
+typedef struct CDBCollisionResolveTask {
+    const CDBCollisionResolveContext *ctx;
+    uint32_t start_cell;
+    uint32_t end_cell;
+    float *dx;
+    float *dy;
+    float *dvx;
+    float *dvy;
+    uint32_t *hit_count;
+    uint32_t collision_pairs;
+} CDBCollisionResolveTask;
+
+static void cdb_collision_apply_pair(
+    CDBCollisionResolveTask *task,
+    uint32_t i,
+    uint32_t j
+) {
+    if (task == NULL || task->ctx == NULL) {
+        return;
+    }
+    const CDBCollisionResolveContext *ctx = task->ctx;
+    if (i >= ctx->count || j >= ctx->count || i == j) {
+        return;
+    }
+
+    float xi = ctx->x[i];
+    float yi = ctx->y[i];
+    float xj = ctx->x[j];
+    float yj = ctx->y[j];
+    if (!isfinite(xi) || !isfinite(yi) || !isfinite(xj) || !isfinite(yj)) {
+        return;
+    }
+
+    float radius_i = ctx->radius != NULL ? ctx->radius[i] : 0.0f;
+    float radius_j = ctx->radius != NULL ? ctx->radius[j] : 0.0f;
+    if (!isfinite(radius_i) || radius_i < 0.0f) {
+        radius_i = 0.0f;
+    }
+    if (!isfinite(radius_j) || radius_j < 0.0f) {
+        radius_j = 0.0f;
+    }
+    float min_distance = radius_i + radius_j;
+    if (min_distance <= 0.0f) {
+        return;
+    }
+
+    float dx = xj - xi;
+    float dy = yj - yi;
+    float dist_sq = (dx * dx) + (dy * dy);
+    float min_dist_sq = min_distance * min_distance;
+    if (dist_sq >= min_dist_sq) {
+        return;
+    }
+
+    float nx = 0.0f;
+    float ny = 0.0f;
+    float distance = 0.0f;
+    if (dist_sq < 1e-12f) {
+        uint32_t jitter_seed = mix_hash_u32(
+            ((i + 1u) * 73856093u)
+            ^ ((j + 1u) * 19349663u)
+            ^ 0x9E3779B9u
+        );
+        float theta = ((float)(jitter_seed % 6283u)) * 0.001f;
+        nx = cosf(theta);
+        ny = sinf(theta);
+        distance = 1e-6f;
+    } else {
+        distance = sqrtf(dist_sq);
+        nx = dx / distance;
+        ny = dy / distance;
+    }
+
+    float mass_i = ctx->mass != NULL ? ctx->mass[i] : 1.0f;
+    float mass_j = ctx->mass != NULL ? ctx->mass[j] : 1.0f;
+    if (!isfinite(mass_i) || mass_i < 0.2f) {
+        mass_i = 0.2f;
+    }
+    if (!isfinite(mass_j) || mass_j < 0.2f) {
+        mass_j = 0.2f;
+    }
+    float inv_mass_i = 1.0f / mass_i;
+    float inv_mass_j = 1.0f / mass_j;
+
+    float vx_i = ctx->vx[i];
+    float vy_i = ctx->vy[i];
+    float vx_j = ctx->vx[j];
+    float vy_j = ctx->vy[j];
+
+    float rel_vx = vx_i - vx_j;
+    float rel_vy = vy_i - vy_j;
+    float vel_normal = (rel_vx * nx) + (rel_vy * ny);
+
+    if (vel_normal < 0.0f) {
+        float impulse = (-(1.0f + ctx->restitution) * vel_normal)
+            / fmaxf(1e-6f, inv_mass_i + inv_mass_j);
+        float impulse_x = impulse * nx;
+        float impulse_y = impulse * ny;
+        task->dvx[i] += impulse_x * inv_mass_i;
+        task->dvy[i] += impulse_y * inv_mass_i;
+        task->dvx[j] -= impulse_x * inv_mass_j;
+        task->dvy[j] -= impulse_y * inv_mass_j;
+
+        float tangent_x = rel_vx - (vel_normal * nx);
+        float tangent_y = rel_vy - (vel_normal * ny);
+        float tangent_norm = sqrtf((tangent_x * tangent_x) + (tangent_y * tangent_y));
+        if (tangent_norm > 1e-6f) {
+            tangent_x /= tangent_norm;
+            tangent_y /= tangent_norm;
+            float tangent_velocity = (rel_vx * tangent_x) + (rel_vy * tangent_y);
+            float tangent_impulse = fminf(
+                fabsf(impulse) * 0.18f,
+                fabsf(tangent_velocity)
+            );
+            task->dvx[i] -= tangent_impulse * tangent_x * inv_mass_i;
+            task->dvy[i] -= tangent_impulse * tangent_y * inv_mass_i;
+            task->dvx[j] += tangent_impulse * tangent_x * inv_mass_j;
+            task->dvy[j] += tangent_impulse * tangent_y * inv_mass_j;
+        }
+    }
+
+    float penetration = min_distance - distance;
+    float correction = (
+        fmaxf(0.0f, penetration) / fmaxf(1e-6f, inv_mass_i + inv_mass_j)
+    ) * ctx->separation_percent;
+    float correction_x = correction * nx;
+    float correction_y = correction * ny;
+    task->dx[i] -= correction_x * inv_mass_i;
+    task->dy[i] -= correction_y * inv_mass_i;
+    task->dx[j] += correction_x * inv_mass_j;
+    task->dy[j] += correction_y * inv_mass_j;
+
+    task->hit_count[i] += 1u;
+    task->hit_count[j] += 1u;
+    task->collision_pairs += 1u;
+}
+
+static void cdb_collision_process_cells(CDBCollisionResolveTask *task) {
+    if (task == NULL || task->ctx == NULL) {
+        return;
+    }
+    const CDBCollisionResolveContext *ctx = task->ctx;
+    if (ctx->cell_head == NULL || ctx->next == NULL) {
+        return;
+    }
+
+    for (uint32_t cell = task->start_cell; cell < task->end_cell; cell += 1u) {
+        int32_t head_i = ctx->cell_head[cell];
+        if (head_i < 0) {
+            continue;
+        }
+
+        uint32_t gx = cell % ctx->cols;
+        uint32_t gy = cell / ctx->cols;
+        int32_t x_min = (gx > 0u) ? (int32_t)(gx - 1u) : (int32_t)gx;
+        int32_t x_max = (gx + 1u < ctx->cols) ? (int32_t)(gx + 1u) : (int32_t)gx;
+        int32_t y_min = (gy > 0u) ? (int32_t)(gy - 1u) : (int32_t)gy;
+        int32_t y_max = (gy + 1u < ctx->rows) ? (int32_t)(gy + 1u) : (int32_t)gy;
+
+        for (int32_t ny = y_min; ny <= y_max; ny += 1) {
+            for (int32_t nx = x_min; nx <= x_max; nx += 1) {
+                uint32_t neighbor = ((uint32_t)ny * ctx->cols) + (uint32_t)nx;
+                if (neighbor < cell) {
+                    continue;
+                }
+                int32_t head_j = ctx->cell_head[neighbor];
+                if (head_j < 0) {
+                    continue;
+                }
+
+                if (neighbor == cell) {
+                    for (int32_t i = head_i; i >= 0; i = ctx->next[(uint32_t)i]) {
+                        for (
+                            int32_t j = ctx->next[(uint32_t)i];
+                            j >= 0;
+                            j = ctx->next[(uint32_t)j]
+                        ) {
+                            cdb_collision_apply_pair(task, (uint32_t)i, (uint32_t)j);
+                        }
+                    }
+                } else {
+                    for (int32_t i = head_i; i >= 0; i = ctx->next[(uint32_t)i]) {
+                        for (int32_t j = head_j; j >= 0; j = ctx->next[(uint32_t)j]) {
+                            cdb_collision_apply_pair(task, (uint32_t)i, (uint32_t)j);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+static void *cdb_collision_worker_entry(void *arg) {
+    CDBCollisionResolveTask *task = (CDBCollisionResolveTask *)arg;
+    if (task == NULL) {
+        return NULL;
+    }
+    cdb_collision_process_cells(task);
+    return NULL;
+}
+
+uint32_t cdb_resolve_semantic_collisions(
+    uint32_t count,
+    float *x,
+    float *y,
+    float *vx,
+    float *vy,
+    const float *radius,
+    const float *mass,
+    float restitution,
+    float separation_percent,
+    float cell_size,
+    uint32_t worker_count,
+    uint32_t *out_collision_count
+) {
+    if (
+        count == 0u
+        || x == NULL
+        || y == NULL
+        || vx == NULL
+        || vy == NULL
+        || radius == NULL
+        || mass == NULL
+    ) {
+        return 0u;
+    }
+
+    if (out_collision_count != NULL) {
+        memset(out_collision_count, 0, (size_t)count * sizeof(uint32_t));
+    }
+    if (count < 2u) {
+        return 0u;
+    }
+
+    float bounded_restitution = isfinite(restitution) ? restitution : 0.88f;
+    if (bounded_restitution < 0.0f) {
+        bounded_restitution = 0.0f;
+    } else if (bounded_restitution > 1.0f) {
+        bounded_restitution = 1.0f;
+    }
+
+    float bounded_separation = isfinite(separation_percent) ? separation_percent : 0.72f;
+    if (bounded_separation < 0.0f) {
+        bounded_separation = 0.0f;
+    } else if (bounded_separation > 1.2f) {
+        bounded_separation = 1.2f;
+    }
+
+    float bounded_cell = isfinite(cell_size) ? cell_size : 0.04f;
+    if (bounded_cell < 0.005f) {
+        bounded_cell = 0.005f;
+    } else if (bounded_cell > 0.25f) {
+        bounded_cell = 0.25f;
+    }
+
+    uint32_t cols = (uint32_t)floorf(1.0f / bounded_cell) + 1u;
+    if (cols < 4u) {
+        cols = 4u;
+    } else if (cols > 512u) {
+        cols = 512u;
+    }
+    uint32_t rows = cols;
+    uint32_t cell_count = cols * rows;
+
+    int32_t *cell_head = (int32_t *)malloc((size_t)cell_count * sizeof(int32_t));
+    int32_t *next = (int32_t *)malloc((size_t)count * sizeof(int32_t));
+    if (cell_head == NULL || next == NULL) {
+        free(cell_head);
+        free(next);
+        return 0u;
+    }
+    for (uint32_t cell = 0u; cell < cell_count; cell += 1u) {
+        cell_head[cell] = -1;
+    }
+
+    for (uint32_t i = 0u; i < count; i += 1u) {
+        float xi = x[i];
+        float yi = y[i];
+        if (!isfinite(xi)) {
+            xi = 0.5f;
+        }
+        if (!isfinite(yi)) {
+            yi = 0.5f;
+        }
+        xi = clamp01(xi);
+        yi = clamp01(yi);
+        x[i] = xi;
+        y[i] = yi;
+
+        uint32_t cx = (uint32_t)floorf(xi / bounded_cell);
+        uint32_t cy = (uint32_t)floorf(yi / bounded_cell);
+        if (cx >= cols) {
+            cx = cols - 1u;
+        }
+        if (cy >= rows) {
+            cy = rows - 1u;
+        }
+        uint32_t cell = (cy * cols) + cx;
+        next[i] = cell_head[cell];
+        cell_head[cell] = (int32_t)i;
+    }
+
+    uint32_t workers = worker_count;
+    if (workers < 1u) {
+        workers = 1u;
+    } else if (workers > 32u) {
+        workers = 32u;
+    }
+    if (workers > cell_count) {
+        workers = cell_count;
+    }
+    if (workers < 1u) {
+        workers = 1u;
+    }
+
+    CDBCollisionResolveContext ctx;
+    ctx.count = count;
+    ctx.cols = cols;
+    ctx.rows = rows;
+    ctx.cell_count = cell_count;
+    ctx.cell_head = cell_head;
+    ctx.next = next;
+    ctx.x = x;
+    ctx.y = y;
+    ctx.vx = vx;
+    ctx.vy = vy;
+    ctx.radius = radius;
+    ctx.mass = mass;
+    ctx.restitution = bounded_restitution;
+    ctx.separation_percent = bounded_separation;
+
+    CDBCollisionResolveTask *tasks = (CDBCollisionResolveTask *)calloc(
+        workers,
+        sizeof(CDBCollisionResolveTask)
+    );
+    pthread_t *threads = (pthread_t *)calloc(workers, sizeof(pthread_t));
+    uint8_t *thread_started = (uint8_t *)calloc(workers, sizeof(uint8_t));
+    if (tasks == NULL || threads == NULL || thread_started == NULL) {
+        free(tasks);
+        free(threads);
+        free(thread_started);
+        free(cell_head);
+        free(next);
+        return 0u;
+    }
+
+    int alloc_failed = 0;
+    for (uint32_t w = 0u; w < workers; w += 1u) {
+        tasks[w].ctx = &ctx;
+        tasks[w].dx = (float *)calloc((size_t)count, sizeof(float));
+        tasks[w].dy = (float *)calloc((size_t)count, sizeof(float));
+        tasks[w].dvx = (float *)calloc((size_t)count, sizeof(float));
+        tasks[w].dvy = (float *)calloc((size_t)count, sizeof(float));
+        tasks[w].hit_count = (uint32_t *)calloc((size_t)count, sizeof(uint32_t));
+        if (
+            tasks[w].dx == NULL
+            || tasks[w].dy == NULL
+            || tasks[w].dvx == NULL
+            || tasks[w].dvy == NULL
+            || tasks[w].hit_count == NULL
+        ) {
+            alloc_failed = 1;
+            break;
+        }
+    }
+    if (alloc_failed != 0) {
+        for (uint32_t w = 0u; w < workers; w += 1u) {
+            free(tasks[w].dx);
+            free(tasks[w].dy);
+            free(tasks[w].dvx);
+            free(tasks[w].dvy);
+            free(tasks[w].hit_count);
+        }
+        free(tasks);
+        free(threads);
+        free(thread_started);
+        free(cell_head);
+        free(next);
+        return 0u;
+    }
+
+    uint32_t chunk = (cell_count + workers - 1u) / workers;
+    for (uint32_t w = 0u; w < workers; w += 1u) {
+        uint32_t start = w * chunk;
+        uint32_t end = start + chunk;
+        if (start > cell_count) {
+            start = cell_count;
+        }
+        if (end > cell_count) {
+            end = cell_count;
+        }
+        tasks[w].start_cell = start;
+        tasks[w].end_cell = end;
+    }
+
+    for (uint32_t w = 1u; w < workers; w += 1u) {
+        if (tasks[w].start_cell >= tasks[w].end_cell) {
+            continue;
+        }
+        if (pthread_create(&threads[w], NULL, cdb_collision_worker_entry, &tasks[w]) == 0) {
+            thread_started[w] = 1u;
+        } else {
+            cdb_collision_process_cells(&tasks[w]);
+        }
+    }
+    if (tasks[0].start_cell < tasks[0].end_cell) {
+        cdb_collision_process_cells(&tasks[0]);
+    }
+    for (uint32_t w = 1u; w < workers; w += 1u) {
+        if (thread_started[w] != 0u) {
+            pthread_join(threads[w], NULL);
+        }
+    }
+
+    uint32_t collision_pairs = 0u;
+    for (uint32_t w = 0u; w < workers; w += 1u) {
+        collision_pairs += tasks[w].collision_pairs;
+    }
+
+    for (uint32_t i = 0u; i < count; i += 1u) {
+        float sum_dx = 0.0f;
+        float sum_dy = 0.0f;
+        float sum_dvx = 0.0f;
+        float sum_dvy = 0.0f;
+        uint32_t sum_hits = 0u;
+        for (uint32_t w = 0u; w < workers; w += 1u) {
+            sum_dx += tasks[w].dx[i];
+            sum_dy += tasks[w].dy[i];
+            sum_dvx += tasks[w].dvx[i];
+            sum_dvy += tasks[w].dvy[i];
+            sum_hits += tasks[w].hit_count[i];
+        }
+        x[i] = clamp01(x[i] + sum_dx);
+        y[i] = clamp01(y[i] + sum_dy);
+        vx[i] += sum_dvx;
+        vy[i] += sum_dvy;
+        if (out_collision_count != NULL) {
+            out_collision_count[i] = sum_hits;
+        }
+    }
+
+    for (uint32_t w = 0u; w < workers; w += 1u) {
+        free(tasks[w].dx);
+        free(tasks[w].dy);
+        free(tasks[w].dvx);
+        free(tasks[w].dvy);
+        free(tasks[w].hit_count);
+    }
+    free(tasks);
+    free(threads);
+    free(thread_started);
+    free(cell_head);
+    free(next);
+    return collision_pairs;
+}
+
 static void sleep_microseconds(uint32_t microseconds) {
     if (microseconds == 0u) {
         return;
@@ -1247,110 +1858,972 @@ static void mix_vectors_24(float *target, const float *source, float alpha) {
     }
 }
 
-static void resolve_collisions(CDBEngine *engine, const float *pos_x, const float *pos_y, float *acc_x, float *acc_y) {
-    uint32_t count = engine->particle_count;
-    int32_t *head = engine->grid_head;
-    int32_t *next = engine->grid_next;
-    
-    if (head == NULL || next == NULL) return;
+static void cdb_quadtree_reset_node(
+    CDBQuadNode *node,
+    float min_x,
+    float min_y,
+    float max_x,
+    float max_y,
+    uint16_t depth
+) {
+    if (node == NULL) {
+        return;
+    }
+    node->min_x = min_x;
+    node->min_y = min_y;
+    node->max_x = max_x;
+    node->max_y = max_y;
+    node->child_base = UINT32_MAX;
+    node->particle_head = -1;
+    node->particle_count = 0u;
+    node->depth = depth;
+    node->total_count = 0u;
+    node->nexus_count = 0u;
+    node->max_radius = 0.0f;
+    node->mass = 0.0f;
+    node->com_x = 0.5f * (min_x + max_x);
+    node->com_y = 0.5f * (min_y + max_y);
+    memset(node->emb_sum, 0, sizeof(node->emb_sum));
+    node->emb_norm = 0.0f;
+    node->group_mask = 0u;
+}
 
-    // Reset grid
-    memset(head, -1, CDB_NOOI_COLS * CDB_NOOI_ROWS * sizeof(int32_t));
+static uint64_t cdb_group_mask_bit(uint32_t group_id) {
+    return 1ull << (uint64_t)(group_id & 63u);
+}
 
-    // Populate grid
-    for (uint32_t i = 0; i < count; i++) {
-        int cx = fast_floor_to_int(pos_x[i] * (float)CDB_NOOI_COLS);
-        int cy = fast_floor_to_int(pos_y[i] * (float)CDB_NOOI_ROWS);
-        if (cx >= 0 && cx < CDB_NOOI_COLS && cy >= 0 && cy < CDB_NOOI_ROWS) {
-            int cell_idx = (cy * CDB_NOOI_COLS) + cx;
-            next[i] = head[cell_idx];
-            head[cell_idx] = (int32_t)i;
-        } else {
-            next[i] = -1;
+static uint32_t cdb_quadtree_choose_child(const CDBQuadNode *node, float x, float y) {
+    float mid_x = 0.5f * (node->min_x + node->max_x);
+    float mid_y = 0.5f * (node->min_y + node->max_y);
+    uint32_t bit_x = (x >= mid_x) ? 1u : 0u;
+    uint32_t bit_y = (y >= mid_y) ? 1u : 0u;
+    return node->child_base + (bit_y * 2u) + bit_x;
+}
+
+static int cdb_quadtree_subdivide(
+    CDBEngine *engine,
+    uint32_t node_index,
+    uint32_t *io_node_count
+) {
+    if (engine == NULL || io_node_count == NULL || engine->quad_nodes == NULL) {
+        return -1;
+    }
+    if (node_index >= engine->quad_capacity) {
+        return -1;
+    }
+    CDBQuadNode *node = &engine->quad_nodes[node_index];
+    if (node->child_base != UINT32_MAX) {
+        return 0;
+    }
+    if ((*io_node_count + 4u) > engine->quad_capacity) {
+        return -1;
+    }
+
+    uint32_t base = *io_node_count;
+    *io_node_count += 4u;
+    node->child_base = base;
+
+    float mid_x = 0.5f * (node->min_x + node->max_x);
+    float mid_y = 0.5f * (node->min_y + node->max_y);
+    uint16_t child_depth = (uint16_t)(node->depth + 1u);
+
+    cdb_quadtree_reset_node(
+        &engine->quad_nodes[base + 0u],
+        node->min_x,
+        node->min_y,
+        mid_x,
+        mid_y,
+        child_depth
+    );
+    cdb_quadtree_reset_node(
+        &engine->quad_nodes[base + 1u],
+        mid_x,
+        node->min_y,
+        node->max_x,
+        mid_y,
+        child_depth
+    );
+    cdb_quadtree_reset_node(
+        &engine->quad_nodes[base + 2u],
+        node->min_x,
+        mid_y,
+        mid_x,
+        node->max_y,
+        child_depth
+    );
+    cdb_quadtree_reset_node(
+        &engine->quad_nodes[base + 3u],
+        mid_x,
+        mid_y,
+        node->max_x,
+        node->max_y,
+        child_depth
+    );
+    return 0;
+}
+
+static int cdb_quadtree_insert_particle(
+    CDBEngine *engine,
+    uint32_t node_index,
+    uint32_t particle_index,
+    const float *pos_x,
+    const float *pos_y,
+    uint32_t *io_node_count
+) {
+    if (
+        engine == NULL
+        || engine->quad_nodes == NULL
+        || pos_x == NULL
+        || pos_y == NULL
+        || io_node_count == NULL
+    ) {
+        return -1;
+    }
+    if (node_index >= engine->quad_capacity || particle_index >= engine->particle_count) {
+        return -1;
+    }
+
+    CDBQuadNode *node = &engine->quad_nodes[node_index];
+    if (node->child_base == UINT32_MAX) {
+        if (
+            node->particle_count < engine->bh_leaf_capacity
+            || node->depth >= engine->bh_max_depth
+        ) {
+            engine->grid_next[particle_index] = node->particle_head;
+            node->particle_head = (int32_t)particle_index;
+            node->particle_count = (uint16_t)(node->particle_count + 1u);
+            return 0;
+        }
+
+        if (cdb_quadtree_subdivide(engine, node_index, io_node_count) != 0) {
+            return -1;
+        }
+
+        int32_t cursor = node->particle_head;
+        node->particle_head = -1;
+        node->particle_count = 0u;
+
+        while (cursor != -1) {
+            uint32_t existing = (uint32_t)cursor;
+            int32_t next_cursor = engine->grid_next[existing];
+            engine->grid_next[existing] = -1;
+            if (
+                cdb_quadtree_insert_particle(
+                    engine,
+                    node_index,
+                    existing,
+                    pos_x,
+                    pos_y,
+                    io_node_count
+                )
+                != 0
+            ) {
+                return -1;
+            }
+            cursor = next_cursor;
         }
     }
 
-    float impact_dist = 0.022f; // ~ DAIMOI_SURFACE_RADIUS * 2 (roughly, tuning for stability)
-    float impact_sq = impact_dist * impact_dist;
+    float px = pos_x[particle_index];
+    float py = pos_y[particle_index];
+    uint32_t child_index = cdb_quadtree_choose_child(node, px, py);
+    return cdb_quadtree_insert_particle(
+        engine,
+        child_index,
+        particle_index,
+        pos_x,
+        pos_y,
+        io_node_count
+    );
+}
 
-    // Check collisions
-    for (uint32_t i = 0; i < count; i++) {
-        int cx = fast_floor_to_int(pos_x[i] * (float)CDB_NOOI_COLS);
-        int cy = fast_floor_to_int(pos_y[i] * (float)CDB_NOOI_ROWS);
-        
-        // Check 3x3 neighborhood
-        for (int dy = -1; dy <= 1; dy++) {
-            for (int dx = -1; dx <= 1; dx++) {
-                int nx = cx + dx;
-                int ny = cy + dy;
-                if (nx >= 0 && nx < CDB_NOOI_COLS && ny >= 0 && ny < CDB_NOOI_ROWS) {
-                    int cell_idx = (ny * CDB_NOOI_COLS) + nx;
-                    int32_t j = head[cell_idx];
-                    while (j != -1) {
-                        if ((uint32_t)j > i) { // Check pair once
-                            float px_i = pos_x[i];
-                            float py_i = pos_y[i];
-                            float px_j = pos_x[j];
-                            float py_j = pos_y[j];
-                            
-                            float dist_x = px_j - px_i;
-                            float dist_y = py_j - py_i;
-                            float d2 = (dist_x * dist_x) + (dist_y * dist_y);
-                            
-                            float r_sum = engine->radius[i] + engine->radius[j];
-                            float min_dist_sq = r_sum * r_sum;
+static void cdb_quadtree_accumulate(
+    CDBEngine *engine,
+    uint32_t node_index,
+    const float *pos_x,
+    const float *pos_y
+) {
+    CDBQuadNode *node = &engine->quad_nodes[node_index];
+    node->total_count = 0u;
+    node->nexus_count = 0u;
+    node->max_radius = 0.0f;
+    node->mass = 0.0f;
+    node->com_x = 0.0f;
+    node->com_y = 0.0f;
+    memset(node->emb_sum, 0, sizeof(node->emb_sum));
+    node->emb_norm = 0.0f;
+    node->group_mask = 0u;
 
-                            if (d2 < min_dist_sq && d2 > 1e-9f) {
-                                float dist = sqrtf(d2);
-                                float overlap = r_sum - dist;
-                                float nx_vec = dist_x / dist;
-                                float ny_vec = dist_y / dist;
-                                
-                                // Physics: Position correction force (spring-like)
-                                float k_spring = 80.0f; 
-                                float f_mag = k_spring * overlap;
-                                
-                                // Apply equal and opposite forces
-                                acc_x[i] -= nx_vec * f_mag;
-                                acc_y[i] -= ny_vec * f_mag;
-                                acc_x[j] += nx_vec * f_mag;
-                                acc_y[j] += ny_vec * f_mag;
+    if (node->child_base != UINT32_MAX) {
+        for (uint32_t child_offset = 0u; child_offset < 4u; child_offset += 1u) {
+            uint32_t child_index = node->child_base + child_offset;
+            cdb_quadtree_accumulate(engine, child_index, pos_x, pos_y);
+            CDBQuadNode *child = &engine->quad_nodes[child_index];
+            node->total_count += child->total_count;
+            node->nexus_count += child->nexus_count;
+            if (child->max_radius > node->max_radius) {
+                node->max_radius = child->max_radius;
+            }
+            node->mass += child->mass;
+            node->com_x += child->com_x * child->mass;
+            node->com_y += child->com_y * child->mass;
+            for (uint32_t k = 0u; k < 24u; k += 1u) {
+                node->emb_sum[k] += child->emb_sum[k];
+            }
+            node->group_mask |= child->group_mask;
+        }
+    } else {
+        int32_t cursor = node->particle_head;
+        while (cursor != -1) {
+            uint32_t particle = (uint32_t)cursor;
+            cursor = engine->grid_next[particle];
+            node->total_count += 1u;
 
-                                // Semantics: Exchange
-                                // If collision is strong enough or probabilistic
-                                float *ei = &engine->embeddings[i * 24];
-                                float *ej = &engine->embeddings[j * 24];
-                                float sim = dot_product_24(ei, ej); // -1 to 1
-                                
-                                // Spec: Exchange count k ~ E_i. 
-                                // We approximate by blending embeddings.
-                                // Alpha depends on similarity. Disimilar = Repel/Deflect, Similar = Bond/Mix?
-                                // Spec says "Recompute probabilities".
-                                // Python logic: 
-                                //   transfer_t = (sim + 1) * 0.5
-                                //   coupling = intensity * bias
-                                //   delta = lambda * coupling * transfer
-                                
-                                float intensity = clamp01(overlap * 40.0f); // Proxy for impulse
-                                float transfer = clamp01((sim + 1.0f) * 0.5f);
-                                float mix_rate = 0.15f * intensity * transfer;
-                                
-                                // Bi-directional mix
-                                // We need temp storage to avoid order bias in a single step, 
-                                // but for simplicity/speed in C, sequential update is acceptable approximation 
-                                // for this "Probabilistic" simulation.
-                                float temp_j[24];
-                                memcpy(temp_j, ej, 24 * sizeof(float));
-                                
-                                mix_vectors_24(ej, ei, mix_rate);
-                                mix_vectors_24(ei, temp_j, mix_rate);
-                            }
-                        }
-                        j = next[j];
-                    }
+            float radius = engine->radius[particle];
+            if (!isfinite(radius) || radius < 0.0f) {
+                radius = 0.0f;
+            }
+            if (radius > node->max_radius) {
+                node->max_radius = radius;
+            }
+
+            if ((engine->flags[particle] & CDB_FLAG_NEXUS) != 0u) {
+                float particle_mass = engine->mass[particle];
+                if (!isfinite(particle_mass) || particle_mass <= 0.0f) {
+                    particle_mass = 0.7f;
+                }
+                particle_mass = fmaxf(0.05f, particle_mass);
+                node->nexus_count += 1u;
+                node->mass += particle_mass;
+                node->com_x += pos_x[particle] * particle_mass;
+                node->com_y += pos_y[particle] * particle_mass;
+                const float *embedding = &engine->embeddings[particle * 24u];
+                for (uint32_t k = 0u; k < 24u; k += 1u) {
+                    node->emb_sum[k] += embedding[k] * particle_mass;
+                }
+                node->group_mask |= cdb_group_mask_bit(engine->group_id[particle]);
+            }
+        }
+    }
+
+    if (node->mass > 1e-9f) {
+        node->com_x /= node->mass;
+        node->com_y /= node->mass;
+    } else {
+        node->com_x = 0.5f * (node->min_x + node->max_x);
+        node->com_y = 0.5f * (node->min_y + node->max_y);
+    }
+
+    float emb_sq = 0.0f;
+    for (uint32_t k = 0u; k < 24u; k += 1u) {
+        emb_sq += node->emb_sum[k] * node->emb_sum[k];
+    }
+    node->emb_norm = (emb_sq > 1e-9f) ? sqrtf(emb_sq) : 0.0f;
+}
+
+static int cdb_build_quadtree_frame(
+    CDBEngine *engine,
+    const float *pos_x,
+    const float *pos_y,
+    uint32_t count,
+    uint32_t *out_node_count
+) {
+    if (
+        engine == NULL
+        || engine->quad_nodes == NULL
+        || pos_x == NULL
+        || pos_y == NULL
+        || out_node_count == NULL
+        || count == 0u
+    ) {
+        if (out_node_count != NULL) {
+            *out_node_count = 0u;
+        }
+        return -1;
+    }
+
+    for (uint32_t i = 0u; i < count; i += 1u) {
+        engine->grid_next[i] = -1;
+    }
+
+    float min_x = pos_x[0];
+    float max_x = pos_x[0];
+    float min_y = pos_y[0];
+    float max_y = pos_y[0];
+    for (uint32_t i = 1u; i < count; i += 1u) {
+        float x = pos_x[i];
+        float y = pos_y[i];
+        if (x < min_x) {
+            min_x = x;
+        }
+        if (x > max_x) {
+            max_x = x;
+        }
+        if (y < min_y) {
+            min_y = y;
+        }
+        if (y > max_y) {
+            max_y = y;
+        }
+    }
+
+    float span = fmaxf(max_x - min_x, max_y - min_y);
+    span = fmaxf(0.02f, span);
+    float half = (span * 0.5f) + 0.0005f;
+    float center_x = 0.5f * (min_x + max_x);
+    float center_y = 0.5f * (min_y + max_y);
+
+    cdb_quadtree_reset_node(
+        &engine->quad_nodes[0],
+        center_x - half,
+        center_y - half,
+        center_x + half,
+        center_y + half,
+        0u
+    );
+
+    uint32_t node_count = 1u;
+    for (uint32_t i = 0u; i < count; i += 1u) {
+        if (cdb_quadtree_insert_particle(engine, 0u, i, pos_x, pos_y, &node_count) != 0) {
+            *out_node_count = 0u;
+            return -1;
+        }
+    }
+
+    cdb_quadtree_accumulate(engine, 0u, pos_x, pos_y);
+    *out_node_count = node_count;
+    return 0;
+}
+
+static float cdb_point_aabb_distance_sq(float x, float y, const CDBQuadNode *node) {
+    float dx = 0.0f;
+    float dy = 0.0f;
+    if (x < node->min_x) {
+        dx = node->min_x - x;
+    } else if (x > node->max_x) {
+        dx = x - node->max_x;
+    }
+    if (y < node->min_y) {
+        dy = node->min_y - y;
+    } else if (y > node->max_y) {
+        dy = y - node->max_y;
+    }
+    return (dx * dx) + (dy * dy);
+}
+
+static void cdb_apply_collision_force_from_tree(
+    const CDBEngine *engine,
+    const CDBQuadNode *nodes,
+    uint32_t node_index,
+    const float *pos_x,
+    const float *pos_y,
+    uint32_t target,
+    float xi,
+    float yi,
+    float radius_i,
+    float *io_fx,
+    float *io_fy
+) {
+    const CDBQuadNode *node = &nodes[node_index];
+    if (node->total_count == 0u) {
+        return;
+    }
+
+    float max_interaction = radius_i + node->max_radius;
+    if (max_interaction <= 0.0f) {
+        return;
+    }
+    float max_dist_sq = max_interaction * max_interaction;
+    if (cdb_point_aabb_distance_sq(xi, yi, node) > max_dist_sq) {
+        return;
+    }
+
+    if (node->child_base != UINT32_MAX) {
+        for (uint32_t child_offset = 0u; child_offset < 4u; child_offset += 1u) {
+            cdb_apply_collision_force_from_tree(
+                engine,
+                nodes,
+                node->child_base + child_offset,
+                pos_x,
+                pos_y,
+                target,
+                xi,
+                yi,
+                radius_i,
+                io_fx,
+                io_fy
+            );
+        }
+        return;
+    }
+
+    int32_t cursor = node->particle_head;
+    while (cursor != -1) {
+        uint32_t other = (uint32_t)cursor;
+        cursor = engine->grid_next[other];
+        if (other == target) {
+            continue;
+        }
+        float radius_other = engine->radius[other];
+        if (!isfinite(radius_other) || radius_other < 0.0f) {
+            radius_other = 0.0f;
+        }
+        float r_sum = radius_i + radius_other;
+        if (r_sum <= 0.0f) {
+            continue;
+        }
+
+        float dx = pos_x[other] - xi;
+        float dy = pos_y[other] - yi;
+        float dist_sq = (dx * dx) + (dy * dy);
+        float min_dist_sq = r_sum * r_sum;
+        if (dist_sq >= min_dist_sq) {
+            continue;
+        }
+
+        float nx = 0.0f;
+        float ny = 0.0f;
+        float dist = 0.0f;
+        if (dist_sq > 1e-10f) {
+            dist = sqrtf(dist_sq);
+            nx = dx / dist;
+            ny = dy / dist;
+        } else {
+            uint32_t jitter_seed = mix_hash_u32(
+                ((target + 1u) * 73856093u)
+                ^ ((other + 1u) * 19349663u)
+                ^ engine->seed
+            );
+            float angle = ((float)(jitter_seed % 6283u)) * 0.001f;
+            nx = cosf(angle);
+            ny = sinf(angle);
+            dist = 0.0f;
+        }
+
+        float overlap = fmaxf(0.0f, r_sum - dist);
+        float force_mag = engine->collision_spring * overlap;
+        *io_fx -= nx * force_mag;
+        *io_fy -= ny * force_mag;
+    }
+}
+
+static void cdb_apply_barnes_hut_force(
+    const CDBEngine *engine,
+    const CDBQuadNode *nodes,
+    uint32_t node_index,
+    const float *pos_x,
+    const float *pos_y,
+    uint32_t target,
+    float xi,
+    float yi,
+    const float *embedding,
+    float grav_const,
+    float grav_eps,
+    float theta,
+    float *io_fx,
+    float *io_fy
+) {
+    const CDBQuadNode *node = &nodes[node_index];
+    if (node->nexus_count == 0u) {
+        return;
+    }
+
+    if (node->child_base == UINT32_MAX) {
+        int32_t cursor = node->particle_head;
+        while (cursor != -1) {
+            uint32_t other = (uint32_t)cursor;
+            cursor = engine->grid_next[other];
+            if (other == target || (engine->flags[other] & CDB_FLAG_NEXUS) == 0u) {
+                continue;
+            }
+
+            float dx = pos_x[other] - xi;
+            float dy = pos_y[other] - yi;
+            float dist_sq = (dx * dx) + (dy * dy);
+            const float *other_embedding = &engine->embeddings[other * 24u];
+            float kappa = dot_product_24(embedding, other_embedding);
+            float particle_mass = engine->mass[other];
+            if (!isfinite(particle_mass) || particle_mass <= 0.0f) {
+                particle_mass = 0.7f;
+            }
+            particle_mass = fmaxf(0.05f, particle_mass);
+            float force = (grav_const * kappa * particle_mass) / (dist_sq + grav_eps);
+            *io_fx += dx * force;
+            *io_fy += dy * force;
+        }
+        return;
+    }
+
+    float dx = node->com_x - xi;
+    float dy = node->com_y - yi;
+    float dist_sq = (dx * dx) + (dy * dy);
+    float size = fmaxf(node->max_x - node->min_x, node->max_y - node->min_y);
+    int contains_target = (
+        xi >= node->min_x && xi <= node->max_x
+        && yi >= node->min_y && yi <= node->max_y
+    );
+
+    if (!contains_target && dist_sq > 1e-9f && (size * size) <= ((theta * theta) * dist_sq)) {
+        if (node->emb_norm > 1e-9f && node->mass > 0.0f) {
+            float dot = 0.0f;
+            for (uint32_t k = 0u; k < 24u; k += 1u) {
+                dot += embedding[k] * node->emb_sum[k];
+            }
+            float kappa = dot / node->emb_norm;
+            float force = (grav_const * kappa * node->mass) / (dist_sq + grav_eps);
+            *io_fx += dx * force;
+            *io_fy += dy * force;
+        }
+        return;
+    }
+
+    for (uint32_t child_offset = 0u; child_offset < 4u; child_offset += 1u) {
+        cdb_apply_barnes_hut_force(
+            engine,
+            nodes,
+            node->child_base + child_offset,
+            pos_x,
+            pos_y,
+            target,
+            xi,
+            yi,
+            embedding,
+            grav_const,
+            grav_eps,
+            theta,
+            io_fx,
+            io_fy
+        );
+    }
+}
+
+static void cdb_apply_group_spring_forces_exact(
+    const CDBEngine *engine,
+    const float *pos_x,
+    const float *pos_y,
+    uint32_t target,
+    float xi,
+    float yi,
+    const float *embedding,
+    float *io_fx,
+    float *io_fy
+) {
+    if ((engine->flags[target] & CDB_FLAG_NEXUS) == 0u) {
+        return;
+    }
+    float rest_length = engine->cluster_rest_length;
+    float k0 = 0.05f * engine->cluster_stiffness;
+    if (!isfinite(rest_length) || rest_length <= 0.0f) {
+        rest_length = 0.08f;
+    }
+    if (!isfinite(k0) || k0 <= 0.0f) {
+        k0 = 0.05f;
+    }
+
+    uint32_t group_i = engine->group_id[target];
+    uint32_t count = engine->particle_count;
+    for (uint32_t other = 0u; other < count; other += 1u) {
+        if (other == target || (engine->flags[other] & CDB_FLAG_NEXUS) == 0u) {
+            continue;
+        }
+        if (engine->group_id[other] != group_i) {
+            continue;
+        }
+
+        float dx = pos_x[other] - xi;
+        float dy = pos_y[other] - yi;
+        float dist = sqrtf((dx * dx) + (dy * dy)) + 1e-9f;
+        const float *other_embedding = &engine->embeddings[other * 24u];
+        float sim = dot_product_24(embedding, other_embedding);
+        float beta = 1.2f;
+        float ke = k0 * powf(clamp01(1.0f - sim), beta);
+        float f_edge = ke * (dist - rest_length);
+        *io_fx += (dx / dist) * f_edge;
+        *io_fy += (dy / dist) * f_edge;
+    }
+}
+
+static void cdb_apply_group_cluster_force_bh(
+    const CDBEngine *engine,
+    const CDBQuadNode *nodes,
+    uint32_t node_index,
+    const float *pos_x,
+    const float *pos_y,
+    uint32_t target,
+    float xi,
+    float yi,
+    uint32_t target_group,
+    const float *embedding,
+    float theta,
+    float *io_fx,
+    float *io_fy
+) {
+    if ((engine->flags[target] & CDB_FLAG_NEXUS) == 0u) {
+        return;
+    }
+
+    const CDBQuadNode *node = &nodes[node_index];
+    if (node->nexus_count == 0u) {
+        return;
+    }
+
+    uint64_t target_mask = cdb_group_mask_bit(target_group);
+    if ((node->group_mask & target_mask) == 0u) {
+        return;
+    }
+
+    float rest_length = engine->cluster_rest_length;
+    float k0 = 0.05f * engine->cluster_stiffness;
+    if (!isfinite(rest_length) || rest_length <= 0.0f) {
+        rest_length = 0.08f;
+    }
+    if (!isfinite(k0) || k0 <= 0.0f) {
+        k0 = 0.05f;
+    }
+
+    if (node->child_base == UINT32_MAX) {
+        int32_t cursor = node->particle_head;
+        while (cursor != -1) {
+            uint32_t other = (uint32_t)cursor;
+            cursor = engine->grid_next[other];
+            if (other == target || (engine->flags[other] & CDB_FLAG_NEXUS) == 0u) {
+                continue;
+            }
+            if (engine->group_id[other] != target_group) {
+                continue;
+            }
+
+            float dx = pos_x[other] - xi;
+            float dy = pos_y[other] - yi;
+            float dist_sq = (dx * dx) + (dy * dy);
+            float dist = 0.0f;
+            float nx = 0.0f;
+            float ny = 0.0f;
+            if (dist_sq > 1e-10f) {
+                dist = sqrtf(dist_sq);
+                nx = dx / dist;
+                ny = dy / dist;
+            } else {
+                uint32_t jitter_seed = mix_hash_u32(
+                    ((target + 1u) * 2654435761u)
+                    ^ ((other + 1u) * 2246822519u)
+                    ^ engine->seed
+                );
+                float angle = ((float)(jitter_seed % 6283u)) * 0.001f;
+                nx = cosf(angle);
+                ny = sinf(angle);
+                dist = 0.0f;
+            }
+
+            const float *other_embedding = &engine->embeddings[other * 24u];
+            float sim = dot_product_24(embedding, other_embedding);
+            float ke = k0 * powf(clamp01(1.0f - sim), 1.2f);
+            float f_edge = ke * (dist - rest_length);
+            *io_fx += nx * f_edge;
+            *io_fy += ny * f_edge;
+        }
+        return;
+    }
+
+    float dx = node->com_x - xi;
+    float dy = node->com_y - yi;
+    float dist_sq = (dx * dx) + (dy * dy);
+    float size = fmaxf(node->max_x - node->min_x, node->max_y - node->min_y);
+    int contains_target = (
+        xi >= node->min_x && xi <= node->max_x
+        && yi >= node->min_y && yi <= node->max_y
+    );
+    int node_is_single_group = (node->group_mask == target_mask);
+
+    if (
+        !contains_target
+        && node_is_single_group
+        && dist_sq > 1e-9f
+        && (size * size) <= ((theta * theta) * dist_sq)
+    ) {
+        if (node->emb_norm > 1e-9f && node->nexus_count > 0u) {
+            float dot = 0.0f;
+            for (uint32_t k = 0u; k < 24u; k += 1u) {
+                dot += embedding[k] * node->emb_sum[k];
+            }
+            float sim = dot / node->emb_norm;
+            float dist = sqrtf(dist_sq) + 1e-9f;
+            float ke = k0 * powf(clamp01(1.0f - sim), 1.2f);
+            float node_scale = (float)node->nexus_count;
+            float f_edge = ke * (dist - rest_length) * node_scale;
+            *io_fx += (dx / dist) * f_edge;
+            *io_fy += (dy / dist) * f_edge;
+        }
+        return;
+    }
+
+    for (uint32_t child_offset = 0u; child_offset < 4u; child_offset += 1u) {
+        cdb_apply_group_cluster_force_bh(
+            engine,
+            nodes,
+            node->child_base + child_offset,
+            pos_x,
+            pos_y,
+            target,
+            xi,
+            yi,
+            target_group,
+            embedding,
+            theta,
+            io_fx,
+            io_fy
+        );
+    }
+}
+
+typedef struct CDBForceEvalContext {
+    CDBEngine *engine;
+    const float *pos_x;
+    const float *pos_y;
+    float *acc_x;
+    float *acc_y;
+    const float *nooi;
+    uint32_t count;
+    uint32_t node_count;
+    uint32_t sim_flags;
+} CDBForceEvalContext;
+
+typedef struct CDBForceWorkerTask {
+    const CDBForceEvalContext *ctx;
+    uint32_t start;
+    uint32_t end;
+} CDBForceWorkerTask;
+
+static void cdb_force_eval_range(const CDBForceEvalContext *ctx, uint32_t start, uint32_t end) {
+    if (ctx == NULL || ctx->engine == NULL) {
+        return;
+    }
+
+    CDBEngine *engine = ctx->engine;
+    const float *pos_x = ctx->pos_x;
+    const float *pos_y = ctx->pos_y;
+    float *acc_x = ctx->acc_x;
+    float *acc_y = ctx->acc_y;
+    const float *nooi = ctx->nooi;
+    uint32_t count = ctx->count;
+    float grav_const = engine->grav_const;
+    float grav_eps = engine->grav_eps;
+    float bh_theta = engine->bh_theta;
+    float cluster_theta = engine->cluster_theta;
+    if (!isfinite(bh_theta) || bh_theta <= 0.0f) {
+        bh_theta = 0.62f;
+    }
+    if (!isfinite(cluster_theta) || cluster_theta <= 0.0f) {
+        cluster_theta = 0.68f;
+    }
+
+    if (end > count) {
+        end = count;
+    }
+
+    for (uint32_t i = start; i < end; i += 1u) {
+        float xi = pos_x[i];
+        float yi = pos_y[i];
+        float fx = 0.0f;
+        float fy = 0.0f;
+
+        if (nooi != NULL) {
+            int cx = fast_floor_to_int(xi * (float)CDB_NOOI_COLS);
+            int cy = fast_floor_to_int(yi * (float)CDB_NOOI_ROWS);
+            if (cx >= 0 && cx < CDB_NOOI_COLS && cy >= 0 && cy < CDB_NOOI_ROWS) {
+                uint32_t owner = engine->owner_id[i];
+                int layer = (int)(owner % CDB_NOOI_LAYERS);
+                size_t layer_stride = (size_t)(CDB_NOOI_COLS * CDB_NOOI_ROWS * 2);
+                size_t cell_offset = (size_t)((cy * CDB_NOOI_COLS + cx) * 2);
+                size_t idx = (size_t)(layer * layer_stride) + cell_offset;
+                if (idx + 1u < (size_t)CDB_NOOI_SIZE) {
+                    float f_scale = 6.5f;
+                    fx += nooi[idx] * f_scale;
+                    fy += nooi[idx + 1u] * f_scale;
                 }
             }
         }
+
+        float radius_i = engine->radius[i];
+        if (!isfinite(radius_i) || radius_i < 0.0f) {
+            radius_i = 0.0f;
+        }
+
+        const float *embedding = &engine->embeddings[i * 24u];
+        if (ctx->node_count > 0u) {
+            if ((ctx->sim_flags & CDB_SIM_FLAG_COLLISION) != 0u) {
+                cdb_apply_collision_force_from_tree(
+                    engine,
+                    engine->quad_nodes,
+                    0u,
+                    pos_x,
+                    pos_y,
+                    i,
+                    xi,
+                    yi,
+                    radius_i,
+                    &fx,
+                    &fy
+                );
+            }
+            cdb_apply_barnes_hut_force(
+                engine,
+                engine->quad_nodes,
+                0u,
+                pos_x,
+                pos_y,
+                i,
+                xi,
+                yi,
+                embedding,
+                grav_const,
+                grav_eps,
+                bh_theta,
+                &fx,
+                &fy
+            );
+        } else {
+            if ((ctx->sim_flags & CDB_SIM_FLAG_COLLISION) != 0u) {
+                for (uint32_t other = 0u; other < count; other += 1u) {
+                    if (other == i) {
+                        continue;
+                    }
+                    float radius_other = engine->radius[other];
+                    if (!isfinite(radius_other) || radius_other < 0.0f) {
+                        radius_other = 0.0f;
+                    }
+                    float r_sum = radius_i + radius_other;
+                    float dx = pos_x[other] - xi;
+                    float dy = pos_y[other] - yi;
+                    float dist_sq = (dx * dx) + (dy * dy);
+                    if (dist_sq >= (r_sum * r_sum) || r_sum <= 0.0f) {
+                        continue;
+                    }
+                    float dist = sqrtf(fmaxf(dist_sq, 1e-10f));
+                    float overlap = fmaxf(0.0f, r_sum - dist);
+                    float nx = dx / dist;
+                    float ny = dy / dist;
+                    float force_mag = engine->collision_spring * overlap;
+                    fx -= nx * force_mag;
+                    fy -= ny * force_mag;
+                }
+            }
+            for (uint32_t other = 0u; other < count; other += 1u) {
+                if (other == i || (engine->flags[other] & CDB_FLAG_NEXUS) == 0u) {
+                    continue;
+                }
+                float dx = pos_x[other] - xi;
+                float dy = pos_y[other] - yi;
+                float dist_sq = (dx * dx) + (dy * dy);
+                const float *other_embedding = &engine->embeddings[other * 24u];
+                float kappa = dot_product_24(embedding, other_embedding);
+                float particle_mass = engine->mass[other];
+                if (!isfinite(particle_mass) || particle_mass <= 0.0f) {
+                    particle_mass = 0.7f;
+                }
+                particle_mass = fmaxf(0.05f, particle_mass);
+                float force = (grav_const * kappa * particle_mass) / (dist_sq + grav_eps);
+                fx += dx * force;
+                fy += dy * force;
+            }
+        }
+
+        if (ctx->node_count > 0u) {
+            cdb_apply_group_cluster_force_bh(
+                engine,
+                engine->quad_nodes,
+                0u,
+                pos_x,
+                pos_y,
+                i,
+                xi,
+                yi,
+                engine->group_id[i],
+                embedding,
+                cluster_theta,
+                &fx,
+                &fy
+            );
+        } else {
+            cdb_apply_group_spring_forces_exact(
+                engine,
+                pos_x,
+                pos_y,
+                i,
+                xi,
+                yi,
+                embedding,
+                &fx,
+                &fy
+            );
+        }
+
+        acc_x[i] = fx;
+        acc_y[i] = fy;
+    }
+}
+
+static void *cdb_force_worker_entry(void *arg) {
+    CDBForceWorkerTask *task = (CDBForceWorkerTask *)arg;
+    if (task == NULL || task->ctx == NULL) {
+        return NULL;
+    }
+    cdb_force_eval_range(task->ctx, task->start, task->end);
+    return NULL;
+}
+
+static void cdb_force_parallel_apply(const CDBForceEvalContext *ctx) {
+    if (ctx == NULL || ctx->engine == NULL || ctx->count == 0u) {
+        return;
+    }
+
+    uint32_t worker_count = ctx->engine->force_worker_count;
+    if (worker_count < 1u) {
+        worker_count = 1u;
+    }
+    worker_count = (worker_count > 32u) ? 32u : worker_count;
+    worker_count = (worker_count > ctx->count) ? ctx->count : worker_count;
+
+    if (worker_count <= 1u || ctx->count < 96u) {
+        cdb_force_eval_range(ctx, 0u, ctx->count);
+        return;
+    }
+
+    CDBForceWorkerTask tasks[32];
+    pthread_t threads[32];
+    uint32_t active_workers[32];
+    uint32_t active_count = 0u;
+    uint32_t chunk = (ctx->count + worker_count - 1u) / worker_count;
+
+    for (uint32_t worker = 1u; worker < worker_count; worker += 1u) {
+        uint32_t start = worker * chunk;
+        if (start >= ctx->count) {
+            continue;
+        }
+        uint32_t end = start + chunk;
+        if (end > ctx->count) {
+            end = ctx->count;
+        }
+        tasks[worker].ctx = ctx;
+        tasks[worker].start = start;
+        tasks[worker].end = end;
+        if (pthread_create(&threads[worker], NULL, cdb_force_worker_entry, &tasks[worker]) == 0) {
+            active_workers[active_count] = worker;
+            active_count += 1u;
+        } else {
+            cdb_force_eval_range(ctx, start, end);
+        }
+    }
+
+    uint32_t main_end = chunk;
+    if (main_end > ctx->count) {
+        main_end = ctx->count;
+    }
+    cdb_force_eval_range(ctx, 0u, main_end);
+
+    for (uint32_t i = 0u; i < active_count; i += 1u) {
+        uint32_t worker = active_workers[i];
+        pthread_join(threads[worker], NULL);
     }
 }
 
@@ -1369,112 +2842,30 @@ static void *force_system_worker(void *arg) {
         const float *pos_y = engine->position.y[pos_index];
         float *acc_x = engine->acceleration.x[write_index];
         float *acc_y = engine->acceleration.y[write_index];
-
         uint32_t count = engine->particle_count;
-        float grav_const = engine->grav_const;
-        float grav_eps = engine->grav_eps;
-        uint32_t flags = atomic_load_explicit((_Atomic uint32_t *)&engine->sim_flags, memory_order_relaxed);
+        uint32_t flags = atomic_load_explicit(
+            (_Atomic uint32_t *)&engine->sim_flags,
+            memory_order_relaxed
+        );
 
-        if ((flags & CDB_SIM_FLAG_COLLISION) != 0u) {
-            resolve_collisions(engine, pos_x, pos_y, acc_x, acc_y);
-        }
+        uint32_t node_count = 0u;
+        int tree_ok = cdb_build_quadtree_frame(engine, pos_x, pos_y, count, &node_count);
 
-        for (uint32_t i = 0; i < count; i += 1) {
-            float xi = pos_x[i];
-            float yi = pos_y[i];
-            float fx = acc_x[i]; // Accumulate on top of collision forces
-            float fy = acc_y[i];
+        int nooi_idx = atomic_load_explicit(&engine->nooi_readable, memory_order_acquire);
+        const float *nooi = engine->nooi_buffer[nooi_idx];
 
-            // 1. Nooi Field Acceleration
-            int nooi_idx = atomic_load_explicit(&engine->nooi_readable, memory_order_acquire);
-            const float *nooi = engine->nooi_buffer[nooi_idx];
-            if (nooi != NULL) {
-                int cx = fast_floor_to_int(xi * (float)CDB_NOOI_COLS);
-                int cy = fast_floor_to_int(yi * (float)CDB_NOOI_ROWS);
-                if (cx >= 0 && cx < CDB_NOOI_COLS && cy >= 0 && cy < CDB_NOOI_ROWS) {
-                    uint32_t owner = engine->owner_id[i];
-                    int layer = (int)(owner % CDB_NOOI_LAYERS);
-                    size_t layer_stride = (size_t)(CDB_NOOI_COLS * CDB_NOOI_ROWS * 2);
-                    size_t cell_offset = (size_t)((cy * CDB_NOOI_COLS + cx) * 2);
-                    size_t idx = (size_t)(layer * layer_stride) + cell_offset;
-                    
-                    if (idx + 1 < (size_t)CDB_NOOI_SIZE) {
-                        float f_scale = 6.5f;
-                        fx += nooi[idx] * f_scale; 
-                        fy += nooi[idx + 1] * f_scale;
+        CDBForceEvalContext ctx;
+        ctx.engine = engine;
+        ctx.pos_x = pos_x;
+        ctx.pos_y = pos_y;
+        ctx.acc_x = acc_x;
+        ctx.acc_y = acc_y;
+        ctx.nooi = nooi;
+        ctx.count = count;
+        ctx.node_count = (tree_ok == 0) ? node_count : 0u;
+        ctx.sim_flags = flags;
 
-                        // Mean Field Semantic Drift
-                        if ((flags & CDB_SIM_FLAG_MEAN_FIELD) != 0u) {
-                            // If field is strong, align embedding slightly to owner?
-                            // Or just add noise based on field intensity?
-                            // "Exchange energy with Field"
-                            // We can't easily access field embedding, but we can assume field 
-                            // aligns with Owner intent.
-                            // So pull embedding towards "default" or just scramble it if field is turbulent.
-                            
-                            float field_mag = sqrtf(nooi[idx]*nooi[idx] + nooi[idx+1]*nooi[idx+1]);
-                            if (field_mag > 0.1f) {
-                                // Apply drift? 
-                                // For now, just a placeholder or simple effect:
-                                // Add field velocity to physical force (already done)
-                                // Maybe small embedding decay/noise?
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 2. Semantic Gravity toward all Nexus entities
-            const float *ei = &engine->embeddings[i * 24];
-            for (uint32_t n = 0; n < count; n++) {
-                if (n == i) continue;
-                if ((engine->flags[n] & CDB_FLAG_NEXUS) == 0) continue;
-
-                float dx = pos_x[n] - xi;
-                float dy = pos_y[n] - yi;
-                float dist_sq = (dx * dx) + (dy * dy);
-                
-                const float *en = &engine->embeddings[n * 24];
-                float kappa = dot_product_24(ei, en);
-                
-                // kappa > 0 means attraction, kappa < 0 means repulsion (if we allow it)
-                // spec says grav force is proportional to kappa.
-                float force = (grav_const * kappa) / (dist_sq + grav_eps);
-                fx += dx * force;
-                fy += dy * force;
-            }
-
-            // 3. Elastic Edges (Bonding) for Nexus-Nexus links
-            // Spec: ke = k0 (1 - sim(ea, eb))^beta
-            if ((engine->flags[i] & CDB_FLAG_NEXUS) != 0) {
-                uint32_t group_i = engine->group_id[i];
-                for (uint32_t j = 0; j < count; j++) {
-                    if (j == i) continue;
-                    if ((engine->flags[j] & CDB_FLAG_NEXUS) == 0) continue;
-                    // Only nodes in same group have edges for now (mimicking graph edges)
-                    if (engine->group_id[j] != group_i) continue;
-
-                    float dx = pos_x[j] - xi;
-                    float dy = pos_y[j] - yi;
-                    float dist = sqrtf((dx * dx) + (dy * dy)) + 1e-9f;
-                    
-                    const float *ej = &engine->embeddings[j * 24];
-                    float sim = dot_product_24(ei, ej);
-                    
-                    float rest_length = 0.08f;
-                    float k0 = 0.05f;
-                    float beta = 1.2f;
-                    float ke = k0 * powf(clamp01(1.0f - sim), beta);
-                    
-                    float f_edge = ke * (dist - rest_length);
-                    fx += (dx / dist) * f_edge;
-                    fy += (dy / dist) * f_edge;
-                }
-            }
-
-            acc_x[i] = fx;
-            acc_y[i] = fy;
-        }
+        cdb_force_parallel_apply(&ctx);
 
         atomic_store_explicit(&engine->acceleration.readable, write_index, memory_order_release);
         atomic_fetch_add_explicit(&engine->force_frame, 1u, memory_order_relaxed);
@@ -1735,6 +3126,67 @@ CDBEngine *cdb_engine_create(uint32_t particle_count, uint32_t seed) {
     engine->nexus_friction = 4.5f;
     engine->grav_const = 0.0025f;
     engine->grav_eps = 0.0015f;
+    engine->bh_theta = env_f32("CDB_BH_THETA", 0.62f);
+    if (!isfinite(engine->bh_theta) || engine->bh_theta < 0.2f) {
+        engine->bh_theta = 0.2f;
+    } else if (engine->bh_theta > 1.4f) {
+        engine->bh_theta = 1.4f;
+    }
+    engine->bh_leaf_capacity = env_u32("CDB_BH_LEAF_CAP", 8u);
+    if (engine->bh_leaf_capacity < 1u) {
+        engine->bh_leaf_capacity = 1u;
+    } else if (engine->bh_leaf_capacity > 64u) {
+        engine->bh_leaf_capacity = 64u;
+    }
+    engine->bh_max_depth = env_u32("CDB_BH_MAX_DEPTH", 12u);
+    if (engine->bh_max_depth < 4u) {
+        engine->bh_max_depth = 4u;
+    } else if (engine->bh_max_depth > 24u) {
+        engine->bh_max_depth = 24u;
+    }
+    engine->collision_spring = env_f32("CDB_COLLISION_SPRING", 80.0f);
+    if (!isfinite(engine->collision_spring) || engine->collision_spring < 1.0f) {
+        engine->collision_spring = 1.0f;
+    } else if (engine->collision_spring > 250.0f) {
+        engine->collision_spring = 250.0f;
+    }
+    engine->cluster_theta = env_f32("CDB_CLUSTER_THETA", 0.68f);
+    if (!isfinite(engine->cluster_theta) || engine->cluster_theta < 0.2f) {
+        engine->cluster_theta = 0.2f;
+    } else if (engine->cluster_theta > 1.6f) {
+        engine->cluster_theta = 1.6f;
+    }
+    engine->cluster_rest_length = env_f32("CDB_CLUSTER_REST_LENGTH", 0.08f);
+    if (!isfinite(engine->cluster_rest_length) || engine->cluster_rest_length < 0.01f) {
+        engine->cluster_rest_length = 0.01f;
+    } else if (engine->cluster_rest_length > 0.4f) {
+        engine->cluster_rest_length = 0.4f;
+    }
+    engine->cluster_stiffness = env_f32("CDB_CLUSTER_STIFFNESS", 1.0f);
+    if (!isfinite(engine->cluster_stiffness) || engine->cluster_stiffness < 0.1f) {
+        engine->cluster_stiffness = 0.1f;
+    } else if (engine->cluster_stiffness > 4.0f) {
+        engine->cluster_stiffness = 4.0f;
+    }
+
+    uint32_t default_force_workers = detect_cpu_count();
+    if (default_force_workers > 4u) {
+        default_force_workers -= 3u;
+    }
+    if (default_force_workers < 1u) {
+        default_force_workers = 1u;
+    }
+    engine->force_worker_count = env_u32("CDB_FORCE_WORKERS", default_force_workers);
+    if (engine->force_worker_count < 1u) {
+        engine->force_worker_count = 1u;
+    } else if (engine->force_worker_count > 32u) {
+        engine->force_worker_count = 32u;
+    }
+
+    engine->quad_capacity = (particle_count * 16u) + 128u;
+    if (engine->quad_capacity < 256u) {
+        engine->quad_capacity = 256u;
+    }
 
     uint32_t nexus_stride = env_u32("CDB_NEXUS_STRIDE", 11u);
     if (nexus_stride == 0u) {
@@ -1788,6 +3240,7 @@ CDBEngine *cdb_engine_create(uint32_t particle_count, uint32_t seed) {
     engine->embeddings = (float *)calloc((size_t)particle_count * 24, sizeof(float));
     engine->grid_head = (int32_t *)calloc(CDB_NOOI_COLS * CDB_NOOI_ROWS, sizeof(int32_t));
     engine->grid_next = (int32_t *)calloc((size_t)particle_count, sizeof(int32_t));
+    engine->quad_nodes = (CDBQuadNode *)calloc((size_t)engine->quad_capacity, sizeof(CDBQuadNode));
 
     if (
         engine->owner_id == NULL
@@ -1798,6 +3251,7 @@ CDBEngine *cdb_engine_create(uint32_t particle_count, uint32_t seed) {
         || engine->embeddings == NULL
         || engine->grid_head == NULL
         || engine->grid_next == NULL
+        || engine->quad_nodes == NULL
     ) {
         cdb_engine_destroy(engine);
         return NULL;
@@ -1933,6 +3387,7 @@ void cdb_engine_destroy(CDBEngine *engine) {
     free(engine->embeddings);
     free(engine->grid_head);
     free(engine->grid_next);
+    free(engine->quad_nodes);
 
     free(engine);
 }

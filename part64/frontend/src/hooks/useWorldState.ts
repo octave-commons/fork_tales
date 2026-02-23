@@ -27,6 +27,44 @@ const WS_PACK_TAG_NULL = -5;
 
 type IncomingWsMessage = { type?: unknown; [key: string]: unknown };
 
+type WsChunkAssembly = {
+  chunkTotal: number;
+  parts: string[];
+  receivedCount: number;
+  updatedAtMs: number;
+};
+
+const WS_CHUNK_TTL_MS = 15_000;
+const WS_CHUNK_CLEANUP_INTERVAL_MS = 2_000;
+const WS_CHUNK_MAX_ACTIVE = 96;
+
+function mergeMuseEvents(previous: MuseEvent[], incoming: MuseEvent[]): MuseEvent[] {
+  if (!Array.isArray(incoming) || incoming.length <= 0) {
+    return previous;
+  }
+
+  const seen = new Set(previous.map((row) => String(row.event_id || '').trim()));
+  const merged = [...previous];
+  let changed = false;
+
+  incoming.forEach((row) => {
+    const id = String(row.event_id || '').trim();
+    if (!id || seen.has(id)) {
+      return;
+    }
+    seen.add(id);
+    merged.push(row);
+    changed = true;
+  });
+
+  if (!changed) {
+    return previous;
+  }
+
+  merged.sort((left, right) => Number(left.seq ?? 0) - Number(right.seq ?? 0));
+  return merged.slice(-320);
+}
+
 function mergeSimulationPatch(
   previous: SimulationState | null,
   patch: Partial<SimulationState>,
@@ -133,11 +171,14 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
   const flushFrameRef = useRef<number | null>(null);
   const connectRef = useRef<(() => void) | null>(null);
   const shouldReconnectRef = useRef(true);
+  const wsChunkAssembliesRef = useRef<Record<string, WsChunkAssembly>>({});
+  const wsChunkCleanupAtMsRef = useRef(0);
   const pendingPatchRef = useRef<{
     catalog?: Catalog | null;
     simulation?: SimulationState | null;
     mixMeta?: MixMeta | null;
     projection?: UIProjectionBundle | null;
+    museEventsAppend?: MuseEvent[];
   }>({});
 
   const enqueueStatePatch = useCallback(
@@ -146,11 +187,29 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
       simulation?: SimulationState | null;
       mixMeta?: MixMeta | null;
       projection?: UIProjectionBundle | null;
+      museEventsAppend?: MuseEvent[];
     }) => {
-      pendingPatchRef.current = {
-        ...pendingPatchRef.current,
-        ...patch,
-      };
+      const { museEventsAppend, ...restPatch } = patch;
+      const existing = pendingPatchRef.current;
+      if (restPatch.catalog !== undefined) {
+        existing.catalog = restPatch.catalog;
+      }
+      if (restPatch.simulation !== undefined) {
+        existing.simulation = restPatch.simulation;
+      }
+      if (restPatch.mixMeta !== undefined) {
+        existing.mixMeta = restPatch.mixMeta;
+      }
+      if (restPatch.projection !== undefined) {
+        existing.projection = restPatch.projection;
+      }
+      if (Array.isArray(museEventsAppend) && museEventsAppend.length > 0) {
+        if (existing.museEventsAppend) {
+          existing.museEventsAppend.push(...museEventsAppend);
+        } else {
+          existing.museEventsAppend = [...museEventsAppend];
+        }
+      }
       if (flushFrameRef.current !== null) {
         return;
       }
@@ -159,13 +218,27 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
         const next = pendingPatchRef.current;
         pendingPatchRef.current = {};
         setState((prev) => {
+          const nextMuseEvents = next.museEventsAppend
+            ? mergeMuseEvents(prev.museEvents, next.museEventsAppend)
+            : prev.museEvents;
           const nextState = {
             ...prev,
             ...(next.catalog !== undefined ? { catalog: next.catalog } : {}),
             ...(next.simulation !== undefined ? { simulation: next.simulation } : {}),
             ...(next.mixMeta !== undefined ? { mixMeta: next.mixMeta } : {}),
             ...(next.projection !== undefined ? { projection: next.projection } : {}),
+            ...(nextMuseEvents !== prev.museEvents ? { museEvents: nextMuseEvents } : {}),
           };
+          if (
+            nextState.catalog === prev.catalog
+            && nextState.simulation === prev.simulation
+            && nextState.mixMeta === prev.mixMeta
+            && nextState.projection === prev.projection
+            && nextState.museEvents === prev.museEvents
+            && nextState.isConnected === prev.isConnected
+          ) {
+            return prev;
+          }
           stateRef.current = nextState;
           return nextState;
         });
@@ -176,8 +249,11 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
 
   const connect = useCallback(() => {
     const url = runtimeWebSocketUrl(
-      `/ws?perspective=${encodeURIComponent(perspective)}&delta_stream=workers&wire=json`,
+      `/ws?perspective=${encodeURIComponent(perspective)}&delta_stream=workers&wire=json&simulation_payload=full&ws_chunk=1`,
     );
+
+    wsChunkAssembliesRef.current = {};
+    wsChunkCleanupAtMsRef.current = 0;
 
     const ws = new WebSocket(url);
 
@@ -190,11 +266,7 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
     };
 
     ws.onmessage = (event) => {
-      try {
-        const msg = decodeWsMessage(JSON.parse(event.data));
-        if (!msg) {
-          return;
-        }
+      const handleDecodedMessage = (msg: IncomingWsMessage) => {
         const msgType = String(msg.type ?? '').trim();
         if (msgType === 'catalog') {
           const catalogPayload = (msg.catalog ?? null) as Catalog | null;
@@ -218,25 +290,7 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
               })
             : [];
           if (incoming.length > 0) {
-            setState((prev) => {
-              const seen = new Set(prev.museEvents.map((row) => String(row.event_id || '').trim()));
-              const merged = [...prev.museEvents];
-              incoming.forEach((row: MuseEvent) => {
-                const id = String(row.event_id || '').trim();
-                if (!id || seen.has(id)) {
-                  return;
-                }
-                seen.add(id);
-                merged.push(row);
-              });
-              merged.sort((left, right) => Number(left.seq ?? 0) - Number(right.seq ?? 0));
-              const next = {
-                ...prev,
-                museEvents: merged.slice(-320),
-              };
-              stateRef.current = next;
-              return next;
-            });
+            enqueueStatePatch({ museEventsAppend: incoming });
           }
         } else if (msgType === 'simulation') {
           const simulationPayload = (msg.simulation ?? null) as SimulationState | null;
@@ -264,6 +318,90 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
             });
           }
         }
+      };
+
+      try {
+        const msg = decodeWsMessage(JSON.parse(event.data));
+        if (!msg) {
+          return;
+        }
+        const msgType = String(msg.type ?? '').trim();
+        if (msgType === 'ws_chunk') {
+          const chunkId = String(msg.chunk_id ?? '').trim();
+          const chunkIndex = Number(msg.chunk_index ?? -1);
+          const chunkTotal = Number(msg.chunk_total ?? 0);
+          const chunkPayload = typeof msg.payload === 'string' ? msg.payload : '';
+          if (
+            chunkId.length <= 0
+            || !Number.isInteger(chunkIndex)
+            || !Number.isInteger(chunkTotal)
+            || chunkIndex < 0
+            || chunkTotal <= 0
+            || chunkIndex >= chunkTotal
+            || chunkTotal > 4096
+            || chunkPayload.length <= 0
+          ) {
+            return;
+          }
+
+          const nowMs = Date.now();
+          if (nowMs - wsChunkCleanupAtMsRef.current >= WS_CHUNK_CLEANUP_INTERVAL_MS) {
+            wsChunkCleanupAtMsRef.current = nowMs;
+            const activeRows = Object.entries(wsChunkAssembliesRef.current);
+            activeRows.forEach(([id, row]) => {
+              if (nowMs - row.updatedAtMs > WS_CHUNK_TTL_MS) {
+                delete wsChunkAssembliesRef.current[id];
+              }
+            });
+            const remaining = Object.entries(wsChunkAssembliesRef.current);
+            if (remaining.length > WS_CHUNK_MAX_ACTIVE) {
+              remaining
+                .sort((left, right) => left[1].updatedAtMs - right[1].updatedAtMs)
+                .slice(0, remaining.length - WS_CHUNK_MAX_ACTIVE)
+                .forEach(([id]) => {
+                  delete wsChunkAssembliesRef.current[id];
+                });
+            }
+          }
+
+          let assembly = wsChunkAssembliesRef.current[chunkId];
+          if (!assembly || assembly.chunkTotal !== chunkTotal) {
+            assembly = {
+              chunkTotal,
+              parts: new Array(chunkTotal).fill(''),
+              receivedCount: 0,
+              updatedAtMs: nowMs,
+            };
+            wsChunkAssembliesRef.current[chunkId] = assembly;
+          }
+
+          if (!assembly.parts[chunkIndex]) {
+            assembly.parts[chunkIndex] = chunkPayload;
+            assembly.receivedCount += 1;
+          }
+          assembly.updatedAtMs = nowMs;
+
+          if (assembly.receivedCount < assembly.chunkTotal) {
+            return;
+          }
+
+          delete wsChunkAssembliesRef.current[chunkId];
+          const mergedPayload = assembly.parts.join('');
+          if (mergedPayload.length <= 0) {
+            return;
+          }
+          try {
+            const mergedMessage = decodeWsMessage(JSON.parse(mergedPayload));
+            if (mergedMessage) {
+              handleDecodedMessage(mergedMessage);
+            }
+          } catch (chunkError) {
+            console.warn('WS chunk decode error', chunkError);
+          }
+          return;
+        }
+
+        handleDecodedMessage(msg);
       } catch (err) {
         console.error('WS parse error', err);
       }
@@ -346,8 +484,18 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
           });
         };
 
-        void fetchCatalog();
-        void fetchSimulation();
+        void fetchCatalog().catch((error) => {
+          if (error instanceof DOMException && error.name === 'AbortError') {
+            return;
+          }
+          console.warn('Initial catalog fetch failed', error);
+        });
+        void fetchSimulation().catch((error) => {
+          if (error instanceof DOMException && error.name === 'AbortError') {
+            return;
+          }
+          console.warn('Initial simulation fetch failed', error);
+        });
       } catch (e) {
         if (!(e instanceof DOMException && e.name === 'AbortError')) {
           console.warn('Initial fetch failed', e);
@@ -368,6 +516,8 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
         flushFrameRef.current = null;
       }
       pendingPatchRef.current = {};
+      wsChunkAssembliesRef.current = {};
+      wsChunkCleanupAtMsRef.current = 0;
     };
   }, [connect, enqueueStatePatch, perspective]);
 

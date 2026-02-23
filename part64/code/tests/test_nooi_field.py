@@ -56,6 +56,14 @@ class TestNooiField(unittest.TestCase):
 
         self.assertLess(mag2, mag1)
 
+    def test_sample_vector_returns_aggregated_direction(self):
+        field = NooiField(cols=10, rows=10)
+        for _ in range(4):
+            field.deposit(0.4, 0.4, 1.0, 0.0)
+        vx, vy = field.sample_vector(0.4, 0.4)
+        self.assertGreater(vx, 0.0)
+        self.assertAlmostEqual(vy, 0.0, places=4)
+
 
 if __name__ == "__main__":
     unittest.main()

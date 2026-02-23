@@ -47,7 +47,7 @@ interface Props {
 
 export interface NexusInteractionEvent {
   nodeId: string;
-  nodeKind: "file" | "crawler";
+  nodeKind: "file" | "crawler" | "nexus";
   resourceKind: GraphNodeResourceKind;
   label: string;
   xRatio: number;
@@ -62,7 +62,9 @@ interface GraphWorldscreenState {
   url: string;
   imageRef?: string;
   label: string;
-  nodeKind: "file" | "crawler";
+  nodeKind: "file" | "crawler" | "nexus";
+  nodeTypeText?: string;
+  nodeRoleText?: string;
   resourceKind: GraphNodeResourceKind;
   view: GraphWorldscreenView;
   subtitle: string;
@@ -110,6 +112,14 @@ interface WorldscreenPlacement {
   width: number;
   height: number;
   transformOrigin: string;
+}
+
+interface GraphNodeTitleOverlay {
+  id: string;
+  label: string;
+  x: number;
+  y: number;
+  kind: "file" | "crawler" | "presence" | "nexus";
 }
 
 interface PresenceAccountEntry {
@@ -174,6 +184,47 @@ const HOLOGRAM_MODE_OPTIONS: Array<{ id: GraphWorldscreenMode; label: string }> 
   { id: "conversation", label: "conversation" },
   { id: "stats", label: "stats" },
 ];
+
+const EMPTY_COMPUTE_JOB_INSIGHTS = {
+  rows: [] as ComputeJobInsightRow[],
+  summary: {
+    total: 0,
+    llm: 0,
+    embedding: 0,
+    ok: 0,
+    error: 0,
+    byResource: {},
+    byBackend: {},
+  } as ComputeJobInsightSummary,
+  filtered: [] as ComputeJobInsightRow[],
+  gpuAvailability: 0,
+  total180s: 0,
+};
+
+const EMPTY_RESOURCE_ECONOMY_HUD = {
+  packets: 0,
+  transfer: 0,
+  actionPackets: 0,
+  blockedPackets: 0,
+  consumedTotal: 0,
+  starvedPresences: 0,
+};
+
+const EMPTY_PARTICLE_LEGEND_STATS = {
+  total: 0,
+  primary: {
+    chaos: 0,
+    nexus: 0,
+    smart: 0,
+    resource: 0,
+    transfer: 0,
+    legacy: 0,
+  },
+  overlays: {
+    transfer: 0,
+    resource: 0,
+  },
+};
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object") {
@@ -276,7 +327,7 @@ function worldscreenCommentRef(worldscreen: GraphWorldscreenState): string {
 
 function nexusCommentRefForNode(
   node: any,
-  nodeKind: "file" | "crawler",
+  nodeKind: "file" | "crawler" | "nexus",
   worldscreenUrl: string,
 ): string {
   const candidates = [
@@ -303,6 +354,9 @@ function nexusCommentRefForNode(
     }
     if (nodeKind === "file" && value && !value.startsWith("file:")) {
       return `file:${value}`;
+    }
+    if (nodeKind === "nexus" && value && !value.startsWith("nexus:")) {
+      return `nexus:${value}`;
     }
     return value;
   }
@@ -500,81 +554,114 @@ function presenceHueFromId(rawPresenceId: string): number {
   return Math.round(stablePresenceRatio(presenceId, 7) * 360) % 360;
 }
 
-function spreadPresenceAnchors(forms: Array<any>): Array<any> {
+function normalizePresenceAnchors(forms: Array<any>): Array<any> {
   if (forms.length <= 0) {
     return [];
   }
 
-  const positioned = forms.map((row, index) => {
-    const presenceId = canonicalPresenceId(String(row?.id ?? ""));
-    const fallbackAngle = stablePresenceRatio(presenceId || `presence-${index}`, 3) * Math.PI * 2;
-    const fallbackRadius = 0.24 + (stablePresenceRatio(presenceId || `presence-${index}`, 11) * 0.4);
-    const fallbackX = 0.5 + Math.cos(fallbackAngle) * fallbackRadius;
-    const fallbackY = 0.5 + Math.sin(fallbackAngle) * fallbackRadius;
-    const baseX = clamp01(Number(row?.x ?? fallbackX));
-    const baseY = clamp01(Number(row?.y ?? fallbackY));
-    const expandedX = clamp01(0.5 + (baseX - 0.5) * 1.15);
-    const expandedY = clamp01(0.5 + (baseY - 0.5) * 1.15);
-    return {
-      ...row,
-      id: presenceId || String(row?.id ?? `presence-${index}`),
-      x: expandedX,
-      y: expandedY,
-      spreadBaseX: expandedX,
-      spreadBaseY: expandedY,
-      hue: Number.isFinite(Number(row?.hue))
-        ? Number(row?.hue)
-        : presenceHueFromId(presenceId || String(row?.id ?? "")),
-    };
-  });
+  const seen = new Set<string>();
+  const positioned = forms
+    .map((row, index) => {
+      const presenceId = canonicalPresenceId(String(row?.id ?? ""));
+      const fallbackAngle = stablePresenceRatio(presenceId || `presence-${index}`, 3) * Math.PI * 2;
+      const fallbackRadius = 0.24 + (stablePresenceRatio(presenceId || `presence-${index}`, 11) * 0.4);
+      const fallbackX = 0.5 + Math.cos(fallbackAngle) * fallbackRadius;
+      const fallbackY = 0.5 + Math.sin(fallbackAngle) * fallbackRadius;
+      const id = presenceId || String(row?.id ?? `presence-${index}`);
+      if (!id || seen.has(id)) {
+        return null;
+      }
+      seen.add(id);
+      return {
+        ...row,
+        id,
+        x: clamp01(Number(row?.x ?? fallbackX)),
+        y: clamp01(Number(row?.y ?? fallbackY)),
+        hue: Number.isFinite(Number(row?.hue))
+          ? Number(row?.hue)
+          : presenceHueFromId(presenceId || String(row?.id ?? "")),
+      };
+    })
+    .filter((row): row is any => row !== null);
 
-  const count = positioned.length;
-  const minSpacing = count >= 26 ? 0.1 : count >= 18 ? 0.11 : 0.12;
   const minX = 0.06;
   const maxX = 0.94;
   const minY = 0.08;
   const maxY = 0.92;
 
-  for (let iter = 0; iter < 20; iter += 1) {
-    for (let left = 0; left < positioned.length; left += 1) {
-      for (let right = left + 1; right < positioned.length; right += 1) {
-        const leftRow = positioned[left];
-        const rightRow = positioned[right];
-        const dx = rightRow.x - leftRow.x;
-        const dy = rightRow.y - leftRow.y;
-        const distance = Math.hypot(dx, dy);
-        if (distance >= minSpacing) {
-          continue;
-        }
-        const unitX = distance > 0.0001
-          ? dx / distance
-          : Math.cos((left + 1) * 0.73 + (right + 1) * 0.29);
-        const unitY = distance > 0.0001
-          ? dy / distance
-          : Math.sin((left + 1) * 0.61 + (right + 1) * 0.41);
-        const push = (minSpacing - distance) * 0.5;
-        leftRow.x = clamp01(leftRow.x - unitX * push);
-        leftRow.y = clamp01(leftRow.y - unitY * push);
-        rightRow.x = clamp01(rightRow.x + unitX * push);
-        rightRow.y = clamp01(rightRow.y + unitY * push);
-      }
-    }
-    for (const row of positioned) {
-      row.x = Math.min(maxX, Math.max(minX, row.x + (row.spreadBaseX - row.x) * 0.02));
-      row.y = Math.min(maxY, Math.max(minY, row.y + (row.spreadBaseY - row.y) * 0.02));
-    }
-  }
-
   return positioned.map((row) => {
-    const cleaned = { ...row };
-    delete (cleaned as any).spreadBaseX;
-    delete (cleaned as any).spreadBaseY;
     return {
-      ...cleaned,
-      x: Math.min(maxX, Math.max(minX, Number(cleaned.x ?? 0.5))),
-      y: Math.min(maxY, Math.max(minY, Number(cleaned.y ?? 0.5))),
+      ...row,
+      x: Math.min(maxX, Math.max(minX, Number(row.x ?? 0.5))),
+      y: Math.min(maxY, Math.max(minY, Number(row.y ?? 0.5))),
     };
   });
+}
+
+function normalizeGraphNodePositionMap(payload: unknown): Map<string, { x: number; y: number }> {
+  const map = new Map<string, { x: number; y: number }>();
+  if (!payload) {
+    return map;
+  }
+
+  const pushRow = (nodeIdRaw: unknown, rowValue: unknown) => {
+    const nodeId = String(nodeIdRaw ?? "").trim();
+    const row = asRecord(rowValue);
+    if (!nodeId || !row) {
+      return;
+    }
+    const x = Number(row.x);
+    const y = Number(row.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return;
+    }
+    map.set(nodeId, { x: clamp01(x), y: clamp01(y) });
+  };
+
+  if (Array.isArray(payload)) {
+    payload.forEach((entry) => {
+      const row = asRecord(entry);
+      if (!row) {
+        return;
+      }
+      pushRow(row.id, row);
+    });
+    return map;
+  }
+
+  const root = asRecord(payload);
+  if (!root) {
+    return map;
+  }
+  Object.entries(root).forEach(([nodeId, rowValue]) => {
+    pushRow(nodeId, rowValue);
+  });
+  return map;
+}
+
+function normalizePresenceAnchorPositionMap(payload: unknown): Map<string, { x: number; y: number }> {
+  const map = new Map<string, { x: number; y: number }>();
+  if (!payload) {
+    return map;
+  }
+
+  const root = asRecord(payload);
+  if (!root) {
+    return map;
+  }
+  Object.entries(root).forEach(([presenceId, rowValue]) => {
+    const row = asRecord(rowValue);
+    if (!row) {
+      return;
+    }
+    const x = Number(row.x);
+    const y = Number(row.y);
+    if (!presenceId || !Number.isFinite(x) || !Number.isFinite(y)) {
+      return;
+    }
+    map.set(presenceId, { x: clamp01(x), y: clamp01(y) });
+  });
+  return map;
 }
 
 function shortPresenceIdLabel(raw: string): string {
@@ -634,7 +721,7 @@ function normalizeComputeJobInsightRows(payload: unknown): ComputeJobInsightRow[
     const inferredResource = resourceRaw
       || (backend.includes("npu")
         ? "npu"
-        : backend.includes("gpu") || backend.includes("vllm") || backend.includes("ollama")
+        : backend.includes("gpu") || backend.includes("cuda") || backend.includes("torch") || backend.includes("vllm") || backend.includes("ollama")
           ? "gpu"
           : "cpu");
     const latencyRaw = row.latency_ms;
@@ -970,9 +1057,12 @@ function isEditorResource(node: any, resourceKind: GraphNodeResourceKind): boole
 
 function worldscreenViewForNode(
   node: any,
-  nodeKind: "file" | "crawler",
+  nodeKind: "file" | "crawler" | "nexus",
   resourceKind: GraphNodeResourceKind,
 ): GraphWorldscreenView {
+  if (nodeKind === "nexus") {
+    return "metadata";
+  }
   if (resourceKind === "image") {
     return "metadata";
   }
@@ -987,10 +1077,15 @@ function worldscreenViewForNode(
 
 function worldscreenSubtitleForNode(
   node: any,
-  nodeKind: "file" | "crawler",
+  nodeKind: "file" | "crawler" | "nexus",
   resourceKind: GraphNodeResourceKind,
 ): string {
   const kindText = resourceKindLabel(resourceKind);
+  if (nodeKind === "nexus") {
+    const nodeTypeText = String(node?.node_type ?? "nexus").trim().toLowerCase() || "nexus";
+    const roleText = String(node?.kind ?? node?.presence_kind ?? "").trim().toLowerCase();
+    return roleText ? `${kindText} · ${nodeTypeText}/${roleText}` : `${kindText} · ${nodeTypeText}`;
+  }
   if (nodeKind === "crawler") {
     const domain = String(node?.domain ?? "").trim();
     return domain ? `${kindText} · ${shortPathLabel(domain)}` : kindText;
@@ -1102,6 +1197,9 @@ function remoteFrameUrlForNode(
 function worldscreenMetadataRows(worldscreen: GraphWorldscreenState): Array<{ key: string; value: string }> {
   const rows: Array<{ key: string; value: string }> = [
     { key: "resource", value: resourceKindLabel(worldscreen.resourceKind) },
+    { key: "node-kind", value: String(worldscreen.nodeKind ?? "") },
+    { key: "node-type", value: String(worldscreen.nodeTypeText ?? "") },
+    { key: "node-role", value: String(worldscreen.nodeRoleText ?? "") },
     { key: "node-id", value: String(worldscreen.nodeId ?? "") },
     { key: "comment-ref", value: String(worldscreen.commentRef ?? "") },
     { key: "image-ref", value: String(worldscreen.imageRef ?? "") },
@@ -1243,7 +1341,7 @@ function libraryUrlForArchiveMember(archivePath: string, memberPath: string): st
   return `${archiveUrl}?member=${memberParam}`;
 }
 
-function openUrlForGraphNode(node: any, nodeKind: "file" | "crawler"): string {
+function openUrlForGraphNode(node: any, nodeKind: "file" | "crawler" | "nexus"): string {
   const directUrl = String(node?.url ?? "").trim();
   if (directUrl) {
     return directUrl;
@@ -1387,10 +1485,7 @@ export function SimulationCanvas({
     glassCenterRatioRef.current = glassCenterRatio;
   }, [glassCenterRatio]);
   const [worldscreen, setWorldscreen] = useState<GraphWorldscreenState | null>(null);
-  const worldscreenRef = useRef<GraphWorldscreenState | null>(null);
-  useEffect(() => {
-    worldscreenRef.current = worldscreen;
-  }, [worldscreen]);
+  const [worldscreenPinnedCenterRatio, setWorldscreenPinnedCenterRatio] = useState<{ x: number; y: number } | null>(null);
   const [worldscreenMode, setWorldscreenMode] = useState<GraphWorldscreenMode>("overview");
   const [editorPreview, setEditorPreview] = useState<EditorPreviewState>({
     status: "idle",
@@ -1413,6 +1508,16 @@ export function SimulationCanvas({
   const [modelDockOpen, setModelDockOpen] = useState(false);
   const [computeJobFilter, setComputeJobFilter] = useState<ComputeJobFilter>("all");
   const [computePanelCollapsed, setComputePanelCollapsed] = useState(false);
+  const [graphNodeTitleOverlays, setGraphNodeTitleOverlays] = useState<GraphNodeTitleOverlay[]>([]);
+  const interactAtRef = useRef<
+    ((xRatio: number, yRatio: number, options?: { openWorldscreen?: boolean }) => {
+      hitNode: boolean;
+      openedWorldscreen: boolean;
+      target: string;
+      xRatio: number;
+      yRatio: number;
+    }) | null
+  >(null);
 
   // Mouse Daimon refs - synced from props (managed in CoreControlPanel)
   const mouseDaimonEnabledRef = useRef(mouseDaimonEnabled);
@@ -1439,6 +1544,9 @@ export function SimulationCanvas({
   }, []);
 
   const computeJobInsights = useMemo(() => {
+    if (compactHud) {
+      return EMPTY_COMPUTE_JOB_INSIGHTS;
+    }
     const simulationRows = normalizeComputeJobInsightRows(simulation?.presence_dynamics?.compute_jobs);
     const runtimeRows = normalizeComputeJobInsightRows(catalog?.presence_runtime?.compute_jobs);
     const sourceRows = simulationRows.length > 0 ? simulationRows : runtimeRows;
@@ -1486,7 +1594,7 @@ export function SimulationCanvas({
       gpuAvailability,
       total180s: Number(simulation?.presence_dynamics?.compute_jobs_180s ?? catalog?.presence_runtime?.compute_jobs_180s ?? rows.length),
     };
-  }, [catalog, computeJobFilter, simulation]);
+  }, [catalog, compactHud, computeJobFilter, simulation]);
 
   const loadPresenceAccounts = useCallback(
     async (signal?: AbortSignal): Promise<PresenceAccountEntry[]> => {
@@ -1745,6 +1853,13 @@ export function SimulationCanvas({
   }, [interactive]);
 
   useEffect(() => {
+    if (interactive) {
+      return;
+    }
+    setGraphNodeTitleOverlays((previous) => (previous.length > 0 ? [] : previous));
+  }, [interactive]);
+
+  useEffect(() => {
     renderParticleFieldRef.current = interactive || backgroundMode;
   }, [backgroundMode, interactive]);
 
@@ -1767,6 +1882,7 @@ export function SimulationCanvas({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setWorldscreen(null);
+        setWorldscreenPinnedCenterRatio(null);
         setWorldscreenMode("overview");
       }
     };
@@ -2074,14 +2190,14 @@ export function SimulationCanvas({
       out[15] = 1;
     };
 
-    const resolveDepth = (point: { x: number; y: number; size: number; z?: number }, idx: number): number => {
-      const explicit = Number(point.z);
+    const resolveDepth = (x: number, y: number, zHint: number, idx: number): number => {
+      const explicit = Number(zHint);
       if (Number.isFinite(explicit)) {
         return Math.max(-1, Math.min(1, explicit));
       }
-      const noise = Math.sin((point.x * 15.37) + (point.y * 27.91) + (idx * 0.913)) * 43758.5453123;
+      const noise = Math.sin((x * 15.37) + (y * 27.91) + (idx * 0.913)) * 43758.5453123;
       const layer = (noise - Math.floor(noise)) * 2 - 1;
-      const radial = Math.min(1, Math.hypot(point.x, point.y));
+      const radial = Math.min(1, Math.hypot(x, y));
       const spread = 0.88 - (radial * 0.3);
       return layer * spread;
     };
@@ -2164,8 +2280,28 @@ export function SimulationCanvas({
     };
     const TRAIL_LAYER_COUNT = 8;
     const trailSnapshots: TrailSnapshot[] = [];
+    const trailSnapshotPool: Float32Array[] = [];
     const projectionMatrix = new Float32Array(16);
     const viewMatrix = new Float32Array(16);
+
+    const recycleTrailSnapshot = (positions: Float32Array) => {
+      if (trailSnapshotPool.length >= TRAIL_LAYER_COUNT * 3) {
+        return;
+      }
+      trailSnapshotPool.push(positions);
+    };
+
+    const acquireTrailSnapshot = (requiredLength: number): Float32Array => {
+      for (let poolIndex = trailSnapshotPool.length - 1; poolIndex >= 0; poolIndex -= 1) {
+        const candidate = trailSnapshotPool[poolIndex];
+        if (candidate.length < requiredLength) {
+          continue;
+        }
+        trailSnapshotPool.splice(poolIndex, 1);
+        return candidate;
+      }
+      return new Float32Array(requiredLength);
+    };
 
     const randomNoise = (seed: number): number => {
       const value = Math.sin(seed * 12.9898 + 78.233) * 43758.5453123;
@@ -2230,17 +2366,27 @@ export function SimulationCanvas({
 
     const pushTrailSnapshot = () => {
       if (count <= 0) {
+        while (trailSnapshots.length > 0) {
+          const retired = trailSnapshots.pop();
+          if (retired) {
+            recycleTrailSnapshot(retired.positions);
+          }
+        }
         trailSnapshots.length = 0;
         return;
       }
-      const snapshot = new Float32Array(count * 3);
-      snapshot.set(targetPositions.subarray(0, count * 3));
+      const requiredLength = count * 3;
+      const snapshot = acquireTrailSnapshot(requiredLength);
+      snapshot.set(targetPositions.subarray(0, requiredLength));
       trailSnapshots.push({
         positions: snapshot,
         count,
       });
       if (trailSnapshots.length > TRAIL_LAYER_COUNT) {
-        trailSnapshots.shift();
+        const retired = trailSnapshots.shift();
+        if (retired) {
+          recycleTrailSnapshot(retired.positions);
+        }
       }
     };
 
@@ -2397,22 +2543,10 @@ export function SimulationCanvas({
           )
         : [];
       const hasOverlayParticles = overlayRows.length > 0;
-      const points = hasOverlayParticles && renderOverlayWithWebgl
-        ? overlayRows.map((row) => ({
-            x: clampValue(Number((row as any)?.x ?? 0), -1, 1),
-            y: clampValue(Number((row as any)?.y ?? 0), -1, 1),
-            size: clampValue(Number((row as any)?.size ?? 1.5), 0.2, 4.8),
-            r: clamp01(Number((row as any)?.r ?? 0.48)),
-            g: clamp01(Number((row as any)?.g ?? 0.64)),
-            b: clamp01(Number((row as any)?.b ?? 0.92)),
-            z: clampValue(
-              Number((row as any)?.mass ?? (row as any)?.route_probability ?? (row as any)?.drift_score ?? 0),
-              -1,
-              1,
-            ),
-          }))
-        : (hasOverlayParticles ? [] : (state.points || []));
-      const sourceCount = points.length;
+      const sourceRows = hasOverlayParticles
+        ? (renderOverlayWithWebgl ? overlayRows : [])
+        : (Array.isArray(state.points) ? state.points : []);
+      const sourceCount = sourceRows.length;
       const desiredAmbient = hasOverlayParticles
         ? 0
         : Math.max(72, Math.round(96 + particleDensityRef.current * 220));
@@ -2439,16 +2573,29 @@ export function SimulationCanvas({
         const sourceIndex = sourceCount <= dynamicCount
           ? i
           : Math.floor((i * sourceCount) / dynamicCount);
-        const p = points[sourceIndex];
-        const z = resolveDepth(p, sourceIndex);
+        const row = sourceRows[sourceIndex] as any;
+        const x = clampValue(Number(row?.x ?? 0), -1, 1);
+        const y = clampValue(Number(row?.y ?? 0), -1, 1);
+        const size = clampValue(Number(row?.size ?? 1.5), 0.2, 4.8);
+        const r = clamp01(Number(row?.r ?? 0.48));
+        const g = clamp01(Number(row?.g ?? 0.64));
+        const b = clamp01(Number(row?.b ?? 0.92));
+        const zHint = Number(
+          row?.z
+          ?? row?.mass
+          ?? row?.route_probability
+          ?? row?.drift_score
+          ?? Number.NaN,
+        );
+        const z = resolveDepth(x, y, zHint, sourceIndex);
         const writeIndex = dynamicOffset + i;
-        targetPositions[writeIndex * 3] = p.x;
-        targetPositions[(writeIndex * 3) + 1] = p.y;
+        targetPositions[writeIndex * 3] = x;
+        targetPositions[(writeIndex * 3) + 1] = y;
         targetPositions[(writeIndex * 3) + 2] = z;
-        targetSizes[writeIndex] = p.size;
-        targetColors[writeIndex * 3] = p.r;
-        targetColors[(writeIndex * 3) + 1] = p.g;
-        targetColors[(writeIndex * 3) + 2] = p.b;
+        targetSizes[writeIndex] = size;
+        targetColors[writeIndex * 3] = r;
+        targetColors[(writeIndex * 3) + 1] = g;
+        targetColors[(writeIndex * 3) + 2] = b;
         const seed = ((sourceIndex + 1) * 0.754877666) % 1;
         targetSeeds[writeIndex] = seed;
         if (lastTick === 0) {
@@ -2583,7 +2730,13 @@ export function SimulationCanvas({
       window.removeEventListener("mousemove", onMove);
       clearInterval(decay);
       cancelAnimationFrame(rafId);
-      trailSnapshots.length = 0;
+      while (trailSnapshots.length > 0) {
+        const retired = trailSnapshots.pop();
+        if (retired) {
+          recycleTrailSnapshot(retired.positions);
+        }
+      }
+      trailSnapshotPool.length = 0;
       gl.deleteBuffer(posBuffer);
       gl.deleteBuffer(sizeBuffer);
       gl.deleteBuffer(colorBuffer);
@@ -2778,13 +2931,14 @@ export function SimulationCanvas({
 
     interface OverlayHotspot {
       id: string;
-      kind: "presence" | "file" | "crawler";
+      kind: "presence" | "file" | "crawler" | "nexus";
       label: string;
       x: number;
       y: number;
       radius: number;
       node?: any;
-      nodeKind?: "file" | "crawler";
+      nodeKind?: "file" | "crawler" | "nexus";
+      nodeType?: string;
       resourceKind?: GraphNodeResourceKind;
     }
 
@@ -2881,26 +3035,172 @@ export function SimulationCanvas({
           };
         })
         .filter((row): row is { id: string; en: string; ja: string; x: number; y: number; hue: number } => row !== null);
-      return rows.length > 0 ? spreadPresenceAnchors(rows as any) : spreadPresenceAnchors(fallbackNamedForms as any);
+      const simulationAnchors = normalizePresenceAnchorPositionMap(
+        simulationRef.current?.presence_dynamics?.presence_anchor_positions,
+      );
+      const withBackendAnchors = rows.map((row) => {
+        const backend = simulationAnchors.get(row.id);
+        if (!backend) {
+          return row;
+        }
+        return {
+          ...row,
+          x: backend.x,
+          y: backend.y,
+        };
+      });
+      const sourceRows = withBackendAnchors.length > 0 ? withBackendAnchors : fallbackNamedForms;
+      return normalizePresenceAnchors(sourceRows as any);
     };
 
     let rafId = 0;
     let lastPaintTs = 0;
+    let lastLowPowerSimulationTimestamp = "";
     let canvasWidth = 0;
     let canvasHeight = 0;
-    let hotspots: OverlayHotspot[] = [];
+    const hotspots: OverlayHotspot[] = [];
     let userPresenceMouseEmitMs = 0;
     let pulse = { x: 0.5, y: 0.5, power: 0, atMs: 0, target: "particle_field" };
     let pointerField = { x: 0.5, y: 0.5, power: 0, inside: false };
     const PARTICLE_TRAIL_FRAME_COUNT = 12;
     const particleTrailFrames: number[][] = [];
+    const particleTrailFramePool: number[][] = [];
     let lastTrailFrameKey = "";
+    let lastNodeTitleOverlaySyncMs = 0;
+    let graphNodePositionMapCacheKey = "";
+    let graphNodePositionMap = new Map<string, { x: number; y: number }>();
+    const pointRows: number[] = [];
+    const lineRows: number[] = [];
+    const presencePointRowsCurrent: number[] = [];
+    const namedFormRows: number[] = [];
+    const livePresenceCentroids = new Map<string, { sumX: number; sumY: number; count: number }>();
+    const graphNodeLookup = new Map<
+      string,
+      {
+        x: number;
+        y: number;
+        node: any;
+        nodeKind: "file" | "crawler" | "nexus";
+        nodeType: string;
+      }
+    >();
+    const daimoiFlowLanes = new Map<
+      string,
+      {
+        sourceX: number;
+        sourceY: number;
+        targetX: number;
+        targetY: number;
+        count: number;
+        score: number;
+        seed: number;
+        resourceTypeCounts: Record<string, number>;
+      }
+    >();
+    const activeFlowLaneRows: Array<{
+      sourceX: number;
+      sourceY: number;
+      targetX: number;
+      targetY: number;
+      count: number;
+      score: number;
+      seed: number;
+      resourceTypeCounts: Record<string, number>;
+    }> = [];
+    const sortedPresenceCentroids: Array<[string, { sumX: number; sumY: number; count: number }]> = [];
+    const seenNodeIds = new Set<string>();
+    let uploadPointBuffer: Float32Array<ArrayBufferLike> = new Float32Array(0);
+    let uploadLineBuffer: Float32Array<ArrayBufferLike> = new Float32Array(0);
 
-    const findNearestHotspot = (xRatio: number, yRatio: number): OverlayHotspot | null => {
+    const ensureUploadBuffer = (
+      buffer: Float32Array<ArrayBufferLike>,
+      required: number,
+    ): Float32Array<ArrayBufferLike> => {
+      if (buffer.length >= required) {
+        return buffer;
+      }
+      const nextSize = Math.max(required, Math.max(256, buffer.length * 2));
+      return new Float32Array(nextSize);
+    };
+
+    const selectGraphNodeTitleOverlays = (
+      sourceHotspots: OverlayHotspot[],
+      options: {
+        showFileLayer: boolean;
+        showCrawlerLayer: boolean;
+        showPresenceLayer: boolean;
+        interactiveEnabled: boolean;
+      },
+    ): GraphNodeTitleOverlay[] => {
+      if (!options.interactiveEnabled) {
+        return [];
+      }
+      const rows = sourceHotspots
+        .filter((row) => (
+          (row.kind === "file" && options.showFileLayer)
+          || (row.kind === "crawler" && options.showCrawlerLayer)
+          || (row.kind === "presence" && options.showPresenceLayer)
+          || (row.kind === "nexus" && (options.showFileLayer || options.showCrawlerLayer))
+        ))
+        .map((row) => {
+          const importance = row.kind === "presence"
+            ? clamp01((row.radius / 0.022) * 0.9)
+            : clamp01(Number(row.node?.importance ?? (row.kind === "file" ? 0.36 : 0.28)));
+          const kindBoost = row.kind === "file"
+            ? 0.16
+            : row.kind === "crawler"
+              ? 0.08
+              : row.kind === "nexus"
+                ? 0.11
+                : 0.05;
+          const textBoost = row.resourceKind === "text" ? 0.08 : 0;
+          const score = clampValue(importance + kindBoost + textBoost, 0, 2);
+          return {
+            id: row.id,
+            kind: row.kind,
+            label: row.label,
+            x: clamp01(row.x),
+            y: clamp01(row.y),
+            score,
+          };
+        })
+        .sort((left, right) => right.score - left.score || left.label.length - right.label.length);
+
+      const maxLabels = rows.length;
+      const selected: Array<GraphNodeTitleOverlay & { halfWidth: number }> = [];
+      for (let index = 0; index < rows.length && selected.length < maxLabels; index += 1) {
+        const row = rows[index];
+        const halfWidth = clampValue(0.04 + (row.label.length * 0.0028), 0.05, 0.16);
+        const centerX = clampValue(row.x, 0.06, 0.94);
+        const centerY = clampValue(row.y - (row.kind === "presence" ? 0.014 : 0.018), 0.07, 0.95);
+        selected.push({
+          id: row.id,
+          label: row.label,
+          x: centerX,
+          y: centerY,
+          kind: row.kind,
+          halfWidth,
+        });
+      }
+
+      return selected.map((row) => ({
+        id: row.id,
+        label: row.label,
+        x: row.x,
+        y: row.y,
+        kind: row.kind,
+      }));
+    };
+
+    const findNearestHotspotAt = (xRatio: number, yRatio: number): { row: OverlayHotspot | null; distance: number } => {
       let match: { row: OverlayHotspot; distance: number } | null = null;
       for (const row of hotspots) {
         const distance = Math.hypot(xRatio - row.x, yRatio - row.y);
-        const threshold = row.radius * 1.8;
+        const threshold = row.kind === "presence"
+          ? row.radius * 1.6
+          : row.kind === "nexus"
+            ? row.radius * 1.42
+            : row.radius * 1.35;
         if (distance > threshold) {
           continue;
         }
@@ -2908,10 +3208,29 @@ export function SimulationCanvas({
           match = { row, distance };
         }
       }
-      return match?.row ?? null;
+      return {
+        row: match?.row ?? null,
+        distance: match?.distance ?? Number.POSITIVE_INFINITY,
+      };
     };
 
-    const shouldOpenWorldscreen = (nodeKind: "file" | "crawler", nodeId: string): boolean => {
+    const resolveInteractionHotspot = (xRatioInput: number, yRatioInput: number): {
+      hit: OverlayHotspot | null;
+      xRatio: number;
+      yRatio: number;
+    } => {
+      const xRatio = clamp01(xRatioInput);
+      const yRatio = clamp01(yRatioInput);
+      const direct = findNearestHotspotAt(xRatio, yRatio);
+
+      return {
+        hit: direct.row,
+        xRatio,
+        yRatio,
+      };
+    };
+
+    const shouldOpenWorldscreen = (nodeKind: "file" | "crawler" | "nexus", nodeId: string): boolean => {
       const key = `${nodeKind}:${nodeId}`;
       const nowMs = performance.now();
       const previous = lastNexusPointerTapRef.current;
@@ -2920,7 +3239,7 @@ export function SimulationCanvas({
       return isDoubleTap;
     };
 
-    const openWorldscreenForNode = (node: any, nodeKind: "file" | "crawler", xRatio: number, yRatio: number) => {
+    const openWorldscreenForNode = (node: any, nodeKind: "file" | "crawler" | "nexus", xRatio: number, yRatio: number) => {
       const resourceKind = resourceKindForNode(node);
       const graphNodeId = String(node?.id ?? "").trim();
       const label = shortPathLabel(
@@ -2937,19 +3256,22 @@ export function SimulationCanvas({
       );
       const openUrl = openUrlForGraphNode(node, nodeKind);
       const domain = String(node?.domain ?? "").trim();
-      const worldscreenUrl = resolveWorldscreenUrl(openUrl, nodeKind, domain);
-      if (!worldscreenUrl) {
-        return;
-      }
+      const worldscreenUrl = resolveWorldscreenUrl(openUrl, nodeKind, domain) ?? "";
       const frameUrl = remoteFrameUrlForNode(node, worldscreenUrl, resourceKind);
       const imageRef = String(
         node?.source_rel_path
         || node?.archive_rel_path
         || node?.archived_rel_path
         || node?.url
-        || worldscreenUrl,
+        || worldscreenUrl
+        || graphNodeId,
       ).trim();
       const commentRef = nexusCommentRefForNode(node, nodeKind, worldscreenUrl) || imageRef;
+      const pinnedCenter = {
+        x: clamp01(Number(glassCenterRatioRef.current?.x ?? xRatio)),
+        y: clamp01(Number(glassCenterRatioRef.current?.y ?? yRatio)),
+      };
+      setWorldscreenPinnedCenterRatio(pinnedCenter);
       setWorldscreenMode("overview");
       setWorldscreen({
         nodeId: graphNodeId,
@@ -2958,14 +3280,12 @@ export function SimulationCanvas({
         imageRef,
         label,
         nodeKind,
+        nodeTypeText: String(node?.node_type ?? "").trim(),
+        nodeRoleText: String(node?.kind ?? node?.presence_kind ?? "").trim(),
         resourceKind,
         anchorRatioX: clamp01(xRatio),
         anchorRatioY: clamp01(yRatio),
-        view: resourceKind === "image"
-          ? "metadata"
-          : isRemoteHttpUrl(worldscreenUrl)
-            ? "metadata"
-            : worldscreenViewForNode(node, nodeKind, resourceKind),
+        view: worldscreenViewForNode(node, nodeKind, resourceKind),
         subtitle: worldscreenSubtitleForNode(node, nodeKind, resourceKind),
         remoteFrameUrl: resourceKind === "image" ? (frameUrl || worldscreenUrl) : frameUrl,
         encounteredAt: timestampLabel(node?.encountered_at ?? node?.encounteredAt ?? ""),
@@ -2986,12 +3306,62 @@ export function SimulationCanvas({
     const draw = (ts: number) => {
       const currentSimulation = simulationRef.current;
       const simulationTimestamp = String(currentSimulation?.timestamp ?? "").trim();
-      const allFieldParticles = (() => {
-        const directRows = currentSimulation?.presence_dynamics?.field_particles ?? currentSimulation?.field_particles;
-        return Array.isArray(directRows) ? (directRows as BackendFieldParticle[]) : [];
-      })();
-      const livePresenceCentroids = new Map<string, { sumX: number; sumY: number; count: number }>();
-      for (let index = 0; index < allFieldParticles.length; index += 1) {
+      const directRows = currentSimulation?.presence_dynamics?.field_particles ?? currentSimulation?.field_particles;
+      const allFieldParticles = Array.isArray(directRows) ? (directRows as BackendFieldParticle[]) : [];
+      const isBackgroundMode = backgroundModeRef.current;
+      const isInteractive = interactiveRef.current;
+      const currentOverlayView = overlayViewRef.current;
+      const currentLayerVisibility = layerVisibilityRef.current;
+      const isLowPowerOverlay = !isInteractive && !isBackgroundMode;
+      const trailFrameCountLimit = isLowPowerOverlay ? 6 : PARTICLE_TRAIL_FRAME_COUNT;
+      const baselineFrameMs = allFieldParticles.length > 1500 ? 34 : allFieldParticles.length > 900 ? 24 : 16;
+      const lowPowerDataUnchanged = isLowPowerOverlay
+        && simulationTimestamp.length > 0
+        && simulationTimestamp === lastLowPowerSimulationTimestamp;
+      const targetFrameMs = isLowPowerOverlay
+        ? (lowPowerDataUnchanged ? 180 : Math.max(56, baselineFrameMs * 1.6))
+        : baselineFrameMs;
+      const rect = canvas.getBoundingClientRect();
+      const hasArea = rect.width > 0.5 && rect.height > 0.5;
+      const docEl = document.documentElement;
+      const viewportW = window.innerWidth || docEl.clientWidth || rect.width;
+      const viewportH = window.innerHeight || docEl.clientHeight || rect.height;
+      const offscreen = hasArea
+        && (rect.bottom <= 0 || rect.top >= viewportH || rect.right <= 0 || rect.left >= viewportW);
+      const effectiveFrameMs = offscreen
+        ? (isLowPowerOverlay ? 220 : 96)
+        : targetFrameMs;
+      if (lastPaintTs > 0 && (ts - lastPaintTs) < effectiveFrameMs) {
+        rafId = requestAnimationFrame(draw);
+        return;
+      }
+      lastPaintTs = ts;
+
+      if (!hasArea || offscreen) {
+        if (!isLowPowerOverlay) {
+          lastLowPowerSimulationTimestamp = "";
+        }
+        rafId = requestAnimationFrame(draw);
+        return;
+      }
+
+      const dprRaw = window.devicePixelRatio || 1;
+      const dpr = isLowPowerOverlay ? Math.min(1.25, dprRaw) : dprRaw;
+      const nextWidth = Math.max(1, Math.floor(rect.width * dpr));
+      const nextHeight = Math.max(1, Math.floor(rect.height * dpr));
+      const skipLowPowerRepaint = lowPowerDataUnchanged
+        && nextWidth === canvasWidth
+        && nextHeight === canvasHeight;
+      if (skipLowPowerRepaint) {
+        rafId = requestAnimationFrame(draw);
+        return;
+      }
+
+      const centroidStride = isLowPowerOverlay
+        ? Math.max(1, Math.ceil(allFieldParticles.length / 880))
+        : 1;
+      livePresenceCentroids.clear();
+      for (let index = 0; index < allFieldParticles.length; index += centroidStride) {
         const row = allFieldParticles[index] as any;
         const presenceId = String(row?.presence_id ?? "").trim();
         if (!presenceId) {
@@ -3000,30 +3370,12 @@ export function SimulationCanvas({
         const xRatio = toRatio(Number(row?.x ?? 0.5));
         const yRatio = toRatio(Number(row?.y ?? 0.5));
         const current = livePresenceCentroids.get(presenceId) ?? { sumX: 0, sumY: 0, count: 0 };
-        current.sumX += xRatio;
-        current.sumY += yRatio;
-        current.count += 1;
+        current.sumX += xRatio * centroidStride;
+        current.sumY += yRatio * centroidStride;
+        current.count += centroidStride;
         livePresenceCentroids.set(presenceId, current);
       }
       const renderFallbackManifestAnchors = livePresenceCentroids.size === 0;
-      const isBackgroundMode = backgroundModeRef.current;
-      const isInteractive = interactiveRef.current;
-      const currentOverlayView = overlayViewRef.current;
-      const currentLayerVisibility = layerVisibilityRef.current;
-      const baselineFrameMs = allFieldParticles.length > 1500 ? 34 : allFieldParticles.length > 900 ? 24 : 16;
-      const targetFrameMs = (!isInteractive && !isBackgroundMode)
-        ? Math.max(34, baselineFrameMs)
-        : baselineFrameMs;
-      if (lastPaintTs > 0 && (ts - lastPaintTs) < targetFrameMs) {
-        rafId = requestAnimationFrame(draw);
-        return;
-      }
-      lastPaintTs = ts;
-
-      const dpr = window.devicePixelRatio || 1;
-      const rect = canvas.getBoundingClientRect();
-      const nextWidth = Math.max(1, Math.floor(rect.width * dpr));
-      const nextHeight = Math.max(1, Math.floor(rect.height * dpr));
       if (nextWidth !== canvasWidth || nextHeight !== canvasHeight) {
         canvasWidth = nextWidth;
         canvasHeight = nextHeight;
@@ -3040,11 +3392,13 @@ export function SimulationCanvas({
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-      const pointRows: number[] = [];
-      const lineRows: number[] = [];
-      const presencePointRowsCurrent: number[] = [];
-      hotspots = [];
-      const graphNodeLookup = new Map<string, { x: number; y: number; node: any; nodeKind: "file" | "crawler" }>();
+      pointRows.length = 0;
+      lineRows.length = 0;
+      presencePointRowsCurrent.length = 0;
+      namedFormRows.length = 0;
+      hotspots.length = 0;
+      graphNodeLookup.clear();
+      daimoiFlowLanes.clear();
 
       const addPoint = (
         xRatio: number,
@@ -3094,29 +3448,33 @@ export function SimulationCanvas({
         ?? (!isBackgroundMode && (currentOverlayView === "omni" || currentOverlayView === "file-graph"));
       const showCrawlerGraphLayer = currentLayerVisibility?.["crawler-graph"]
         ?? (!isBackgroundMode && (currentOverlayView === "omni" || currentOverlayView === "crawler-graph"));
+      const showGraphFocusedView = showFileGraphLayer || showCrawlerGraphLayer;
+      const showAmbientPresenceParticles = showPresenceLayer;
+      const showRouteLaneTelemetry = showPresenceLayer || showGraphFocusedView;
 
       const namedForms = resolveNamedFormsForWebgl();
-      const namedFormPoints: Array<{ x: number; y: number; sizePx: number; r: number; g: number; b: number; a: number }> = [];
-      if (showPresenceLayer && renderFallbackManifestAnchors) {
+      if (showAmbientPresenceParticles && renderFallbackManifestAnchors) {
         for (let index = 0; index < namedForms.length; index += 1) {
           const form = namedForms[index] as any;
           const pulseOffset = Math.sin((ts * 0.001 * 1.8) + index * 0.7) * 0.12 + 0.88;
           const [r, g, b] = toRgbFromHue(Number(form?.hue ?? 180));
-          namedFormPoints.push({
-            x: clamp01(Number(form.x ?? 0.5)),
-            y: clamp01(Number(form.y ?? 0.5)),
-            sizePx: (13 + pulseOffset * 8.5) * dpr,
-            r,
-            g,
-            b,
-            a: 0.96,
-          });
+          const x = clamp01(Number(form.x ?? 0.5));
+          const y = clamp01(Number(form.y ?? 0.5));
+          namedFormRows.push(
+            x * canvasWidth,
+            y * canvasHeight,
+            Math.max(2.2, (13 + pulseOffset * 8.5) * dpr),
+            clamp01(r),
+            clamp01(g),
+            clamp01(b),
+            0.96,
+          );
           hotspots.push({
             id: String(form.id ?? `presence-${index}`),
             kind: "presence",
             label: String(form.en ?? form.id ?? "presence"),
-            x: clamp01(Number(form.x ?? 0.5)),
-            y: clamp01(Number(form.y ?? 0.5)),
+            x,
+            y,
             radius: 0.03,
           });
         }
@@ -3125,67 +3483,173 @@ export function SimulationCanvas({
       const fileGraph = currentSimulation?.file_graph ?? catalogRef.current?.file_graph;
       const crawlerGraph = currentSimulation?.crawler_graph ?? catalogRef.current?.crawler_graph;
 
-      const mergedNodeRows = [
-        ...(Array.isArray(fileGraph?.nodes) ? fileGraph.nodes : []),
-        ...(Array.isArray(fileGraph?.file_nodes) ? fileGraph.file_nodes : []),
-        ...(Array.isArray(fileGraph?.crawler_nodes) ? fileGraph.crawler_nodes : []),
-        ...(Array.isArray(crawlerGraph?.nodes) ? crawlerGraph.nodes : []),
-        ...(Array.isArray(crawlerGraph?.crawler_nodes) ? crawlerGraph.crawler_nodes : []),
-      ];
-
-      const seenNodeIds = new Set<string>();
-      const maxNodeCount = 1400;
-      for (let index = 0; index < mergedNodeRows.length && graphNodeLookup.size < maxNodeCount; index += 1) {
-        const node = mergedNodeRows[index] as any;
-        const nodeId = String(node?.id ?? "").trim();
-        if (!nodeId || seenNodeIds.has(nodeId)) {
-          continue;
-        }
-        seenNodeIds.add(nodeId);
-        const rawType = String(node?.node_type ?? "").trim().toLowerCase();
-        const nodeKind: "file" | "crawler" = rawType === "crawler" || String(node?.crawler_kind ?? "").trim().length > 0
-          ? "crawler"
-          : "file";
-        if (!showFileGraphLayer && nodeKind === "file") {
-          continue;
-        }
-        if (!showCrawlerGraphLayer && nodeKind === "crawler") {
-          continue;
-        }
-        const xRatio = toRatio(Number(node?.x ?? 0.5));
-        const yRatio = toRatio(Number(node?.y ?? 0.5));
-        const resourceKind = resourceKindForNode(node);
-        const [r, g, b] = resourceColor(resourceKind);
-        const importance = clamp01(Number(node?.importance ?? 0.35));
-        const nodeSize = (nodeKind === "crawler" ? 4.4 : 5.1) + importance * 4.2;
-        addPoint(xRatio, yRatio, nodeSize * dpr, r, g, b, nodeKind === "crawler" ? 0.84 : 0.78);
-        graphNodeLookup.set(nodeId, { x: xRatio, y: yRatio, node, nodeKind });
-        hotspots.push({
-          id: nodeId,
-          kind: nodeKind,
-          node,
-          nodeKind,
-          resourceKind,
-          label: shortPathLabel(String(node?.title ?? node?.domain ?? node?.label ?? nodeId)),
-          x: xRatio,
-          y: yRatio,
-          radius: nodeKind === "crawler" ? 0.022 : 0.019,
-        });
+      seenNodeIds.clear();
+      const maxNodeCount = isLowPowerOverlay ? 760 : 1400;
+      const graphPositionSourceKey = `${simulationTimestamp}|${String(currentSimulation?.presence_dynamics?.generated_at ?? "")}`;
+      if (graphPositionSourceKey !== graphNodePositionMapCacheKey) {
+        graphNodePositionMap = normalizeGraphNodePositionMap(
+          currentSimulation?.presence_dynamics?.graph_node_positions,
+        );
+        graphNodePositionMapCacheKey = graphPositionSourceKey;
       }
+      const restrictGraphNodesToViewMap = showGraphFocusedView && graphNodePositionMap.size > 0;
+
+      const ingestNodeRows = (nodes: any, sourceLayer: "file" | "crawler") => {
+        if (!Array.isArray(nodes)) {
+          return;
+        }
+        for (let index = 0; index < nodes.length && graphNodeLookup.size < maxNodeCount; index += 1) {
+          const node = nodes[index] as any;
+          const nodeId = String(node?.id ?? "").trim();
+          if (!nodeId || seenNodeIds.has(nodeId)) {
+            continue;
+          }
+
+          if (sourceLayer === "file" && !showFileGraphLayer) {
+            continue;
+          }
+          if (sourceLayer === "crawler" && !showCrawlerGraphLayer) {
+            continue;
+          }
+          if (restrictGraphNodesToViewMap && !graphNodePositionMap.has(nodeId)) {
+            continue;
+          }
+          seenNodeIds.add(nodeId);
+
+          const rawType = String(node?.node_type ?? "").trim().toLowerCase();
+          const hasCrawlerKind = String(node?.crawler_kind ?? "").trim().length > 0;
+          const nodeKind: "file" | "crawler" | "nexus" = (
+            rawType === "crawler" || hasCrawlerKind
+          )
+            ? "crawler"
+            : (rawType === "file" || rawType.length === 0)
+              ? "file"
+              : "nexus";
+          const nodeType = rawType || (nodeKind === "crawler" ? "crawler" : "file");
+
+          const baseX = toRatio(Number(node?.x ?? 0.5));
+          const baseY = toRatio(Number(node?.y ?? 0.5));
+          const backendNodePosition = graphNodePositionMap.get(nodeId);
+          const xRatio = clampValue(Number(backendNodePosition?.x ?? baseX), 0.012, 0.988);
+          const yRatio = clampValue(Number(backendNodePosition?.y ?? baseY), 0.012, 0.988);
+          const sourceRelPath = String(
+            node?.source_rel_path
+            ?? node?.archived_rel_path
+            ?? node?.archive_rel_path
+            ?? "",
+          ).trim();
+          const nodeLabelText = nodeKind === "crawler"
+            ? shortPathLabel(String(node?.title ?? node?.domain ?? node?.url ?? node?.label ?? nodeId))
+            : nodeType === "tag"
+              ? `#${shortPathLabel(String(node?.label ?? node?.tag ?? nodeId))}`
+              : nodeType === "field"
+                ? shortPathLabel(String(node?.label ?? node?.node_id ?? nodeId))
+                : nodeType === "presence"
+                ? shortPathLabel(String(node?.label ?? node?.node_id ?? nodeId))
+                : shortPathLabel(String(sourceRelPath || node?.name || node?.label || nodeId));
+          const resourceKind = resourceKindForNode(node);
+          const importance = clamp01(Number(node?.importance ?? 0.35));
+          let [r, g, b] = resourceColor(resourceKind);
+          if (nodeKind === "nexus") {
+            if (nodeType === "tag") {
+              [r, g, b] = [0.73, 0.68, 0.98];
+            } else if (nodeType === "field") {
+              [r, g, b] = [0.44, 0.88, 0.94];
+            } else if (nodeType === "presence") {
+              [r, g, b] = [0.62, 0.92, 0.72];
+            } else {
+              [r, g, b] = [0.74, 0.8, 0.9];
+            }
+          }
+          const nodeSize = nodeKind === "crawler"
+            ? 4.2 + importance * 4.1
+            : nodeKind === "nexus"
+              ? 3.7 + importance * 3.4
+              : 5.0 + importance * 4.2;
+          addPoint(xRatio, yRatio, nodeSize * dpr, r, g, b, nodeKind === "nexus" ? 0.72 : 0.82);
+          graphNodeLookup.set(nodeId, {
+            x: xRatio,
+            y: yRatio,
+            node,
+            nodeKind,
+            nodeType,
+          });
+          hotspots.push({
+            id: nodeId,
+            kind: nodeKind === "nexus" ? "nexus" : nodeKind,
+            node,
+            nodeKind,
+            nodeType,
+            resourceKind,
+            label: nodeLabelText,
+            x: xRatio,
+            y: yRatio,
+            radius: nodeKind === "crawler" ? 0.022 : nodeKind === "nexus" ? 0.018 : 0.02,
+          });
+        }
+      };
+
+      const ingestFallbackGraphPositions = () => {
+        if (!showGraphFocusedView || graphNodePositionMap.size <= 0) {
+          return;
+        }
+        for (const [nodeId, nodePosition] of graphNodePositionMap.entries()) {
+          if (!nodeId || graphNodeLookup.size >= maxNodeCount || graphNodeLookup.has(nodeId)) {
+            continue;
+          }
+          const xRatio = clampValue(Number(nodePosition?.x ?? 0.5), 0.012, 0.988);
+          const yRatio = clampValue(Number(nodePosition?.y ?? 0.5), 0.012, 0.988);
+          const node = {
+            id: nodeId,
+            node_type: "nexus",
+            label: nodeId,
+          };
+          const nodeSize = 3.6;
+          addPoint(xRatio, yRatio, nodeSize * dpr, 0.74, 0.8, 0.9, 0.72);
+          graphNodeLookup.set(nodeId, {
+            x: xRatio,
+            y: yRatio,
+            node,
+            nodeKind: "nexus",
+            nodeType: "nexus",
+          });
+          hotspots.push({
+            id: nodeId,
+            kind: "nexus",
+            node,
+            nodeKind: "nexus",
+            nodeType: "nexus",
+            resourceKind: "text",
+            label: shortPathLabel(nodeId),
+            x: xRatio,
+            y: yRatio,
+            radius: 0.016,
+          });
+        }
+      };
+
+      ingestNodeRows(fileGraph?.nodes, "file");
+      ingestNodeRows(fileGraph?.file_nodes, "file");
+      ingestNodeRows(fileGraph?.crawler_nodes, "file");
+      ingestNodeRows(crawlerGraph?.nodes, "crawler");
+      ingestNodeRows(crawlerGraph?.crawler_nodes, "crawler");
+      ingestFallbackGraphPositions();
 
       const fileEdges = showFileGraphLayer && Array.isArray(fileGraph?.edges) ? fileGraph.edges : [];
       const crawlerEdges = showCrawlerGraphLayer && Array.isArray(crawlerGraph?.edges) ? crawlerGraph.edges : [];
-      const mergedEdges = [...fileEdges, ...crawlerEdges];
-      const maxEdgeCount = 3200;
+      const maxEdgeCount = isLowPowerOverlay ? 1200 : 3200;
 
       const daimoiCounts: Record<string, number> = {};
       let totalResourceDaimoi = 0;
-      for (let i = 0; i < allFieldParticles.length; i += 1) {
+      const daimoiStride = isLowPowerOverlay
+        ? Math.max(1, Math.ceil(allFieldParticles.length / 960))
+        : 1;
+      for (let i = 0; i < allFieldParticles.length; i += daimoiStride) {
         const row = allFieldParticles[i] as any;
         if (row.resource_daimoi) {
           const type = String(row.resource_type ?? "cpu");
           daimoiCounts[type] = (daimoiCounts[type] ?? 0) + 1;
-          totalResourceDaimoi += 1;
+          totalResourceDaimoi += daimoiStride;
         }
       }
       let dominantDaimoiType = "cpu";
@@ -3211,88 +3675,247 @@ export function SimulationCanvas({
       const strobe = (Math.sin(strobePhase) * 0.5) + 0.5;
       const flowIntensity = Math.min(1.0, totalResourceDaimoi / 20.0);
 
-      for (let index = 0; index < mergedEdges.length && index < maxEdgeCount; index += 1) {
-        const edge = mergedEdges[index] as any;
-        const sourceId = String(edge?.source ?? "").trim();
-        const targetId = String(edge?.target ?? "").trim();
-        if (!sourceId || !targetId || sourceId === targetId) {
-          continue;
-        }
-        const source = graphNodeLookup.get(sourceId);
-        const target = graphNodeLookup.get(targetId);
-        if (!source || !target) {
-          continue;
-        }
-        const kind = String(edge?.kind ?? "").trim().toLowerCase();
-        const [r, g, b, a] = edgeColorByKind(kind);
-        
-        const mix = flowIntensity * strobe * 0.6;
-        const fr = r * (1 - mix) + dr * mix;
-        const fg = g * (1 - mix) + dg * mix;
-        const fb = b * (1 - mix) + db * mix;
-        const fa = Math.min(1.0, a + (flowIntensity * 0.3));
+      let renderedEdgeCount = 0;
+      const drawEdgeRows = (edges: any[]) => {
+        for (let index = 0; index < edges.length && renderedEdgeCount < maxEdgeCount; index += 1) {
+          const edge = edges[index] as any;
+          const sourceId = String(edge?.source ?? "").trim();
+          const targetId = String(edge?.target ?? "").trim();
+          if (!sourceId || !targetId || sourceId === targetId) {
+            continue;
+          }
+          const source = graphNodeLookup.get(sourceId);
+          const target = graphNodeLookup.get(targetId);
+          if (!source || !target) {
+            continue;
+          }
+          const kind = String(edge?.kind ?? "").trim().toLowerCase();
+          const [r, g, b, a] = edgeColorByKind(kind);
 
-        addLine(source.x, source.y, target.x, target.y, fr, fg, fb, fa);
+          const mix = flowIntensity * strobe * 0.6;
+          const fr = r * (1 - mix) + dr * mix;
+          const fg = g * (1 - mix) + dg * mix;
+          const fb = b * (1 - mix) + db * mix;
+          const fa = Math.min(1.0, a + (flowIntensity * 0.3));
+
+          addLine(source.x, source.y, target.x, target.y, fr, fg, fb, fa);
+          renderedEdgeCount += 1;
+        }
+      };
+
+      if (fileEdges.length > 0) {
+        drawEdgeRows(fileEdges);
+      }
+      if (crawlerEdges.length > 0 && renderedEdgeCount < maxEdgeCount) {
+        drawEdgeRows(crawlerEdges);
       }
 
 
-      if (showPresenceLayer) {
+      if (showAmbientPresenceParticles || showRouteLaneTelemetry) {
         const particleRows = allFieldParticles;
-        const maxParticleCount = Math.max(240, Math.round(2600 * particleDensityRef.current));
+        const maxParticleCount = Math.max(
+          isLowPowerOverlay ? 180 : 240,
+          Math.round((isLowPowerOverlay ? 980 : 2600) * particleDensityRef.current),
+        );
         const step = Math.max(1, Math.ceil(particleRows.length / Math.max(1, maxParticleCount)));
         for (let index = 0; index < particleRows.length; index += step) {
           const row = particleRows[index] as any;
           const xRatio = toRatio(Number(row?.x ?? 0.5));
           const yRatio = toRatio(Number(row?.y ?? 0.5));
-          const size = clampValue(Number(row?.size ?? 1.1), 0.3, 5.4);
-          addPoint(
-            xRatio,
-            yRatio,
-            (size * 3.1 + 1.1) * particleScaleRef.current * dpr,
-            Number(row?.r ?? 0.58),
-            Number(row?.g ?? 0.72),
-            Number(row?.b ?? 0.92),
-            0.66,
-          );
-          presencePointRowsCurrent.push(
-            xRatio * canvasWidth,
-            yRatio * canvasHeight,
-            Math.max(1.2, (size * 3.1 + 1.1) * particleScaleRef.current * dpr),
-            clamp01(Number(row?.r ?? 0.58)),
-            clamp01(Number(row?.g ?? 0.72)),
-            clamp01(Number(row?.b ?? 0.92)),
-            0.66,
-          );
+          if (showAmbientPresenceParticles) {
+            const size = clampValue(Number(row?.size ?? 1.1), 0.3, 5.4);
+            addPoint(
+              xRatio,
+              yRatio,
+              (size * 3.1 + 1.1) * particleScaleRef.current * dpr,
+              Number(row?.r ?? 0.58),
+              Number(row?.g ?? 0.72),
+              Number(row?.b ?? 0.92),
+              0.66,
+            );
+            presencePointRowsCurrent.push(
+              xRatio * canvasWidth,
+              yRatio * canvasHeight,
+              Math.max(1.2, (size * 3.1 + 1.1) * particleScaleRef.current * dpr),
+              clamp01(Number(row?.r ?? 0.58)),
+              clamp01(Number(row?.g ?? 0.72)),
+              clamp01(Number(row?.b ?? 0.92)),
+              0.66,
+            );
+          }
 
-          const routeNodeId = String(row?.route_node_id ?? "").trim();
-          const graphNodeId = String(row?.graph_node_id ?? "").trim();
-          if (routeNodeId && graphNodeId) {
+          const routeNodeId = showRouteLaneTelemetry ? String(row?.route_node_id ?? "").trim() : "";
+          const graphNodeId = showRouteLaneTelemetry ? String(row?.graph_node_id ?? "").trim() : "";
+          if (showRouteLaneTelemetry && routeNodeId && graphNodeId) {
             const source = graphNodeLookup.get(routeNodeId);
             const target = graphNodeLookup.get(graphNodeId);
             if (source && target) {
-              addLine(source.x, source.y, target.x, target.y, 0.58, 0.88, 1.0, 0.14);
+              const laneKey = `${routeNodeId}->${graphNodeId}`;
+              const routeProbability = clamp01(Number(row?.route_probability ?? 0.34));
+              const influencePower = clamp01(Number(row?.influence_power ?? 0.22));
+              const laneWeight = clampValue(
+                0.35 + (routeProbability * 0.45) + (influencePower * 0.2),
+                0.18,
+                1.2,
+              );
+              const resourceType = String(
+                row?.resource_type
+                  ?? row?.resource_consume_type
+                  ?? row?.route_resource_focus
+                  ?? dominantDaimoiType,
+              ).trim().toLowerCase() || dominantDaimoiType;
+              const existingLane = daimoiFlowLanes.get(laneKey);
+              if (existingLane) {
+                existingLane.count += 1;
+                existingLane.score += laneWeight;
+                existingLane.resourceTypeCounts[resourceType] = (existingLane.resourceTypeCounts[resourceType] ?? 0) + 1;
+              } else {
+                daimoiFlowLanes.set(laneKey, {
+                  sourceX: source.x,
+                  sourceY: source.y,
+                  targetX: target.x,
+                  targetY: target.y,
+                  count: 1,
+                  score: laneWeight,
+                  seed: stablePresenceRatio(laneKey, 17),
+                  resourceTypeCounts: {
+                    [resourceType]: 1,
+                  },
+                });
+              }
             }
           }
         }
 
-        if (livePresenceCentroids.size > 0) {
-          Array.from(livePresenceCentroids.entries())
-            .sort((left, right) => right[1].count - left[1].count)
-            .slice(0, 180)
-            .forEach(([presenceId, centroid]) => {
-              if (centroid.count <= 0) {
-                return;
-              }
-              hotspots.push({
-                id: presenceId,
-                kind: "presence",
-                label: shortPresenceIdLabel(presenceId),
-                x: clamp01(centroid.sumX / centroid.count),
-                y: clamp01(centroid.sumY / centroid.count),
-                radius: 0.022,
-              });
+        if (showPresenceLayer && livePresenceCentroids.size > 0) {
+          sortedPresenceCentroids.length = 0;
+          for (const entry of livePresenceCentroids.entries()) {
+            sortedPresenceCentroids.push(entry);
+          }
+          sortedPresenceCentroids.sort((left, right) => right[1].count - left[1].count);
+          const centroidLimit = Math.min(isLowPowerOverlay ? 96 : 180, sortedPresenceCentroids.length);
+          for (let centroidIndex = 0; centroidIndex < centroidLimit; centroidIndex += 1) {
+            const [presenceId, centroid] = sortedPresenceCentroids[centroidIndex];
+            if (centroid.count <= 0) {
+              continue;
+            }
+            hotspots.push({
+              id: presenceId,
+              kind: "presence",
+              label: shortPresenceIdLabel(presenceId),
+              x: clamp01(centroid.sumX / centroid.count),
+              y: clamp01(centroid.sumY / centroid.count),
+              radius: 0.022,
             });
+          }
         }
+      }
+
+      if (daimoiFlowLanes.size > 0) {
+        activeFlowLaneRows.length = 0;
+        for (const lane of daimoiFlowLanes.values()) {
+          activeFlowLaneRows.push(lane);
+        }
+        activeFlowLaneRows.sort((left, right) => right.score - left.score);
+        const laneLimit = Math.min(isLowPowerOverlay ? 140 : 320, activeFlowLaneRows.length);
+
+        for (let laneIndex = 0; laneIndex < laneLimit; laneIndex += 1) {
+          const lane = activeFlowLaneRows[laneIndex];
+          const normalizedCount = clamp01(lane.count / 6);
+          const normalizedActivity = clamp01((lane.score / Math.max(1, lane.count)) * 0.9);
+          const throughput = clamp01((normalizedCount * 0.72) + (normalizedActivity * 0.28));
+          let dominantLaneResourceType = dominantDaimoiType;
+          let dominantLaneResourceCount = -1;
+          Object.entries(lane.resourceTypeCounts).forEach(([type, count]) => {
+            const numericCount = Number(count);
+            if (numericCount > dominantLaneResourceCount) {
+              dominantLaneResourceType = type;
+              dominantLaneResourceCount = numericCount;
+            }
+          });
+          const [laneR, laneG, laneB] = getDaimoiColor(dominantLaneResourceType);
+          const streamR = clamp01((laneR * 0.72) + 0.24);
+          const streamG = clamp01((laneG * 0.72) + 0.24);
+          const streamB = clamp01((laneB * 0.72) + 0.24);
+          addLine(
+            lane.sourceX,
+            lane.sourceY,
+            lane.targetX,
+            lane.targetY,
+            streamR,
+            streamG,
+            streamB,
+            0.1 + (throughput * 0.42),
+          );
+
+          const laneDx = lane.targetX - lane.sourceX;
+          const laneDy = lane.targetY - lane.sourceY;
+          const laneLength = Math.hypot(laneDx, laneDy);
+          if (laneLength > 0.0005 && throughput > 0.22) {
+            const ux = laneDx / laneLength;
+            const uy = laneDy / laneLength;
+            const px = -uy;
+            const py = ux;
+            const arrowLen = 0.009 + (throughput * 0.018);
+            const arrowWidth = arrowLen * 0.48;
+            const tipX = lane.targetX;
+            const tipY = lane.targetY;
+            const baseX = tipX - (ux * arrowLen);
+            const baseY = tipY - (uy * arrowLen);
+            addLine(
+              baseX + (px * arrowWidth),
+              baseY + (py * arrowWidth),
+              tipX,
+              tipY,
+              streamR,
+              streamG,
+              streamB,
+              0.28 + (throughput * 0.5),
+            );
+            addLine(
+              baseX - (px * arrowWidth),
+              baseY - (py * arrowWidth),
+              tipX,
+              tipY,
+              streamR,
+              streamG,
+              streamB,
+              0.28 + (throughput * 0.5),
+            );
+          }
+        }
+      }
+
+      const nowMs = performance.now();
+      if (isInteractive && (nowMs - lastNodeTitleOverlaySyncMs) >= 140) {
+        lastNodeTitleOverlaySyncMs = nowMs;
+        const nextGraphNodeTitleOverlays = selectGraphNodeTitleOverlays(hotspots, {
+          showFileLayer: showFileGraphLayer,
+          showCrawlerLayer: showCrawlerGraphLayer,
+          showPresenceLayer: showPresenceLayer,
+          interactiveEnabled: isInteractive,
+        });
+        setGraphNodeTitleOverlays((previous) => {
+          if (previous.length === nextGraphNodeTitleOverlays.length) {
+            const unchanged = previous.every((row, index) => {
+              const nextRow = nextGraphNodeTitleOverlays[index];
+              if (!nextRow) {
+                return false;
+              }
+              return (
+                row.id === nextRow.id
+                && row.label === nextRow.label
+                && row.kind === nextRow.kind
+                && Math.abs(row.x - nextRow.x) < 0.001
+                && Math.abs(row.y - nextRow.y) < 0.001
+              );
+            });
+            if (unchanged) {
+              return previous;
+            }
+          }
+          return nextGraphNodeTitleOverlays;
+        });
       }
 
       if (pointerField.inside) {
@@ -3334,7 +3957,15 @@ export function SimulationCanvas({
       if (lineRows.length > 0 && lineLocPos >= 0 && lineLocColor >= 0) {
         activateLineProgram();
         gl.bindBuffer(gl.ARRAY_BUFFER, lineBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(lineRows), gl.DYNAMIC_DRAW);
+        uploadLineBuffer = ensureUploadBuffer(uploadLineBuffer, lineRows.length);
+        for (let index = 0; index < lineRows.length; index += 1) {
+          uploadLineBuffer[index] = lineRows[index] ?? 0;
+        }
+        gl.bufferData(
+          gl.ARRAY_BUFFER,
+          uploadLineBuffer.subarray(0, lineRows.length),
+          gl.DYNAMIC_DRAW,
+        );
         gl.enableVertexAttribArray(lineLocPos);
         gl.vertexAttribPointer(lineLocPos, 2, gl.FLOAT, false, 6 * 4, 0);
         gl.enableVertexAttribArray(lineLocColor);
@@ -3354,7 +3985,15 @@ export function SimulationCanvas({
         }
         activatePointProgram();
         gl.bindBuffer(gl.ARRAY_BUFFER, pointBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(rows), gl.DYNAMIC_DRAW);
+        uploadPointBuffer = ensureUploadBuffer(uploadPointBuffer, rows.length);
+        for (let index = 0; index < rows.length; index += 1) {
+          uploadPointBuffer[index] = rows[index] ?? 0;
+        }
+        gl.bufferData(
+          gl.ARRAY_BUFFER,
+          uploadPointBuffer.subarray(0, rows.length),
+          gl.DYNAMIC_DRAW,
+        );
         gl.enableVertexAttribArray(pointLocPos);
         gl.vertexAttribPointer(pointLocPos, 2, gl.FLOAT, false, 7 * 4, 0);
         gl.enableVertexAttribArray(pointLocSize);
@@ -3384,69 +4023,47 @@ export function SimulationCanvas({
       }
       drawPointCloud(pointRows, 1.0);
 
-      const currentWorldscreen = worldscreenRef.current;
-      if (currentWorldscreen) {
-        const targetId = String(currentWorldscreen.nodeId ?? "").trim();
-        const target = graphNodeLookup.get(targetId);
-        if (target) {
-          const glass = glassCenterRatioRef.current;
-          // Draw connecting line from node to lens center
-          addLine(
-            target.x,
-            target.y,
-            glass.x,
-            glass.y,
-            0.38,
-            0.64,
-            0.92,
-            0.48,
-          );
-          // Highlight the node
-          addPoint(
-            target.x,
-            target.y,
-            16 * dpr,
-            0.38,
-            0.64,
-            0.92,
-            0.55,
-          );
-        }
-      }
-
-      if (namedFormPoints.length > 0) {
-        const namedFormRows: number[] = [];
-        for (let index = 0; index < namedFormPoints.length; index += 1) {
-          const row = namedFormPoints[index] as any;
-          namedFormRows.push(
-            row.x * canvasWidth,
-            row.y * canvasHeight,
-            Math.max(2.2, row.sizePx),
-            clamp01(row.r),
-            clamp01(row.g),
-            clamp01(row.b),
-            clamp01(row.a),
-          );
-        }
+      if (namedFormRows.length > 0) {
         drawPointCloud(namedFormRows, 1.0);
       }
 
-      if (showPresenceLayer && presencePointRowsCurrent.length > 0) {
+      if (showAmbientPresenceParticles && presencePointRowsCurrent.length > 0) {
         const frameKey = simulationTimestamp || String(Math.round(ts));
         if (frameKey !== lastTrailFrameKey) {
-          particleTrailFrames.push(presencePointRowsCurrent.slice());
-          if (particleTrailFrames.length > PARTICLE_TRAIL_FRAME_COUNT) {
-            particleTrailFrames.shift();
+          const snapshot = particleTrailFramePool.pop() ?? [];
+          snapshot.length = presencePointRowsCurrent.length;
+          for (let index = 0; index < presencePointRowsCurrent.length; index += 1) {
+            snapshot[index] = presencePointRowsCurrent[index] ?? 0;
+          }
+          particleTrailFrames.push(snapshot);
+          if (particleTrailFrames.length > trailFrameCountLimit) {
+            const retired = particleTrailFrames.shift();
+            if (retired) {
+              retired.length = 0;
+              particleTrailFramePool.push(retired);
+            }
           }
           lastTrailFrameKey = frameKey;
         }
       } else {
-        particleTrailFrames.length = 0;
+        while (particleTrailFrames.length > 0) {
+          const retired = particleTrailFrames.pop();
+          if (retired) {
+            retired.length = 0;
+            particleTrailFramePool.push(retired);
+          }
+        }
         lastTrailFrameKey = "";
       }
 
       if (metaRef.current) {
         metaRef.current.textContent = `webgl overlay particles:${allFieldParticles.length} nodes:${graphNodeLookup.size} hotspots:${hotspots.length}`;
+      }
+
+      if (isLowPowerOverlay) {
+        lastLowPowerSimulationTimestamp = simulationTimestamp;
+      } else {
+        lastLowPowerSimulationTimestamp = "";
       }
 
       rafId = requestAnimationFrame(draw);
@@ -3472,23 +4089,26 @@ export function SimulationCanvas({
       xRatioInput: number,
       yRatioInput: number,
       options?: { openWorldscreen?: boolean },
-    ): { hitNode: boolean; openedWorldscreen: boolean; target: string } => {
-      const xRatio = clamp01(xRatioInput);
-      const yRatio = clamp01(yRatioInput);
-      const hit = findNearestHotspot(xRatio, yRatio);
+    ): { hitNode: boolean; openedWorldscreen: boolean; target: string; xRatio: number; yRatio: number } => {
+      const resolved = resolveInteractionHotspot(xRatioInput, yRatioInput);
+      const xRatio = resolved.xRatio;
+      const yRatio = resolved.yRatio;
+      const hit = resolved.hit;
       if (hit?.node && hit.nodeKind) {
+        const nodeXRatio = clamp01(hit.x);
+        const nodeYRatio = clamp01(hit.y);
         const isDoubleTap = shouldOpenWorldscreen(hit.nodeKind, hit.id);
         const openWorldscreen = Boolean(options?.openWorldscreen) || true; // Always open on click
         if (openWorldscreen) {
-          openWorldscreenForNode(hit.node, hit.nodeKind, xRatio, yRatio);
+          openWorldscreenForNode(hit.node, hit.nodeKind, nodeXRatio, nodeYRatio);
         }
         onNexusInteractionRef.current?.({
           nodeId: hit.id,
           nodeKind: hit.nodeKind,
           resourceKind: hit.resourceKind ?? "unknown",
           label: hit.label,
-          xRatio,
-          yRatio,
+          xRatio: nodeXRatio,
+          yRatio: nodeYRatio,
           openWorldscreen,
           isDoubleTap,
         });
@@ -3496,8 +4116,8 @@ export function SimulationCanvas({
           kind: "click",
           target: hit.id,
           message: `click graph node ${hit.id}`,
-          xRatio,
-          yRatio,
+          xRatio: nodeXRatio,
+          yRatio: nodeYRatio,
           embedDaimoi: true,
           meta: {
             source: "simulation-canvas",
@@ -3508,36 +4128,44 @@ export function SimulationCanvas({
         if (metaRef.current) {
           metaRef.current.textContent = openWorldscreen
             ? `hologram opened: ${hit.label}`
-            : `focused node: ${hit.label} (double tap to open hologram)`;
+            : `focused node: ${hit.label}`;
         }
-        pulseAt(xRatio, yRatio, 1.0, hit.id);
+        pulseAt(nodeXRatio, nodeYRatio, 1.0, hit.id);
         return {
           hitNode: true,
           openedWorldscreen: openWorldscreen,
           target: hit.id,
+          xRatio: nodeXRatio,
+          yRatio: nodeYRatio,
         };
       }
 
       const target = hit?.id || "particle_field";
+      const clickXRatio = hit ? clamp01(hit.x) : xRatio;
+      const clickYRatio = hit ? clamp01(hit.y) : yRatio;
       onUserPresenceInputRef.current?.({
         kind: "click",
         target,
         message: `click simulation field ${target}`,
-        xRatio,
-        yRatio,
+        xRatio: clickXRatio,
+        yRatio: clickYRatio,
         embedDaimoi: true,
         meta: {
           source: "simulation-canvas",
           renderer: "webgl",
         },
       });
-      pulseAt(xRatio, yRatio, 0.96, target);
+      pulseAt(clickXRatio, clickYRatio, 0.96, target);
       return {
         hitNode: false,
         openedWorldscreen: false,
         target,
+        xRatio: clickXRatio,
+        yRatio: clickYRatio,
       };
     };
+
+    interactAtRef.current = interactAt;
 
     const api = {
       pulseAt,
@@ -3548,7 +4176,11 @@ export function SimulationCanvas({
           return null;
         }
         if (kind === "node" || kind === "file" || kind === "crawler") {
-          const match = hotspots.find((row) => (row.kind === "file" || row.kind === "crawler") && row.id === target);
+          const match = hotspots.find((row) => (
+            row.kind === "file"
+            || row.kind === "crawler"
+            || row.kind === "nexus"
+          ) && row.id === target);
           if (!match) {
             return null;
           }
@@ -3580,6 +4212,18 @@ export function SimulationCanvas({
         };
       },
       interactAt,
+      interactClientAt: (
+        clientX: number,
+        clientY: number,
+        options?: { openWorldscreen?: boolean },
+      ) => {
+        const rect = canvas.getBoundingClientRect();
+        const width = Math.max(1, rect.width);
+        const height = Math.max(1, rect.height);
+        const xRatio = clamp01((clientX - rect.left) / width);
+        const yRatio = clamp01((clientY - rect.top) / height);
+        return interactAt(xRatio, yRatio, options);
+      },
     };
 
     const onPointerDown = (event: PointerEvent) => {
@@ -3645,6 +4289,7 @@ export function SimulationCanvas({
     rafId = requestAnimationFrame(draw);
 
     return () => {
+      interactAtRef.current = null;
       canvas.removeEventListener("pointermove", onPointerMove);
       canvas.removeEventListener("pointerleave", onPointerLeave);
       canvas.removeEventListener("pointerdown", onPointerDown);
@@ -3671,10 +4316,36 @@ export function SimulationCanvas({
     : `relative mt-3 border border-[rgba(36,31,26,0.16)] rounded-xl overflow-hidden bg-gradient-to-b from-[#0f1a1f] to-[#131b2a] ${className}`.trim();
   const canvasHeight: number | string = backgroundMode ? "100%" : height;
   const canvasPointerEvents = interactive ? "auto" : "none";
+  const worldscreenCenterRatio = worldscreenPinnedCenterRatio ?? glassCenterRatio;
   const worldscreenPlacement = worldscreen
-    ? resolveWorldscreenPlacement(worldscreen, containerRef.current, glassCenterRatio)
+    ? resolveWorldscreenPlacement(worldscreen, containerRef.current, worldscreenCenterRatio)
     : null;
   const activeImageCommentRef = worldscreen ? worldscreenCommentRef(worldscreen) : "";
+  const worldscreenConnector = useMemo(() => {
+    if (!worldscreen || !worldscreenPlacement) {
+      return null;
+    }
+    const container = containerRef.current;
+    if (!container) {
+      return null;
+    }
+    const width = Math.max(1, container.clientWidth);
+    const height = Math.max(1, container.clientHeight);
+    const startX = clamp01(Number(worldscreen.anchorRatioX ?? 0.5));
+    const startY = clamp01(Number(worldscreen.anchorRatioY ?? 0.5));
+    const cardLeft = clamp01(worldscreenPlacement.left / width);
+    const cardRight = clamp01((worldscreenPlacement.left + worldscreenPlacement.width) / width);
+    const cardTop = clamp01(worldscreenPlacement.top / height);
+    const cardBottom = clamp01((worldscreenPlacement.top + worldscreenPlacement.height) / height);
+    const endX = clamp01(clampValue(startX, cardLeft, cardRight));
+    const endY = clamp01(clampValue(startY, cardTop, cardBottom));
+    return {
+      startX,
+      startY,
+      endX,
+      endY,
+    };
+  }, [worldscreen, worldscreenPlacement]);
   const worldscreenMetadataDetails = useMemo(() => {
     if (!worldscreen) {
       return [] as Array<{
@@ -3749,6 +4420,9 @@ export function SimulationCanvas({
     return resolveFieldParticleRows(simulation);
   }, [resolveFieldParticleRows, simulation]);
   const resourceEconomyHud = useMemo(() => {
+    if (!interactive) {
+      return EMPTY_RESOURCE_ECONOMY_HUD;
+    }
     const dynamics = simulation?.presence_dynamics;
     const probabilistic = dynamics?.daimoi_probabilistic;
     const resourceSummary = dynamics?.resource_daimoi ?? probabilistic?.resource_daimoi;
@@ -3769,10 +4443,13 @@ export function SimulationCanvas({
       consumedTotal,
       starvedPresences,
     };
-  }, [simulation]);
+  }, [interactive, simulation]);
   const liveFieldParticleCount = activeFieldParticleRows.length;
   const fallbackPointCount = Array.isArray(simulation?.points) ? simulation.points.length : 0;
   const particleLegendStats = useMemo(() => {
+    if (!interactive || activeFieldParticleRows.length <= 0) {
+      return EMPTY_PARTICLE_LEGEND_STATS;
+    }
     const primary = {
       chaos: 0,
       nexus: 0,
@@ -3823,13 +4500,45 @@ export function SimulationCanvas({
       primary,
       overlays,
     };
-  }, [activeFieldParticleRows]);
+  }, [activeFieldParticleRows, interactive]);
   const overlayParticleModeActive = renderRichOverlayParticles && liveFieldParticleCount > 0;
 
   return (
     <div ref={containerRef} className={containerClassName}>
       <canvas ref={canvasRef} style={{ height: canvasHeight, pointerEvents: canvasPointerEvents }} className="block w-full" />
       <canvas ref={overlayRef} style={{ height: canvasHeight, pointerEvents: canvasPointerEvents }} className="absolute inset-0 w-full touch-none" />
+      {interactive && graphNodeTitleOverlays.length > 0 ? (
+        <div className="absolute inset-0 z-10 pointer-events-none overflow-hidden">
+          {graphNodeTitleOverlays.map((row) => (
+            <div
+              key={`graph-node-title-${row.id}`}
+              className={`absolute pointer-events-auto max-w-[15rem] -translate-x-1/2 -translate-y-full rounded border px-1.5 py-0.5 text-[10px] leading-4 whitespace-nowrap overflow-hidden text-ellipsis shadow-[0_8px_22px_rgba(0,0,0,0.32)] ${
+                row.kind === "file"
+                  ? "border-[rgba(152,216,255,0.44)] bg-[rgba(11,30,48,0.68)] text-[#dff3ff]"
+                  : row.kind === "crawler"
+                    ? "border-[rgba(186,210,164,0.38)] bg-[rgba(23,36,30,0.65)] text-[#d7f0dc]"
+                    : row.kind === "nexus"
+                      ? "border-[rgba(189,206,255,0.44)] bg-[rgba(19,28,52,0.68)] text-[#e5ecff]"
+                      : "border-[rgba(178,190,232,0.44)] bg-[rgba(18,23,40,0.68)] text-[#e2e8ff]"
+              }`}
+              onPointerDown={(event) => {
+                if (event.button !== 0) {
+                  return;
+                }
+                event.preventDefault();
+                event.stopPropagation();
+                interactAtRef.current?.(row.x, row.y, { openWorldscreen: true });
+              }}
+              style={{
+                left: `${(row.x * 100).toFixed(2)}%`,
+                top: `${(row.y * 100).toFixed(2)}%`,
+              }}
+            >
+              {row.label}
+            </div>
+          ))}
+        </div>
+      ) : null}
       {!compactHud ? (
         <div className="absolute top-2 right-2 z-10 w-[min(96%,31rem)] pointer-events-auto">
           <div className="rounded-md border border-[rgba(137,178,220,0.32)] bg-[rgba(9,22,36,0.72)] px-2 py-2 backdrop-blur-[2px]">
@@ -3971,6 +4680,7 @@ export function SimulationCanvas({
             <span className="text-[#c8dcf3]"> · </span>
             <span className="text-[#ff9f77]">VIDEO</span>
           </p>
+          <p className="text-[10px] text-[#cfdcff]">NEXUS META: tag / field / presence nodes</p>
         </div>
       ) : null}
       {!compactHud ? (
@@ -3997,6 +4707,9 @@ export function SimulationCanvas({
                 stream signals: transfer ({particleLegendStats.overlays.transfer}) · resource ({particleLegendStats.overlays.resource})
               </p>
               <p className="text-[#9ecbe8]">ghost trails: smart daimoi keep short path memory for easier tracing.</p>
+              <p className="text-[#9ecbe8]">flow lanes: backend simulation drives nexus routing telemetry.</p>
+              <p className="text-[#9ecbe8]">all nexus node movement now comes from backend simulation deltas.</p>
+              <p className="text-[#9ecbe8]">graph view: daimoi flow is shown as lane lines + arrowheads from backend state.</p>
               <p className="mt-1 text-[#ffd7aa]">
                 economy: packets {resourceEconomyHud.packets} · actions {resourceEconomyHud.actionPackets} · blocked {resourceEconomyHud.blockedPackets}
               </p>
@@ -4028,6 +4741,40 @@ export function SimulationCanvas({
       ) : null}
       {interactive && worldscreen ? (
         <div className="absolute inset-0 z-20 pointer-events-none">
+          {worldscreenConnector ? (
+            <svg className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden="true">
+              <defs>
+                <marker
+                  id="worldscreen-connector-arrow"
+                  markerWidth="8"
+                  markerHeight="8"
+                  refX="7"
+                  refY="4"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0,0 L8,4 L0,8 z" fill="rgba(158,226,255,0.9)" />
+                </marker>
+              </defs>
+              <line
+                x1={`${(worldscreenConnector.startX * 100).toFixed(2)}%`}
+                y1={`${(worldscreenConnector.startY * 100).toFixed(2)}%`}
+                x2={`${(worldscreenConnector.endX * 100).toFixed(2)}%`}
+                y2={`${(worldscreenConnector.endY * 100).toFixed(2)}%`}
+                stroke="rgba(158,226,255,0.76)"
+                strokeWidth="2"
+                strokeDasharray="5 4"
+                markerEnd="url(#worldscreen-connector-arrow)"
+              />
+              <circle
+                cx={`${(worldscreenConnector.startX * 100).toFixed(2)}%`}
+                cy={`${(worldscreenConnector.startY * 100).toFixed(2)}%`}
+                r="4"
+                fill="rgba(120,205,255,0.9)"
+                stroke="rgba(224,246,255,0.84)"
+                strokeWidth="1"
+              />
+            </svg>
+          ) : null}
           <section
             data-core-pointer="block"
             className="pointer-events-auto absolute rounded-2xl border border-[rgba(126,218,255,0.58)] bg-[linear-gradient(164deg,rgba(6,16,30,0.88),rgba(10,30,48,0.82),rgba(7,18,34,0.9))] backdrop-blur-[5px] shadow-[0_30px_90px_rgba(0,18,42,0.56)] overflow-hidden"
@@ -4077,14 +4824,16 @@ export function SimulationCanvas({
                 <span className="text-[10px] px-2 py-1 rounded-md border border-[rgba(142,223,255,0.44)] text-[#d8f3ff] bg-[rgba(33,95,132,0.24)]">
                   {resourceKindLabel(worldscreen.resourceKind)}
                 </span>
-                <a
-                  href={worldscreen.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-xs px-2.5 py-1 rounded-md border border-[rgba(145,190,240,0.42)] text-[#d4ebff] hover:bg-[rgba(72,119,170,0.2)]"
-                >
-                  new tab
-                </a>
+                {String(worldscreen.url ?? "").trim().length > 0 ? (
+                  <a
+                    href={worldscreen.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs px-2.5 py-1 rounded-md border border-[rgba(145,190,240,0.42)] text-[#d4ebff] hover:bg-[rgba(72,119,170,0.2)]"
+                  >
+                    new tab
+                  </a>
+                ) : null}
                 <button
                   type="button"
                   onPointerDown={(event) => {
@@ -4095,6 +4844,7 @@ export function SimulationCanvas({
                     event.preventDefault();
                     event.stopPropagation();
                     setWorldscreen(null);
+                    setWorldscreenPinnedCenterRatio(null);
                     setWorldscreenMode("overview");
                   }}
                   className="text-xs px-2.5 py-1 rounded-md border border-[rgba(245,200,171,0.45)] text-[#ffe6d2] hover:bg-[rgba(187,120,78,0.2)]"

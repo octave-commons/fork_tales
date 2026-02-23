@@ -27,6 +27,7 @@ Run in Docker (preferred; world + IO + web graph weaver + Chroma):
 - Weaver status (direct): `http://127.0.0.1:8793/api/weaver/status`
 - Weaver status (via gateway): `http://127.0.0.1:8787/weaver/api/weaver/status`
 - Optional TTS proxy target: set `TTS_BASE_URL` (default `http://127.0.0.1:8788` inside container)
+- LLM text routing defaults to vLLM/OpenAI-compatible HTTP via `TEXT_GENERATION_BASE_URL` (compose default: `http://host.docker.internal:18000`)
 
 Long-running embedding benchmark container (websocket live stream + simple UI):
 - Start: `docker compose -f docker-compose.embed-bench.yml up --build`
@@ -36,8 +37,11 @@ Long-running embedding benchmark container (websocket live stream + simple UI):
 - Tune backend/model with env vars:
   - `EMBED_BENCH_BACKEND` (`openvino` default)
   - `EMBED_BENCH_MODEL` (`nomic-embed-text` default)
-  - `OPENVINO_EMBED_ENDPOINT` (default `http://host.docker.internal:18000/v1/embeddings`)
-  - `OLLAMA_BASE_URL` (default `http://host.docker.internal:11435`)
+  - `CDB_EMBED_DEVICE` (`AUTO`, `NPU`, or `GPU`)
+  - `OPENVINO_EMBED_DEVICE` (`NPU` recommended for embeddings)
+  - `TEXT_GENERATION_DEVICE` (`GPU` for NVIDIA-backed LLM/vision)
+  - `CDB_EMBED_GPU_REQUIRE_CUDA` (`1` to reject non-CUDA GPU fallbacks)
+  - `CDB_EMBED_REQUIRE_C` (`1` to fail fast when C runtime is unavailable)
 
 Comprehensive model benchmark runner (same compose stack, runner profile):
 - Start one-shot run: `docker compose -f docker-compose.embed-bench.yml --profile runner run --rm model-bench-runner`
@@ -45,6 +49,22 @@ Comprehensive model benchmark runner (same compose stack, runner profile):
 - Override suite/output:
   - `MODEL_BENCH_SUITE=/workspace/scripts/benchmark_suites/universal_starter.json`
   - `MODEL_BENCH_OUTPUT=/results/model-bench.latest.json`
+
+TensorRT-LLM local tooling (optional local text path):
+- Load local CUDA/MPI runtime env and run a command:
+  - `part64/scripts/trtllm_env.sh trtllm-build --help`
+- Build qwen3-vl TensorRT engines from a local checkpoint directory:
+  - `part64/scripts/build_qwen3vl_trtllm.sh <checkpoint_dir> [output_dir]`
+  - Note: this script now uses `trtllm-bench ... build` (HF checkpoint path) instead of the legacy `trtllm-build --checkpoint_dir` path.
+  - Fast preflight (no model weights load, useful to validate toolchain without long build):
+    - `TRTLLM_NO_WEIGHTS_LOADING=true part64/scripts/build_qwen3vl_trtllm.sh <checkpoint_dir> [output_dir]`
+- Run one local prompt against a built engine (JSON output, offline flags enabled):
+  - `part64/scripts/trtllm_env.sh python part64/scripts/trtllm_text_generate.py --engine-dir <engine_dir> --tokenizer <checkpoint_or_tokenizer_dir> --prompt "hello" --model qwen3-vl:2b-instruct`
+  - The prompt runner fails fast with `trtllm_engine_not_built` when no `*.engine` artifact exists under `--engine-dir` (prevents accidental long fallback work).
+- Runtime bridge env vars for world runtime text generation:
+  - `C_LLM_RUNTIME_BACKEND` (`trtllm_subprocess` default)
+  - `C_LLM_ENGINE_DIR` (required for local generation)
+  - `C_LLM_TOKENIZER_DIR` (recommended when engine does not embed tokenizer assets)
 - Output artifact: `part64/runs/model-bench/*.json`
 - Docs: `MODEL_BENCH_RUNNER.md`, `WHISPER_BENCHMARK.md`
 
@@ -170,14 +190,10 @@ Web Graph Weaver crawler service:
 Embedding provider options (GPU/NPU experimental routing):
 - Inspect current provider config:
   - `GET http://127.0.0.1:8787/api/embeddings/provider/options`
-- Switch to local GPU (Ollama embeddings):
-  - `POST /api/embeddings/provider/options` with `{"preset":"gpu_local","ollama_embed_force_nomic":true}`
-- Switch to local NPU (OpenVINO endpoint):
-  - `POST /api/embeddings/provider/options` with `{"preset":"npu_local","openvino_endpoint":"http://host.docker.internal:18000/v1/embeddings"}`
-- If OpenVINO endpoint requires auth, include one of:
-  - `"openvino_bearer_token":"<token>"` (sends `Authorization: Bearer <token>`)
-  - `"openvino_api_key":"<key>","openvino_api_key_header":"X-API-Key"`
-  - `"openvino_auth_header":"Authorization: Bearer <token>"` for custom header control
+- Switch to local GPU embeddings (C runtime on CUDA device):
+  - `POST /api/embeddings/provider/options` with `{"preset":"gpu_local","cuda_model":"nomic-ai/nomic-embed-text-v1.5"}`
+- Switch to local NPU embeddings (C runtime on NPU device):
+  - `POST /api/embeddings/provider/options` with `{"preset":"npu_local","openvino_device":"NPU"}`
 - Hybrid auto mode (prefer NPU, then fallback):
   - `POST /api/embeddings/provider/options` with `{"preset":"hybrid_auto"}`
 

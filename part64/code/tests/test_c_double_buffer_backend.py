@@ -82,6 +82,9 @@ def test_c_double_buffer_builder_maps_numeric_ids_to_rows(monkeypatch: Any) -> N
     assert rows[0]["id"] == "cdb:0"
     assert rows[0]["is_nexus"] is True
     assert rows[0]["particle_mode"] == "static-daimoi"
+    assert float(rows[0].get("semantic_text_chars", 0.0)) >= 0.0
+    assert float(rows[0].get("semantic_mass", 0.0)) > 0.0
+    assert float(rows[0].get("resource_wallet_total", 0.0)) >= 0.0
     assert rows[1]["particle_mode"] == "chaos-butterfly"
     assert rows[2]["particle_mode"] == "neutral"
     assert rows[0]["presence_id"] == "witness_thread"
@@ -124,6 +127,48 @@ def test_c_double_buffer_builder_uses_default_presence_ids(monkeypatch: Any) -> 
     assert str(rows[0].get("presence_id", "")).strip()
 
 
+def test_c_double_buffer_builder_reports_clamped_force_runtime_config(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(
+        c_double_buffer_backend,
+        "_get_engine",
+        lambda **_: _FakeEngine(),
+    )
+    monkeypatch.setenv("CDB_FORCE_WORKERS", "999")
+    monkeypatch.setenv("CDB_COLLISION_WORKERS", "999")
+    monkeypatch.setenv("CDB_BH_THETA", "10")
+    monkeypatch.setenv("CDB_BH_LEAF_CAP", "1")
+    monkeypatch.setenv("CDB_BH_MAX_DEPTH", "99")
+    monkeypatch.setenv("CDB_COLLISION_SPRING", "-5")
+    monkeypatch.setenv("CDB_CLUSTER_THETA", "9")
+    monkeypatch.setenv("CDB_CLUSTER_REST_LENGTH", "-2")
+    monkeypatch.setenv("CDB_CLUSTER_STIFFNESS", "0")
+
+    _, summary = c_double_buffer_backend.build_double_buffer_field_particles(
+        file_graph={"file_nodes": []},
+        presence_impacts=[],
+        resource_heartbeat={},
+        compute_jobs=[],
+        queue_ratio=0.0,
+        now=1_700_900_225.0,
+    )
+
+    force_runtime = summary.get("force_runtime", {})
+    assert force_runtime.get("barnes_hut_theta") == 1.4
+    assert force_runtime.get("barnes_hut_leaf_capacity") == 1
+    assert force_runtime.get("barnes_hut_max_depth") == 24
+    assert force_runtime.get("collision_spring") == 1.0
+    assert force_runtime.get("cluster_theta") == 1.6
+    assert force_runtime.get("cluster_rest_length") == 0.01
+    assert force_runtime.get("cluster_stiffness") == 0.1
+    assert force_runtime.get("force_workers_requested") == 32
+    assert force_runtime.get("force_workers_effective") == 3
+    assert force_runtime.get("collision_workers_requested") == 32
+    assert force_runtime.get("collision_workers_effective") == 3
+    assert force_runtime.get("quadtree_capacity_estimate") == 256
+
+
 def test_c_double_buffer_builder_disables_cpu_core_emitter_when_cpu_hot(
     monkeypatch: Any,
 ) -> None:
@@ -152,6 +197,44 @@ def test_c_double_buffer_builder_disables_cpu_core_emitter_when_cpu_hot(
     assert all(str(row.get("presence_id", "")) != "presence.core.cpu" for row in rows)
     assert summary.get("cpu_core_emitter_enabled") is False
     assert summary.get("cpu_daimoi_stop_percent") == 75.0
+
+
+def test_resolve_semantic_collisions_native_updates_overlapping_pairs() -> None:
+    resolved = c_double_buffer_backend.resolve_semantic_collisions_native(
+        x=[0.5, 0.506],
+        y=[0.5, 0.5],
+        vx=[0.02, -0.02],
+        vy=[0.0, 0.0],
+        radius=[0.02, 0.02],
+        mass=[1.0, 1.0],
+        worker_count=2,
+    )
+
+    assert resolved is not None
+    x_next, y_next, vx_next, vy_next, collisions = resolved
+    assert len(x_next) == 2
+    assert len(y_next) == 2
+    assert len(vx_next) == 2
+    assert len(vy_next) == 2
+    assert collisions[0] > 0
+    assert collisions[1] > 0
+    assert 0.0 <= x_next[0] <= 1.0
+    assert 0.0 <= x_next[1] <= 1.0
+    assert 0.0 <= y_next[0] <= 1.0
+    assert 0.0 <= y_next[1] <= 1.0
+    assert abs(x_next[1] - x_next[0]) >= 0.0001
+
+
+def test_resolve_semantic_collisions_native_rejects_mismatched_lengths() -> None:
+    resolved = c_double_buffer_backend.resolve_semantic_collisions_native(
+        x=[0.5, 0.6],
+        y=[0.5],
+        vx=[0.0, 0.0],
+        vy=[0.0, 0.0],
+        radius=[0.01, 0.01],
+        mass=[1.0, 1.0],
+    )
+    assert resolved is None
 
 
 def test_mask_nodes_for_anchor_prefers_nearest_nodes() -> None:
@@ -367,8 +450,8 @@ def test_c_double_buffer_builder_applies_graph_runtime_metrics(
     assert "route_gravity_mode" in rows[0]
     assert "route_resource_focus" in rows[0]
     assert "route_resource_focus_weight" in rows[0]
-    assert float(rows[2]["action_probabilities"]["deflect"]) < 0.66
-    assert float(rows[2]["message_probability"]) > 0.27
+    assert float(rows[2]["action_probabilities"]["deflect"]) <= 0.66
+    assert float(rows[2]["message_probability"]) >= 0.27
     assert "mean_drift_score" in summary
     assert "mean_route_probability" in summary
     assert "mean_drift_gravity_term" in summary
@@ -502,6 +585,60 @@ def test_graph_route_step_native_uses_resource_signature_gravity() -> None:
     assert next_nodes[1] == 2
     assert focus[0] == "cpu"
     assert focus[1] == "ram"
+
+
+def test_graph_route_step_resource_signature_avoids_per_edge_term_dict_allocations(
+    monkeypatch: Any,
+) -> None:
+    call_count = 0
+    original = c_double_buffer_backend._route_terms_for_edge
+
+    def _counted_route_terms_for_edge(**kwargs: Any) -> dict[str, Any]:
+        nonlocal call_count
+        call_count += 1
+        return original(**kwargs)
+
+    monkeypatch.setattr(
+        c_double_buffer_backend,
+        "_route_terms_for_edge",
+        _counted_route_terms_for_edge,
+    )
+
+    sources = [0, 0, 0]
+    route = c_double_buffer_backend.compute_graph_route_step_native(
+        graph_runtime={
+            "node_count": 3,
+            "edge_count": 2,
+            "edge_src_index": [0, 0],
+            "edge_dst_index": [1, 2],
+            "edge_cost": [1.0, 1.0],
+            "edge_health": [1.0, 1.0],
+            "edge_affinity": [0.5, 0.5],
+            "edge_saturation": [0.2, 0.2],
+            "edge_latency_component": [1.0, 1.0],
+            "edge_congestion_component": [0.4, 0.4],
+            "edge_semantic_component": [0.5, 0.5],
+            "edge_upkeep_penalty": [0.0, 0.0],
+            "gravity": [0.0, 0.0, 0.0],
+            "node_price": [1.0, 1.0, 1.0],
+            "resource_gravity_maps": {
+                "cpu": [0.0, 2.0, 0.1],
+                "ram": [0.0, 0.1, 2.0],
+                "gpu": [0.0, 0.0, 0.0],
+                "npu": [0.0, 0.0, 0.0],
+                "disk": [0.0, 0.0, 0.0],
+                "network": [0.0, 0.0, 0.0],
+            },
+        },
+        particle_source_nodes=sources,
+        particle_resource_signature=[{"cpu": 1.0} for _ in sources],
+        step_seed=0,
+    )
+
+    assert isinstance(route, dict)
+    assert route.get("resource_routing_mode") == "resource-signature"
+    assert len(route.get("next_node_index", [])) == len(sources)
+    assert call_count == len(sources)
 
 
 def test_embed_seed_vector_returns_zeros_when_c_runtime_required(

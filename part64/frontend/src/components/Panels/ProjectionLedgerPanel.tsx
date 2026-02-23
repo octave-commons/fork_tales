@@ -58,33 +58,43 @@ function SignalBar({
 }
 
 export function ProjectionLedgerPanel({ projection }: ProjectionLedgerPanelProps) {
+  const projectionElements = Array.isArray(projection?.elements)
+    ? projection.elements
+    : [];
+  const projectionStates = Array.isArray(projection?.states)
+    ? projection.states
+    : [];
+  const projectionFieldSchemas = Array.isArray(projection?.field_schemas)
+    ? projection.field_schemas
+    : [];
+
   const elementsById = useMemo(() => {
     const map = new Map<string, UIProjectionElement>();
-    projection?.elements.forEach((element) => {
+    projectionElements.forEach((element) => {
       map.set(element.id, element);
     });
     return map;
-  }, [projection]);
+  }, [projectionElements]);
 
   const statesById = useMemo(() => {
     const map = new Map<string, UIProjectionElementState>();
-    projection?.states.forEach((state) => {
+    projectionStates.forEach((state) => {
       map.set(state.element_id, state);
     });
     return map;
-  }, [projection]);
+  }, [projectionStates]);
 
   const states = useMemo(() => {
     if (!projection) {
       return [];
     }
-    return [...projection.states].sort((a, b) => {
+    return [...projectionStates].sort((a, b) => {
       if (b.priority !== a.priority) {
         return b.priority - a.priority;
       }
       return b.mass - a.mass;
     });
-  }, [projection]);
+  }, [projection, projectionStates]);
 
   const laneCards = useMemo(() => {
     const laneMap = new Map<string, UIProjectionElementState[]>();
@@ -115,7 +125,7 @@ export function ProjectionLedgerPanel({ projection }: ProjectionLedgerPanelProps
     if (!projection) {
       return [];
     }
-    return projection.field_schemas.map((schema) => {
+    return projectionFieldSchemas.map((schema) => {
       const leaders: FieldLeader[] = states
         .map((state) => {
           const binding = Number(state.explain.field_bindings?.[schema.field] ?? 0);
@@ -142,20 +152,20 @@ export function ProjectionLedgerPanel({ projection }: ProjectionLedgerPanelProps
         leaders,
       };
     });
-  }, [elementsById, projection, states]);
+  }, [elementsById, projection, projectionFieldSchemas, states]);
 
   const layoutRects = projection?.layout?.rects ?? {};
   const routedBoxCount = states.filter((state) => layoutRects[state.element_id]).length;
 
   const uniquePresenceCount = useMemo(() => {
     const set = new Set<string>();
-    projection?.elements.forEach((element) => {
+    projectionElements.forEach((element) => {
       if (element.presence) {
         set.add(element.presence);
       }
     });
     return set.size;
-  }, [projection]);
+  }, [projectionElements]);
 
   const [focusedElementId, setFocusedElementId] = useState("");
 

@@ -66,6 +66,20 @@ class NooiField:
                 self.layers[l_idx][idx] += dx * w * NOOI_DEPOSIT_ALPHA
                 self.layers[l_idx][idx + 1] += dy * w * NOOI_DEPOSIT_ALPHA
 
+    def sample_vector(self, x: float, y: float) -> tuple[float, float]:
+        """Sample aggregated field vector at normalized coordinates."""
+        if self.cols <= 0 or self.rows <= 0:
+            return (0.0, 0.0)
+        col = int(min(self.cols - 1, max(0, x * self.cols)))
+        row = int(min(self.rows - 1, max(0, y * self.rows)))
+        idx = (row * self.cols + col) * 2
+        vx = 0.0
+        vy = 0.0
+        for layer in self.layers:
+            vx += layer[idx]
+            vy += layer[idx + 1]
+        return (vx, vy)
+
     def get_grid_snapshot(
         self, particles: list[dict[str, Any]] | None = None
     ) -> dict[str, Any]:

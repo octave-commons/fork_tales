@@ -282,27 +282,55 @@ def _eta_mu_is_excluded_inbox_rel(rel_path: str) -> bool:
 
 
 def _eta_mu_scan_candidates(inbox_root: Path) -> list[Path]:
+    import subprocess
     from .constants import (
         ETA_MU_INGEST_MAX_SCAN_FILES,
         ETA_MU_INGEST_MAX_SCAN_DEPTH,
+        ETA_MU_INGEST_EXCLUDE_REL_PATHS,
     )
 
     if not inbox_root.exists() or not inbox_root.is_dir():
         return []
 
-    candidates: list[Path] = []
-    for path in inbox_root.rglob("*"):
-        if not path.is_file():
-            continue
-        rel = _eta_mu_inbox_rel_path(path, inbox_root)
-        if _eta_mu_is_excluded_inbox_rel(rel):
-            continue
-        depth = max(0, len([token for token in rel.split("/") if token]) - 1)
-        if depth > ETA_MU_INGEST_MAX_SCAN_DEPTH:
-            continue
-        candidates.append(path)
-        if len(candidates) >= ETA_MU_INGEST_MAX_SCAN_FILES:
-            break
+    # Use 'find' command for high performance on massive directory trees (37GB+ / 1M files).
+    # Prune common exclude folders and dot-folders during the walk.
+    exclude_args = []
+    for folder in ETA_MU_INGEST_EXCLUDE_REL_PATHS:
+        exclude_args.extend(["-o", "-name", folder])
+
+    # Base command: find <root> -mindepth 1 -maxdepth <depth> ( -name <excluded> -o -name .* ) -prune -o -type f -print
+    cmd = [
+        "find",
+        str(inbox_root.resolve()),
+        "-mindepth",
+        "1",
+        "-maxdepth",
+        str(ETA_MU_INGEST_MAX_SCAN_DEPTH + 1),
+        "(",
+        "-name",
+        "_TEMP_NEVER_MATCH_",
+    ]
+    for folder in ETA_MU_INGEST_EXCLUDE_REL_PATHS:
+        cmd.extend(["-o", "-name", folder])
+
+    # Prune all other dot-directories but we're already inside .ημ
+    # Quote the patterns to prevent shell expansion
+    cmd.extend(["-o", "-name", ".*", ")", "-prune", "-o", "-type", "f", "-print"])
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            return []  # Fallback or log error
+
+        found_paths = result.stdout.splitlines()
+        candidates = [
+            Path(p) for p in sorted(found_paths)[:ETA_MU_INGEST_MAX_SCAN_FILES]
+        ]
+        return candidates
+    except (subprocess.SubprocessError, subprocess.TimeoutExpired):
+        # If 'find' fails or times out, return empty to avoid hanging the world server
+        return []
+
     return candidates
 
 

@@ -8,32 +8,25 @@ services:
       CHROMA_HOST: chroma
       CHROMA_PORT: "8000"
       PYTHONUNBUFFERED: "1"
-      OLLAMA_BASE_URL: "http://host.docker.internal:11435"
-      OLLAMA_MODEL: "qwen3-vl:4b-instruct"
-      OLLAMA_TIMEOUT_SEC: "${OLLAMA_TIMEOUT_SEC:-4}"
-      OLLAMA_NUM_GPU: "${OLLAMA_NUM_GPU:-1}"
-      OLLAMA_MAIN_GPU: "${OLLAMA_MAIN_GPU:-0}"
-      OLLAMA_EMBED_MODEL: "nomic-embed-text"
-      OLLAMA_EMBED_FORCE_NOMIC: "1"
-      OLLAMA_EMBED_NUM_CTX: "512"
-      OLLAMA_EMBED_MAX_CHARS: "2400"
-      OPENVINO_EMBED_ENDPOINT: "http://host.docker.internal:18000/v1/embeddings"
+      TEXT_GENERATION_MODEL: "qwen3-vl:4b-instruct"
+      TEXT_GENERATION_TIMEOUT_SEC: "${TEXT_GENERATION_TIMEOUT_SEC:-8}"
+      TEXT_GENERATION_DEVICE: "GPU"
       OPENVINO_EMBED_MODEL: "nomic-embed-text"
       OPENVINO_EMBED_DEVICE: "NPU"
-      OPENVINO_EMBED_TIMEOUT_SEC: "10"
       OPENVINO_EMBED_MAX_CHARS: "2400"
-      OPENVINO_EMBED_API_KEY: "${OPENVINO_EMBED_API_KEY:-}"
-      OPENVINO_EMBED_API_KEY_HEADER: "X-API-Key"
-      OPENVINO_EMBED_BEARER_TOKEN: "${OPENVINO_EMBED_BEARER_TOKEN:-}"
       EMBEDDINGS_BACKEND: "openvino"
       CDB_EMBED_IN_C: "1"
       CDB_EMBED_REQUIRE_C: "1"
-      CDB_EMBED_DEVICE: "AUTO"
+      CDB_EMBED_DEVICE: "NPU"
+      CDB_EMBED_GPU_REQUIRE_CUDA: "1"
       CDB_EMBED_STRICT_DEVICE: "1"
       CDB_EMBED_PRELOAD_ORT_CORE: "1"
       NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
       NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
-      TEXT_GENERATION_BACKEND: "auto"
+      TEXT_GENERATION_BACKEND: "vllm"
+      TEXT_GENERATION_BASE_URL: "${TEXT_GENERATION_BASE_URL:-http://host.docker.internal:18000}"
+      ETA_MU_IMAGE_VISION_ENABLED: "${ETA_MU_IMAGE_VISION_ENABLED:-1}"
+      ETA_MU_IMAGE_VISION_BASE_URL: "${ETA_MU_IMAGE_VISION_BASE_URL:-http://host.docker.internal:18000}"
       TF_EMBED_HASH_BINS: "768"
       OMP_NUM_THREADS: "1"
       OPENBLAS_NUM_THREADS: "1"
@@ -59,7 +52,6 @@ services:
       io.fork_tales.simulation.variant: "baseline"
     depends_on:
       - chroma
-      - ollama-loopback-proxy
     ports:
       - "19877:8787"
     cpus: "0.85"
@@ -104,32 +96,25 @@ services:
       CHROMA_HOST: chroma
       CHROMA_PORT: "8000"
       PYTHONUNBUFFERED: "1"
-      OLLAMA_BASE_URL: "http://host.docker.internal:11435"
-      OLLAMA_MODEL: "qwen3-vl:4b-instruct"
-      OLLAMA_TIMEOUT_SEC: "${OLLAMA_TIMEOUT_SEC:-4}"
-      OLLAMA_NUM_GPU: "${OLLAMA_NUM_GPU:-1}"
-      OLLAMA_MAIN_GPU: "${OLLAMA_MAIN_GPU:-0}"
-      OLLAMA_EMBED_MODEL: "nomic-embed-text"
-      OLLAMA_EMBED_FORCE_NOMIC: "1"
-      OLLAMA_EMBED_NUM_CTX: "512"
-      OLLAMA_EMBED_MAX_CHARS: "2400"
-      OPENVINO_EMBED_ENDPOINT: "http://host.docker.internal:18000/v1/embeddings"
+      TEXT_GENERATION_MODEL: "qwen3-vl:4b-instruct"
+      TEXT_GENERATION_TIMEOUT_SEC: "${TEXT_GENERATION_TIMEOUT_SEC:-8}"
+      TEXT_GENERATION_DEVICE: "GPU"
       OPENVINO_EMBED_MODEL: "nomic-embed-text"
       OPENVINO_EMBED_DEVICE: "NPU"
-      OPENVINO_EMBED_TIMEOUT_SEC: "10"
       OPENVINO_EMBED_MAX_CHARS: "2400"
-      OPENVINO_EMBED_API_KEY: "${OPENVINO_EMBED_API_KEY:-}"
-      OPENVINO_EMBED_API_KEY_HEADER: "X-API-Key"
-      OPENVINO_EMBED_BEARER_TOKEN: "${OPENVINO_EMBED_BEARER_TOKEN:-}"
       EMBEDDINGS_BACKEND: "openvino"
       CDB_EMBED_IN_C: "1"
       CDB_EMBED_REQUIRE_C: "1"
-      CDB_EMBED_DEVICE: "AUTO"
+      CDB_EMBED_DEVICE: "NPU"
+      CDB_EMBED_GPU_REQUIRE_CUDA: "1"
       CDB_EMBED_STRICT_DEVICE: "1"
       CDB_EMBED_PRELOAD_ORT_CORE: "1"
       NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
       NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
-      TEXT_GENERATION_BACKEND: "auto"
+      TEXT_GENERATION_BACKEND: "vllm"
+      TEXT_GENERATION_BASE_URL: "${TEXT_GENERATION_BASE_URL:-http://host.docker.internal:18000}"
+      ETA_MU_IMAGE_VISION_ENABLED: "${ETA_MU_IMAGE_VISION_ENABLED:-1}"
+      ETA_MU_IMAGE_VISION_BASE_URL: "${ETA_MU_IMAGE_VISION_BASE_URL:-http://host.docker.internal:18000}"
       TF_EMBED_HASH_BINS: "768"
       OMP_NUM_THREADS: "1"
       OPENBLAS_NUM_THREADS: "1"
@@ -155,7 +140,6 @@ services:
       io.fork_tales.simulation.variant: "chaos"
     depends_on:
       - chroma
-      - ollama-loopback-proxy
     ports:
       - "19878:8787"
     cpus: "1.10"
@@ -200,32 +184,25 @@ services:
       CHROMA_HOST: chroma
       CHROMA_PORT: "8000"
       PYTHONUNBUFFERED: "1"
-      OLLAMA_BASE_URL: "http://host.docker.internal:11435"
-      OLLAMA_MODEL: "qwen3-vl:4b-instruct"
-      OLLAMA_TIMEOUT_SEC: "${OLLAMA_TIMEOUT_SEC:-4}"
-      OLLAMA_NUM_GPU: "${OLLAMA_NUM_GPU:-1}"
-      OLLAMA_MAIN_GPU: "${OLLAMA_MAIN_GPU:-0}"
-      OLLAMA_EMBED_MODEL: "nomic-embed-text"
-      OLLAMA_EMBED_FORCE_NOMIC: "1"
-      OLLAMA_EMBED_NUM_CTX: "512"
-      OLLAMA_EMBED_MAX_CHARS: "2400"
-      OPENVINO_EMBED_ENDPOINT: "http://host.docker.internal:18000/v1/embeddings"
+      TEXT_GENERATION_MODEL: "qwen3-vl:4b-instruct"
+      TEXT_GENERATION_TIMEOUT_SEC: "${TEXT_GENERATION_TIMEOUT_SEC:-8}"
+      TEXT_GENERATION_DEVICE: "GPU"
       OPENVINO_EMBED_MODEL: "nomic-embed-text"
       OPENVINO_EMBED_DEVICE: "NPU"
-      OPENVINO_EMBED_TIMEOUT_SEC: "10"
       OPENVINO_EMBED_MAX_CHARS: "2400"
-      OPENVINO_EMBED_API_KEY: "${OPENVINO_EMBED_API_KEY:-}"
-      OPENVINO_EMBED_API_KEY_HEADER: "X-API-Key"
-      OPENVINO_EMBED_BEARER_TOKEN: "${OPENVINO_EMBED_BEARER_TOKEN:-}"
       EMBEDDINGS_BACKEND: "openvino"
       CDB_EMBED_IN_C: "1"
       CDB_EMBED_REQUIRE_C: "1"
-      CDB_EMBED_DEVICE: "AUTO"
+      CDB_EMBED_DEVICE: "NPU"
+      CDB_EMBED_GPU_REQUIRE_CUDA: "1"
       CDB_EMBED_STRICT_DEVICE: "1"
       CDB_EMBED_PRELOAD_ORT_CORE: "1"
       NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
       NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
-      TEXT_GENERATION_BACKEND: "auto"
+      TEXT_GENERATION_BACKEND: "vllm"
+      TEXT_GENERATION_BASE_URL: "${TEXT_GENERATION_BASE_URL:-http://host.docker.internal:18000}"
+      ETA_MU_IMAGE_VISION_ENABLED: "${ETA_MU_IMAGE_VISION_ENABLED:-1}"
+      ETA_MU_IMAGE_VISION_BASE_URL: "${ETA_MU_IMAGE_VISION_BASE_URL:-http://host.docker.internal:18000}"
       TF_EMBED_HASH_BINS: "768"
       OMP_NUM_THREADS: "1"
       OPENBLAS_NUM_THREADS: "1"
@@ -251,7 +228,6 @@ services:
       io.fork_tales.simulation.variant: "stability"
     depends_on:
       - chroma
-      - ollama-loopback-proxy
     ports:
       - "19879:8787"
     cpus: "0.80"
@@ -299,16 +275,6 @@ services:
       IS_PERSISTENT: "TRUE"
     networks:
       - eta-mu-sim-net
-    restart: unless-stopped
-
-  ollama-loopback-proxy:
-    image: alpine/socat:latest
-    network_mode: host
-    command: ["-d", "-d", "TCP-LISTEN:11435,reuseaddr,fork", "TCP:127.0.0.1:11434"]
-    cpus: "0.20"
-    mem_limit: "128m"
-    memswap_limit: "128m"
-    pids_limit: 64
     restart: unless-stopped
 
 volumes:

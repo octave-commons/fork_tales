@@ -46,6 +46,22 @@ const NODE_COOLDOWN_MS = Number.parseInt(
   process.env.WEAVER_NODE_COOLDOWN_MS || String(10 * 60 * 1000),
   10,
 );
+const CONTENT_HASH_INDEX_MAX_RAW = Number.parseInt(
+  process.env.WEAVER_CONTENT_HASH_INDEX_MAX || "60000",
+  10,
+);
+const CONTENT_HASH_INDEX_MAX =
+  Number.isFinite(CONTENT_HASH_INDEX_MAX_RAW) && CONTENT_HASH_INDEX_MAX_RAW >= 2048
+    ? CONTENT_HASH_INDEX_MAX_RAW
+    : 60000;
+const DOMAIN_STATE_MAX_RAW = Number.parseInt(
+  process.env.WEAVER_DOMAIN_STATE_MAX || "4000",
+  10,
+);
+const DOMAIN_STATE_MAX =
+  Number.isFinite(DOMAIN_STATE_MAX_RAW) && DOMAIN_STATE_MAX_RAW >= 128
+    ? DOMAIN_STATE_MAX_RAW
+    : 4000;
 const ACTIVATION_THRESHOLD = Number.parseFloat(
   process.env.WEAVER_ACTIVATION_THRESHOLD || "1.0",
 );
@@ -72,10 +88,12 @@ const ENTITY_MOVE_MAX_MS = Number.parseInt(
   10,
 );
 const LLM_ENABLED = !["0", "false", "off"].includes(
-  String(process.env.WEAVER_LLM_ENABLED || "1").trim().toLowerCase(),
+  String(process.env.WEAVER_LLM_ENABLED || "0").trim().toLowerCase(),
 );
-const LLM_BASE_URL = String(process.env.WEAVER_LLM_BASE_URL || "http://127.0.0.1:11434").trim();
-const LLM_MODEL = String(process.env.WEAVER_LLM_MODEL || "qwen2.5:3b-instruct").trim();
+const LLM_BASE_URL = String(
+  process.env.WEAVER_LLM_BASE_URL || process.env.TEXT_GENERATION_BASE_URL || "http://127.0.0.1:18000/v1",
+).trim();
+const LLM_MODEL = String(process.env.WEAVER_LLM_MODEL || "qwen3-vl:2b-instruct").trim();
 const LLM_TIMEOUT_MS = Number.parseInt(
   process.env.WEAVER_LLM_TIMEOUT_MS || "9000",
   10,
@@ -1104,6 +1122,7 @@ class WebGraphWeaver {
     this.graph = new GraphStore({ maxUrlNodes: DEFAULT_MAX_NODES });
     this.robotsCache = new RobotsCache();
     this.contentHashIndex = new Map();
+    this.maxContentHashIndex = CONTENT_HASH_INDEX_MAX;
     this.optOutDomains = new Set();
     this.recentEvents = [];
     this.inFlightUrls = new Set();
@@ -1154,6 +1173,7 @@ class WebGraphWeaver {
     };
 
     this.domainState = new Map();
+    this.maxDomainStateEntries = DOMAIN_STATE_MAX;
 
     this.broadcast = () => {};
     this.scheduler = setInterval(() => {
@@ -1228,6 +1248,9 @@ class WebGraphWeaver {
 
   _domainState(domain) {
     if (!this.domainState.has(domain)) {
+      if (this.domainState.size >= this.maxDomainStateEntries) {
+        this._pruneDomainState();
+      }
       this.domainState.set(domain, {
         nextAllowedAt: 0,
         crawlDelayMs: this.defaultDelayMs,
@@ -1237,6 +1260,50 @@ class WebGraphWeaver {
       });
     }
     return this.domainState.get(domain);
+  }
+
+  _pruneDomainState() {
+    if (this.domainState.size <= this.maxDomainStateEntries) {
+      return;
+    }
+    const trimTarget = Math.max(64, Math.floor(this.maxDomainStateEntries * 0.9));
+    for (const [domain, state] of this.domainState.entries()) {
+      if (this.domainState.size <= trimTarget) {
+        break;
+      }
+      if (Number(state?.active || 0) > 0) {
+        continue;
+      }
+      this.domainState.delete(domain);
+    }
+    if (this.domainState.size <= trimTarget) {
+      return;
+    }
+    for (const domain of this.domainState.keys()) {
+      if (this.domainState.size <= trimTarget) {
+        break;
+      }
+      this.domainState.delete(domain);
+    }
+  }
+
+  _pruneContentHashIndex() {
+    if (this.contentHashIndex.size <= this.maxContentHashIndex) {
+      return;
+    }
+    const trimTarget = Math.max(1024, Math.floor(this.maxContentHashIndex * 0.9));
+    const removeCount = this.contentHashIndex.size - trimTarget;
+    if (removeCount <= 0) {
+      return;
+    }
+    let removed = 0;
+    for (const hash of this.contentHashIndex.keys()) {
+      this.contentHashIndex.delete(hash);
+      removed += 1;
+      if (removed >= removeCount) {
+        break;
+      }
+    }
   }
 
   _recordSemanticEdgeStats(edgeKind) {
@@ -1534,18 +1601,23 @@ class WebGraphWeaver {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
         try {
-          const response = await fetch(`${LLM_BASE_URL.replace(/\/+$/, "")}/api/generate`, {
+          const baseUrl = LLM_BASE_URL.replace(/\/+$/, "");
+          const endpoint = baseUrl.endsWith("/v1/chat/completions")
+            ? baseUrl
+            : baseUrl.endsWith("/v1")
+              ? `${baseUrl}/chat/completions`
+              : `${baseUrl}/v1/chat/completions`;
+          const response = await fetch(endpoint, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
             },
             body: JSON.stringify({
               model: LLM_MODEL,
-              prompt,
+              messages: [{ role: "user", content: prompt }],
               stream: false,
-              options: {
-                temperature: 0.2,
-              },
+              temperature: 0.2,
+              max_tokens: 300,
             }),
             signal: controller.signal,
           });
@@ -1553,10 +1625,14 @@ class WebGraphWeaver {
             throw new Error(`llm_http_${response.status}`);
           }
           const payload = await response.json();
-          const candidate = String(payload.response || "").replace(/\s+/g, " ").trim();
+          const candidate = String(
+            payload?.choices?.[0]?.message?.content || payload?.choices?.[0]?.text || "",
+          )
+            .replace(/\s+/g, " ")
+            .trim();
           if (candidate) {
             summary = candidate.slice(0, 700);
-            provider = "ollama";
+            provider = "openai-chat";
           }
         } finally {
           clearTimeout(timeoutId);
@@ -2272,6 +2348,7 @@ class WebGraphWeaver {
       }
 
       this.contentHashIndex.set(contentHash, item.url);
+      this._pruneContentHashIndex();
 
       let outboundCount = 0;
       if (contentType.includes("html")) {

@@ -42,9 +42,29 @@ export const CONTRACT_ημ_INGEST_V1 = Object.freeze({
     outRoot: ".Π",
     registryPath: ".ημ/ημ_registry.jsonl",
     backlogDir: ".ημ/backlog",
+    exclude: [
+      "node_modules",
+      "bower_components",
+      "vendor",
+      "dist",
+      "build",
+      "target",
+      "out",
+      "bin",
+      "obj",
+      ".git",
+      ".next",
+      ".nuxt",
+      ".vite",
+      ".svelte-kit",
+      "__pycache__",
+      "_rejected",
+      "_notes",
+    ],
     allowedExt: {
       text: [".txt", ".md", ".json", ".yaml", ".yml", ".csv"],
       image: [".png", ".jpg", ".jpeg", ".webp", ".gif"],
+      audio: [".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac", ".aiff", ".wma"],
     },
   },
 
@@ -130,7 +150,11 @@ export const CONTRACT_ημ_INGEST_V1 = Object.freeze({
 
     step("filter-allowed", {
       fn: (st, c) => {
-        const allowed = new Set([...c.scope.allowedExt.text, ...c.scope.allowedExt.image]);
+        const allowed = new Set([
+          ...c.scope.allowedExt.text,
+          ...c.scope.allowedExt.image,
+          ...c.scope.allowedExt.audio,
+        ]);
         const keep = st.files.filter((p) => allowed.has(path.extname(p).toLowerCase()));
         return { ...st, candidates: keep };
       },
@@ -142,7 +166,9 @@ export const CONTRACT_ημ_INGEST_V1 = Object.freeze({
         for (const p of st.candidates) {
           const sha = await sha256File(p);
           const ext = path.extname(p).toLowerCase();
-          const kind = c.scope.allowedExt.image.includes(ext) ? "image" : "text";
+          let kind = "text";
+          if (c.scope.allowedExt.image.includes(ext)) kind = "image";
+          if (c.scope.allowedExt.audio.includes(ext)) kind = "audio";
           routed.push({ path: p, sha, kind });
         }
         return { ...st, routed };
@@ -360,7 +386,7 @@ async function runPipeline(contract, st, handlers) {
 // -----------------------------
 const HANDLERS = {
   // filesystem
-  "fs.walk": async (act) => ({ files: await walkDir(act.attrs.path) }),
+  "fs.walk": async (act, st, c) => ({ files: await walkDir(act.attrs.path, c.scope.exclude) }),
   "fs.read": async (act) => ({ text: await fs.readFile(act.attrs.path, "utf8") }),
   "fs.append": async (act) => ({ ok: true, bytes: (await fs.appendFile(act.attrs.path, act.attrs.text)).length }),
   "fs.mkdir": async (act) => (await fs.mkdir(act.attrs.path, { recursive: true }), { ok: true }),
@@ -502,11 +528,13 @@ async function sha256File(p) {
   return crypto.createHash("sha256").update(buf).digest("hex");
 }
 
-async function walkDir(root) {
+async function walkDir(root, exclude = []) {
   const out = [];
+  const excludeSet = new Set(exclude);
   async function rec(dir) {
     const ents = await fs.readdir(dir, { withFileTypes: true });
     for (const e of ents) {
+      if (excludeSet.has(e.name)) continue;
       const full = path.join(dir, e.name);
       if (e.isDirectory()) await rec(full);
       else out.push(full.replace(/\\/g, "/"));
