@@ -893,6 +893,69 @@ def test_simulation_projection_can_activate_from_view_edge_pressure() -> None:
     assert float(policy.get("compaction_drive", 0.0)) >= 0.2
 
 
+def test_simulation_projection_can_activate_from_memory_sentinel_pressure() -> None:
+    graph = _synthetic_file_graph(file_count=90, edges_per_file=1)
+    crawler_graph = {
+        "record": "eta-mu.crawler-graph.v1",
+        "generated_at": "2026-01-01T00:00:00+00:00",
+        "field_nodes": [],
+        "crawler_nodes": [
+            {"id": "crawler:a", "node_id": "crawler:a", "node_type": "crawler"},
+            {"id": "crawler:b", "node_id": "crawler:b", "node_type": "crawler"},
+        ],
+        "edges": [
+            {
+                "id": f"crawler-edge:memory-pressure:{index:04d}",
+                "source": "crawler:a",
+                "target": "crawler:b",
+                "kind": "crawl_ref",
+                "weight": 0.42,
+            }
+            for index in range(640)
+        ],
+        "stats": {"field_count": 0, "crawler_count": 2, "edge_count": 640},
+    }
+
+    simulation = build_simulation_state(
+        {
+            "items": [
+                {"rel_path": "docs/a.md", "part": "part64", "kind": "text"},
+                {"rel_path": "docs/b.md", "part": "part64", "kind": "text"},
+            ],
+            "counts": {"audio": 0, "image": 0, "video": 0},
+            "file_graph": graph,
+            "crawler_graph": crawler_graph,
+        },
+        influence_snapshot={
+            "clicks_45s": 0,
+            "file_changes_120s": 0,
+            "recent_file_paths": ["docs/node_0001.md"],
+            "compute_jobs_180s": 0,
+            "compute_summary": {"resource_counts": {"cpu": 0}},
+            "resource_heartbeat": {
+                "devices": {
+                    "cpu": {"utilization": 18.0, "memory_pressure": 0.96},
+                },
+                "resource_monitor": {
+                    "memory_percent": 96.0,
+                },
+            },
+        },
+        queue_snapshot={"pending_count": 0, "event_count": 0},
+    )
+
+    projection = simulation.get("file_graph", {}).get("projection", {})
+    assert bool(projection.get("active", False)) is True
+    assert projection.get("reason") == "memory_sentinel_compaction_pressure"
+
+    policy = projection.get("policy", {})
+    limits = projection.get("limits", {})
+    assert float(policy.get("memory_pressure", 0.0)) >= 0.7
+    assert float(policy.get("cpu_pressure", 0.0)) <= 0.05
+    assert policy.get("memory_source") in {"resource_monitor", "cpu.memory_pressure"}
+    assert int(limits.get("edge_cap", 0)) < int(limits.get("edge_cap_base", 0))
+
+
 def test_simulation_projection_can_enter_decompression_mode_with_headroom() -> None:
     graph = _synthetic_file_graph(file_count=160, edges_per_file=2)
     simulation = build_simulation_state(

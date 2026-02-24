@@ -112,8 +112,8 @@ services:
     ports:
       - "${ETA_MU_WEAVER_PORT:-8793}:8793"
     cpus: "12.00"
-    mem_limit: "24000m"
-    memswap_limit: "24000m"
+    mem_limit: "20000m"
+    memswap_limit: "20000m"
     pids_limit: 220
     gpus: all
     devices:

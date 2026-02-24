@@ -1993,10 +1993,53 @@ def _project_file_graph_for_simulation(
             if isinstance(heartbeat_devices.get("cpu", {}), dict)
             else {}
         )
+        heartbeat_monitor = (
+            resource_heartbeat.get("resource_monitor", {})
+            if isinstance(resource_heartbeat, dict)
+            and isinstance(resource_heartbeat.get("resource_monitor", {}), dict)
+            else {}
+        )
+        heartbeat_host = (
+            resource_heartbeat.get("host", {})
+            if isinstance(resource_heartbeat, dict)
+            and isinstance(resource_heartbeat.get("host", {}), dict)
+            else {}
+        )
         cpu_utilization = max(
             0.0,
             min(100.0, _safe_float(heartbeat_cpu.get("utilization", 0.0), 0.0)),
         )
+        monitor_memory_percent = _safe_float(
+            heartbeat_monitor.get("memory_percent", float("nan")),
+            float("nan"),
+        )
+        cpu_memory_pressure = _safe_float(
+            heartbeat_cpu.get("memory_pressure", float("nan")),
+            float("nan"),
+        )
+        host_memory_total_mb = _safe_float(
+            heartbeat_host.get("memory_total_mb", 0.0),
+            0.0,
+        )
+        host_memory_available_mb = _safe_float(
+            heartbeat_host.get("memory_available_mb", 0.0),
+            0.0,
+        )
+        memory_utilization = 0.0
+        memory_source = "none"
+        if math.isfinite(monitor_memory_percent):
+            memory_utilization = max(0.0, min(100.0, monitor_memory_percent))
+            memory_source = "resource_monitor"
+        elif math.isfinite(cpu_memory_pressure):
+            memory_utilization = max(0.0, min(100.0, cpu_memory_pressure * 100.0))
+            memory_source = "cpu.memory_pressure"
+        elif host_memory_total_mb > 0.0:
+            used_ratio = _clamp01(
+                (host_memory_total_mb - max(0.0, host_memory_available_mb))
+                / max(1.0, host_memory_total_mb)
+            )
+            memory_utilization = used_ratio * 100.0
+            memory_source = "host.meminfo"
 
         compute_summary = (
             influence_snapshot.get("compute_summary", {})
@@ -2037,6 +2080,25 @@ def _project_file_graph_for_simulation(
         cpu_headroom = _clamp01(
             (cpu_preheat_threshold - cpu_utilization) / max(1.0, cpu_preheat_threshold)
         )
+        memory_preheat_threshold = max(
+            56.0,
+            min(
+                96.0,
+                _safe_float(
+                    os.getenv("SIMULATION_MEMORY_COMPACTION_START_PERCENT", "82")
+                    or "82",
+                    82.0,
+                ),
+            ),
+        )
+        memory_pressure = _clamp01(
+            (memory_utilization - memory_preheat_threshold)
+            / max(1.0, (100.0 - memory_preheat_threshold))
+        )
+        memory_headroom = _clamp01(
+            (memory_preheat_threshold - memory_utilization)
+            / max(1.0, memory_preheat_threshold)
+        )
         queue_pressure = _clamp01(
             (queue_pending_count / 24.0) + (queue_event_count / 96.0)
         )
@@ -2055,18 +2117,25 @@ def _project_file_graph_for_simulation(
         )
         view_headroom = _clamp01(1.0 - view_edge_pressure)
         sentinel_compaction_drive = _clamp01(
-            (cpu_pressure * 0.44)
-            + (view_edge_pressure * 0.28)
-            + (queue_pressure * 0.16)
-            + (compute_pressure * 0.12)
+            (cpu_pressure * 0.32)
+            + (memory_pressure * 0.24)
+            + (view_edge_pressure * 0.22)
+            + (queue_pressure * 0.12)
+            + (compute_pressure * 0.1)
         )
         sentinel_decompression_drive = _clamp01(
-            ((cpu_headroom * 0.62) + (queue_headroom * 0.2) + (compute_headroom * 0.18))
+            (
+                (cpu_headroom * 0.4)
+                + (memory_headroom * 0.28)
+                + (queue_headroom * 0.18)
+                + (compute_headroom * 0.14)
+            )
             * view_headroom
         )
         decompression_enabled = (
             sentinel_decompression_drive >= 0.2
             and cpu_pressure <= 0.28
+            and memory_pressure <= 0.24
             and queue_pressure <= 0.38
             and compute_pressure <= 0.34
         )
@@ -2105,6 +2174,11 @@ def _project_file_graph_for_simulation(
                 _RESOURCE_DAIMOI_CPU_SENTINEL_BURN_START_PERCENT,
                 3,
             ),
+            "memory_utilization": round(memory_utilization, 3),
+            "memory_source": memory_source,
+            "memory_preheat_threshold": round(memory_preheat_threshold, 3),
+            "memory_pressure": round(memory_pressure, 6),
+            "memory_headroom": round(memory_headroom, 6),
             "cpu_pressure": round(cpu_pressure, 6),
             "cpu_headroom": round(cpu_headroom, 6),
             "queue_pressure": round(queue_pressure, 6),
@@ -2771,11 +2845,22 @@ def _project_file_graph_for_simulation(
             "decompression_budget"
             if projection_control_mode == "decompression"
             else (
-                "cpu_sentinel_compaction_pressure"
-                if effective_compaction_drive >= 0.2
-                else "edge_budget"
+                "memory_sentinel_compaction_pressure"
+                if (memory_pressure >= 0.2 and memory_pressure >= cpu_pressure)
+                else (
+                    "cpu_sentinel_compaction_pressure"
+                    if effective_compaction_drive >= 0.2
+                    else "edge_budget"
+                )
             )
         )
+
+        if (
+            projection_control_mode != "decompression"
+            and projection_reason == "memory_sentinel_compaction_pressure"
+            and effective_compaction_drive < 0.2
+        ):
+            projection_reason = "edge_budget"
 
         projection_payload = {
             "record": SIMULATION_FILE_GRAPH_PROJECTION_RECORD,
@@ -2862,6 +2947,7 @@ def _project_file_graph_for_simulation(
                     "decompression_drive": round(sentinel_decompression_drive, 6),
                     "control_mode": projection_control_mode,
                     "cpu_pressure": round(cpu_pressure, 6),
+                    "memory_pressure": round(memory_pressure, 6),
                     "view_edge_pressure": round(view_edge_pressure, 6),
                 },
             ),
