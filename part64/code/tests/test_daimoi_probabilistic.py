@@ -1054,86 +1054,73 @@ def test_simulation_cpu_sentinel_burns_wallet_above_threshold(
 def test_simulation_cpu_sentinel_forces_cpu_resource_targets_when_hot(
     monkeypatch: Any,
 ) -> None:
-    monkeypatch.setenv("SIM_PARTICLE_BACKEND", "python")
-    monkeypatch.setenv("SIMULATION_PRESENCE_PROFILE", "concept_cpu")
-    monkeypatch.setenv("SIMULATION_CORE_RESOURCES", "cpu")
-    monkeypatch.setenv("SIMULATION_CPU_SENTINEL_BURN_START_PERCENT", "90")
-    monkeypatch.setenv("SIMULATION_CPU_SENTINEL_ATTRACTOR_START_PERCENT", "90")
-    monkeypatch.setenv("SIMULATION_CPU_SENTINEL_ATTRACTOR_ALL_DAIMOI", "1")
-    monkeypatch.setenv("SIMULATION_RESET_DAIMOI_ON_BOOT", "0")
-    monkeypatch.setitem(simulation_module._RESOURCE_DAIMOI_WALLET_CAP, "cpu", 1.0)
     monkeypatch.setattr(
         simulation_module,
-        "_resource_monitor_snapshot",
-        lambda: {
-            "devices": {
-                "cpu": {"utilization": 96.0},
-                "gpu1": {"utilization": 20.0},
-                "gpu2": {"utilization": 18.0},
-                "npu0": {"utilization": 14.0},
-            },
-            "resource_monitor": {
-                "cpu_percent": 96.0,
-                "memory_percent": 46.0,
-                "disk_percent": 29.0,
-                "network_percent": 23.0,
-            },
-        },
+        "_RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_START_PERCENT",
+        90.0,
     )
+    monkeypatch.setattr(
+        simulation_module,
+        "_RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_ALL_DAIMOI",
+        True,
+    )
+    monkeypatch.setitem(simulation_module._RESOURCE_DAIMOI_WALLET_CAP, "cpu", 1.0)
 
-    from code.world_web.presence_runtime import get_presence_runtime_manager
-
-    manager = get_presence_runtime_manager()
-    manager.reset()
-    witness_wallet = manager.get_state("witness_thread").setdefault(
-        "resource_wallet", {}
-    )
-    witness_wallet["cpu"] = 28.0
-    anchor_wallet = manager.get_state("anchor_registry").setdefault(
-        "resource_wallet", {}
-    )
-    anchor_wallet["cpu"] = 22.0
-    sentinel_wallet = manager.get_state("health_sentinel_cpu").setdefault(
-        "resource_wallet", {}
-    )
-    sentinel_wallet["cpu"] = 18.0
-
-    simulation = build_simulation_state(
+    field_particles = [
         {
-            "items": [],
-            "counts": {"audio": 0, "image": 0, "video": 0},
-            "file_graph": {"file_nodes": []},
-        },
-        influence_snapshot={
-            "clicks_45s": 0,
-            "file_changes_120s": 0,
-            "recent_click_targets": [],
-            "recent_file_paths": [],
-        },
-        queue_snapshot={"pending_count": 0, "event_count": 0},
-    )
-
-    dynamics = simulation.get("presence_dynamics", {})
-    field_particles = dynamics.get("field_particles", [])
-    cpu_resource_rows = [
-        row
-        for row in field_particles
-        if bool(row.get("resource_daimoi", False))
-        and str(row.get("resource_type", "")).strip() == "cpu"
+            "id": "particle:witness:01",
+            "presence_id": "witness_thread",
+            "is_nexus": False,
+            "x": 0.45,
+            "y": 0.48,
+            "influence_power": 0.8,
+            "message_probability": 0.72,
+            "route_probability": 0.6,
+            "drift_score": 0.1,
+            "gravity_potential": 0.2,
+            "local_price": 1.0,
+        }
     ]
-    assert cpu_resource_rows
-    assert all(
-        str(row.get("resource_target_presence_id", "")).strip() == "health_sentinel_cpu"
-        for row in cpu_resource_rows
-    )
-    assert any(
-        bool(row.get("cpu_sentinel_attractor_active", False))
-        for row in cpu_resource_rows
+    presence_impacts = [
+        {
+            "id": "witness_thread",
+            "presence_type": "presence",
+            "x": 0.45,
+            "y": 0.48,
+            "affected_by": {"resource": 0.6},
+            "resource_wallet": {"cpu": 0.9},
+        },
+        {
+            "id": "health_sentinel_cpu",
+            "presence_type": "presence",
+            "x": 0.52,
+            "y": 0.52,
+            "affected_by": {"resource": 0.2},
+            "resource_wallet": {"cpu": 0.2},
+        },
+    ]
+
+    summary = simulation_module._apply_resource_daimoi_emissions(
+        field_particles=field_particles,
+        presence_impacts=presence_impacts,
+        resource_heartbeat={"devices": {"cpu": {"utilization": 96.0}}},
+        queue_ratio=0.0,
     )
 
-    resource_daimoi = dynamics.get("resource_daimoi", {})
-    assert resource_daimoi.get("cpu_sentinel_attractor_active") is True
-    assert int(float(resource_daimoi.get("cpu_sentinel_forced_packets", 0) or 0.0)) > 0
+    assert summary.get("cpu_sentinel_attractor_active") is True
+    assert int(float(summary.get("cpu_sentinel_forced_packets", 0) or 0.0)) > 0
+
+    assert bool(field_particles[0].get("resource_daimoi", False)) is True
+    assert str(field_particles[0].get("resource_type", "")).strip() == "cpu"
+    assert (
+        str(field_particles[0].get("resource_target_presence_id", "")).strip()
+        == "health_sentinel_cpu"
+    )
+    assert bool(field_particles[0].get("cpu_sentinel_attractor_active", False)) is True
+    assert (
+        str(field_particles[0].get("resource_forced_target", "")).strip()
+        == "cpu_sentinel_attractor"
+    )
 
 
 def test_config_payload_exposes_magic_number_constants_by_module() -> None:
