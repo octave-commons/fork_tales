@@ -58,6 +58,7 @@ part64/frontend/dist/
 part64/frontend/dist-ssr/
 
 # Local benchmark/runtime artifacts
+**/.cache*/
 part64/.cache-npu/
 part64/bench_embed_native
 part64/bench_embed_native_dbg
@@ -68,4 +69,5 @@ part64/runs/
 part64/code/world_web/native/libc_embed_runtime.so
 part64/code/world_web/native/libc_embed_runtime.buildinfo
 part64/frontend/coverage/
+part64/models/*/model.safetensors
 session-ses_*.md

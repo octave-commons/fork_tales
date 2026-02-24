@@ -37,6 +37,92 @@ type WsChunkAssembly = {
 const WS_CHUNK_TTL_MS = 15_000;
 const WS_CHUNK_CLEANUP_INTERVAL_MS = 2_000;
 const WS_CHUNK_MAX_ACTIVE = 96;
+const CATALOG_STREAM_CHUNK_ROWS = 128;
+
+type CatalogStreamSection =
+  | 'items'
+  | 'file_nodes'
+  | 'file_edges'
+  | 'file_embed_layers'
+  | 'crawler_nodes'
+  | 'crawler_edges';
+
+const CATALOG_STREAM_SECTION_PATHS: Record<CatalogStreamSection, string[]> = {
+  items: ['items'],
+  file_nodes: ['file_graph', 'file_nodes'],
+  file_edges: ['file_graph', 'edges'],
+  file_embed_layers: ['file_graph', 'embed_layers'],
+  crawler_nodes: ['crawler_graph', 'crawler_nodes'],
+  crawler_edges: ['crawler_graph', 'edges'],
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function catalogStreamSectionPath(section: string): string[] | null {
+  const clean = String(section || '').trim().toLowerCase() as CatalogStreamSection;
+  return CATALOG_STREAM_SECTION_PATHS[clean] ?? null;
+}
+
+function catalogStreamArrayTarget(catalog: Record<string, unknown>, section: string): unknown[] | null {
+  const path = catalogStreamSectionPath(section);
+  if (!path || path.length <= 0) {
+    return null;
+  }
+
+  let cursor: Record<string, unknown> = catalog;
+  for (let index = 0; index < path.length - 1; index += 1) {
+    const key = path[index];
+    const nested = cursor[key];
+    if (!isRecord(nested)) {
+      const nextNested: Record<string, unknown> = {};
+      cursor[key] = nextNested;
+      cursor = nextNested;
+    } else {
+      cursor = nested;
+    }
+  }
+
+  const leafKey = path[path.length - 1];
+  const leafValue = cursor[leafKey];
+  if (Array.isArray(leafValue)) {
+    return leafValue;
+  }
+  const nextRows: unknown[] = [];
+  cursor[leafKey] = nextRows;
+  return nextRows;
+}
+
+function createCatalogStreamDraft(metaCatalog: unknown): Catalog | null {
+  if (!isRecord(metaCatalog)) {
+    return null;
+  }
+  const draft = JSON.parse(JSON.stringify(metaCatalog)) as Record<string, unknown>;
+  (Object.keys(CATALOG_STREAM_SECTION_PATHS) as CatalogStreamSection[]).forEach((section) => {
+    const target = catalogStreamArrayTarget(draft, section);
+    if (target) {
+      target.length = 0;
+    }
+  });
+  return draft as unknown as Catalog;
+}
+
+function mergeCatalogStreamRows(
+  draftCatalog: Catalog,
+  section: string,
+  offset: number,
+  rows: unknown[],
+): void {
+  const target = catalogStreamArrayTarget(draftCatalog as unknown as Record<string, unknown>, section);
+  if (!target || !Array.isArray(rows) || rows.length <= 0) {
+    return;
+  }
+  const baseOffset = Number.isFinite(offset) ? Math.max(0, Math.floor(offset)) : 0;
+  rows.forEach((row, index) => {
+    target[baseOffset + index] = row;
+  });
+}
 
 function mergeMuseEvents(previous: MuseEvent[], incoming: MuseEvent[]): MuseEvent[] {
   if (!Array.isArray(incoming) || incoming.length <= 0) {
@@ -84,10 +170,49 @@ function mergeSimulationPatch(
     ...patch,
   };
   if (patch.presence_dynamics && previous.presence_dynamics) {
+    const previousDynamics = previous.presence_dynamics;
+    const patchDynamics = patch.presence_dynamics;
     next.presence_dynamics = {
-      ...previous.presence_dynamics,
-      ...patch.presence_dynamics,
+      ...previousDynamics,
+      ...patchDynamics,
     };
+
+    const previousParticles = Array.isArray(previousDynamics.field_particles)
+      ? previousDynamics.field_particles
+      : [];
+    const patchParticles = Array.isArray(patchDynamics.field_particles)
+      ? patchDynamics.field_particles
+      : [];
+    if (patchParticles.length > 0 && previousParticles.length > 0) {
+      const previousById = new Map<string, (typeof previousParticles)[number]>();
+      previousParticles.forEach((row, index) => {
+        if (!row || typeof row !== 'object') {
+          return;
+        }
+        const rowRecord = row as (typeof previousParticles)[number];
+        const rowId = String(rowRecord.id ?? rowRecord.presence_id ?? `particle:${index}`).trim();
+        if (!rowId || previousById.has(rowId)) {
+          return;
+        }
+        previousById.set(rowId, rowRecord);
+      });
+
+      next.presence_dynamics.field_particles = patchParticles.map((row, index) => {
+        if (!row || typeof row !== 'object') {
+          return row;
+        }
+        const rowRecord = row as (typeof patchParticles)[number];
+        const rowId = String(rowRecord.id ?? rowRecord.presence_id ?? `particle:${index}`).trim();
+        const previousRow = previousById.get(rowId);
+        if (!previousRow) {
+          return row;
+        }
+        return {
+          ...previousRow,
+          ...rowRecord,
+        } as (typeof patchParticles)[number];
+      });
+    }
   }
   return next;
 }
@@ -168,6 +293,8 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
   const wsRef = useRef<WebSocket | null>(null);
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const projectionFetchTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const simulationFallbackInFlightRef = useRef(false);
+  const simulationFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const flushFrameRef = useRef<number | null>(null);
   const connectRef = useRef<(() => void) | null>(null);
   const shouldReconnectRef = useRef(true);
@@ -249,7 +376,7 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
 
   const connect = useCallback(() => {
     const url = runtimeWebSocketUrl(
-      `/ws?perspective=${encodeURIComponent(perspective)}&delta_stream=workers&wire=json&simulation_payload=full&ws_chunk=1`,
+      `/ws?perspective=${encodeURIComponent(perspective)}&delta_stream=workers&wire=arr&simulation_payload=trimmed&particle_payload=lite&ws_chunk=1&catalog_events=0&skip_catalog_bootstrap=1`,
     );
 
     wsChunkAssembliesRef.current = {};
@@ -437,14 +564,130 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
     const fetchInitial = async () => {
       try {
         const perspectiveQs = `perspective=${encodeURIComponent(perspective)}`;
-        const fetchCatalog = async () => {
+        const fetchCatalogFromStream = async (): Promise<Catalog | null> => {
+          const streamRes = await fetch(
+            runtimeApiUrl(
+              `/api/catalog/stream?${perspectiveQs}&trim=1&chunk_rows=${CATALOG_STREAM_CHUNK_ROWS}`,
+            ),
+            {
+              signal: controller.signal,
+            },
+          );
+          if (!streamRes.ok || !streamRes.body || typeof streamRes.body.getReader !== 'function') {
+            return null;
+          }
+
+          const reader = streamRes.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          let draftCatalog: Catalog | null = null;
+          let streamDoneOk = false;
+          let streamError = '';
+
+          const processLine = (rawLine: string) => {
+            const line = String(rawLine || '').trim();
+            if (!line) {
+              return;
+            }
+
+            let payload: unknown = null;
+            try {
+              payload = JSON.parse(line);
+            } catch {
+              return;
+            }
+            if (!isRecord(payload)) {
+              return;
+            }
+
+            const rowType = String(payload.type ?? '').trim().toLowerCase();
+            if (rowType === 'meta') {
+              draftCatalog = createCatalogStreamDraft(payload.catalog);
+              return;
+            }
+            if (rowType === 'rows') {
+              if (!draftCatalog) {
+                return;
+              }
+              const section = String(payload.section ?? '').trim();
+              const offsetRaw = Number(payload.offset ?? 0);
+              const rows = Array.isArray(payload.rows) ? payload.rows : [];
+              mergeCatalogStreamRows(draftCatalog, section, offsetRaw, rows);
+              return;
+            }
+            if (rowType === 'error') {
+              streamError = String(payload.error ?? 'catalog_stream_error').trim() || 'catalog_stream_error';
+              return;
+            }
+            if (rowType === 'done') {
+              streamDoneOk = payload.ok === true || String(payload.ok ?? '').trim().toLowerCase() === 'true';
+            }
+          };
+
+          try {
+            while (true) {
+              const { value, done } = await reader.read();
+              if (done) {
+                break;
+              }
+              buffer += decoder.decode(value, { stream: true });
+
+              let newlineIndex = buffer.indexOf('\n');
+              while (newlineIndex >= 0) {
+                const line = buffer.slice(0, newlineIndex);
+                buffer = buffer.slice(newlineIndex + 1);
+                processLine(line);
+                if (streamError) {
+                  break;
+                }
+                newlineIndex = buffer.indexOf('\n');
+              }
+              if (streamError) {
+                break;
+              }
+            }
+
+            buffer += decoder.decode();
+            if (buffer.trim()) {
+              processLine(buffer);
+            }
+          } finally {
+            reader.releaseLock();
+          }
+
+          if (streamError) {
+            throw new Error(streamError);
+          }
+          if (!streamDoneOk || !draftCatalog) {
+            return null;
+          }
+          return draftCatalog;
+        };
+
+        const fetchCatalogLegacyJson = async (): Promise<Catalog | null> => {
           const catalogRes = await fetch(runtimeApiUrl(`/api/catalog?${perspectiveQs}`), {
             signal: controller.signal,
           });
           if (!catalogRes.ok) {
+            return null;
+          }
+          return (await catalogRes.json()) as Catalog;
+        };
+
+        const fetchCatalog = async () => {
+          let catalog: Catalog | null = null;
+          try {
+            catalog = await fetchCatalogFromStream();
+          } catch (streamError) {
+            console.warn('Initial catalog stream fetch failed', streamError);
+          }
+          if (!catalog) {
+            catalog = await fetchCatalogLegacyJson();
+          }
+          if (!catalog) {
             return;
           }
-          const catalog = await catalogRes.json();
+
           enqueueStatePatch({
             catalog,
             ...(catalog?.ui_projection ? { projection: catalog.ui_projection } : {}),
@@ -520,6 +763,63 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
       wsChunkCleanupAtMsRef.current = 0;
     };
   }, [connect, enqueueStatePatch, perspective]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+
+    const scheduleNext = (delayMs: number) => {
+      clearTimeout(simulationFallbackTimerRef.current);
+      simulationFallbackTimerRef.current = window.setTimeout(() => {
+        void pollSimulationFallback();
+      }, delayMs);
+    };
+
+    const pollSimulationFallback = async () => {
+      if (cancelled || controller.signal.aborted) {
+        return;
+      }
+      if (simulationFallbackInFlightRef.current) {
+        scheduleNext(3500);
+        return;
+      }
+      if (stateRef.current.simulation) {
+        return;
+      }
+
+      simulationFallbackInFlightRef.current = true;
+      try {
+        const perspectiveQs = `perspective=${encodeURIComponent(perspective)}`;
+        const simulationRes = await fetch(runtimeApiUrl(`/api/simulation?${perspectiveQs}&compact=1`), {
+          signal: controller.signal,
+        });
+        if (!simulationRes.ok) {
+          scheduleNext(4000);
+          return;
+        }
+        const simulation = await simulationRes.json();
+        enqueueStatePatch({
+          simulation,
+          ...(simulation?.projection ? { projection: simulation.projection } : {}),
+        });
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === 'AbortError')) {
+          scheduleNext(4500);
+        }
+      } finally {
+        simulationFallbackInFlightRef.current = false;
+      }
+    };
+
+    scheduleNext(1200);
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+      clearTimeout(simulationFallbackTimerRef.current);
+      simulationFallbackInFlightRef.current = false;
+    };
+  }, [enqueueStatePatch, perspective]);
 
   return state;
 }

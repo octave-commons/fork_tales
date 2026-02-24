@@ -179,6 +179,30 @@ SIMULATION_FILE_GRAPH_EDGE_RESPONSE_FACTOR = max(
         2.0,
     ),
 )
+USER_SEARCH_QUERY_KINDS: set[str] = {
+    "search",
+    "search_query",
+    "query",
+    "semantic_search",
+}
+USER_QUERY_TRANSIENT_TTL_SECONDS = max(
+    8.0,
+    _safe_float(
+        os.getenv("USER_QUERY_TRANSIENT_TTL_SECONDS", "36.0") or "36.0",
+        36.0,
+    ),
+)
+USER_QUERY_TRANSIENT_TTL_MAX_SECONDS = max(
+    USER_QUERY_TRANSIENT_TTL_SECONDS,
+    _safe_float(
+        os.getenv("USER_QUERY_TRANSIENT_TTL_MAX_SECONDS", "180.0") or "180.0",
+        180.0,
+    ),
+)
+USER_QUERY_TRANSIENT_PROMOTION_HITS = max(
+    2,
+    _safe_int(os.getenv("USER_QUERY_TRANSIENT_PROMOTION_HITS", "3") or "3", 3),
+)
 
 
 _SIMULATION_MINIMAL_PRESENCE_IDS: tuple[str, ...] = (
@@ -223,15 +247,15 @@ SIMULATION_STREAM_CENTER_GRAVITY = max(
 SIMULATION_STREAM_JITTER_FORCE = max(
     0.0,
     _safe_float(
-        os.getenv("SIMULATION_WS_STREAM_JITTER_FORCE", "0.085") or "0.085",
-        0.085,
+        os.getenv("SIMULATION_WS_STREAM_JITTER_FORCE", "0.098") or "0.098",
+        0.098,
     ),
 )
 SIMULATION_STREAM_SIMPLEX_SCALE = max(
     0.0,
     _safe_float(
-        os.getenv("SIMULATION_WS_STREAM_SIMPLEX_SCALE", "2.4") or "2.4",
-        2.4,
+        os.getenv("SIMULATION_WS_STREAM_SIMPLEX_SCALE", "2.95") or "2.95",
+        2.95,
     ),
 )
 _SIMULATION_STREAM_FRICTION_LEGACY = _safe_float(
@@ -269,6 +293,46 @@ SIMULATION_STREAM_NEXUS_FRICTION = max(
 SIMULATION_STREAM_MAX_SPEED = max(
     0.005,
     _safe_float(os.getenv("SIMULATION_WS_STREAM_MAX_SPEED", "0.095") or "0.095", 0.095),
+)
+SIMULATION_STREAM_ANT_INFLUENCE = max(
+    0.0,
+    min(
+        2.0,
+        _safe_float(
+            os.getenv("SIMULATION_WS_STREAM_ANT_INFLUENCE", "1.18") or "1.18",
+            1.18,
+        ),
+    ),
+)
+SIMULATION_STREAM_NOISE_AMPLITUDE = max(
+    0.0,
+    min(
+        32.0,
+        _safe_float(
+            os.getenv("SIMULATION_WS_STREAM_NOISE_AMPLITUDE", "13") or "13",
+            13.0,
+        ),
+    ),
+)
+SIMULATION_STREAM_COLLISION_STATIC = max(
+    0.5,
+    min(
+        24.0,
+        _safe_float(
+            os.getenv("SIMULATION_WS_STREAM_COLLISION_STATIC", "5") or "5",
+            5.0,
+        ),
+    ),
+)
+SIMULATION_STREAM_LOW_FRICTION = max(
+    0.0,
+    min(
+        1.0,
+        _safe_float(
+            os.getenv("SIMULATION_WS_STREAM_LOW_FRICTION", "0.16") or "0.16",
+            0.16,
+        ),
+    ),
 )
 SIMULATION_DISABLE_DAIMOI = max(
     0.0,
@@ -543,6 +607,8 @@ SIMULATION_FILE_GRAPH_NODE_FIELDS: tuple[str, ...] = (
     "presence_kind",
     "name",
     "kind",
+    "resource_kind",
+    "modality",
     "x",
     "y",
     "hue",
@@ -566,6 +632,18 @@ SIMULATION_FILE_GRAPH_NODE_FIELDS: tuple[str, ...] = (
     "concept_presence_label",
     "organized_by",
     "embedding_links",
+    "projection_overflow",
+    "consolidated",
+    "consolidated_count",
+    "projection_group_id",
+    "graph_scope",
+    "truth_scope",
+    "simulation_semantic_role",
+    "semantic_bundle",
+    "semantic_bundle_mass",
+    "semantic_bundle_charge",
+    "semantic_bundle_gravity",
+    "semantic_bundle_member_edge_count",
 )
 
 SIMULATION_FILE_GRAPH_RENDER_NODE_FIELDS: tuple[str, ...] = (
@@ -579,6 +657,8 @@ SIMULATION_FILE_GRAPH_RENDER_NODE_FIELDS: tuple[str, ...] = (
     "presence_kind",
     "name",
     "kind",
+    "resource_kind",
+    "modality",
     "x",
     "y",
     "hue",
@@ -592,6 +672,18 @@ SIMULATION_FILE_GRAPH_RENDER_NODE_FIELDS: tuple[str, ...] = (
     "concept_presence_label",
     "organized_by",
     "resource_wallet",  # Exposed for debugging/visualization
+    "projection_overflow",
+    "consolidated",
+    "consolidated_count",
+    "projection_group_id",
+    "graph_scope",
+    "truth_scope",
+    "simulation_semantic_role",
+    "semantic_bundle",
+    "semantic_bundle_mass",
+    "semantic_bundle_charge",
+    "semantic_bundle_gravity",
+    "semantic_bundle_member_edge_count",
 )
 
 _SIMULATION_LAYOUT_CACHE_LOCK = threading.Lock()
@@ -873,6 +965,21 @@ def _build_truth_graph_contract(file_graph: dict[str, Any] | None) -> dict[str, 
     )
     node_digest_input = "\n".join(node_ids)
     edge_digest_input = "\n".join(edge_ids)
+    projection_bundle_node_count = sum(
+        1
+        for row in node_rows
+        if isinstance(row, dict)
+        and (
+            bool(row.get("projection_overflow", False))
+            or bool(row.get("semantic_bundle", False))
+            or str(row.get("kind", "")).strip().lower() == "projection_overflow"
+        )
+    )
+    projection_bundle_edge_count = sum(
+        1
+        for row in edge_rows
+        if isinstance(row, dict) and bool(row.get("projection_overflow", False))
+    )
 
     return {
         "record": SIMULATION_TRUTH_GRAPH_RECORD,
@@ -891,6 +998,13 @@ def _build_truth_graph_contract(file_graph: dict[str, Any] | None) -> dict[str, 
             "source": "catalog.file_graph",
             "lossless": True,
         },
+        "semantics": {
+            "graph_domain": "truth_graph",
+            "graph_scope": "truth",
+            "includes_projection_bundles": False,
+            "projection_bundle_node_count": int(projection_bundle_node_count),
+            "projection_bundle_edge_count": int(projection_bundle_edge_count),
+        },
     }
 
 
@@ -902,6 +1016,12 @@ def _build_view_graph_contract(file_graph: dict[str, Any] | None) -> dict[str, A
         file_graph.get("projection", {})
         if isinstance(file_graph, dict)
         and isinstance(file_graph.get("projection", {}), dict)
+        else {}
+    )
+    projection_policy = (
+        projection.get("policy", {})
+        if isinstance(projection, dict)
+        and isinstance(projection.get("policy", {}), dict)
         else {}
     )
     groups = [
@@ -944,6 +1064,22 @@ def _build_view_graph_contract(file_graph: dict[str, Any] | None) -> dict[str, A
             }
         )
 
+    projection_bundle_node_count = sum(
+        1
+        for row in node_rows
+        if isinstance(row, dict)
+        and (
+            bool(row.get("projection_overflow", False))
+            or bool(row.get("semantic_bundle", False))
+            or str(row.get("kind", "")).strip().lower() == "projection_overflow"
+        )
+    )
+    projection_bundle_edge_count = sum(
+        1
+        for row in edge_rows
+        if isinstance(row, dict) and bool(row.get("projection_overflow", False))
+    )
+
     return {
         "record": SIMULATION_VIEW_GRAPH_RECORD,
         "schema_version": SIMULATION_VIEW_GRAPH_SCHEMA_VERSION,
@@ -955,18 +1091,75 @@ def _build_view_graph_contract(file_graph: dict[str, Any] | None) -> dict[str, A
             "mode": str(projection.get("mode", "none") or "none"),
             "active": bool(projection.get("active", False)),
             "reason": str(projection.get("reason", "") or ""),
+            "compaction_drive": round(
+                _clamp01(
+                    _safe_float(projection_policy.get("compaction_drive", 0.0), 0.0)
+                ),
+                6,
+            ),
+            "cpu_pressure": round(
+                _clamp01(_safe_float(projection_policy.get("cpu_pressure", 0.0), 0.0)),
+                6,
+            ),
+            "view_edge_pressure": round(
+                _clamp01(
+                    _safe_float(projection_policy.get("view_edge_pressure", 0.0), 0.0)
+                ),
+                6,
+            ),
+            "cpu_utilization": round(
+                max(
+                    0.0,
+                    min(
+                        100.0,
+                        _safe_float(projection_policy.get("cpu_utilization", 0.0), 0.0),
+                    ),
+                ),
+                3,
+            ),
+            "cpu_sentinel_id": str(projection_policy.get("presence_id", "") or ""),
+            "edge_threshold_base": int(
+                _safe_int(
+                    projection_policy.get(
+                        "edge_threshold_base",
+                        SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD,
+                    ),
+                    SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD,
+                )
+            ),
+            "edge_threshold_effective": int(
+                _safe_int(
+                    projection_policy.get("edge_threshold_effective", 0),
+                    0,
+                )
+            ),
+            "edge_cap_base": int(
+                _safe_int(projection_policy.get("edge_cap_base", 0), 0)
+            ),
+            "edge_cap_effective": int(
+                _safe_int(projection_policy.get("edge_cap_effective", 0), 0)
+            ),
             "bundle_ledger_count": int(len(bundle_ledgers)),
             "bundle_member_edge_count_total": int(bundle_member_edges_total),
             "reconstructable_bundle_count": int(reconstructable_bundle_count),
             "surface_visible_bundle_count": int(surface_visible_count),
             "bundle_ledgers": bundle_ledgers,
             "ledger_ref": "file_graph.projection.groups",
+            "policy": projection_policy,
         },
         "projection_pi": {
             "kind": "edge-bundle" if bundle_ledgers else "identity",
             "bundle_count": int(len(bundle_ledgers)),
             "bundle_member_edge_count_total": int(bundle_member_edges_total),
             "reconstructable_bundle_count": int(reconstructable_bundle_count),
+        },
+        "semantics": {
+            "graph_domain": "view_graph",
+            "graph_scope": "view",
+            "includes_projection_bundles": bool(bundle_ledgers),
+            "projection_bundle_node_count": int(projection_bundle_node_count),
+            "projection_bundle_edge_count": int(projection_bundle_edge_count),
+            "bundle_semantic_role": "view_compaction_aggregate",
         },
     }
 
@@ -1673,6 +1866,8 @@ def _apply_daimoi_growth_guard_to_file_graph(
 def _project_file_graph_for_simulation(
     *,
     file_graph: dict[str, Any] | None,
+    crawler_graph: dict[str, Any] | None,
+    queue_snapshot: dict[str, Any] | None,
     influence_snapshot: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     if not isinstance(file_graph, dict):
@@ -1692,6 +1887,14 @@ def _project_file_graph_for_simulation(
             "ts": now_iso,
             "payload": payload,
         }
+
+    crawler_graph_payload: dict[str, Any] = (
+        dict(crawler_graph) if isinstance(crawler_graph, dict) else {}
+    )
+    queue_snapshot_payload: dict[str, Any] = (
+        dict(queue_snapshot) if isinstance(queue_snapshot, dict) else {}
+    )
+    projection_policy: dict[str, Any] = {}
 
     try:
         file_nodes = [
@@ -1759,6 +1962,191 @@ def _project_file_graph_for_simulation(
 
         edge_count_before = len(edge_rows)
         file_count_before = len(file_nodes)
+
+        crawler_edges_raw = crawler_graph_payload.get("edges", [])
+        crawler_edge_count = (
+            len([row for row in crawler_edges_raw if isinstance(row, dict)])
+            if isinstance(crawler_edges_raw, list)
+            else 0
+        )
+        queue_pending_count = max(
+            0, _safe_int(queue_snapshot_payload.get("pending_count", 0), 0)
+        )
+        queue_event_count = max(
+            0, _safe_int(queue_snapshot_payload.get("event_count", 0), 0)
+        )
+
+        resource_heartbeat = (
+            influence_snapshot.get("resource_heartbeat", {})
+            if isinstance(influence_snapshot, dict)
+            and isinstance(influence_snapshot.get("resource_heartbeat", {}), dict)
+            else {}
+        )
+        heartbeat_devices = (
+            resource_heartbeat.get("devices", {})
+            if isinstance(resource_heartbeat, dict)
+            and isinstance(resource_heartbeat.get("devices", {}), dict)
+            else {}
+        )
+        heartbeat_cpu = (
+            heartbeat_devices.get("cpu", {})
+            if isinstance(heartbeat_devices.get("cpu", {}), dict)
+            else {}
+        )
+        cpu_utilization = max(
+            0.0,
+            min(100.0, _safe_float(heartbeat_cpu.get("utilization", 0.0), 0.0)),
+        )
+
+        compute_summary = (
+            influence_snapshot.get("compute_summary", {})
+            if isinstance(influence_snapshot, dict)
+            and isinstance(influence_snapshot.get("compute_summary", {}), dict)
+            else {}
+        )
+        compute_resource_counts = (
+            compute_summary.get("resource_counts", {})
+            if isinstance(compute_summary.get("resource_counts", {}), dict)
+            else {}
+        )
+        cpu_compute_jobs = max(
+            0,
+            _safe_int(
+                compute_resource_counts.get("cpu", 0),
+                0,
+            ),
+        )
+        compute_jobs_total = max(
+            0,
+            _safe_int(
+                influence_snapshot.get("compute_jobs_180s", 0)
+                if isinstance(influence_snapshot, dict)
+                else 0,
+                0,
+            ),
+        )
+
+        cpu_preheat_threshold = max(
+            42.0,
+            _RESOURCE_DAIMOI_CPU_SENTINEL_BURN_START_PERCENT * 0.72,
+        )
+        cpu_pressure = _clamp01(
+            (cpu_utilization - cpu_preheat_threshold)
+            / max(1.0, (100.0 - cpu_preheat_threshold))
+        )
+        cpu_headroom = _clamp01(
+            (cpu_preheat_threshold - cpu_utilization) / max(1.0, cpu_preheat_threshold)
+        )
+        queue_pressure = _clamp01(
+            (queue_pending_count / 24.0) + (queue_event_count / 96.0)
+        )
+        compute_pressure = _clamp01(
+            (cpu_compute_jobs / 24.0) + (compute_jobs_total / 96.0)
+        )
+        queue_headroom = _clamp01(1.0 - queue_pressure)
+        compute_headroom = _clamp01(1.0 - compute_pressure)
+        predicted_view_edge_count = max(0, edge_count_before + crawler_edge_count)
+        view_edge_pressure = _clamp01(
+            predicted_view_edge_count
+            / max(
+                240.0,
+                float(SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD) * 2.0,
+            )
+        )
+        view_headroom = _clamp01(1.0 - view_edge_pressure)
+        sentinel_compaction_drive = _clamp01(
+            (cpu_pressure * 0.44)
+            + (view_edge_pressure * 0.28)
+            + (queue_pressure * 0.16)
+            + (compute_pressure * 0.12)
+        )
+        sentinel_decompression_drive = _clamp01(
+            ((cpu_headroom * 0.62) + (queue_headroom * 0.2) + (compute_headroom * 0.18))
+            * view_headroom
+        )
+        decompression_enabled = (
+            sentinel_decompression_drive >= 0.2
+            and cpu_pressure <= 0.28
+            and queue_pressure <= 0.38
+            and compute_pressure <= 0.34
+        )
+        effective_compaction_drive = _clamp01(
+            sentinel_compaction_drive
+            - (sentinel_decompression_drive * (0.36 if decompression_enabled else 0.0))
+        )
+        projection_control_mode = "balanced"
+        if decompression_enabled and sentinel_decompression_drive > 0.0:
+            projection_control_mode = "decompression"
+        elif effective_compaction_drive >= 0.2:
+            projection_control_mode = "compaction"
+
+        edge_threshold_scale = max(0.38, 1.0 - (0.58 * effective_compaction_drive))
+        if decompression_enabled:
+            edge_threshold_scale = min(
+                1.52,
+                edge_threshold_scale + (sentinel_decompression_drive * 0.46),
+            )
+        base_edge_threshold = int(SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD)
+        effective_edge_threshold = max(
+            96,
+            min(
+                int(round(float(base_edge_threshold) * 1.7)),
+                int(round(float(base_edge_threshold) * edge_threshold_scale)),
+            ),
+        )
+        projection_policy = {
+            "record": "eta-mu.view-graph-compaction-policy.v1",
+            "schema_version": "view-graph.compaction-policy.v1",
+            "mode": "cpu-sentinel-sensitive",
+            "presence_id": _RESOURCE_DAIMOI_CPU_SENTINEL_ID,
+            "cpu_utilization": round(cpu_utilization, 3),
+            "cpu_preheat_threshold": round(cpu_preheat_threshold, 3),
+            "cpu_sentinel_burn_threshold": round(
+                _RESOURCE_DAIMOI_CPU_SENTINEL_BURN_START_PERCENT,
+                3,
+            ),
+            "cpu_pressure": round(cpu_pressure, 6),
+            "cpu_headroom": round(cpu_headroom, 6),
+            "queue_pressure": round(queue_pressure, 6),
+            "queue_headroom": round(queue_headroom, 6),
+            "compute_pressure": round(compute_pressure, 6),
+            "compute_headroom": round(compute_headroom, 6),
+            "view_edge_pressure": round(view_edge_pressure, 6),
+            "view_headroom": round(view_headroom, 6),
+            "compaction_drive": round(sentinel_compaction_drive, 6),
+            "compaction_drive_effective": round(effective_compaction_drive, 6),
+            "decompression_drive": round(sentinel_decompression_drive, 6),
+            "decompression_enabled": bool(decompression_enabled),
+            "control_mode": projection_control_mode,
+            "queue_pending_count": int(queue_pending_count),
+            "queue_event_count": int(queue_event_count),
+            "cpu_compute_jobs_180s": int(cpu_compute_jobs),
+            "compute_jobs_180s": int(compute_jobs_total),
+            "crawler_edge_count": int(crawler_edge_count),
+            "predicted_view_edge_count": int(predicted_view_edge_count),
+            "edge_threshold_base": int(base_edge_threshold),
+            "edge_threshold_effective": int(effective_edge_threshold),
+            "edge_threshold_scale": round(edge_threshold_scale, 6),
+            "edge_cap_base": 0,
+            "edge_cap_effective": 0,
+            "edge_cap_scale": 1.0,
+        }
+
+        effective_projection_edge_count = int(edge_count_before)
+        if effective_compaction_drive >= 0.2:
+            pressure_edge_floor = int(
+                round(
+                    predicted_view_edge_count
+                    * (0.34 + (0.22 * _clamp01(effective_compaction_drive)))
+                )
+            )
+            effective_projection_edge_count = max(
+                effective_projection_edge_count,
+                pressure_edge_floor,
+            )
+        projection_policy["edge_count_file"] = int(edge_count_before)
+        projection_policy["edge_count_effective"] = int(effective_projection_edge_count)
+
         if edge_count_before <= 0:
             projection_payload = {
                 "record": SIMULATION_FILE_GRAPH_PROJECTION_RECORD,
@@ -1768,9 +2156,13 @@ def _project_file_graph_for_simulation(
                 "active": False,
                 "reason": "no_edges",
                 "limits": {
-                    "edge_threshold": int(
+                    "edge_threshold": int(effective_edge_threshold),
+                    "edge_threshold_base": int(
                         SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD
                     ),
+                    "edge_count_file": int(edge_count_before),
+                    "edge_count_effective": int(effective_projection_edge_count),
+                    "control_mode": projection_control_mode,
                 },
                 "before": {
                     "file_nodes": int(file_count_before),
@@ -1785,12 +2177,13 @@ def _project_file_graph_for_simulation(
                 "overflow_edges": 0,
                 "group_count": 0,
                 "groups": [],
+                "policy": dict(projection_policy),
             }
             updated_graph = dict(file_graph)
             updated_graph["projection"] = projection_payload
             return updated_graph, None
 
-        if edge_count_before < SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD:
+        if effective_projection_edge_count < effective_edge_threshold:
             projection_payload = {
                 "record": SIMULATION_FILE_GRAPH_PROJECTION_RECORD,
                 "schema_version": SIMULATION_FILE_GRAPH_PROJECTION_SCHEMA_VERSION,
@@ -1799,9 +2192,13 @@ def _project_file_graph_for_simulation(
                 "active": False,
                 "reason": "below_threshold",
                 "limits": {
-                    "edge_threshold": int(
+                    "edge_threshold": int(effective_edge_threshold),
+                    "edge_threshold_base": int(
                         SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD
                     ),
+                    "edge_count_file": int(edge_count_before),
+                    "edge_count_effective": int(effective_projection_edge_count),
+                    "control_mode": projection_control_mode,
                 },
                 "before": {
                     "file_nodes": int(file_count_before),
@@ -1816,6 +2213,7 @@ def _project_file_graph_for_simulation(
                 "overflow_edges": 0,
                 "group_count": 0,
                 "groups": [],
+                "policy": dict(projection_policy),
             }
             updated_graph = dict(file_graph)
             updated_graph["projection"] = projection_payload
@@ -1891,7 +2289,7 @@ def _project_file_graph_for_simulation(
         )
 
         file_count = max(1, file_count_before)
-        global_edge_cap = max(
+        base_global_edge_cap = max(
             SIMULATION_FILE_GRAPH_PROJECTION_EDGE_CAP_MIN,
             min(
                 SIMULATION_FILE_GRAPH_PROJECTION_EDGE_CAP_MAX,
@@ -1901,13 +2299,36 @@ def _project_file_graph_for_simulation(
                 ),
             ),
         )
+        edge_cap_scale = max(
+            0.24,
+            1.0
+            - (0.52 * effective_compaction_drive)
+            - (0.18 * _clamp01(view_edge_pressure)),
+        )
+        if decompression_enabled:
+            edge_cap_scale = min(
+                1.86,
+                edge_cap_scale
+                + (sentinel_decompression_drive * 0.62)
+                + (cpu_headroom * 0.2),
+            )
+        global_edge_cap = max(
+            96,
+            min(
+                int(SIMULATION_FILE_GRAPH_PROJECTION_EDGE_CAP_MAX),
+                int(round(float(base_global_edge_cap) * edge_cap_scale)),
+            ),
+        )
+        projection_policy["edge_cap_base"] = int(base_global_edge_cap)
+        projection_policy["edge_cap_effective"] = int(global_edge_cap)
+        projection_policy["edge_cap_scale"] = round(edge_cap_scale, 6)
         per_source_cap = 4
         per_source_categorizes_cap = 1
         per_field_hub_cap = max(26, min(92, int(file_count * 0.13)))
         per_concept_hub_cap = max(24, min(120, int(file_count * 0.16)))
         tag_member_cap = max(46, min(240, int(file_count * 0.5)))
         tag_pair_cap = max(18, min(110, int(file_count * 0.24)))
-        overflow_group_limit = max(6, min(48, int(file_count * 0.14)))
+        overflow_group_limit = max(48, min(320, int(file_count * 1.35)))
 
         kept_edges: list[dict[str, Any]] = []
         source_counts: dict[str, int] = defaultdict(int)
@@ -2036,10 +2457,12 @@ def _project_file_graph_for_simulation(
                 "active": False,
                 "reason": "within_projection_limits",
                 "limits": {
-                    "edge_threshold": int(
+                    "edge_threshold": int(effective_edge_threshold),
+                    "edge_threshold_base": int(
                         SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD
                     ),
                     "edge_cap": int(global_edge_cap),
+                    "edge_cap_base": int(base_global_edge_cap),
                 },
                 "before": {
                     "file_nodes": int(file_count_before),
@@ -2054,6 +2477,7 @@ def _project_file_graph_for_simulation(
                 "overflow_edges": 0,
                 "group_count": 0,
                 "groups": [],
+                "policy": dict(projection_policy),
             }
             updated_graph = dict(file_graph)
             updated_graph["projection"] = projection_payload
@@ -2132,18 +2556,33 @@ def _project_file_graph_for_simulation(
                 }
             )
 
-        visual_groups = [
-            group
-            for group in finalized_groups
-            if (
-                str(group.get("kind", "")) == "categorizes"
-                and str(group.get("target", "")).startswith("field:")
-            )
-            or (
-                str(group.get("kind", "")) == "organized_by_presence"
-                and str(group.get("target", "")).startswith("presence:concept:")
-            )
-        ]
+        visual_groups: list[dict[str, Any]] = []
+        for group in finalized_groups:
+            group_id = str(group.get("id", "")).strip()
+            if not group_id:
+                continue
+            target_id = str(group.get("target", "")).strip()
+            field_id = str(group.get("field", "")).strip()
+
+            anchor_target = target_id
+            if not anchor_target and field_id:
+                fallback_target = f"field:{field_id}"
+                if fallback_target in node_by_id:
+                    anchor_target = fallback_target
+            if not anchor_target:
+                member_target_ids = group.get("member_target_ids", [])
+                if isinstance(member_target_ids, list):
+                    for candidate in member_target_ids:
+                        candidate_id = str(candidate).strip()
+                        if candidate_id and candidate_id in node_by_id:
+                            anchor_target = candidate_id
+                            break
+            if not anchor_target or anchor_target not in node_by_id:
+                continue
+
+            group_row = dict(group)
+            group_row["anchor_target"] = anchor_target
+            visual_groups.append(group_row)
         visual_groups.sort(
             key=lambda item: (
                 -int(item.get("member_edge_count", 0)),
@@ -2161,7 +2600,7 @@ def _project_file_graph_for_simulation(
         overflow_edges: list[dict[str, Any]] = []
         for index, group in enumerate(visual_groups):
             group_id = str(group.get("id", "")).strip()
-            target_id = str(group.get("target", "")).strip()
+            target_id = str(group.get("anchor_target", group.get("target", ""))).strip()
             if not group_id or not target_id:
                 continue
             target_node = node_by_id.get(target_id)
@@ -2223,12 +2662,27 @@ def _project_file_graph_for_simulation(
             member_source_count = (
                 len(member_sources) if isinstance(member_sources, list) else 0
             )
+            member_edge_count = max(1, int(group.get("member_edge_count", 0)))
             overflow_importance = _clamp01(
                 0.2
                 + min(
                     0.62,
                     math.log1p(max(1, member_source_count)) / 5.8,
                 )
+            )
+            semantic_bundle_mass = _clamp01(
+                0.32
+                + min(
+                    0.62,
+                    math.log1p(max(1, member_source_count + member_edge_count)) / 5.0,
+                )
+            )
+            semantic_bundle_charge = _clamp01(
+                0.28 + min(0.66, math.log1p(max(1, member_edge_count)) / 5.4)
+            )
+            semantic_bundle_gravity = _clamp01(
+                (max(semantic_bundle_mass, semantic_bundle_charge) * 0.82)
+                + (min(1.0, member_source_count / 18.0) * 0.18)
             )
 
             overflow_nodes.append(
@@ -2255,6 +2709,14 @@ def _project_file_graph_for_simulation(
                     "consolidated_count": member_source_count,
                     "projection_overflow": True,
                     "projection_group_id": group_id,
+                    "graph_scope": "view",
+                    "truth_scope": "excluded_projection_bundle",
+                    "simulation_semantic_role": "view_compaction_aggregate",
+                    "semantic_bundle": True,
+                    "semantic_bundle_member_edge_count": member_edge_count,
+                    "semantic_bundle_mass": round(semantic_bundle_mass, 6),
+                    "semantic_bundle_charge": round(semantic_bundle_charge, 6),
+                    "semantic_bundle_gravity": round(semantic_bundle_gravity, 6),
                 }
             )
 
@@ -2283,6 +2745,9 @@ def _project_file_graph_for_simulation(
                     "projection_member_edge_digest": str(
                         group.get("member_edge_digest", "")
                     ),
+                    "graph_scope": "view",
+                    "truth_scope": "excluded_projection_bundle",
+                    "simulation_semantic_role": "view_compaction_aggregate",
                 }
             )
 
@@ -2302,16 +2767,33 @@ def _project_file_graph_for_simulation(
             )
             projection_groups.append(group_row)
 
+        projection_reason = (
+            "decompression_budget"
+            if projection_control_mode == "decompression"
+            else (
+                "cpu_sentinel_compaction_pressure"
+                if effective_compaction_drive >= 0.2
+                else "edge_budget"
+            )
+        )
+
         projection_payload = {
             "record": SIMULATION_FILE_GRAPH_PROJECTION_RECORD,
             "schema_version": SIMULATION_FILE_GRAPH_PROJECTION_SCHEMA_VERSION,
             "generated_at": now_iso,
             "mode": "hub-overflow",
             "active": True,
-            "reason": "edge_budget",
+            "reason": projection_reason,
             "limits": {
-                "edge_threshold": int(SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD),
+                "edge_threshold": int(effective_edge_threshold),
+                "edge_threshold_base": int(
+                    SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD
+                ),
+                "edge_count_file": int(edge_count_before),
+                "edge_count_effective": int(effective_projection_edge_count),
+                "control_mode": projection_control_mode,
                 "edge_cap": int(global_edge_cap),
+                "edge_cap_base": int(base_global_edge_cap),
                 "per_source_cap": int(per_source_cap),
                 "per_source_categorizes_cap": int(per_source_categorizes_cap),
                 "field_hub_cap": int(per_field_hub_cap),
@@ -2333,6 +2815,7 @@ def _project_file_graph_for_simulation(
             "overflow_edges": int(len(overflow_edges)),
             "group_count": int(len(projection_groups)),
             "groups": projection_groups,
+            "policy": dict(projection_policy),
         }
 
         updated_graph = dict(file_graph)
@@ -2360,7 +2843,7 @@ def _project_file_graph_for_simulation(
             _event(
                 "simulation.file_graph.projection.applied",
                 "ok",
-                "edge_budget",
+                projection_reason,
                 {
                     "edge_count_before": int(edge_count_before),
                     "edge_count_after": int(len(next_edges)),
@@ -2369,10 +2852,36 @@ def _project_file_graph_for_simulation(
                     "overflow_edges": int(len(overflow_edges)),
                     "group_count": int(len(projection_groups)),
                     "edge_cap": int(global_edge_cap),
+                    "edge_cap_base": int(base_global_edge_cap),
+                    "edge_threshold": int(effective_edge_threshold),
+                    "edge_threshold_base": int(
+                        SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD
+                    ),
+                    "compaction_drive": round(sentinel_compaction_drive, 6),
+                    "compaction_drive_effective": round(effective_compaction_drive, 6),
+                    "decompression_drive": round(sentinel_decompression_drive, 6),
+                    "control_mode": projection_control_mode,
+                    "cpu_pressure": round(cpu_pressure, 6),
+                    "view_edge_pressure": round(view_edge_pressure, 6),
                 },
             ),
         )
     except Exception as exc:
+        fallback_policy = (
+            dict(projection_policy)
+            if isinstance(projection_policy, dict) and projection_policy
+            else {
+                "record": "eta-mu.view-graph-compaction-policy.v1",
+                "schema_version": "view-graph.compaction-policy.v1",
+                "mode": "cpu-sentinel-sensitive",
+                "presence_id": _RESOURCE_DAIMOI_CPU_SENTINEL_ID,
+                "compaction_drive": 0.0,
+                "compaction_drive_effective": 0.0,
+                "decompression_drive": 0.0,
+                "decompression_enabled": False,
+                "control_mode": "balanced",
+            }
+        )
         failed_payload = {
             "record": SIMULATION_FILE_GRAPH_PROJECTION_RECORD,
             "schema_version": SIMULATION_FILE_GRAPH_PROJECTION_SCHEMA_VERSION,
@@ -2421,6 +2930,7 @@ def _project_file_graph_for_simulation(
             "overflow_edges": 0,
             "group_count": 0,
             "groups": [],
+            "policy": fallback_policy,
         }
         updated_graph = dict(file_graph)
         updated_graph["projection"] = failed_payload
@@ -5089,8 +5599,7 @@ def _compact_file_graph_for_simulation(file_graph: dict[str, Any]) -> dict[str, 
             ),
         ),
     )
-    if len(compact_edges) > dynamic_edge_cap:
-        compact_edges = compact_edges[:dynamic_edge_cap]
+    edge_count_before_projection = len(compact_edges)
 
     compact_stats_raw = file_graph.get("stats", {})
     compact_stats = (
@@ -5098,6 +5607,8 @@ def _compact_file_graph_for_simulation(file_graph: dict[str, Any]) -> dict[str, 
     )
     compact_stats["file_count"] = int(len(compact_file_nodes))
     compact_stats["edge_count"] = int(len(compact_edges))
+    compact_stats["edge_count_before_projection"] = int(edge_count_before_projection)
+    compact_stats["edge_response_cap"] = int(dynamic_edge_cap)
 
     return {
         "record": str(file_graph.get("record", ETA_MU_FILE_GRAPH_RECORD)),
@@ -5351,6 +5862,12 @@ def _build_unified_nexus_graph(
         normalized["crawler_kind"] = crawler_kind or "url"
         if not str(normalized.get("kind", "")).strip():
             normalized["kind"] = normalized["crawler_kind"]
+        resource_kind = str(normalized.get("resource_kind", "")).strip().lower()
+        if not resource_kind:
+            resource_kind = _graph_resource_kind_from_crawler_node(normalized)
+        normalized["resource_kind"] = resource_kind
+        if not str(normalized.get("modality", "")).strip():
+            normalized["modality"] = _graph_modality_from_resource_kind(resource_kind)
         normalized["x"] = round(_clamp01(_safe_float(normalized.get("x", 0.5), 0.5)), 4)
         normalized["y"] = round(_clamp01(_safe_float(normalized.get("y", 0.5), 0.5)), 4)
         normalized["importance"] = round(
@@ -5578,6 +6095,8 @@ def _build_canonical_nexus_node(
             "source_rel_path",
             "archived_rel_path",
             "archive_rel_path",
+            "resource_kind",
+            "modality",
             "tags",
             "summary",
             "text_excerpt",
@@ -5591,6 +6110,8 @@ def _build_canonical_nexus_node(
             "title",
             "content_type",
             "crawler_kind",
+            "resource_kind",
+            "modality",
             "compliance",
             "dominant_field",
         ):
@@ -7456,6 +7977,95 @@ def _dominant_eta_mu_field(scores: dict[str, float]) -> tuple[str, float]:
     return dominant_field, _safe_float(scores.get(dominant_field, 0.0), 0.0)
 
 
+_GRAPH_ARCHIVE_SUFFIXES: set[str] = {
+    ".zip",
+    ".tar",
+    ".tgz",
+    ".gz",
+    ".bz2",
+    ".xz",
+    ".7z",
+    ".rar",
+    ".zst",
+}
+_GRAPH_IMAGE_SUFFIXES: set[str] = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".bmp",
+    ".svg",
+    ".avif",
+    ".heic",
+}
+_GRAPH_AUDIO_SUFFIXES: set[str] = {
+    ".mp3",
+    ".wav",
+    ".ogg",
+    ".m4a",
+    ".flac",
+    ".aac",
+    ".opus",
+}
+_GRAPH_VIDEO_SUFFIXES: set[str] = {
+    ".mp4",
+    ".m4v",
+    ".mov",
+    ".webm",
+    ".mkv",
+    ".avi",
+}
+
+
+def _graph_suffix_from_path_like(path_like: Any) -> str:
+    raw = str(path_like or "").strip()
+    if not raw:
+        return ""
+    parsed_path = urlparse(raw).path if "://" in raw else raw
+    normalized = unquote(str(parsed_path or "")).strip()
+    if not normalized:
+        return ""
+    return Path(normalized).suffix.lower()
+
+
+def _graph_resource_kind_from_crawler_node(node: dict[str, Any]) -> str:
+    crawler_kind = (
+        str(node.get("crawler_kind", node.get("kind", "url"))).strip().lower()
+    )
+    content_type = str(node.get("content_type", "")).strip().lower()
+    suffix = _graph_suffix_from_path_like(node.get("url", ""))
+
+    if content_type.startswith("image/") or suffix in _GRAPH_IMAGE_SUFFIXES:
+        return "image"
+    if content_type.startswith("audio/") or suffix in _GRAPH_AUDIO_SUFFIXES:
+        return "audio"
+    if content_type.startswith("video/") or suffix in _GRAPH_VIDEO_SUFFIXES:
+        return "video"
+    if "zip" in content_type or suffix in _GRAPH_ARCHIVE_SUFFIXES:
+        return "archive"
+    if content_type.startswith("text/"):
+        return "text"
+    if crawler_kind in {"domain", "content"}:
+        return "website"
+    if crawler_kind == "url":
+        return "link"
+    return "unknown"
+
+
+def _graph_modality_from_resource_kind(resource_kind: str) -> str:
+    normalized = str(resource_kind or "").strip().lower()
+    if normalized in {"text", "image", "audio", "video"}:
+        return normalized
+    if normalized in {"website", "link"}:
+        return "web"
+    if normalized == "archive":
+        return "archive"
+    if normalized == "blob":
+        return "binary"
+    return "unknown"
+
+
 def _infer_weaver_field_scores(node: dict[str, Any]) -> dict[str, float]:
     scores = {field_id: 0.0 for field_id in FIELD_TO_PRESENCE}
     kind = str(node.get("kind", "")).strip().lower()
@@ -7598,6 +8208,7 @@ def _build_weaver_field_graph_uncached(
     edges: list[dict[str, Any]] = []
     node_id_map: dict[str, str] = {}
     kind_counts: dict[str, int] = defaultdict(int)
+    resource_kind_counts: dict[str, int] = defaultdict(int)
     field_counts: dict[str, int] = defaultdict(int)
 
     for index, node in enumerate(raw_nodes[:WEAVER_GRAPH_NODE_LIMIT]):
@@ -7634,6 +8245,9 @@ def _build_weaver_field_graph_uncached(
         kind_counts[kind] += 1
         field_counts[dominant_field] += 1
         importance = _crawler_node_importance(node, dominant_weight)
+        resource_kind = _graph_resource_kind_from_crawler_node(node)
+        modality = _graph_modality_from_resource_kind(resource_kind)
+        resource_kind_counts[resource_kind] += 1
         label = str(
             node.get("title", "")
             or node.get("domain", "")
@@ -7646,6 +8260,8 @@ def _build_weaver_field_graph_uncached(
                 "node_id": original_id,
                 "node_type": "crawler",
                 "crawler_kind": kind,
+                "resource_kind": resource_kind,
+                "modality": modality,
                 "label": label,
                 "x": round(x, 4),
                 "y": round(y, 4),
@@ -7739,6 +8355,7 @@ def _build_weaver_field_graph_uncached(
             "crawler_count": len(crawler_nodes),
             "edge_count": len(edges),
             "kind_counts": dict(kind_counts),
+            "resource_kind_counts": dict(resource_kind_counts),
             "field_counts": dict(field_counts),
             "nodes_total": int(
                 _safe_float(
@@ -7999,9 +8616,114 @@ _RESOURCE_DAIMOI_WALLET_CAP: dict[str, float] = {
 _RESOURCE_DAIMOI_ACTION_BASE_COST = 0.00001
 _RESOURCE_DAIMOI_ACTION_COST_MAX = 0.0028
 _RESOURCE_DAIMOI_ACTION_SATISFIED_RATIO = 0.85
+_RESOURCE_DAIMOI_CPU_SENTINEL_ID = "health_sentinel_cpu"
+_RESOURCE_DAIMOI_CPU_SENTINEL_BURN_START_PERCENT = max(
+    0.0,
+    min(
+        100.0,
+        _safe_float(
+            os.getenv("SIMULATION_CPU_SENTINEL_BURN_START_PERCENT", "90") or "90",
+            90.0,
+        ),
+    ),
+)
+_RESOURCE_DAIMOI_CPU_SENTINEL_BURN_MAX_MULTIPLIER = max(
+    1.0,
+    min(
+        128.0,
+        _safe_float(
+            os.getenv("SIMULATION_CPU_SENTINEL_BURN_MAX_MULTIPLIER", "12.0") or "12.0",
+            12.0,
+        ),
+    ),
+)
+_RESOURCE_DAIMOI_CPU_SENTINEL_BURN_COST_MAX = max(
+    _RESOURCE_DAIMOI_ACTION_COST_MAX,
+    min(
+        4.0,
+        _safe_float(
+            os.getenv("SIMULATION_CPU_SENTINEL_BURN_COST_MAX", "0.4") or "0.4",
+            0.4,
+        ),
+    ),
+)
+_RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_START_PERCENT = max(
+    0.0,
+    min(
+        100.0,
+        _safe_float(
+            os.getenv(
+                "SIMULATION_CPU_SENTINEL_ATTRACTOR_START_PERCENT",
+                str(_RESOURCE_DAIMOI_CPU_SENTINEL_BURN_START_PERCENT),
+            )
+            or str(_RESOURCE_DAIMOI_CPU_SENTINEL_BURN_START_PERCENT),
+            _RESOURCE_DAIMOI_CPU_SENTINEL_BURN_START_PERCENT,
+        ),
+    ),
+)
+_RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_GAIN = max(
+    0.0,
+    min(
+        8.0,
+        _safe_float(
+            os.getenv("SIMULATION_CPU_SENTINEL_ATTRACTOR_GAIN", "1.8") or "1.8",
+            1.8,
+        ),
+    ),
+)
+_RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_RESOURCE_BOOST = max(
+    1.0,
+    min(
+        24.0,
+        _safe_float(
+            os.getenv("SIMULATION_CPU_SENTINEL_ATTRACTOR_RESOURCE_BOOST", "4.0")
+            or "4.0",
+            4.0,
+        ),
+    ),
+)
+_RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_ALL_DAIMOI = str(
+    os.getenv("SIMULATION_CPU_SENTINEL_ATTRACTOR_ALL_DAIMOI", "1") or "1"
+).strip().lower() in {"1", "true", "yes", "on"}
 
 _SIMULATION_BOOT_RESET_LOCK = threading.Lock()
 _SIMULATION_BOOT_RESET_APPLIED = False
+
+
+def reset_simulation_bootstrap_state(
+    *,
+    clear_layout_cache: bool = True,
+    rearm_boot_reset: bool = True,
+) -> dict[str, Any]:
+    previous_layout_key = ""
+    previous_embedding_points = 0
+    if clear_layout_cache:
+        with _SIMULATION_LAYOUT_CACHE_LOCK:
+            previous_layout_key = str(_SIMULATION_LAYOUT_CACHE.get("key", "") or "")
+            previous_points = _SIMULATION_LAYOUT_CACHE.get("embedding_points", [])
+            previous_embedding_points = (
+                len(previous_points) if isinstance(previous_points, list) else 0
+            )
+            _SIMULATION_LAYOUT_CACHE["key"] = ""
+            _SIMULATION_LAYOUT_CACHE["prepared_monotonic"] = 0.0
+            _SIMULATION_LAYOUT_CACHE["prepared_graph"] = None
+            _SIMULATION_LAYOUT_CACHE["embedding_points"] = []
+
+    rearmed = False
+    if rearm_boot_reset:
+        global _SIMULATION_BOOT_RESET_APPLIED
+        with _SIMULATION_BOOT_RESET_LOCK:
+            _SIMULATION_BOOT_RESET_APPLIED = False
+            rearmed = True
+
+    return {
+        "ok": True,
+        "record": "eta-mu.simulation-bootstrap-reset.v1",
+        "cleared_layout_cache": bool(clear_layout_cache),
+        "previous_layout_key": previous_layout_key,
+        "previous_embedding_points": previous_embedding_points,
+        "rearmed_boot_reset": rearmed,
+    }
 
 
 def _maybe_reset_simulation_runtime_state() -> None:
@@ -8197,6 +8919,29 @@ def _apply_resource_daimoi_emissions(
     resource_heartbeat: dict[str, Any],
     queue_ratio: float,
 ) -> dict[str, Any]:
+    resource_devices = (
+        resource_heartbeat.get("devices", {})
+        if isinstance(resource_heartbeat, dict)
+        else {}
+    )
+    cpu_utilization = max(
+        0.0,
+        min(
+            100.0,
+            _safe_float(
+                (
+                    resource_devices.get("cpu", {})
+                    if isinstance(resource_devices.get("cpu", {}), dict)
+                    else {}
+                ).get("utilization", 0.0),
+                0.0,
+            ),
+        ),
+    )
+    cpu_sentinel_attractor_active = (
+        cpu_utilization >= _RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_START_PERCENT
+    )
+
     summary: dict[str, Any] = {
         "record": "eta-mu.resource-daimoi-flow.v1",
         "schema_version": "resource.daimoi.flow.v1",
@@ -8206,6 +8951,14 @@ def _apply_resource_daimoi_emissions(
         "by_resource": {},
         "recipients": [],
         "queue_ratio": round(_clamp01(_safe_float(queue_ratio, 0.0)), 6),
+        "cpu_utilization": round(cpu_utilization, 2),
+        "cpu_sentinel_id": _RESOURCE_DAIMOI_CPU_SENTINEL_ID,
+        "cpu_sentinel_attractor_threshold": round(
+            _RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_START_PERCENT,
+            2,
+        ),
+        "cpu_sentinel_attractor_active": bool(cpu_sentinel_attractor_active),
+        "cpu_sentinel_forced_packets": 0,
     }
     if not isinstance(field_particles, list) or not isinstance(presence_impacts, list):
         return summary
@@ -8261,6 +9014,8 @@ def _apply_resource_daimoi_emissions(
     recipient_totals: dict[str, float] = {}
     packet_count = 0
     emitter_rows = 0
+    cpu_sentinel_forced_packets = 0
+    cpu_sentinel_impact = impact_by_id.get(_RESOURCE_DAIMOI_CPU_SENTINEL_ID)
 
     for row in field_particles:
         if not isinstance(row, dict):
@@ -8268,10 +9023,16 @@ def _apply_resource_daimoi_emissions(
         if bool(row.get("is_nexus", False)):
             continue
         presence_id = str(row.get("presence_id", "")).strip()
+        if presence_id == USER_PRESENCE_ID:
+            continue
         resource_type = _core_resource_type_from_presence_id(presence_id)
         if not resource_type:
             # Allow non-core presences to emit CPU if they have pressure
             resource_type = "cpu"
+        if presence_id == _RESOURCE_DAIMOI_CPU_SENTINEL_ID:
+            row["resource_emit_disabled"] = True
+            row["resource_emit_disabled_reason"] = "cpu_sentinel_sink"
+            continue
 
         emitter_cpu_cost = 0.0
         emitter_impact = impact_by_id.get(presence_id)
@@ -8346,23 +9107,38 @@ def _apply_resource_daimoi_emissions(
         best_target: dict[str, Any] | None = None
         best_target_id = ""
         best_score = -1.0
-        for impact in recipient_impacts:
-            target_id = str(impact.get("id", "")).strip()
-            if not target_id:
-                continue
-            need_ratio = _resource_need_ratio(
-                impact,
-                resource_type,
-                queue_ratio=queue_ratio,
-            )
-            ax, ay = anchor_by_presence.get(target_id, (0.5, 0.5))
-            distance = math.sqrt(((ax - px) * (ax - px)) + ((ay - py) * (ay - py)))
-            proximity = _clamp01(1.0 - min(1.0, distance / 1.15))
-            score = (need_ratio * 0.72) + (proximity * 0.28)
-            if score > best_score:
-                best_score = score
-                best_target = impact
-                best_target_id = target_id
+        forced_cpu_target = False
+        if (
+            cpu_sentinel_attractor_active
+            and resource_type == "cpu"
+            and isinstance(cpu_sentinel_impact, dict)
+            and presence_id != _RESOURCE_DAIMOI_CPU_SENTINEL_ID
+        ):
+            forced_target_id = str(cpu_sentinel_impact.get("id", "")).strip()
+            if forced_target_id:
+                best_target = cpu_sentinel_impact
+                best_target_id = forced_target_id
+                best_score = 1.0
+                forced_cpu_target = True
+
+        if best_target is None:
+            for impact in recipient_impacts:
+                target_id = str(impact.get("id", "")).strip()
+                if not target_id:
+                    continue
+                need_ratio = _resource_need_ratio(
+                    impact,
+                    resource_type,
+                    queue_ratio=queue_ratio,
+                )
+                ax, ay = anchor_by_presence.get(target_id, (0.5, 0.5))
+                distance = math.sqrt(((ax - px) * (ax - px)) + ((ay - py) * (ay - py)))
+                proximity = _clamp01(1.0 - min(1.0, distance / 1.15))
+                score = (need_ratio * 0.72) + (proximity * 0.28)
+                if score > best_score:
+                    best_score = score
+                    best_target = impact
+                    best_target_id = target_id
 
         if best_target is None or best_score <= 1e-8:
             continue
@@ -8397,6 +9173,12 @@ def _apply_resource_daimoi_emissions(
         row["resource_target_presence_id"] = best_target_id
         row["resource_availability"] = round(availability, 6)
         row["resource_action_blocked"] = False
+        row["cpu_sentinel_attractor_active"] = bool(
+            cpu_sentinel_attractor_active and resource_type == "cpu"
+        )
+        if forced_cpu_target:
+            row["resource_forced_target"] = "cpu_sentinel_attractor"
+            cpu_sentinel_forced_packets += 1
         row["top_job"] = "emit_resource_packet"
         row["job_probabilities"] = {
             "emit_resource_packet": round(0.74, 6),
@@ -8425,6 +9207,7 @@ def _apply_resource_daimoi_emissions(
     summary["emitter_rows"] = int(emitter_rows)
     summary["delivered_packets"] = int(packet_count)
     summary["total_transfer"] = round(sum(resource_totals.values()), 6)
+    summary["cpu_sentinel_forced_packets"] = int(cpu_sentinel_forced_packets)
     summary["by_resource"] = {
         key: round(value, 6)
         for key, value in sorted(resource_totals.items())
@@ -8447,8 +9230,32 @@ def _apply_resource_daimoi_action_consumption(
     *,
     field_particles: list[dict[str, Any]],
     presence_impacts: list[dict[str, Any]],
+    resource_heartbeat: dict[str, Any],
     queue_ratio: float,
 ) -> dict[str, Any]:
+    resource_devices = (
+        resource_heartbeat.get("devices", {})
+        if isinstance(resource_heartbeat, dict)
+        else {}
+    )
+    cpu_utilization = max(
+        0.0,
+        min(
+            100.0,
+            _safe_float(
+                (
+                    resource_devices.get("cpu", {})
+                    if isinstance(resource_devices.get("cpu", {}), dict)
+                    else {}
+                ).get("utilization", 0.0),
+                0.0,
+            ),
+        ),
+    )
+    cpu_sentinel_burn_active = (
+        cpu_utilization >= _RESOURCE_DAIMOI_CPU_SENTINEL_BURN_START_PERCENT
+    )
+
     summary: dict[str, Any] = {
         "record": "eta-mu.resource-daimoi-consumption.v1",
         "schema_version": "resource.daimoi.consumption.v1",
@@ -8459,6 +9266,21 @@ def _apply_resource_daimoi_action_consumption(
         "starved_presences": [],
         "active_presences": [],
         "queue_ratio": round(_clamp01(_safe_float(queue_ratio, 0.0)), 6),
+        "cpu_utilization": round(cpu_utilization, 2),
+        "cpu_sentinel_id": _RESOURCE_DAIMOI_CPU_SENTINEL_ID,
+        "cpu_sentinel_burn_threshold": round(
+            _RESOURCE_DAIMOI_CPU_SENTINEL_BURN_START_PERCENT,
+            2,
+        ),
+        "cpu_sentinel_burn_max_multiplier": round(
+            _RESOURCE_DAIMOI_CPU_SENTINEL_BURN_MAX_MULTIPLIER,
+            6,
+        ),
+        "cpu_sentinel_burn_cost_max": round(
+            _RESOURCE_DAIMOI_CPU_SENTINEL_BURN_COST_MAX,
+            6,
+        ),
+        "cpu_sentinel_burn_active": bool(cpu_sentinel_burn_active),
     }
     if not isinstance(field_particles, list) or not isinstance(presence_impacts, list):
         return summary
@@ -8491,11 +9313,28 @@ def _apply_resource_daimoi_action_consumption(
         presence_id = str(row.get("presence_id", "")).strip()
         if not presence_id:
             continue
+        if presence_id == USER_PRESENCE_ID:
+            row["resource_action_blocked"] = False
+            continue
         if _core_resource_type_from_presence_id(presence_id):
             continue
 
         impact = impact_by_id.get(presence_id)
         if not isinstance(impact, dict):
+            continue
+
+        is_cpu_sentinel = presence_id == _RESOURCE_DAIMOI_CPU_SENTINEL_ID
+        if is_cpu_sentinel and not cpu_sentinel_burn_active:
+            row["resource_action_blocked"] = False
+            row["resource_sentinel_idle"] = True
+            row["resource_sentinel_cpu_utilization"] = round(cpu_utilization, 2)
+            row["resource_sentinel_burn_threshold"] = round(
+                _RESOURCE_DAIMOI_CPU_SENTINEL_BURN_START_PERCENT,
+                2,
+            )
+            top_job = str(row.get("top_job", "")).strip()
+            if top_job in {"", "observe"}:
+                row["top_job"] = "observe"
             continue
 
         wallet = _normalize_resource_wallet(impact)
@@ -8525,6 +9364,27 @@ def _apply_resource_daimoi_action_consumption(
             _RESOURCE_DAIMOI_ACTION_COST_MAX,
             max(_RESOURCE_DAIMOI_ACTION_BASE_COST, desired_cost),
         )
+
+        if is_cpu_sentinel:
+            pressure = _clamp01(
+                (cpu_utilization - _RESOURCE_DAIMOI_CPU_SENTINEL_BURN_START_PERCENT)
+                / max(1.0, (100.0 - _RESOURCE_DAIMOI_CPU_SENTINEL_BURN_START_PERCENT)),
+            )
+            burn_multiplier = 1.0 + (
+                pressure * (_RESOURCE_DAIMOI_CPU_SENTINEL_BURN_MAX_MULTIPLIER - 1.0)
+            )
+            desired_cost = min(
+                _RESOURCE_DAIMOI_CPU_SENTINEL_BURN_COST_MAX,
+                max(_RESOURCE_DAIMOI_ACTION_BASE_COST, desired_cost * burn_multiplier),
+            )
+            row["resource_sentinel_idle"] = False
+            row["resource_sentinel_burn_intensity"] = round(pressure, 6)
+            row["resource_sentinel_burn_multiplier"] = round(burn_multiplier, 6)
+            row["resource_sentinel_cpu_utilization"] = round(cpu_utilization, 2)
+            row["resource_sentinel_burn_threshold"] = round(
+                _RESOURCE_DAIMOI_CPU_SENTINEL_BURN_START_PERCENT,
+                2,
+            )
 
         available = max(0.0, _safe_float(wallet.get(focus_resource, 0.0), 0.0))
         consumed = min(available, desired_cost)
@@ -8583,9 +9443,12 @@ def _apply_resource_daimoi_action_consumption(
             )
         else:
             row["resource_action_blocked"] = False
-            top_job = str(row.get("top_job", "")).strip()
-            if top_job in {"", "observe"}:
-                row["top_job"] = "consume_resource_packet"
+            if is_cpu_sentinel:
+                row["top_job"] = "burn_resource_packet"
+            else:
+                top_job = str(row.get("top_job", "")).strip()
+                if top_job in {"", "observe"}:
+                    row["top_job"] = "consume_resource_packet"
 
     summary["action_packets"] = int(action_packets)
     summary["blocked_packets"] = int(blocked_packets)
@@ -8647,6 +9510,14 @@ def _snapshot_user_presence_runtime_state(
                     "target": str(row.get("target", "simulation") or "simulation"),
                     "message": str(row.get("message", "") or ""),
                     "embed_daimoi": bool(row.get("embed_daimoi", False)),
+                    "meta": (
+                        {
+                            str(key): value
+                            for key, value in list(row.get("meta", {}).items())[:16]
+                        }
+                        if isinstance(row.get("meta"), dict)
+                        else {}
+                    ),
                     "x_ratio": row.get("x_ratio"),
                     "y_ratio": row.get("y_ratio"),
                     "ts_monotonic": ts_monotonic,
@@ -8796,6 +9667,301 @@ def _snapshot_user_presence_runtime_state(
     }
 
 
+def _user_query_component_rows(event: dict[str, Any]) -> list[dict[str, Any]]:
+    message = str(event.get("message", "") or "").strip()
+    kind = str(event.get("kind", "input") or "input").strip().lower()
+    meta_raw = event.get("meta")
+    meta: dict[str, Any] = meta_raw if isinstance(meta_raw, dict) else {}
+    search_meta_raw = meta.get("search_daimoi")
+    search_meta: dict[str, Any] = (
+        search_meta_raw if isinstance(search_meta_raw, dict) else {}
+    )
+    components_raw = search_meta.get("components")
+    component_rows = components_raw if isinstance(components_raw, list) else []
+
+    rows: list[dict[str, Any]] = []
+    for index, row in enumerate(component_rows[:8]):
+        if not isinstance(row, dict):
+            continue
+        text = str(row.get("text", "") or "").strip()
+        if not text:
+            continue
+        rows.append(
+            {
+                "component_id": str(
+                    row.get("component_id", f"query-term:{index:02d}")
+                    or f"query-term:{index:02d}"
+                )[:80],
+                "component_type": str(
+                    row.get("component_type", "query-term") or "query-term"
+                )[:40],
+                "kind": "search" if kind in USER_SEARCH_QUERY_KINDS else kind,
+                "target": str(event.get("target", "simulation") or "simulation")[:120],
+                "text": text[:180],
+                "weight": round(_clamp01(_safe_float(row.get("weight", 0.4), 0.4)), 6),
+                "variant_rank": int(
+                    _safe_float(row.get("variant_rank", index), float(index))
+                ),
+                "embedding_dim": max(
+                    0, int(_safe_float(row.get("embedding_dim", 0), 0.0))
+                ),
+                "embedding_preview": [
+                    round(_safe_float(value, 0.0), 6)
+                    for value in (
+                        row.get("embedding_preview", [])
+                        if isinstance(row.get("embedding_preview", []), list)
+                        else []
+                    )[:8]
+                ],
+            }
+        )
+
+    if rows:
+        return rows
+
+    if kind in USER_SEARCH_QUERY_KINDS and message:
+        component_id = hashlib.sha1(
+            f"{message}|fallback-query".encode("utf-8")
+        ).hexdigest()[:12]
+        return [
+            {
+                "component_id": f"query:{component_id}",
+                "component_type": "query-term",
+                "kind": "search",
+                "target": str(event.get("target", "simulation") or "simulation")[:120],
+                "text": message[:180],
+                "weight": 0.88,
+                "variant_rank": 0,
+                "embedding_dim": 0,
+                "embedding_preview": [],
+            }
+        ]
+
+    return [
+        {
+            "component_id": f"{str(event.get('id', 'user-input'))[:48]}:message",
+            "component_type": "user-input",
+            "kind": kind,
+            "target": str(event.get("target", "simulation") or "simulation")[:120],
+            "text": message[:180],
+            "weight": 0.58,
+            "variant_rank": 0,
+            "embedding_dim": 0,
+            "embedding_preview": [],
+        }
+    ]
+
+
+def _update_user_query_transient_edges(
+    user_presence_state: dict[str, Any],
+    *,
+    now_monotonic: float,
+) -> dict[str, Any]:
+    if not isinstance(user_presence_state, dict):
+        return {"active_edges": [], "promoted_edges": []}
+
+    events = user_presence_state.get("events", [])
+    if not isinstance(events, list):
+        events = []
+
+    known_presence_ids = {
+        str(row.get("id", "") or "").strip()
+        for row in ENTITY_MANIFEST
+        if isinstance(row, dict)
+    }
+    known_presence_ids = {row for row in known_presence_ids if row}
+
+    with _USER_PRESENCE_INPUT_LOCK:
+        cache = _USER_PRESENCE_INPUT_CACHE
+        active_map_raw = cache.get("query_transient_edges", {})
+        active_map: dict[str, dict[str, Any]] = (
+            {
+                str(edge_key): dict(edge_row)
+                for edge_key, edge_row in active_map_raw.items()
+                if isinstance(edge_key, str) and isinstance(edge_row, dict)
+            }
+            if isinstance(active_map_raw, dict)
+            else {}
+        )
+
+        seen_raw = cache.get("query_transient_seen", {})
+        seen_events: dict[str, float] = (
+            {
+                str(event_id): _safe_float(ts_value, 0.0)
+                for event_id, ts_value in seen_raw.items()
+                if str(event_id).strip()
+            }
+            if isinstance(seen_raw, dict)
+            else {}
+        )
+
+        promoted_raw = cache.get("query_promoted_edges", {})
+        promoted_edges: dict[str, dict[str, Any]] = (
+            {
+                str(edge_key): dict(edge_row)
+                for edge_key, edge_row in promoted_raw.items()
+                if isinstance(edge_key, str) and isinstance(edge_row, dict)
+            }
+            if isinstance(promoted_raw, dict)
+            else {}
+        )
+
+        prune_before = now_monotonic - (USER_QUERY_TRANSIENT_TTL_MAX_SECONDS * 2.0)
+        seen_events = {
+            event_id: ts for event_id, ts in seen_events.items() if ts >= prune_before
+        }
+
+        processed_events = sorted(
+            [
+                row
+                for row in events[-24:]
+                if isinstance(row, dict)
+                and str(row.get("kind", "")).strip().lower() in USER_SEARCH_QUERY_KINDS
+                and bool(row.get("embed_daimoi", False))
+            ],
+            key=lambda row: _safe_float(row.get("ts_monotonic", 0.0), 0.0),
+        )
+
+        for event in processed_events:
+            event_id = str(event.get("id", "") or "").strip()
+            event_ts = _safe_float(
+                event.get("ts_monotonic", now_monotonic), now_monotonic
+            )
+            if event_id and event_id in seen_events:
+                continue
+
+            component_rows = _user_query_component_rows(event)
+            target_text = str(event.get("target", "") or "").strip().lower()
+            target_ids = {"nexus"}
+
+            meta_raw = event.get("meta")
+            meta: dict[str, Any] = meta_raw if isinstance(meta_raw, dict) else {}
+            search_meta_raw = meta.get("search_daimoi")
+            search_meta: dict[str, Any] = (
+                search_meta_raw if isinstance(search_meta_raw, dict) else {}
+            )
+            target_presence_ids_raw = search_meta.get("target_presence_ids")
+            target_presence_ids = (
+                target_presence_ids_raw
+                if isinstance(target_presence_ids_raw, list)
+                else []
+            )
+            for target_id in target_presence_ids:
+                clean_target = str(target_id or "").strip()
+                if clean_target:
+                    target_ids.add(clean_target)
+
+            for presence_id in known_presence_ids:
+                if presence_id.lower() in target_text:
+                    target_ids.add(presence_id)
+
+            for component in component_rows[:8]:
+                if not isinstance(component, dict):
+                    continue
+                query_text = str(component.get("text", "") or "").strip()
+                if not query_text:
+                    continue
+                query_hash = hashlib.sha1(query_text.encode("utf-8")).hexdigest()[:12]
+                source_id = f"query:{query_hash}"
+
+                for target_id in sorted(target_ids):
+                    edge_key = f"{source_id}->{target_id}"
+                    edge = active_map.get(edge_key, {})
+                    hits = int(_safe_float(edge.get("hits", 0), 0.0)) + 1
+                    ttl_seconds = min(
+                        USER_QUERY_TRANSIENT_TTL_MAX_SECONDS,
+                        USER_QUERY_TRANSIENT_TTL_SECONDS + (hits * 4.0),
+                    )
+                    score = _clamp01(0.18 + (hits * 0.16))
+                    edge_id = str(edge.get("id", f"transient:{query_hash}:{target_id}"))
+                    active_map[edge_key] = {
+                        "id": edge_id,
+                        "source": source_id,
+                        "target": target_id,
+                        "kind": "query_transient",
+                        "query": query_text[:180],
+                        "component_id": str(component.get("component_id", "") or "")[
+                            :80
+                        ],
+                        "hits": hits,
+                        "ttl_seconds": round(ttl_seconds, 6),
+                        "first_seen_monotonic": _safe_float(
+                            edge.get("first_seen_monotonic", event_ts), event_ts
+                        ),
+                        "last_seen_monotonic": event_ts,
+                        "score": round(score, 6),
+                        "promoted": bool(hits >= USER_QUERY_TRANSIENT_PROMOTION_HITS),
+                    }
+
+                    if hits >= USER_QUERY_TRANSIENT_PROMOTION_HITS:
+                        permanent_key = edge_key
+                        permanent_id = hashlib.sha1(
+                            f"{source_id}|{target_id}|promoted".encode("utf-8")
+                        ).hexdigest()[:12]
+                        promoted_edges[permanent_key] = {
+                            "id": f"query-edge:{permanent_id}",
+                            "source": source_id,
+                            "target": target_id,
+                            "kind": "query_resonance",
+                            "query": query_text[:180],
+                            "strength": round(_clamp01(0.3 + (hits * 0.12)), 6),
+                            "promoted_at_monotonic": event_ts,
+                            "hits": hits,
+                        }
+
+            if event_id:
+                seen_events[event_id] = event_ts
+
+        active_rows: list[dict[str, Any]] = []
+        for edge_key, edge in list(active_map.items()):
+            ttl_seconds = max(
+                USER_QUERY_TRANSIENT_TTL_SECONDS,
+                _safe_float(
+                    edge.get("ttl_seconds", USER_QUERY_TRANSIENT_TTL_SECONDS),
+                    USER_QUERY_TRANSIENT_TTL_SECONDS,
+                ),
+            )
+            age_seconds = max(
+                0.0,
+                now_monotonic
+                - _safe_float(
+                    edge.get("last_seen_monotonic", now_monotonic), now_monotonic
+                ),
+            )
+            if age_seconds > ttl_seconds:
+                active_map.pop(edge_key, None)
+                continue
+            life = _clamp01(1.0 - (age_seconds / ttl_seconds))
+            edge["life"] = round(life, 6)
+            edge["age_seconds"] = round(age_seconds, 6)
+            active_rows.append(dict(edge))
+
+        promoted_rows = sorted(
+            [dict(row) for row in promoted_edges.values() if isinstance(row, dict)],
+            key=lambda row: _safe_float(row.get("promoted_at_monotonic", 0.0), 0.0),
+            reverse=True,
+        )[:24]
+
+        cache["query_transient_edges"] = active_map
+        cache["query_promoted_edges"] = promoted_edges
+        cache["query_transient_seen"] = seen_events
+
+    active_rows = sorted(
+        active_rows,
+        key=lambda row: (
+            -_safe_float(row.get("life", 0.0), 0.0),
+            -_safe_float(row.get("hits", 0.0), 0.0),
+            str(row.get("id", "")),
+        ),
+    )[:48]
+    return {
+        "active_edges": active_rows,
+        "promoted_edges": promoted_rows,
+        "active_count": len(active_rows),
+        "promoted_count": len(promoted_rows),
+    }
+
+
 def _build_user_presence_embedded_daimoi_rows(
     user_presence_state: dict[str, Any],
     *,
@@ -8851,6 +10017,13 @@ def _build_user_presence_embedded_daimoi_rows(
             str(event.get("target", "simulation") or "simulation").strip()
             or "simulation"
         )
+        packet_components = _user_query_component_rows(event)
+        if kind not in USER_SEARCH_QUERY_KINDS and packet_components:
+            for component in packet_components:
+                if not isinstance(component, dict):
+                    continue
+                component["kind"] = kind
+                component["target"] = target
         influence_power = _clamp01(0.34 + (life * 0.58))
         route_probability = _clamp01(0.26 + (life * 0.54))
 
@@ -8878,24 +10051,24 @@ def _build_user_presence_embedded_daimoi_rows(
                 "message_probability": round(_clamp01(life), 6),
                 "route_probability": round(route_probability, 6),
                 "influence_power": round(influence_power, 6),
-                "top_job": "emit_user_input_message",
+                "top_job": (
+                    "emit_query_daimoi_packet"
+                    if kind in USER_SEARCH_QUERY_KINDS
+                    else "emit_user_input_message"
+                ),
                 "resource_daimoi": True,
                 "resource_emit_amount": round(0.08 + (life * 0.22), 6),
                 "resource_emit_type": "attention",
                 "resource_emit_reason": kind,
                 "resource_action_blocked": False,
-                "packet_components": [
-                    {
-                        "component_id": f"{event_id}:message",
-                        "component_type": "user-input",
-                        "kind": kind,
-                        "target": target,
-                        "text": message[:180],
-                        "weight": round(_clamp01(0.42 + (life * 0.5)), 6),
-                    }
-                ],
+                "packet_components": packet_components,
                 "action_probabilities": {
                     "emit_user_input_message": round(_clamp01(0.64 + (life * 0.24)), 6),
+                    "emit_query_daimoi_packet": (
+                        round(_clamp01(0.58 + (life * 0.3)), 6)
+                        if kind in USER_SEARCH_QUERY_KINDS
+                        else 0.0
+                    ),
                     "broadcast_ui_attention": round(_clamp01(0.36 + (life * 0.22)), 6),
                 },
                 "resource_signature": {
@@ -8973,6 +10146,8 @@ def build_simulation_state(
     )
     file_graph, projection_event = _project_file_graph_for_simulation(
         file_graph=file_graph if isinstance(file_graph, dict) else None,
+        crawler_graph=crawler_graph if isinstance(crawler_graph, dict) else None,
+        queue_snapshot=queue_snapshot if isinstance(queue_snapshot, dict) else None,
         influence_snapshot=influence if isinstance(influence, dict) else {},
     )
     if isinstance(projection_event, dict):
@@ -9004,7 +10179,7 @@ def build_simulation_state(
         else (file_graph if isinstance(file_graph, dict) else None)
     )
     view_graph_contract = _build_view_graph_contract(
-        output_file_graph if isinstance(output_file_graph, dict) else None
+        file_graph if isinstance(file_graph, dict) else None
     )
     truth_state = catalog.get("truth_state") if isinstance(catalog, dict) else None
     logical_graph = catalog.get("logical_graph") if isinstance(catalog, dict) else None
@@ -9543,9 +10718,14 @@ def build_simulation_state(
                 }
             )
 
+    now_monotonic = time.monotonic()
     user_presence_state = _snapshot_user_presence_runtime_state(
-        time.monotonic(),
+        now_monotonic,
         influence,
+    )
+    user_query_edges = _update_user_query_transient_edges(
+        user_presence_state,
+        now_monotonic=now_monotonic,
     )
     user_recent_events = user_presence_state.get("events", [])
     if not isinstance(user_recent_events, list):
@@ -9775,6 +10955,7 @@ def build_simulation_state(
             "packet_schema_version",
             "is_nexus",
             "owner_presence_id",
+            "origin_presence_id",
             "target_presence_id",
             "top_job",
             "package_entropy",
@@ -9783,6 +10964,11 @@ def build_simulation_state(
             "radius",
             "collision_count",
             "source_node_id",
+            "is_view_compaction_bundle",
+            "simulation_semantic_role",
+            "semantic_bundle_mass",
+            "semantic_bundle_charge",
+            "semantic_bundle_gravity",
             "graph_node_id",
             "graph_distance_cost",
             "gravity_potential",
@@ -9872,6 +11058,7 @@ def build_simulation_state(
     resource_consumption = _apply_resource_daimoi_action_consumption(
         field_particles=normalized_field_particles,
         presence_impacts=presence_impacts,
+        resource_heartbeat=resource_heartbeat,
         queue_ratio=queue_ratio,
     )
     if isinstance(daimoi_probabilistic, dict):
@@ -9946,12 +11133,27 @@ def build_simulation_state(
         "resource_consumption": resource_consumption,
         "user_presence": user_presence_state,
         "user_embedded_daimoi_count": len(user_embedded_daimoi),
+        "user_query_transient_edges": list(user_query_edges.get("active_edges", [])),
+        "user_query_transient_edge_count": int(
+            _safe_float(user_query_edges.get("active_count", 0), 0.0)
+        ),
+        "user_query_promoted_edges": list(user_query_edges.get("promoted_edges", [])),
+        "user_query_promoted_edge_count": int(
+            _safe_float(user_query_edges.get("promoted_count", 0), 0.0)
+        ),
         "user_input_messages": [
             {
                 "id": str(row.get("id", ""))[:80],
                 "kind": str(row.get("kind", "input"))[:40],
                 "target": str(row.get("target", ""))[:180],
                 "message": str(row.get("message", ""))[:260],
+                "query": str(
+                    (
+                        row.get("meta", {}).get("query", "")
+                        if isinstance(row.get("meta"), dict)
+                        else ""
+                    )
+                )[:180],
                 "age_seconds": round(_safe_float(row.get("age_seconds", 0.0), 0.0), 4),
             }
             for row in (
@@ -10159,6 +11361,89 @@ def _stream_particle_collision_radius(row: dict[str, Any], mass_value: float) ->
     )
 
 
+def _apply_stream_collision_behavior_variation(
+    particle_rows: list[dict[str, Any]], *, now_seconds: float | None = None
+) -> None:
+    if not isinstance(particle_rows, list) or not particle_rows:
+        return
+    now_value = _safe_float(now_seconds, time.time())
+    amplitude_ratio = max(0.0, SIMULATION_STREAM_NOISE_AMPLITUDE / 10.0)
+    for index, row in enumerate(particle_rows):
+        if not isinstance(row, dict):
+            continue
+        collisions = max(0, _safe_int(row.get("collision_count", 0), 0))
+        if collisions <= 0:
+            continue
+
+        is_nexus = bool(row.get("is_nexus", False))
+        collision_signal = _clamp01(
+            _safe_float(collisions, 0.0) / max(1.0, SIMULATION_STREAM_COLLISION_STATIC)
+        )
+        if collision_signal <= 1e-8:
+            continue
+
+        vx_value = _safe_float(row.get("vx", 0.0), 0.0)
+        vy_value = _safe_float(row.get("vy", 0.0), 0.0)
+        x_value = _clamp01(_safe_float(row.get("x", 0.5), 0.5))
+        y_value = _clamp01(_safe_float(row.get("y", 0.5), 0.5))
+        particle_id = str(row.get("id", "") or f"particle:{index}")
+        seed = int(hashlib.sha1(particle_id.encode("utf-8")).hexdigest()[:8], 16)
+
+        coupling_damp = 1.0 - (
+            collision_signal
+            * (0.13 if not is_nexus else 0.08)
+            * max(0.2, SIMULATION_STREAM_ANT_INFLUENCE)
+        )
+        coupling_damp = max(0.68 if not is_nexus else 0.78, min(1.0, coupling_damp))
+        vx_value *= coupling_damp
+        vy_value *= coupling_damp
+
+        phase = now_value * (0.67 + (collision_signal * 0.29))
+        noise_x = _simplex_noise_2d(
+            (x_value * 6.4) + phase + (index * 0.021),
+            (y_value * 6.1) + (phase * 0.73),
+            seed=(seed % 251) + 17,
+        )
+        noise_y = _simplex_noise_2d(
+            (x_value * 6.0) + 109.0 + (phase * 0.61),
+            (y_value * 6.3) + phase + (index * 0.019),
+            seed=(seed % 251) + 73,
+        )
+        kick_gain = (
+            (0.00056 + (collision_signal * 0.00242))
+            * max(0.2, amplitude_ratio)
+            * (1.0 if not is_nexus else 0.46)
+        )
+        vx_value += noise_x * kick_gain
+        vy_value += noise_y * kick_gain
+
+        speed = math.hypot(vx_value, vy_value)
+        min_escape_speed = (
+            (0.00062 + (collision_signal * 0.00155))
+            * max(0.2, amplitude_ratio)
+            * (1.0 if not is_nexus else 0.45)
+        )
+        if speed < min_escape_speed:
+            if speed > 1e-8:
+                ux = vx_value / speed
+                uy = vy_value / speed
+            else:
+                ux = noise_x
+                uy = noise_y
+                unorm = math.hypot(ux, uy)
+                if unorm <= 1e-8:
+                    ux, uy = 1.0, 0.0
+                else:
+                    ux /= unorm
+                    uy /= unorm
+            vx_value += ux * (min_escape_speed - speed)
+            vy_value += uy * (min_escape_speed - speed)
+
+        row["vx"] = round(vx_value, 6)
+        row["vy"] = round(vy_value, 6)
+        row["collision_escape_signal"] = round(collision_signal, 6)
+
+
 def _resolve_semantic_particle_collisions_native(
     particle_rows: list[dict[str, Any]],
 ) -> bool:
@@ -10204,8 +11489,8 @@ def _resolve_semantic_particle_collisions_native(
         vy=vy_values,
         radius=radius_values,
         mass=mass_values,
-        restitution=0.88,
-        separation_percent=0.72,
+        restitution=0.91,
+        separation_percent=0.84,
         cell_size=0.04,
     )
     if not (isinstance(resolved, tuple) and len(resolved) == 5):
@@ -10233,6 +11518,7 @@ def _resolve_semantic_particle_collisions_native(
         row["vx"] = round(_safe_float(vx_next[idx], vx_values[idx]), 6)
         row["vy"] = round(_safe_float(vy_next[idx], vy_values[idx]), 6)
         row["collision_count"] = max(0, int(_safe_float(collisions[idx], 0.0)))
+    _apply_stream_collision_behavior_variation(particle_rows)
     return True
 
 
@@ -10263,8 +11549,8 @@ def _resolve_semantic_particle_collisions(rows: list[dict[str, Any]]) -> None:
         gy = int(y_value / cell_size)
         grid[(gx, gy)].append(row)
 
-    restitution = 0.88
-    separation_percent = 0.72
+    restitution = 0.91
+    separation_percent = 0.84
     collision_count_updates: dict[str, int] = defaultdict(int)
 
     visited_pairs: set[tuple[str, str]] = set()
@@ -10343,7 +11629,7 @@ def _resolve_semantic_particle_collisions(rows: list[dict[str, Any]]) -> None:
                         tangent_x /= tangent_norm
                         tangent_y /= tangent_norm
                         tangent_impulse = min(
-                            abs(impulse) * 0.18,
+                            abs(impulse) * 0.1,
                             abs((rel_vx * tangent_x) + (rel_vy * tangent_y)),
                         )
                         vx_a -= tangent_impulse * tangent_x * inv_mass_a
@@ -10381,10 +11667,29 @@ def _resolve_semantic_particle_collisions(rows: list[dict[str, Any]]) -> None:
         collisions = int(collision_count_updates.get(particle_id, 0))
         row["collision_count"] = collisions
 
+    _apply_stream_collision_behavior_variation(particle_rows)
+
 
 def _stream_motion_tick_scale(dt_seconds: float) -> float:
     dt = max(0.001, _safe_float(dt_seconds, 0.08))
     return max(0.55, min(3.0, dt / 0.0166667))
+
+
+def _particle_origin_presence_id(row: dict[str, Any]) -> str:
+    if not isinstance(row, dict):
+        return ""
+    explicit_origin = str(row.get("origin_presence_id", "") or "").strip()
+    if explicit_origin:
+        return explicit_origin
+    particle_id = str(row.get("id", "") or "").strip()
+    if particle_id.startswith("field:"):
+        body = particle_id[6:]
+        if body:
+            return str(body.rsplit(":", 1)[0]).strip()
+    owner_presence = str(row.get("owner_presence_id", "") or "").strip()
+    if owner_presence:
+        return owner_presence
+    return str(row.get("presence_id", "") or "").strip()
 
 
 def _update_stream_motion_overlays(
@@ -10856,6 +12161,47 @@ def advance_simulation_field_particles(
         total_x, total_y = presence_centers[presence_id]
         presence_centers[presence_id] = (total_x / count, total_y / count)
 
+    resource_consumption_state = presence_dynamics.get("resource_consumption", {})
+    if not isinstance(resource_consumption_state, dict):
+        resource_consumption_state = {}
+    resource_heartbeat_state = presence_dynamics.get("resource_heartbeat", {})
+    if not isinstance(resource_heartbeat_state, dict):
+        resource_heartbeat_state = {}
+    resource_devices_state = resource_heartbeat_state.get("devices", {})
+    if not isinstance(resource_devices_state, dict):
+        resource_devices_state = {}
+    cpu_device_state = resource_devices_state.get("cpu", {})
+    if not isinstance(cpu_device_state, dict):
+        cpu_device_state = {}
+    cpu_utilization_stream = max(
+        0.0,
+        min(
+            100.0,
+            _safe_float(cpu_device_state.get("utilization", 0.0), 0.0),
+        ),
+    )
+    cpu_sentinel_attractor_active_stream = bool(
+        resource_consumption_state.get("cpu_sentinel_burn_active", False)
+    ) or (
+        cpu_utilization_stream >= _RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_START_PERCENT
+    )
+    cpu_sentinel_pressure_stream = _clamp01(
+        (cpu_utilization_stream - _RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_START_PERCENT)
+        / max(1.0, (100.0 - _RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_START_PERCENT))
+    )
+    cpu_sentinel_center = presence_centers.get(_RESOURCE_DAIMOI_CPU_SENTINEL_ID)
+    if not (isinstance(cpu_sentinel_center, tuple) and len(cpu_sentinel_center) == 2):
+        anchor_positions = presence_dynamics.get("presence_anchor_positions", {})
+        if isinstance(anchor_positions, dict):
+            anchor_state = anchor_positions.get(_RESOURCE_DAIMOI_CPU_SENTINEL_ID)
+            if isinstance(anchor_state, dict):
+                cpu_sentinel_center = (
+                    _clamp01(_safe_float(anchor_state.get("x", 0.5), 0.5)),
+                    _clamp01(_safe_float(anchor_state.get("y", 0.5), 0.5)),
+                )
+    if not (isinstance(cpu_sentinel_center, tuple) and len(cpu_sentinel_center) == 2):
+        cpu_sentinel_center = None
+
     node_centers: dict[str, tuple[float, float]] = {}
     node_counts: dict[str, int] = defaultdict(int)
     for row in rows:
@@ -10888,6 +12234,7 @@ def advance_simulation_field_particles(
         x_value = _clamp01(_safe_float(row.get("x", 0.5), 0.5))
         y_value = _clamp01(_safe_float(row.get("y", 0.5), 0.5))
         is_nexus = bool(row.get("is_nexus", False))
+        row["cpu_sentinel_attractor_active"] = False
         friction_tick = nexus_friction_tick if is_nexus else daimoi_friction_tick
         vx_value = (
             _safe_float(row.get("vx", 0.0), 0.0) * SIMULATION_STREAM_VELOCITY_SCALE
@@ -10897,15 +12244,36 @@ def advance_simulation_field_particles(
         )
 
         presence_id = str(row.get("presence_id", "") or "").strip()
-        presence_center_x, presence_center_y = presence_centers.get(
-            presence_id, (0.5, 0.5)
+        owner_presence_id = str(
+            row.get("owner_presence_id", row.get("presence_id", "")) or ""
+        ).strip()
+        target_presence_id = str(row.get("target_presence_id", "") or "").strip()
+        origin_presence_id = _particle_origin_presence_id(row)
+
+        attractor_presence_id = ""
+        for candidate in (target_presence_id, owner_presence_id, presence_id):
+            candidate_id = str(candidate).strip()
+            if not candidate_id:
+                continue
+            if origin_presence_id and candidate_id == origin_presence_id:
+                continue
+            attractor_presence_id = candidate_id
+            break
+
+        to_presence_x = 0.0
+        to_presence_y = 0.0
+        attractor_center = (
+            presence_centers.get(attractor_presence_id)
+            if attractor_presence_id
+            else None
         )
-        to_presence_x = presence_center_x - x_value
-        to_presence_y = presence_center_y - y_value
-        to_presence_mag = math.hypot(to_presence_x, to_presence_y)
-        if to_presence_mag > 1e-6:
-            to_presence_x /= to_presence_mag
-            to_presence_y /= to_presence_mag
+        if isinstance(attractor_center, tuple) and len(attractor_center) == 2:
+            to_presence_x = _safe_float(attractor_center[0], x_value) - x_value
+            to_presence_y = _safe_float(attractor_center[1], y_value) - y_value
+            to_presence_mag = math.hypot(to_presence_x, to_presence_y)
+            if to_presence_mag > 1e-6:
+                to_presence_x /= to_presence_mag
+                to_presence_y /= to_presence_mag
 
         graph_node_id = str(row.get("graph_node_id", "") or "").strip()
         route_node_id = str(row.get("route_node_id", "") or "").strip()
@@ -10939,8 +12307,18 @@ def advance_simulation_field_particles(
                 semantic_anchor = center_candidate
 
         if semantic_anchor is None:
-            semantic_anchor = presence_centers.get(presence_id, (0.5, 0.5))
-        semantic_anchor_x, semantic_anchor_y = semantic_anchor
+            fallback_anchor: tuple[float, float] | None = None
+            if attractor_presence_id:
+                candidate_anchor = presence_centers.get(attractor_presence_id)
+                if isinstance(candidate_anchor, tuple) and len(candidate_anchor) == 2:
+                    fallback_anchor = candidate_anchor
+            semantic_anchor = (
+                fallback_anchor if fallback_anchor is not None else (x_value, y_value)
+            )
+        if not (isinstance(semantic_anchor, tuple) and len(semantic_anchor) == 2):
+            semantic_anchor = (0.5, 0.5)
+        semantic_anchor_x = _safe_float(semantic_anchor[0], 0.5)
+        semantic_anchor_y = _safe_float(semantic_anchor[1], 0.5)
         semantic_dx = semantic_anchor_x - x_value
         semantic_dy = semantic_anchor_y - y_value
         semantic_dist = max(1e-6, math.hypot(semantic_dx, semantic_dy))
@@ -10956,6 +12334,26 @@ def advance_simulation_field_particles(
         edge_signal = _clamp01((edge_distance - 0.36) / 0.22)
         lateral_nx = -semantic_ny
         lateral_ny = semantic_nx
+        node_crowd_count = (
+            int(node_counts.get(semantic_node_id, 0)) if semantic_node_id else 0
+        )
+        crowd_threshold = 2 if is_nexus else 3
+        crowd_signal = _clamp01(
+            (max(0, node_crowd_count - crowd_threshold))
+            / max(1.0, 12.0 + (SIMULATION_STREAM_ANT_INFLUENCE * 6.0))
+        )
+        collision_escape_raw = _safe_float(
+            row.get("collision_escape_signal", float("nan")),
+            float("nan"),
+        )
+        if math.isfinite(collision_escape_raw):
+            collision_signal = _clamp01(collision_escape_raw)
+        else:
+            collision_signal = _clamp01(
+                _safe_float(row.get("collision_count", 0.0), 0.0)
+                / max(0.5, SIMULATION_STREAM_COLLISION_STATIC)
+            )
+        isolation_signal = _clamp01(max(0.0, semantic_dist - 0.16) / 0.44)
 
         drift_gravity_term = _safe_float(row.get("drift_gravity_term", 0.0), 0.0)
         valve_gravity_term = _safe_float(row.get("valve_gravity_term", 0.0), 0.0)
@@ -11037,9 +12435,21 @@ def advance_simulation_field_particles(
                 semantic_payload_signal
                 * _safe_float(SIMULATION_STREAM_NEXUS_SEMANTIC_WEIGHT, 0.78),
             )
+        else:
+            semantic_gain *= max(
+                0.36,
+                1.0
+                - (
+                    (collision_signal * 0.34)
+                    + (crowd_signal * 0.24)
+                    + (isolation_signal * 0.08)
+                ),
+            )
         presence_gain = SIMULATION_STREAM_FIELD_FORCE * (
             0.03 + ((1.0 - route_probability) * 0.08) + ((1.0 - semantic_signal) * 0.06)
         )
+        if not is_nexus:
+            presence_gain *= 1.0 + (isolation_signal * 0.22)
         center_gain = SIMULATION_STREAM_CENTER_GRAVITY * (
             edge_signal
             * (
@@ -11056,12 +12466,33 @@ def advance_simulation_field_particles(
             + (edge_signal * 0.24)
             + min(0.62, abs(focus_contribution) * 0.22)
         )
+        jitter_gain *= 1.0 + (
+            max(0.2, SIMULATION_STREAM_ANT_INFLUENCE)
+            * (
+                (collision_signal * 1.08)
+                + (crowd_signal * 0.86)
+                + (isolation_signal * 0.42)
+            )
+        )
         if is_nexus:
             jitter_gain *= 0.38
 
         seed = int(hashlib.sha1(particle_id.encode("utf-8")).hexdigest()[:8], 16)
-        noise_frequency = 2.8 + (semantic_signal * 4.2) + (route_probability * 1.1)
-        noise_time_scale = 0.44 + (route_probability * 0.48) + (semantic_signal * 0.22)
+        noise_frequency = (
+            2.8
+            + (semantic_signal * 4.2)
+            + (route_probability * 1.1)
+            + (crowd_signal * 1.35)
+            + (collision_signal * 1.78)
+            + (isolation_signal * 0.62)
+        )
+        noise_time_scale = (
+            0.44
+            + (route_probability * 0.48)
+            + (semantic_signal * 0.22)
+            + (crowd_signal * 0.21)
+            + (collision_signal * 0.27)
+        )
         jitter_x_primary = _simplex_noise_2d(
             (x_value * noise_frequency) + (index * 0.019),
             now_value * noise_time_scale,
@@ -11083,28 +12514,114 @@ def advance_simulation_field_particles(
             seed=(seed % 251) + 71,
         )
         jitter_x = (
-            (jitter_x_primary + (jitter_x_detail * 0.58))
+            (jitter_x_primary + (jitter_x_detail * 0.66))
             * jitter_gain
             * SIMULATION_STREAM_SIMPLEX_SCALE
         )
         jitter_y = (
-            (jitter_y_primary + (jitter_y_detail * 0.58))
+            (jitter_y_primary + (jitter_y_detail * 0.66))
             * jitter_gain
             * SIMULATION_STREAM_SIMPLEX_SCALE
         )
+        collision_escape_gain = (
+            _clamp01(
+                collision_signal + (crowd_signal * 0.55) + (isolation_signal * 0.25)
+            )
+            * (0.00074 + (SIMULATION_STREAM_NOISE_AMPLITUDE * 0.00018))
+            * max(0.2, SIMULATION_STREAM_ANT_INFLUENCE)
+            * (0.42 if is_nexus else 1.0)
+        )
+        collision_escape_x = 0.0
+        collision_escape_y = 0.0
+        if collision_escape_gain > 1e-8:
+            collision_escape_x = (
+                _simplex_noise_2d(
+                    (x_value * (noise_frequency * 1.72)) + 47.0 + (index * 0.015),
+                    now_value * (noise_time_scale * 1.31),
+                    seed=(seed % 251) + 97,
+                )
+                * collision_escape_gain
+            )
+            collision_escape_y = (
+                _simplex_noise_2d(
+                    (y_value * (noise_frequency * 1.64)) + 149.0 + (index * 0.013),
+                    now_value * (noise_time_scale * 1.47),
+                    seed=(seed % 251) + 151,
+                )
+                * collision_escape_gain
+            )
+
+        cluster_escape_gain = 0.0
+        if not is_nexus:
+            cluster_escape_gain = (
+                SIMULATION_STREAM_FIELD_FORCE
+                * max(0.2, SIMULATION_STREAM_ANT_INFLUENCE)
+                * (
+                    (collision_signal * 0.34)
+                    + (crowd_signal * 0.3)
+                    + (isolation_signal * 0.08)
+                )
+            )
 
         ax = (
             (semantic_nx * semantic_gain)
             + (to_presence_x * presence_gain)
             + (center_nx * center_gain)
             + jitter_x
+            + collision_escape_x
         )
         ay = (
             (semantic_ny * semantic_gain)
             + (to_presence_y * presence_gain)
             + (center_ny * center_gain)
             + jitter_y
+            + collision_escape_y
         )
+        if cluster_escape_gain > 1e-8:
+            ax -= semantic_nx * cluster_escape_gain
+            ay -= semantic_ny * cluster_escape_gain
+
+        if (
+            cpu_sentinel_attractor_active_stream
+            and not is_nexus
+            and isinstance(cpu_sentinel_center, tuple)
+            and len(cpu_sentinel_center) == 2
+        ):
+            sentinel_dx = _safe_float(cpu_sentinel_center[0], x_value) - x_value
+            sentinel_dy = _safe_float(cpu_sentinel_center[1], y_value) - y_value
+            sentinel_dist = math.hypot(sentinel_dx, sentinel_dy)
+            if sentinel_dist > 1e-6:
+                sentinel_nx = sentinel_dx / sentinel_dist
+                sentinel_ny = sentinel_dy / sentinel_dist
+                sentinel_gain = SIMULATION_STREAM_FIELD_FORCE * (
+                    _RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_GAIN
+                    * (0.22 + (cpu_sentinel_pressure_stream * 1.78))
+                )
+                if bool(row.get("resource_daimoi", False)):
+                    resource_type = _canonical_resource_type(
+                        str(row.get("resource_type", "cpu") or "cpu")
+                    )
+                    if resource_type == "cpu":
+                        sentinel_gain *= (
+                            _RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_RESOURCE_BOOST
+                        )
+                        row["resource_target_presence_id"] = (
+                            _RESOURCE_DAIMOI_CPU_SENTINEL_ID
+                        )
+                        row["resource_forced_target"] = "cpu_sentinel_attractor"
+                    elif not _RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_ALL_DAIMOI:
+                        sentinel_gain = 0.0
+                elif not _RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_ALL_DAIMOI:
+                    sentinel_gain = 0.0
+
+                if sentinel_gain > 1e-8:
+                    ax += sentinel_nx * sentinel_gain
+                    ay += sentinel_ny * sentinel_gain
+                    row["cpu_sentinel_attractor_active"] = True
+                    row["cpu_sentinel_attractor_target"] = (
+                        _RESOURCE_DAIMOI_CPU_SENTINEL_ID
+                    )
+                    row["cpu_sentinel_attractor_gain"] = round(sentinel_gain, 6)
 
         nooi_dir_x, nooi_dir_y, nooi_signal = _nooi_flow_at(x_value, y_value)
         if nooi_signal > 0.0:
@@ -11159,6 +12676,12 @@ def advance_simulation_field_particles(
             0.92,
             (0.24 + (semantic_signal * 0.34) + (route_probability * 0.2)) * dt,
         )
+        if not is_nexus and collision_signal > 0.0:
+            lateral_damping *= max(
+                0.28,
+                1.0
+                - (collision_signal * 0.58 * max(0.2, SIMULATION_STREAM_ANT_INFLUENCE)),
+            )
         vx_value -= lateral_velocity * lateral_nx * lateral_damping
         vy_value -= lateral_velocity * lateral_ny * lateral_damping
 
@@ -11180,6 +12703,23 @@ def advance_simulation_field_particles(
         base_drag = 1.0 - min(
             0.08, (node_saturation * 0.03) + (drift_cost_signal * 0.02)
         )
+        if not is_nexus and (collision_signal > 1e-8 or crowd_signal > 1e-8):
+            friction_relief = 1.0 + (
+                SIMULATION_STREAM_LOW_FRICTION
+                * (
+                    0.42
+                    + (collision_signal * 0.72)
+                    + (crowd_signal * 0.34)
+                    + (isolation_signal * 0.22)
+                )
+            )
+            friction_tick = min(1.08, friction_tick * friction_relief)
+            base_drag = min(
+                1.04,
+                base_drag
+                + (collision_signal * 0.08 * max(0.2, SIMULATION_STREAM_ANT_INFLUENCE))
+                + (isolation_signal * 0.03),
+            )
         vx_value *= friction_tick * base_drag
         vy_value *= friction_tick * base_drag
 

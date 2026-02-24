@@ -458,6 +458,9 @@ export interface BackendFieldParticle {
   g: number;
   b: number;
   message_probability?: number;
+  semantic_text_chars?: number;
+  semantic_mass?: number;
+  daimoi_energy?: number;
   job_probabilities?: Record<string, number>;
   action_probabilities?: {
     deflect: number;
@@ -1006,6 +1009,60 @@ export interface WorldInteractionResponse {
   devotion?: number;
 }
 
+export interface TruthGraphContract {
+  record: string;
+  schema_version: string;
+  generated_at: string;
+  node_count: number;
+  edge_count: number;
+  node_type_counts: Record<string, number>;
+  node_id_digest: string;
+  edge_id_digest: string;
+  provenance?: Record<string, unknown>;
+}
+
+export interface ViewGraphProjectionLedger {
+  bundle_id: string;
+  kind: string;
+  field: string;
+  target: string;
+  member_edge_count: number;
+  member_source_count: number;
+  member_target_count: number;
+  member_edge_digest: string;
+  surface_visible: boolean;
+}
+
+export interface ViewGraphContract {
+  record: string;
+  schema_version: string;
+  generated_at: string;
+  node_count: number;
+  edge_count: number;
+  node_type_counts: Record<string, number>;
+  projection?: {
+    mode: string;
+    active: boolean;
+    reason: string;
+    compaction_drive?: number;
+    cpu_pressure?: number;
+    view_edge_pressure?: number;
+    cpu_utilization?: number;
+    cpu_sentinel_id?: string;
+    edge_threshold_base?: number;
+    edge_threshold_effective?: number;
+    edge_cap_base?: number;
+    edge_cap_effective?: number;
+    bundle_ledger_count: number;
+    bundle_member_edge_count_total: number;
+    reconstructable_bundle_count: number;
+    surface_visible_bundle_count: number;
+    bundle_ledgers: ViewGraphProjectionLedger[];
+    ledger_ref: string;
+    policy?: Record<string, unknown>;
+  };
+}
+
 export interface SimulationState {
   timestamp: string;
   total: number;
@@ -1015,6 +1072,8 @@ export interface SimulationState {
   points: SimPoint[];
   field_particles?: BackendFieldParticle[];
   file_graph?: FileGraph;
+  truth_graph?: TruthGraphContract;
+  view_graph?: ViewGraphContract;
   crawler_graph?: CrawlerGraph;
   truth_state?: TruthState;
   logical_graph?: LogicalGraph;
@@ -1518,6 +1577,18 @@ export interface PresenceDynamics {
   }>;
   resource_daimoi?: ResourceDaimoiSummary;
   resource_consumption?: ResourceConsumptionSummary;
+  user_presence?: {
+    id: string;
+    label: string;
+    label_ja?: string;
+    target_x: number;
+    target_y: number;
+    anchor_x: number;
+    anchor_y: number;
+    latest_message?: string;
+    latest_target?: string;
+    active?: boolean;
+  };
   nooi_field?: NooiFieldGrid;
   simulation_budget?: {
     point_limit: number;
@@ -1555,6 +1626,10 @@ export interface PresenceDynamics {
   daimoi_probabilistic_record?: string;
   daimoi_probabilistic?: DaimoiProbabilisticSummary;
   daimoi_behavior_defaults?: string[];
+  user_query_transient_edges?: Array<Record<string, unknown>>;
+  user_query_transient_edge_count?: number;
+  user_query_promoted_edges?: Array<Record<string, unknown>>;
+  user_query_promoted_edge_count?: number;
   distributed_runtime?: PresenceRuntimeSnapshot;
 }
 

@@ -30,6 +30,11 @@ from .constants import (
 )
 
 
+_CGROUP_CPU_SAMPLE_LOCK = threading.Lock()
+_CGROUP_CPU_LAST_USAGE_USEC = 0.0
+_CGROUP_CPU_LAST_MONOTONIC = 0.0
+
+
 def _clamp01(value: float) -> float:
     if value < 0.0:
         return 0.0
@@ -278,6 +283,98 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _cgroup_effective_cpu_cores(cpu_count: int) -> float:
+    fallback = float(max(1, int(cpu_count)))
+
+    cpu_max_path = Path("/sys/fs/cgroup/cpu.max")
+    if cpu_max_path.exists() and cpu_max_path.is_file():
+        try:
+            raw = cpu_max_path.read_text("utf-8").strip()
+            parts = raw.split()
+            if len(parts) >= 2 and parts[0] != "max":
+                quota = _safe_float(parts[0], 0.0)
+                period = _safe_float(parts[1], 0.0)
+                if quota > 0.0 and period > 0.0:
+                    return max(0.1, min(fallback, quota / period))
+        except Exception:
+            pass
+
+    quota_path = Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
+    period_path = Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
+    if (
+        quota_path.exists()
+        and quota_path.is_file()
+        and period_path.exists()
+        and period_path.is_file()
+    ):
+        try:
+            quota = _safe_float(quota_path.read_text("utf-8").strip(), 0.0)
+            period = _safe_float(period_path.read_text("utf-8").strip(), 0.0)
+            if quota > 0.0 and period > 0.0:
+                return max(0.1, min(fallback, quota / period))
+        except Exception:
+            pass
+
+    return fallback
+
+
+def _cgroup_cpu_usage_usec() -> float | None:
+    stat_path = Path("/sys/fs/cgroup/cpu.stat")
+    if stat_path.exists() and stat_path.is_file():
+        try:
+            for raw_line in stat_path.read_text("utf-8").splitlines():
+                key, _, value = raw_line.strip().partition(" ")
+                if key == "usage_usec":
+                    usage = _safe_float(value.strip(), -1.0)
+                    if usage >= 0.0:
+                        return usage
+        except Exception:
+            pass
+
+    v1_usage_path = Path("/sys/fs/cgroup/cpuacct/cpuacct.usage")
+    if v1_usage_path.exists() and v1_usage_path.is_file():
+        try:
+            usage_ns = _safe_float(v1_usage_path.read_text("utf-8").strip(), -1.0)
+            if usage_ns >= 0.0:
+                return usage_ns / 1000.0
+        except Exception:
+            pass
+
+    return None
+
+
+def _container_cpu_utilization_percent(cpu_count: int) -> float | None:
+    global _CGROUP_CPU_LAST_USAGE_USEC
+    global _CGROUP_CPU_LAST_MONOTONIC
+
+    usage_usec = _cgroup_cpu_usage_usec()
+    if usage_usec is None:
+        return None
+
+    now_monotonic = time.monotonic()
+    with _CGROUP_CPU_SAMPLE_LOCK:
+        previous_usage = _CGROUP_CPU_LAST_USAGE_USEC
+        previous_monotonic = _CGROUP_CPU_LAST_MONOTONIC
+
+        _CGROUP_CPU_LAST_USAGE_USEC = max(0.0, usage_usec)
+        _CGROUP_CPU_LAST_MONOTONIC = now_monotonic
+
+    if previous_monotonic <= 0.0:
+        return None
+
+    delta_seconds = now_monotonic - previous_monotonic
+    if delta_seconds <= 0.0:
+        return None
+
+    delta_usage_usec = max(0.0, usage_usec - previous_usage)
+    cores = _cgroup_effective_cpu_cores(cpu_count)
+    capacity_seconds = max(1e-6, delta_seconds * max(0.1, cores))
+    utilization = (delta_usage_usec / 1_000_000.0) / capacity_seconds
+    if not math.isfinite(utilization):
+        return None
+    return max(0.0, min(100.0, utilization * 100.0))
 
 
 def _clean_tokens(text: str) -> list[str]:
@@ -619,7 +716,16 @@ def _resource_monitor_snapshot(part_root: Path | None = None) -> dict[str, Any]:
         load_1m, load_5m, load_15m = os.getloadavg()
     except OSError:
         load_1m, load_5m, load_15m = (0.0, 0.0, 0.0)
-    cpu_utilization = _clamp01(load_1m / max(1, cpu_count)) * 100.0
+    load_avg_cpu_utilization = _clamp01(load_1m / max(1, cpu_count)) * 100.0
+    container_cpu_utilization = _container_cpu_utilization_percent(cpu_count)
+    cpu_utilization = (
+        max(0.0, min(100.0, _safe_float(container_cpu_utilization, 0.0)))
+        if container_cpu_utilization is not None
+        else load_avg_cpu_utilization
+    )
+    cpu_utilization_source = (
+        "cgroup" if container_cpu_utilization is not None else "loadavg"
+    )
     cpu_per_core = _cpu_percent_per_core_snapshot(
         cpu_count=cpu_count,
         fallback_utilization=cpu_utilization,
@@ -687,6 +793,8 @@ def _resource_monitor_snapshot(part_root: Path | None = None) -> dict[str, Any]:
     devices = {
         "cpu": {
             "utilization": round(cpu_utilization, 2),
+            "utilization_source": cpu_utilization_source,
+            "load_avg_utilization": round(load_avg_cpu_utilization, 2),
             "per_core": [round(c, 2) for c in cpu_per_core],
             "load_avg": {
                 "m1": round(load_1m, 3),
@@ -1182,6 +1290,14 @@ class RuntimeInfluenceTracker:
                     "x_ratio": row.get("x_ratio"),
                     "y_ratio": row.get("y_ratio"),
                     "embed_daimoi": bool(row.get("embed_daimoi", False)),
+                    "meta": (
+                        {
+                            str(key): value
+                            for key, value in list(row.get("meta", {}).items())[:16]
+                        }
+                        if isinstance(row.get("meta"), dict)
+                        else {}
+                    ),
                 }
                 for row in recent_user_inputs[:24]
             ],

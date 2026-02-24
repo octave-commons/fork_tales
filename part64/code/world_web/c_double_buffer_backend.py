@@ -3106,8 +3106,10 @@ def compute_graph_runtime_maps_native(
         anchor_x, anchor_y, _ = presence_layout.get(presence_id, (0.5, 0.5, None))
         nearest_index = min(
             range(node_count),
-            key=lambda idx: ((node_positions[idx][0] - anchor_x) ** 2)
-            + ((node_positions[idx][1] - anchor_y) ** 2),
+            key=lambda idx: (
+                ((node_positions[idx][0] - anchor_x) ** 2)
+                + ((node_positions[idx][1] - anchor_y) ** 2)
+            ),
         )
         source_node_index_by_presence[presence_id] = int(nearest_index)
 
@@ -4353,7 +4355,7 @@ def build_double_buffer_field_particles(
     particles_per_presence = max(
         6,
         min(
-            64,
+            4096,
             int(
                 _safe_float(
                     os.getenv("CDB_TARGET_PARTICLES_PER_PRESENCE", "10") or "10",
@@ -4365,7 +4367,7 @@ def build_double_buffer_field_particles(
     particles_file_sqrt_factor = max(
         0.0,
         min(
-            64.0,
+            4096.0,
             _safe_float(
                 os.getenv("CDB_TARGET_FILE_SQRT_FACTOR", "6") or "6",
                 6.0,
@@ -4375,7 +4377,7 @@ def build_double_buffer_field_particles(
     particles_base_offset = max(
         24,
         min(
-            1024,
+            200000,
             int(
                 _safe_float(
                     os.getenv("CDB_TARGET_BASE_OFFSET", "64") or "64",

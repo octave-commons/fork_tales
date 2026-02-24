@@ -6,6 +6,13 @@ interface Props {
   catalog: Catalog | null;
   simulation: SimulationState | null;
   onFocusAnchor: (anchor: WorldAnchorTarget) => void;
+  onEmitUserInput: (payload: {
+    kind: string;
+    target: string;
+    message?: string;
+    embedDaimoi?: boolean;
+    meta?: Record<string, unknown>;
+  }) => void;
 }
 
 interface PresenceAggregate {
@@ -20,6 +27,15 @@ interface PresenceAggregate {
   centroidX: number;
   centroidY: number;
   topJobs: Array<{ name: string; probability: number }>;
+}
+
+interface QueryEdgeEntry {
+  id: string;
+  target: string;
+  query: string;
+  hits: number;
+  life: number;
+  strength: number;
 }
 
 function clamp01(value: number): number {
@@ -42,9 +58,44 @@ function barColor(hue: number): string {
   return `linear-gradient(90deg, hsla(${hue}, 82%, 66%, 0.78), hsla(${(hue + 32) % 360}, 84%, 58%, 0.94))`;
 }
 
-export function DaimoiPresencePanel({ catalog, simulation, onFocusAnchor }: Props) {
+function normalizeQueryEdgeRows(payload: unknown): QueryEdgeEntry[] {
+  if (!Array.isArray(payload)) {
+    return [];
+  }
+  const rows: QueryEdgeEntry[] = [];
+  payload.forEach((entry, index) => {
+    if (!entry || typeof entry !== "object") {
+      return;
+    }
+    const row = entry as Record<string, unknown>;
+    const target = String(row.target ?? "").trim();
+    if (!target) {
+      return;
+    }
+    rows.push({
+      id: String(row.id ?? `edge:${index}`).trim() || `edge:${index}`,
+      target,
+      query: String(row.query ?? "").trim(),
+      hits: Math.max(1, Math.round(Number(row.hits ?? 1) || 1)),
+      life: clamp01(Number(row.life ?? 1)),
+      strength: clamp01(Number(row.strength ?? 0)),
+    });
+  });
+  return rows.slice(0, 12);
+}
+
+export function DaimoiPresencePanel({ catalog, simulation, onFocusAnchor, onEmitUserInput }: Props) {
   const [lastFocusLabel, setLastFocusLabel] = useState("");
+  const [queryDraft, setQueryDraft] = useState("");
+  const [queryTarget, setQueryTarget] = useState("nexus");
+  const [queryHint, setQueryHint] = useState("");
   const fieldRows = useMemo(() => normalizeRows(simulation), [simulation]);
+  const transientEdges = useMemo(() => {
+    return normalizeQueryEdgeRows(simulation?.presence_dynamics?.user_query_transient_edges);
+  }, [simulation?.presence_dynamics?.user_query_transient_edges]);
+  const promotedEdges = useMemo(() => {
+    return normalizeQueryEdgeRows(simulation?.presence_dynamics?.user_query_promoted_edges);
+  }, [simulation?.presence_dynamics?.user_query_promoted_edges]);
 
   const presenceMeta = useMemo(() => {
     const map = new Map<string, { label: string; hue: number }>();
@@ -201,6 +252,25 @@ export function DaimoiPresencePanel({ catalog, simulation, onFocusAnchor }: Prop
     onFocusAnchor(anchor);
   };
 
+  const submitSearchQuery = () => {
+    const query = queryDraft.trim();
+    if (!query) {
+      setQueryHint("Type a query first.");
+      return;
+    }
+    onEmitUserInput({
+      kind: "search_query",
+      target: queryTarget.trim() || "nexus",
+      message: query,
+      embedDaimoi: true,
+      meta: {
+        source: "daimoi-presence-panel",
+        query,
+      },
+    });
+    setQueryHint(`Query emitted: ${query.slice(0, 48)}`);
+  };
+
   if (!simulation) {
     return <p className="text-xs text-[#9fc4dd]">Waiting for simulation payload...</p>;
   }
@@ -231,6 +301,71 @@ export function DaimoiPresencePanel({ catalog, simulation, onFocusAnchor }: Prop
           focus locked {"->"} <span className="font-semibold text-[#f3fbff]">{lastFocusLabel}</span>
         </div>
       ) : null}
+
+      <section className="rounded-lg border border-[rgba(108,184,228,0.32)] bg-[rgba(8,19,28,0.56)] p-3">
+        <p className="text-[11px] uppercase tracking-[0.12em] text-[#9ec7dd]">Search Daimoi Emitter</p>
+        <div className="mt-2 grid gap-2 md:grid-cols-[1.2fr_0.8fr_auto]">
+          <input
+            type="text"
+            value={queryDraft}
+            onChange={(event) => setQueryDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                submitSearchQuery();
+              }
+            }}
+            placeholder="search query -> emits query daimoi + variants"
+            className="rounded-md border border-[rgba(124,190,228,0.32)] bg-[rgba(10,24,35,0.72)] px-2 py-1.5 text-xs text-[#e6f5ff] outline-none placeholder:text-[#87adc5]"
+          />
+          <input
+            type="text"
+            value={queryTarget}
+            onChange={(event) => setQueryTarget(event.target.value)}
+            placeholder="target: nexus or presence_id"
+            className="rounded-md border border-[rgba(124,190,228,0.32)] bg-[rgba(10,24,35,0.72)] px-2 py-1.5 text-xs text-[#e6f5ff] outline-none placeholder:text-[#87adc5]"
+          />
+          <button
+            type="button"
+            onClick={submitSearchQuery}
+            className="rounded-md border border-[rgba(138,226,255,0.56)] bg-[linear-gradient(90deg,rgba(24,88,120,0.86),rgba(22,112,136,0.9))] px-3 py-1.5 text-xs font-semibold text-[#eaf8ff]"
+          >
+            emit
+          </button>
+        </div>
+        <p className="mt-2 text-[10px] text-[#9ec7dd]">
+          transient edges: <code>{transientEdges.length}</code> | promoted edges: <code>{promotedEdges.length}</code>
+        </p>
+        {(transientEdges.length > 0 || promotedEdges.length > 0) ? (
+          <div className="mt-2 grid gap-2 md:grid-cols-2">
+            <div className="rounded border border-[rgba(113,189,224,0.28)] bg-[rgba(7,18,28,0.58)] p-1.5">
+              <p className="text-[10px] uppercase tracking-[0.08em] text-[#a7cce3]">transient</p>
+              <div className="mt-1 space-y-1 max-h-24 overflow-y-auto pr-1">
+                {transientEdges.length === 0 ? (
+                  <p className="text-[10px] text-[#87aec6]">none</p>
+                ) : transientEdges.slice(0, 6).map((row) => (
+                  <p key={row.id} className="text-[10px] text-[#cce5f5]">
+                    {row.target} · h{row.hits} · life {Math.round(row.life * 100)}%
+                  </p>
+                ))}
+              </div>
+            </div>
+            <div className="rounded border border-[rgba(113,189,224,0.28)] bg-[rgba(7,18,28,0.58)] p-1.5">
+              <p className="text-[10px] uppercase tracking-[0.08em] text-[#a7cce3]">promoted</p>
+              <div className="mt-1 space-y-1 max-h-24 overflow-y-auto pr-1">
+                {promotedEdges.length === 0 ? (
+                  <p className="text-[10px] text-[#87aec6]">none</p>
+                ) : promotedEdges.slice(0, 6).map((row) => (
+                  <p key={row.id} className="text-[10px] text-[#ffe1b9]">
+                    {row.target} · h{row.hits} · s {Math.round(row.strength * 100)}%
+                  </p>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : null}
+        {queryHint ? <p className="mt-1 text-[10px] text-[#b7d8ee]">{queryHint}</p> : null}
+      </section>
 
       <section className="rounded-lg border border-[rgba(108,184,228,0.32)] bg-[rgba(8,19,28,0.5)] p-3">
         <p className="text-[11px] uppercase tracking-[0.12em] text-[#9ec7dd]">Action distribution</p>

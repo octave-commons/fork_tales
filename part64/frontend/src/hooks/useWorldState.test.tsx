@@ -19,6 +19,26 @@ function mockJsonResponse(body: unknown, status = 200): Response {
   } as Response;
 }
 
+function mockNdjsonResponse(lines: unknown[], status = 200): Response {
+  const payload = `${lines.map((row) => JSON.stringify(row)).join('\n')}\n`;
+  const encoded = new TextEncoder().encode(payload);
+  const chunkSize = Math.max(1, Math.floor(encoded.length / 3));
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (let offset = 0; offset < encoded.length; offset += chunkSize) {
+        controller.enqueue(encoded.slice(offset, offset + chunkSize));
+      }
+      controller.close();
+    },
+  });
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    body,
+    json: async () => ({ ok: false }),
+  } as Response;
+}
+
 function simulationFixture(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     timestamp: '2026-02-21T18:00:00Z',
@@ -158,7 +178,7 @@ describe('useWorldState websocket worker streams', () => {
 
     expect(ws).toBeDefined();
     expect(ws.url).toContain(
-      '/ws?perspective=hybrid&delta_stream=workers&wire=json&simulation_payload=full&ws_chunk=1',
+      '/ws?perspective=hybrid&delta_stream=workers&wire=arr&simulation_payload=trimmed&particle_payload=lite&ws_chunk=1&catalog_events=0&skip_catalog_bootstrap=1',
     );
 
     act(() => {
@@ -358,6 +378,123 @@ describe('useWorldState websocket worker streams', () => {
       expect(result.current.simulation?.timestamp).toBe('2026-02-21T18:00:03Z');
       expect(result.current.simulation?.presence_dynamics?.resource_heartbeat).toEqual({
         devices: { cpu: { utilization: 91 } },
+      });
+    });
+  });
+
+  it('hydrates initial catalog from ndjson stream rows', async () => {
+    const streamRows = [
+      {
+        type: 'start',
+        ok: true,
+      },
+      {
+        type: 'progress',
+        stage: 'catalog_begin',
+      },
+      {
+        type: 'meta',
+        catalog: {
+          generated_at: '2026-02-23T00:00:00Z',
+          part_roots: [],
+          counts: {},
+          canonical_terms: [],
+          cover_fields: [],
+          ui_projection: {
+            record: 'projection.v1',
+            perspective: 'hybrid',
+            ts: 12,
+          },
+          items: {
+            streamed: true,
+            section: 'items',
+            count: 1,
+          },
+          file_graph: {
+            file_nodes: {
+              streamed: true,
+              section: 'file_nodes',
+              count: 1,
+            },
+            edges: {
+              streamed: true,
+              section: 'file_edges',
+              count: 0,
+            },
+            embed_layers: {
+              streamed: true,
+              section: 'file_embed_layers',
+              count: 0,
+            },
+          },
+          crawler_graph: {
+            crawler_nodes: {
+              streamed: true,
+              section: 'crawler_nodes',
+              count: 0,
+            },
+            edges: {
+              streamed: true,
+              section: 'crawler_edges',
+              count: 0,
+            },
+          },
+        },
+      },
+      {
+        type: 'rows',
+        section: 'items',
+        offset: 0,
+        rows: [
+          {
+            part: 'part-64',
+            name: 'demo.txt',
+            role: 'unknown',
+            display_name: { en: 'demo', ja: 'demo' },
+            display_role: { en: 'unknown', ja: 'unknown' },
+            kind: 'text',
+            bytes: 8,
+            mtime_utc: '2026-02-23T00:00:00Z',
+            rel_path: 'artifacts/demo.txt',
+            url: '/library/artifacts/demo.txt',
+          },
+        ],
+      },
+      {
+        type: 'rows',
+        section: 'file_nodes',
+        offset: 0,
+        rows: [{ id: 'file:1', name: 'demo.txt' }],
+      },
+      {
+        type: 'done',
+        ok: true,
+      },
+    ];
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/catalog/stream?')) {
+        return mockNdjsonResponse(streamRows, 200);
+      }
+      if (url.includes('/api/simulation?')) {
+        return mockJsonResponse({ ok: false }, 503);
+      }
+      if (url.includes('/api/catalog?')) {
+        return mockJsonResponse({ ok: false }, 503);
+      }
+      return mockJsonResponse({ ok: false }, 503);
+    });
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    const { result } = renderHook(() => useWorldState('hybrid'));
+
+    await waitFor(() => {
+      expect(result.current.catalog?.items?.length).toBe(1);
+      expect(result.current.catalog?.items?.[0]?.rel_path).toBe('artifacts/demo.txt');
+      expect(result.current.projection).toMatchObject({
+        record: 'projection.v1',
+        perspective: 'hybrid',
       });
     });
   });

@@ -15,7 +15,7 @@ import zipfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse, parse_qs, quote, unquote
 from collections import defaultdict
 from hashlib import sha1
@@ -240,6 +240,108 @@ def classify_kind(path: Path) -> str:
     if _looks_like_text_file(path):
         return "text"
     return "file"
+
+
+_GRAPH_ARCHIVE_SUFFIXES = {
+    ".zip",
+    ".tar",
+    ".tgz",
+    ".gz",
+    ".bz2",
+    ".xz",
+    ".7z",
+    ".rar",
+    ".zst",
+}
+
+
+def _graph_suffix_from_path_like(path_like: Any) -> str:
+    raw = str(path_like or "").strip()
+    if not raw:
+        return ""
+    parsed_path = urlparse(raw).path if "://" in raw else raw
+    normalized = unquote(str(parsed_path or "")).strip()
+    if not normalized:
+        return ""
+    return Path(normalized).suffix.lower()
+
+
+def _graph_resource_kind_from_entry(entry: dict[str, Any]) -> str:
+    kind = str(entry.get("kind", "")).strip().lower()
+    if kind in {
+        "text",
+        "image",
+        "audio",
+        "video",
+        "archive",
+        "blob",
+        "link",
+        "website",
+    }:
+        return kind
+    if kind == "url":
+        return "link"
+    if kind in {"domain", "content"}:
+        return "website"
+
+    content_type = str(entry.get("content_type", "")).strip().lower()
+    if content_type.startswith("image/"):
+        return "image"
+    if content_type.startswith("audio/"):
+        return "audio"
+    if content_type.startswith("video/"):
+        return "video"
+    if content_type.startswith("text/"):
+        return "text"
+    if "zip" in content_type or content_type in {
+        "application/x-tar",
+        "application/gzip",
+        "application/x-gzip",
+        "application/x-7z-compressed",
+        "application/x-rar-compressed",
+    }:
+        return "archive"
+
+    suffix = ""
+    for candidate in (
+        entry.get("source_rel_path"),
+        entry.get("archive_member_path"),
+        entry.get("archive_rel_path"),
+        entry.get("archived_rel_path"),
+        entry.get("url"),
+        entry.get("name"),
+    ):
+        suffix = _graph_suffix_from_path_like(candidate)
+        if suffix:
+            break
+
+    if suffix in IMAGE_SUFFIXES:
+        return "image"
+    if suffix in AUDIO_SUFFIXES:
+        return "audio"
+    if suffix in VIDEO_SUFFIXES:
+        return "video"
+    if suffix in ETA_MU_TEXT_SUFFIXES:
+        return "text"
+    if suffix in _GRAPH_ARCHIVE_SUFFIXES:
+        return "archive"
+
+    if kind == "file":
+        return "blob"
+    return "unknown"
+
+
+def _graph_modality_from_resource_kind(resource_kind: str) -> str:
+    normalized = str(resource_kind or "").strip().lower()
+    if normalized in {"text", "image", "audio", "video"}:
+        return normalized
+    if normalized in {"website", "link"}:
+        return "web"
+    if normalized == "archive":
+        return "archive"
+    if normalized == "blob":
+        return "binary"
+    return "unknown"
 
 
 def _looks_like_text_file(path: Path) -> bool:
@@ -1605,14 +1707,57 @@ def build_eta_mu_file_graph(
     vault_root: Path,
     *,
     inbox_snapshot: dict[str, Any] | None = None,
+    progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any]:
+    def _emit_progress(stage: str, detail: dict[str, Any] | None = None) -> None:
+        if not callable(progress_callback):
+            return
+        try:
+            progress_callback(
+                str(stage or ""),
+                dict(detail) if isinstance(detail, dict) else None,
+            )
+        except Exception:
+            pass
+
+    _emit_progress("start")
     inbox_state = (
         dict(inbox_snapshot)
         if isinstance(inbox_snapshot, dict)
         else sync_eta_mu_inbox(vault_root)
     )
+    _emit_progress(
+        "inbox_ready",
+        {
+            "pending_count": max(
+                0,
+                int(_safe_float(inbox_state.get("pending_count", 0), 0.0)),
+            ),
+            "processed_count": max(
+                0,
+                int(_safe_float(inbox_state.get("processed_count", 0), 0.0)),
+            ),
+        },
+    )
+
+    _emit_progress("entries_load_start")
     entries = _load_eta_mu_knowledge_entries(vault_root)
+    _emit_progress(
+        "entries_load_done",
+        {
+            "knowledge_entries": len(entries),
+            "max_graph_files": int(ETA_MU_MAX_GRAPH_FILES),
+        },
+    )
+
+    _emit_progress("docmeta_refresh_start")
     docmeta_index = _refresh_eta_mu_docmeta_index(vault_root, entries)
+    _emit_progress(
+        "docmeta_refresh_done",
+        {
+            "docmeta_index_size": len(docmeta_index),
+        },
+    )
     entity_lookup = {
         str(entity.get("id", "")): entity
         for entity in ENTITY_MANIFEST
@@ -1648,10 +1793,20 @@ def build_eta_mu_file_graph(
     file_nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
     kind_counts: dict[str, int] = defaultdict(int)
+    resource_kind_counts: dict[str, int] = defaultdict(int)
     field_counts: dict[str, int] = defaultdict(int)
     archive_count = 0
     compressed_bytes_total = 0
+
+    _emit_progress("embedding_state_start")
     embedding_state = _load_embeddings_db_state(vault_root)
+    _emit_progress(
+        "embedding_state_done",
+        {
+            "embedding_entry_count": len(embedding_state),
+        },
+    )
+
     active_layer_patterns = _split_csv_items(ETA_MU_FILE_GRAPH_ACTIVE_EMBED_LAYERS)
     if not active_layer_patterns:
         active_layer_patterns = ["*"]
@@ -1662,8 +1817,17 @@ def build_eta_mu_file_graph(
     tag_members: dict[str, set[str]] = defaultdict(set)
     tag_labels: dict[str, str] = {}
     tag_pair_counts: dict[tuple[str, str], int] = defaultdict(int)
+    limited_entries = entries[:ETA_MU_MAX_GRAPH_FILES]
+    total_entries = len(limited_entries)
+    _emit_progress(
+        "entries_process_start",
+        {
+            "entry_count": total_entries,
+        },
+    )
+    progress_last_emit = time.monotonic()
 
-    for index, entry in enumerate(entries[:ETA_MU_MAX_GRAPH_FILES]):
+    for index, entry in enumerate(limited_entries):
         entry_id = str(entry.get("id", "")).strip()
         if not entry_id:
             continue
@@ -1892,6 +2056,10 @@ def build_eta_mu_file_graph(
             if label
         ]
 
+        resource_kind = _graph_resource_kind_from_entry(entry)
+        modality = _graph_modality_from_resource_kind(resource_kind)
+        resource_kind_counts[resource_kind] += 1
+
         file_nodes.append(
             {
                 "id": node_id,
@@ -1900,6 +2068,8 @@ def build_eta_mu_file_graph(
                 "name": str(entry.get("name", "")),
                 "label": str(entry.get("name", "")),
                 "kind": str(entry.get("kind", "file")),
+                "resource_kind": resource_kind,
+                "modality": modality,
                 "x": round(x, 4),
                 "y": round(y, 4),
                 "hue": hue,
@@ -1998,7 +2168,43 @@ def build_eta_mu_file_graph(
                 }
             )
 
+        processed_count = index + 1
+        if processed_count == total_entries or processed_count == 1:
+            _emit_progress(
+                "entries_progress",
+                {
+                    "processed_count": processed_count,
+                    "entry_count": total_entries,
+                },
+            )
+            progress_last_emit = time.monotonic()
+        elif processed_count % 64 == 0:
+            now_monotonic = time.monotonic()
+            if now_monotonic - progress_last_emit >= 0.9:
+                _emit_progress(
+                    "entries_progress",
+                    {
+                        "processed_count": processed_count,
+                        "entry_count": total_entries,
+                    },
+                )
+                progress_last_emit = now_monotonic
+
+    _emit_progress(
+        "entries_process_done",
+        {
+            "processed_count": total_entries,
+            "file_node_count": len(file_nodes),
+        },
+    )
+
     organizer_node_id = f"presence:{FILE_ORGANIZER_PROFILE['id']}"
+    _emit_progress(
+        "organizer_start",
+        {
+            "cluster_row_count": len(organizer_cluster_rows),
+        },
+    )
     organizer_presence = {
         "id": organizer_node_id,
         "node_id": FILE_ORGANIZER_PROFILE["id"],
@@ -2254,10 +2460,25 @@ def build_eta_mu_file_graph(
                 node["member_count"] = member_counts[node_id]
         organizer_presence["created_count"] = len(concept_presences)
 
+    _emit_progress(
+        "organizer_done",
+        {
+            "concept_presence_count": len(concept_presences),
+            "organized_file_count": len(concept_assignments),
+        },
+    )
+
     tag_nodes: list[dict[str, Any]] = []
     tag_node_ids: dict[str, str] = {}
     tag_edge_count = 0
     tag_pair_edge_count = 0
+    _emit_progress(
+        "tag_graph_start",
+        {
+            "tag_candidate_count": len(tag_members),
+            "tag_pair_candidate_count": len(tag_pair_counts),
+        },
+    )
     ranked_tags = sorted(tag_members.items(), key=lambda row: (-len(row[1]), row[0]))
     for tag_token, members in ranked_tags[:ETA_MU_FILE_GRAPH_TAG_LIMIT]:
         member_ids = sorted(
@@ -2353,6 +2574,15 @@ def build_eta_mu_file_graph(
         )
         tag_pair_edge_count += 1
 
+    _emit_progress(
+        "tag_graph_done",
+        {
+            "tag_count": len(tag_nodes),
+            "tag_edge_count": tag_edge_count,
+            "tag_pair_edge_count": tag_pair_edge_count,
+        },
+    )
+
     if not layer_summary and file_nodes:
         fallback_node_ids = {
             str(node.get("id", ""))
@@ -2405,6 +2635,15 @@ def build_eta_mu_file_graph(
     )
 
     nodes = [*field_nodes, *tag_nodes, *file_nodes]
+    _emit_progress(
+        "done",
+        {
+            "field_count": len(field_nodes),
+            "file_count": len(file_nodes),
+            "edge_count": len(edges),
+            "tag_count": len(tag_nodes),
+        },
+    )
     return {
         "record": ETA_MU_FILE_GRAPH_RECORD,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -2422,6 +2661,7 @@ def build_eta_mu_file_graph(
             "file_count": len(file_nodes),
             "edge_count": len(edges),
             "kind_counts": dict(kind_counts),
+            "resource_kind_counts": dict(resource_kind_counts),
             "field_counts": dict(field_counts),
             "embed_layer_count": len(embed_layers),
             "embed_layer_active_count": embed_layer_active_count,
@@ -2540,6 +2780,7 @@ def collect_catalog(
     sync_inbox: bool = True,
     include_pi_archive: bool = True,
     include_world_log: bool = True,
+    progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any]:
     from .simulation import (
         build_simulation_state,
@@ -2557,9 +2798,42 @@ def collect_catalog(
         build_world_log_payload,
     )
 
+    def _emit_progress(stage: str, detail: dict[str, Any] | None = None) -> None:
+        if not callable(progress_callback):
+            return
+        try:
+            progress_callback(
+                str(stage or ""), dict(detail) if isinstance(detail, dict) else None
+            )
+        except Exception:
+            pass
+
+    _emit_progress(
+        "catalog_begin",
+        {
+            "sync_inbox": bool(sync_inbox),
+            "include_pi_archive": bool(include_pi_archive),
+            "include_world_log": bool(include_world_log),
+        },
+    )
+
     if sync_inbox:
+        _emit_progress("inbox_sync_start")
         try:
             inbox_snapshot = sync_eta_mu_inbox(vault_root)
+            _emit_progress(
+                "inbox_sync_done",
+                {
+                    "pending_count": max(
+                        0,
+                        int(_safe_float(inbox_snapshot.get("pending_count", 0), 0.0)),
+                    ),
+                    "processed_count": max(
+                        0,
+                        int(_safe_float(inbox_snapshot.get("processed_count", 0), 0.0)),
+                    ),
+                },
+            )
         except Exception as exc:
             inbox_snapshot = _eta_mu_inbox_snapshot_without_sync(vault_root)
             inbox_errors = list(inbox_snapshot.get("errors", []))
@@ -2571,12 +2845,40 @@ def collect_catalog(
             )
             inbox_snapshot["errors"] = inbox_errors
             inbox_snapshot["sync_status"] = "failed"
+            _emit_progress(
+                "inbox_sync_failed",
+                {
+                    "error": f"sync_eta_mu_inbox_failed:{exc.__class__.__name__}",
+                },
+            )
     else:
         inbox_snapshot = _eta_mu_inbox_snapshot_without_sync(vault_root)
-    file_graph = build_eta_mu_file_graph(vault_root, inbox_snapshot=inbox_snapshot)
+
+    _emit_progress("file_graph_start")
+    file_graph = build_eta_mu_file_graph(
+        vault_root,
+        inbox_snapshot=inbox_snapshot,
+        progress_callback=lambda stage, detail: _emit_progress(
+            f"file_graph_{str(stage or '').strip().lower()}",
+            detail,
+        ),
+    )
+    _emit_progress(
+        "file_graph_done",
+        {
+            "file_nodes": len(file_graph.get("file_nodes", []))
+            if isinstance(file_graph.get("file_nodes", []), list)
+            else 0,
+            "edges": len(file_graph.get("edges", []))
+            if isinstance(file_graph.get("edges", []), list)
+            else 0,
+        },
+    )
 
     items, counts, seen = [], defaultdict(int), set()
-    for root in discover_part_roots(vault_root, part_root):
+    roots = discover_part_roots(vault_root, part_root)
+    _emit_progress("manifest_scan_start", {"part_root_count": len(roots)})
+    for root in roots:
         manifest = load_manifest(root)
         for item in _manifest_entries(manifest):
             path = (root / str(item.get("path", ""))).resolve()
@@ -2606,8 +2908,16 @@ def collect_catalog(
                     "url": "/library/" + quote(rel),
                 }
             )
+        _emit_progress(
+            "manifest_scan_root_done",
+            {
+                "part_root": str(root),
+                "item_count": len(items),
+            },
+        )
 
     items.sort(key=lambda row: (row["part"], row["kind"], row["name"]), reverse=True)
+    _emit_progress("manifest_scan_done", {"item_count": len(items)})
     cover_fields = [
         {
             "id": item["rel_path"],
@@ -2620,8 +2930,30 @@ def collect_catalog(
         for item in items
         if item.get("role") == "cover_art"
     ]
+    _emit_progress("promptdb_start")
     promptdb_index = collect_promptdb_packets(vault_root)
+    _emit_progress(
+        "promptdb_done",
+        {
+            "packet_count": len(promptdb_index.get("packets", []))
+            if isinstance(promptdb_index, dict)
+            and isinstance(promptdb_index.get("packets", []), list)
+            else 0,
+        },
+    )
+
+    _emit_progress("test_signal_start")
     test_failures, test_coverage = _load_test_signal_artifacts(part_root, vault_root)
+    _emit_progress(
+        "test_signal_done",
+        {
+            "test_failure_count": len(test_failures)
+            if isinstance(test_failures, list)
+            else 0,
+        },
+    )
+
+    _emit_progress("world_log_start")
     if include_world_log:
         try:
             world_log_payload = build_world_log_payload(
@@ -2641,9 +2973,12 @@ def collect_catalog(
             pending_inbox=int(inbox_snapshot.get("pending_count", 0) or 0),
             error="world_log_deferred:runtime_fast_path",
         )
+    _emit_progress("world_log_done")
+
+    _emit_progress("catalog_assemble_start")
     catalog = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "part_roots": [str(p) for p in discover_part_roots(vault_root, part_root)],
+        "part_roots": [str(p) for p in roots],
         "counts": dict(counts),
         "canonical_terms": [{"en": en, "ja": ja} for en, ja in CANONICAL_TERMS],
         "entity_manifest": ENTITY_MANIFEST,
@@ -2663,10 +2998,19 @@ def collect_catalog(
         "world_log": world_log_payload,
         "items": items,
     }
+    _emit_progress("logical_graph_start")
     catalog["logical_graph"] = _build_logical_graph(catalog)
+    _emit_progress("logical_graph_done")
+
+    _emit_progress("pain_field_start")
     catalog["pain_field"] = _build_pain_field(catalog, catalog["logical_graph"])
+    _emit_progress("pain_field_done")
+
+    _emit_progress("heat_values_start")
     catalog["heat_values"] = _materialize_heat_values(catalog, catalog["pain_field"])
+    _emit_progress("heat_values_done")
     if include_pi_archive:
+        _emit_progress("pi_archive_start")
         pi_archive = build_pi_archive_payload(part_root, vault_root, catalog=catalog)
         catalog["pi_archive"] = {
             "record": "ημ.pi-archive.v1",
@@ -2676,6 +3020,7 @@ def collect_catalog(
             "portable": pi_archive.get("portable", {}),
             "ledger_count": int((pi_archive.get("ledger") or {}).get("count", 0) or 0),
         }
+        _emit_progress("pi_archive_done")
     else:
         catalog["pi_archive"] = {
             "record": "ημ.pi-archive.v1",
@@ -2686,6 +3031,17 @@ def collect_catalog(
             "ledger_count": 0,
             "status": "deferred",
         }
+        _emit_progress("pi_archive_deferred")
+
+    _emit_progress(
+        "catalog_done",
+        {
+            "item_count": len(items),
+            "file_node_count": len(file_graph.get("file_nodes", []))
+            if isinstance(file_graph.get("file_nodes", []), list)
+            else 0,
+        },
+    )
     return catalog
 
 

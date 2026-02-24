@@ -558,6 +558,20 @@ def test_simulation_projection_collapses_hub_edges_and_preserves_membership() ->
     stats = projected_graph.get("stats", {})
     assert int(stats.get("projection_collapsed_edge_count", 0)) > 0
     assert int(stats.get("projection_overflow_edge_count", 0)) >= 1
+    overflow_nodes = [
+        row
+        for row in projected_graph.get("file_nodes", [])
+        if isinstance(row, dict) and bool(row.get("projection_overflow", False))
+    ]
+    assert overflow_nodes
+    assert all(str(row.get("graph_scope", "")) == "view" for row in overflow_nodes)
+    assert all(
+        str(row.get("simulation_semantic_role", "")) == "view_compaction_aggregate"
+        for row in overflow_nodes
+    )
+    assert all(
+        float(row.get("semantic_bundle_gravity", 0.0)) > 0.0 for row in overflow_nodes
+    )
 
     recovered_edge_ids = {
         str(row.get("id", "")).strip()
@@ -567,6 +581,11 @@ def test_simulation_projection_collapses_hub_edges_and_preserves_membership() ->
     groups = projection.get("groups", [])
     assert isinstance(groups, list)
     assert len(groups) >= 1
+    assert all(
+        bool(group.get("surface_visible", False))
+        for group in groups
+        if isinstance(group, dict)
+    )
     for group in groups:
         if not isinstance(group, dict):
             continue
@@ -586,6 +605,21 @@ def test_simulation_projection_collapses_hub_edges_and_preserves_membership() ->
         for row in guard_events
         if isinstance(row, dict)
     )
+
+    field_particles = simulation.get("presence_dynamics", {}).get("field_particles", [])
+    bundle_nexus_rows = [
+        row
+        for row in field_particles
+        if isinstance(row, dict)
+        and bool(row.get("is_nexus", False))
+        and bool(row.get("is_view_compaction_bundle", False))
+    ]
+    assert bundle_nexus_rows
+    assert all(
+        str(row.get("simulation_semantic_role", "")) == "view_compaction_aggregate"
+        for row in bundle_nexus_rows
+    )
+    assert max(float(row.get("mass", 0.0)) for row in bundle_nexus_rows) >= 4.0
 
 
 def test_simulation_exposes_truth_and_view_graph_contracts() -> None:
@@ -618,12 +652,17 @@ def test_simulation_exposes_truth_and_view_graph_contracts() -> None:
     assert truth_graph.get("schema_version") == "truth.graph.v1"
     assert int(truth_graph.get("node_count", 0)) > 0
     assert int(truth_graph.get("edge_count", 0)) > 0
+    truth_semantics = truth_graph.get("semantics", {})
+    assert truth_semantics.get("graph_domain") == "truth_graph"
+    assert truth_semantics.get("includes_projection_bundles") is False
 
     view_graph = simulation.get("view_graph", {})
     assert view_graph.get("record") == "eta-mu.view-graph.v1"
     assert view_graph.get("schema_version") == "view.graph.v1"
     assert int(view_graph.get("node_count", 0)) > 0
     assert int(view_graph.get("edge_count", 0)) > 0
+    view_semantics = view_graph.get("semantics", {})
+    assert view_semantics.get("graph_domain") == "view_graph"
 
     projection = view_graph.get("projection", {})
     assert projection.get("mode") in {"hub-overflow", "none"}
@@ -635,6 +674,8 @@ def test_simulation_exposes_truth_and_view_graph_contracts() -> None:
         ledgers = projection.get("bundle_ledgers", [])
         assert isinstance(ledgers, list)
         assert int(ledgers[0].get("member_edge_count", 0)) >= 1
+        assert view_semantics.get("includes_projection_bundles") is True
+        assert int(view_semantics.get("projection_bundle_node_count", 0)) >= 1
 
 
 def test_simulation_projection_is_deterministic_for_same_input() -> None:
@@ -725,3 +766,275 @@ def test_simulation_projection_skips_small_graphs() -> None:
     assert bool(projection.get("active", True)) is False
     assert projection.get("reason") in {"below_threshold", "within_projection_limits"}
     assert len(projected_graph.get("edges", [])) == len(graph.get("edges", []))
+
+
+def test_simulation_projection_can_activate_from_cpu_sentinel_pressure() -> None:
+    graph = _synthetic_file_graph(file_count=90, edges_per_file=1)
+    crawler_graph = {
+        "record": "eta-mu.crawler-graph.v1",
+        "generated_at": "2026-01-01T00:00:00+00:00",
+        "field_nodes": [],
+        "crawler_nodes": [
+            {"id": "crawler:a", "node_id": "crawler:a", "node_type": "crawler"},
+            {"id": "crawler:b", "node_id": "crawler:b", "node_type": "crawler"},
+        ],
+        "edges": [
+            {
+                "id": f"crawler-edge:{index:04d}",
+                "source": "crawler:a",
+                "target": "crawler:b",
+                "kind": "crawl_ref",
+                "weight": 0.42,
+            }
+            for index in range(520)
+        ],
+        "stats": {"field_count": 0, "crawler_count": 2, "edge_count": 520},
+    }
+
+    simulation = build_simulation_state(
+        {
+            "items": [
+                {"rel_path": "docs/a.md", "part": "part64", "kind": "text"},
+                {"rel_path": "docs/b.md", "part": "part64", "kind": "text"},
+            ],
+            "counts": {"audio": 0, "image": 0, "video": 0},
+            "file_graph": graph,
+            "crawler_graph": crawler_graph,
+        },
+        influence_snapshot={
+            "clicks_45s": 0,
+            "file_changes_120s": 0,
+            "recent_file_paths": ["docs/node_0001.md", "docs/node_0002.md"],
+            "compute_jobs_180s": 140,
+            "compute_summary": {"resource_counts": {"cpu": 48}},
+            "resource_heartbeat": {
+                "devices": {
+                    "cpu": {"utilization": 98.0},
+                }
+            },
+        },
+        queue_snapshot={"pending_count": 28, "event_count": 144},
+    )
+
+    projection = simulation.get("file_graph", {}).get("projection", {})
+    assert bool(projection.get("active", False)) is True
+    assert projection.get("reason") == "cpu_sentinel_compaction_pressure"
+    assert int(projection.get("collapsed_edges", 0)) > 0
+
+    limits = projection.get("limits", {})
+    assert int(limits.get("edge_threshold", 0)) < int(
+        limits.get("edge_threshold_base", 0)
+    )
+    assert int(limits.get("edge_cap", 0)) < int(limits.get("edge_cap_base", 0))
+
+    policy = projection.get("policy", {})
+    assert policy.get("presence_id") == "health_sentinel_cpu"
+    assert float(policy.get("compaction_drive", 0.0)) >= 0.65
+
+
+def test_simulation_projection_can_activate_from_view_edge_pressure() -> None:
+    graph = _synthetic_file_graph(file_count=120, edges_per_file=1)
+    crawler_graph = {
+        "record": "eta-mu.crawler-graph.v1",
+        "generated_at": "2026-01-01T00:00:00+00:00",
+        "field_nodes": [],
+        "crawler_nodes": [
+            {"id": "crawler:a", "node_id": "crawler:a", "node_type": "crawler"},
+            {"id": "crawler:b", "node_id": "crawler:b", "node_type": "crawler"},
+        ],
+        "edges": [
+            {
+                "id": f"crawler-edge:view-pressure:{index:04d}",
+                "source": "crawler:a",
+                "target": "crawler:b",
+                "kind": "crawl_ref",
+                "weight": 0.42,
+            }
+            for index in range(800)
+        ],
+        "stats": {"field_count": 0, "crawler_count": 2, "edge_count": 800},
+    }
+
+    simulation = build_simulation_state(
+        {
+            "items": [
+                {"rel_path": "docs/a.md", "part": "part64", "kind": "text"},
+                {"rel_path": "docs/b.md", "part": "part64", "kind": "text"},
+            ],
+            "counts": {"audio": 0, "image": 0, "video": 0},
+            "file_graph": graph,
+            "crawler_graph": crawler_graph,
+        },
+        influence_snapshot={
+            "clicks_45s": 0,
+            "file_changes_120s": 0,
+            "recent_file_paths": ["docs/node_0001.md"],
+            "compute_jobs_180s": 0,
+            "compute_summary": {"resource_counts": {"cpu": 0}},
+            "resource_heartbeat": {
+                "devices": {
+                    "cpu": {"utilization": 22.0},
+                }
+            },
+        },
+        queue_snapshot={"pending_count": 0, "event_count": 0},
+    )
+
+    projection = simulation.get("file_graph", {}).get("projection", {})
+    assert bool(projection.get("active", False)) is True
+    assert projection.get("reason") == "cpu_sentinel_compaction_pressure"
+
+    policy = projection.get("policy", {})
+    limits = projection.get("limits", {})
+    assert int(policy.get("edge_count_file", 0)) < int(limits.get("edge_threshold", 0))
+    assert int(policy.get("edge_count_effective", 0)) >= int(
+        limits.get("edge_threshold", 0)
+    )
+    assert float(policy.get("compaction_drive", 0.0)) >= 0.2
+
+
+def test_simulation_projection_can_enter_decompression_mode_with_headroom() -> None:
+    graph = _synthetic_file_graph(file_count=160, edges_per_file=2)
+    simulation = build_simulation_state(
+        {
+            "items": [
+                {"rel_path": "docs/a.md", "part": "part64", "kind": "text"},
+            ],
+            "counts": {"audio": 0, "image": 0, "video": 0},
+            "file_graph": graph,
+        },
+        influence_snapshot={
+            "clicks_45s": 0,
+            "file_changes_120s": 0,
+            "recent_file_paths": ["docs/node_0001.md"],
+            "compute_jobs_180s": 0,
+            "compute_summary": {"resource_counts": {"cpu": 0}},
+            "resource_heartbeat": {
+                "devices": {
+                    "cpu": {"utilization": 16.0},
+                }
+            },
+        },
+        queue_snapshot={"pending_count": 0, "event_count": 0},
+    )
+
+    projection = simulation.get("file_graph", {}).get("projection", {})
+    assert bool(projection.get("active", False)) is True
+    assert projection.get("reason") == "decompression_budget"
+
+    policy = projection.get("policy", {})
+    limits = projection.get("limits", {})
+    assert policy.get("control_mode") == "decompression"
+    assert bool(policy.get("decompression_enabled", False)) is True
+    assert float(policy.get("decompression_drive", 0.0)) >= 0.2
+    assert int(limits.get("edge_threshold", 0)) > int(
+        limits.get("edge_threshold_base", 0)
+    )
+    assert int(limits.get("edge_cap", 0)) >= int(limits.get("edge_cap_base", 0))
+
+
+def test_user_search_query_emits_query_daimoi_packet_components() -> None:
+    simulation = build_simulation_state(
+        {
+            "items": [{"rel_path": "docs/a.md", "part": "part64", "kind": "text"}],
+            "counts": {"audio": 0, "image": 0, "video": 0},
+        },
+        influence_snapshot={
+            "recent_user_inputs": [
+                {
+                    "id": "user-search:001",
+                    "kind": "search_query",
+                    "target": "nexus mage_of_receipts",
+                    "message": "receipt graph drift",
+                    "embed_daimoi": True,
+                    "meta": {
+                        "query": "receipt graph drift",
+                        "search_daimoi": {
+                            "components": [
+                                {
+                                    "component_id": "query:base",
+                                    "component_type": "query-term",
+                                    "text": "receipt graph drift",
+                                    "weight": 0.92,
+                                    "variant_rank": 0,
+                                },
+                                {
+                                    "component_id": "query:alt",
+                                    "component_type": "query-term",
+                                    "text": "receipt drift graph",
+                                    "weight": 0.76,
+                                    "variant_rank": 1,
+                                },
+                            ],
+                            "target_presence_ids": ["mage_of_receipts"],
+                        },
+                    },
+                }
+            ]
+        },
+        queue_snapshot={"pending_count": 0, "event_count": 0},
+    )
+
+    rows = simulation.get("presence_dynamics", {}).get("field_particles", [])
+    user_rows = [
+        row
+        for row in rows
+        if isinstance(row, dict)
+        and str(row.get("presence_id", "")) == "presence.user.operator"
+        and str(row.get("top_job", "")) == "emit_query_daimoi_packet"
+    ]
+    assert user_rows
+    packet_components = user_rows[0].get("packet_components", [])
+    assert isinstance(packet_components, list)
+    assert any(
+        str(component.get("component_type", "")) == "query-term"
+        and "receipt graph drift" in str(component.get("text", ""))
+        for component in packet_components
+        if isinstance(component, dict)
+    )
+
+
+def test_user_query_transient_edges_promote_after_repeated_hits() -> None:
+    def _influence(event_id: str) -> dict[str, Any]:
+        return {
+            "recent_user_inputs": [
+                {
+                    "id": event_id,
+                    "kind": "search_query",
+                    "target": "nexus witness_thread",
+                    "message": "where are recent witness receipts",
+                    "embed_daimoi": True,
+                    "meta": {
+                        "query": "where are recent witness receipts",
+                        "search_daimoi": {
+                            "components": [
+                                {
+                                    "component_id": "query:witness",
+                                    "component_type": "query-term",
+                                    "text": "witness receipts",
+                                    "weight": 0.9,
+                                }
+                            ],
+                            "target_presence_ids": ["witness_thread"],
+                        },
+                    },
+                }
+            ]
+        }
+
+    simulation: dict[str, Any] = {}
+    for event_id in ("query-hit:1", "query-hit:2", "query-hit:3"):
+        simulation = build_simulation_state(
+            {
+                "items": [{"rel_path": "docs/a.md", "part": "part64", "kind": "text"}],
+                "counts": {"audio": 0, "image": 0, "video": 0},
+            },
+            influence_snapshot=_influence(event_id),
+            queue_snapshot={"pending_count": 0, "event_count": 0},
+        )
+
+    dynamics = simulation.get("presence_dynamics", {})
+    transient_count = int(dynamics.get("user_query_transient_edge_count", 0))
+    promoted_count = int(dynamics.get("user_query_promoted_edge_count", 0))
+    assert transient_count >= 1
+    assert promoted_count >= 1

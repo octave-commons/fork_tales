@@ -34,6 +34,26 @@ DAIMOI_TRANSFER_LAMBDA = 0.66
 DAIMOI_REPULSION_MU = (
     0.48  # Increased from 0.24 for stronger unrelated concept repulsion
 )
+DAIMOI_COLLISION_COUPLING_GAIN = max(
+    0.05,
+    min(
+        1.0,
+        _safe_float(
+            os.getenv("DAIMOI_COLLISION_COUPLING_GAIN", "0.48") or "0.48",
+            0.48,
+        ),
+    ),
+)
+DAIMOI_COLLISION_REPULSION_BOOST = max(
+    1.0,
+    min(
+        3.5,
+        _safe_float(
+            os.getenv("DAIMOI_COLLISION_REPULSION_BOOST", "2.2") or "2.2",
+            2.2,
+        ),
+    ),
+)
 DAIMOI_DIRECTIVES = (
     "Prioritize witness continuity over novelty.",
     "Deliver only verifiable claims into the target gate.",
@@ -79,7 +99,7 @@ NEXUS_ROUTE_MAX_SPEED = 0.0046
 NEXUS_ROUTE_TANGENT_KICK = 0.00075
 NEXUS_CURRENT_FLOW_GAIN = 0.26
 NEXUS_PREF_RETURN_GAIN = 0.0065
-NEXUS_SIMPLEX_GAIN = 0.00036
+NEXUS_SIMPLEX_GAIN = 0.0005
 NEXUS_GRAVITY_FLOW_GAIN = 0.0037
 NEXUS_DAMPING = 0.89
 NEXUS_SPEED_CAP_BASE = 0.0019
@@ -1635,7 +1655,10 @@ def _collision_semantic_update(
     repulsion_u = _clamp01_finite(((-semantic_affinity) + 1.0) * 0.5, 0.5)
     # Enhanced repulsion for strongly unrelated concepts (affinity < -0.5)
     if semantic_affinity < -0.5:
-        repulsion_u = min(1.0, repulsion_u * 1.6)  # Boost repulsion for opposites
+        repulsion_u = min(
+            1.0,
+            repulsion_u * _safe_float(DAIMOI_COLLISION_REPULSION_BOOST, 1.9),
+        )
     intensity = _clamp01_finite(
         _finite_float(impulse, 0.0) / DAIMOI_IMPULSE_REFERENCE, 0.0
     )
@@ -1644,8 +1667,9 @@ def _collision_semantic_update(
     right_size = max(1e-8, _finite_float(right.get("size", 1.0), 1.0))
     bias_left = _sigmoid(DAIMOI_SIZE_BIAS_BETA * math.log(right_size / left_size))
     bias_right = _sigmoid(DAIMOI_SIZE_BIAS_BETA * math.log(left_size / right_size))
-    coupling_left = _clamp01(intensity * bias_left)
-    coupling_right = _clamp01(intensity * bias_right)
+    coupling_gain = _safe_float(DAIMOI_COLLISION_COUPLING_GAIN, 0.62)
+    coupling_left = _clamp01(intensity * bias_left * coupling_gain)
+    coupling_right = _clamp01(intensity * bias_right * coupling_gain)
     coupling_left_01 = _clamp01_finite(coupling_left, 0.0)
     coupling_right_01 = _clamp01_finite(coupling_right, 0.0)
     transfer_t_01 = _clamp01_finite(transfer_t, 0.0)
@@ -2097,6 +2121,47 @@ def _file_node_rows(file_graph: dict[str, Any] | None) -> list[dict[str, Any]]:
         if not isinstance(node, dict):
             continue
         node_id = str(node.get("id", "")).strip() or f"file-node-{index:05d}"
+        member_count = max(0, _safe_int(node.get("consolidated_count", 0), 0))
+        member_edge_count = max(
+            0,
+            _safe_int(
+                node.get(
+                    "semantic_bundle_member_edge_count",
+                    node.get("projection_member_edge_count", 0),
+                ),
+                0,
+            ),
+        )
+        bundle_marked = (
+            bool(node.get("semantic_bundle", False))
+            or bool(node.get("projection_overflow", False))
+            or str(node.get("kind", "")).strip().lower() == "projection_overflow"
+            or node_id.startswith("file:projection:")
+        )
+        semantic_bundle_mass = _clamp01(
+            _safe_float(node.get("semantic_bundle_mass", 0.0), 0.0)
+        )
+        semantic_bundle_charge = _clamp01(
+            _safe_float(node.get("semantic_bundle_charge", 0.0), 0.0)
+        )
+        semantic_bundle_gravity = _clamp01(
+            _safe_float(node.get("semantic_bundle_gravity", 0.0), 0.0)
+        )
+        if bundle_marked and semantic_bundle_mass <= 1e-8:
+            semantic_bundle_mass = _clamp01(
+                0.3
+                + min(0.62, math.log1p(max(1, member_count + member_edge_count)) / 5.0)
+            )
+        if bundle_marked and semantic_bundle_charge <= 1e-8:
+            semantic_bundle_charge = _clamp01(
+                0.26
+                + min(0.66, math.log1p(max(1, member_edge_count or member_count)) / 5.4)
+            )
+        if bundle_marked and semantic_bundle_gravity <= 1e-8:
+            semantic_bundle_gravity = _clamp01(
+                (max(semantic_bundle_mass, semantic_bundle_charge) * 0.84)
+                + (min(1.0, member_count / 20.0) * 0.16)
+            )
         rows.append(
             {
                 "id": node_id,
@@ -2122,6 +2187,16 @@ def _file_node_rows(file_graph: dict[str, Any] | None) -> list[dict[str, Any]]:
                         0.0,
                     ),
                 ),
+                "is_view_compaction_bundle": bundle_marked,
+                "graph_scope": str(node.get("graph_scope", "")).strip().lower(),
+                "simulation_semantic_role": str(
+                    node.get("simulation_semantic_role", "")
+                ).strip(),
+                "semantic_bundle_member_count": member_count,
+                "semantic_bundle_member_edge_count": member_edge_count,
+                "semantic_bundle_mass": semantic_bundle_mass,
+                "semantic_bundle_charge": semantic_bundle_charge,
+                "semantic_bundle_gravity": semantic_bundle_gravity,
                 "vector": _node_semantic_vector(node),
             }
         )
@@ -2317,6 +2392,8 @@ def _select_downhill_adjacent_nexus(
     target_xy: tuple[float, float] | None,
     semantic_vector: list[float],
     node_vector_by_id: dict[str, list[float]],
+    node_bundle_gravity_by_id: dict[str, float] | None = None,
+    node_bundle_charge_by_id: dict[str, float] | None = None,
     previous_node_id: str = "",
 ) -> tuple[str, float]:
     current_id = str(current_node_id).strip()
@@ -2347,6 +2424,12 @@ def _select_downhill_adjacent_nexus(
     best_node = ""
     best_score = -1e9
     best_drop = 0.0
+    bundle_gravity_map = (
+        node_bundle_gravity_by_id if isinstance(node_bundle_gravity_by_id, dict) else {}
+    )
+    bundle_charge_map = (
+        node_bundle_charge_by_id if isinstance(node_bundle_charge_by_id, dict) else {}
+    )
     for neighbor_id in neighbors:
         candidate_id = str(neighbor_id).strip()
         if not candidate_id:
@@ -2376,11 +2459,23 @@ def _select_downhill_adjacent_nexus(
             score += (current_target_distance - target_distance) * 0.6
 
         node_vector = node_vector_by_id.get(candidate_id)
+        semantic_similarity = 0.0
         if isinstance(node_vector, list) and node_vector:
-            score += (
-                _safe_cosine_unit(semantic_unit, _normalize_vector(list(node_vector)))
-                * 0.22
+            semantic_similarity = _safe_cosine_unit(
+                semantic_unit, _normalize_vector(list(node_vector))
             )
+            score += semantic_similarity * 0.22
+
+        bundle_gravity = _clamp01(
+            _safe_float(bundle_gravity_map.get(candidate_id, 0.0), 0.0)
+        )
+        bundle_charge = _clamp01(
+            _safe_float(bundle_charge_map.get(candidate_id, 0.0), 0.0)
+        )
+        if bundle_gravity > 1e-8:
+            score += bundle_gravity * 0.34
+        if bundle_charge > 1e-8 and semantic_similarity > 0.0:
+            score += semantic_similarity * bundle_charge * 0.28
 
         if previous_node_id and candidate_id == previous_node_id:
             score -= 0.18
@@ -2394,6 +2489,10 @@ def _select_downhill_adjacent_nexus(
         return "", 0.0
 
     route_probability = _clamp01(0.35 + (best_drop / max(0.05, current_balance + 0.5)))
+    route_probability = _clamp01(
+        route_probability
+        + (_clamp01(_safe_float(bundle_gravity_map.get(best_node, 0.0), 0.0)) * 0.22)
+    )
     return best_node, route_probability
 
 
@@ -2539,6 +2638,7 @@ def _spawn_particle(
     return {
         "id": particle_id,
         "owner": presence_id,
+        "origin_presence_id": presence_id,
         "target": target_presence_id,
         "presence_role": role,
         "particle_mode": mode,
@@ -2623,6 +2723,7 @@ def _spawn_chaos_butterfly(
     return {
         "id": particle_id,
         "owner": "chaos_butterfly",
+        "origin_presence_id": "chaos_butterfly",
         "target": "",  # No target - wanders aimlessly
         "presence_role": "chaos-agent",
         "particle_mode": "noise-spreader",
@@ -2659,6 +2760,20 @@ def _spawn_nexus_particle(
     node_x = _clamp01(_safe_float(node.get("x", 0.5), 0.5))
     node_y = _clamp01(_safe_float(node.get("y", 0.5), 0.5))
     importance = _clamp01(_safe_float(node.get("importance", 0.3), 0.3))
+    semantic_bundle_mass = _clamp01(
+        _safe_float(node.get("semantic_bundle_mass", 0.0), 0.0)
+    )
+    semantic_bundle_charge = _clamp01(
+        _safe_float(node.get("semantic_bundle_charge", 0.0), 0.0)
+    )
+    semantic_bundle_gravity = _clamp01(
+        _safe_float(node.get("semantic_bundle_gravity", 0.0), 0.0)
+    )
+    bundle_boost = max(
+        semantic_bundle_mass,
+        semantic_bundle_charge,
+        semantic_bundle_gravity,
+    )
     node_vector = _normalize_vector(list(node.get("vector", [])))
     seed_text = (
         f"Nexus static daimo {particle_id} owner={owner_presence_id}. "
@@ -2669,12 +2784,13 @@ def _spawn_nexus_particle(
 
     alpha_pkg = {key: DAIMOI_ALPHA_BASELINE for key in DAIMOI_JOB_KEYS}
     alpha_msg = {"deliver": 0.8, "hold": 1.2}
-    size = 0.72 + (importance * 1.1)
+    size = 0.72 + (importance * 1.1) + (semantic_bundle_mass * 0.95)
     source_node_id = str(node.get("id", "")).strip()
 
     return {
         "id": particle_id,
         "owner": owner_presence_id,
+        "origin_presence_id": owner_presence_id,
         "target": owner_presence_id,
         "presence_role": "nexus-passive",
         "particle_mode": "static-daimoi",
@@ -2689,8 +2805,11 @@ def _spawn_nexus_particle(
         "y": node_y,
         "vx": 0.0,
         "vy": 0.0,
-        "mass": 2.4 + (importance * 1.6),
-        "radius": 0.01 + (importance * 0.01),
+        "mass": 2.4
+        + (importance * 1.6)
+        + (semantic_bundle_mass * 3.2)
+        + (semantic_bundle_gravity * 2.4),
+        "radius": 0.01 + (importance * 0.01) + (semantic_bundle_gravity * 0.008),
         "size": size,
         "age": 0,
         "collisions": 0,
@@ -2701,6 +2820,26 @@ def _spawn_nexus_particle(
         "is_static_daimoi": True,
         "source_node_id": source_node_id,
         "graph_node_id": source_node_id,
+        "is_view_compaction_bundle": bool(node.get("is_view_compaction_bundle", False))
+        or source_node_id.startswith("file:projection:"),
+        "simulation_semantic_role": (
+            str(node.get("simulation_semantic_role", "")).strip()
+            or (
+                "view_compaction_aggregate"
+                if source_node_id.startswith("file:projection:")
+                else ""
+            )
+        ),
+        "semantic_bundle_mass": semantic_bundle_mass,
+        "semantic_bundle_charge": semantic_bundle_charge,
+        "semantic_bundle_gravity": semantic_bundle_gravity,
+        "semantic_bundle_member_count": max(
+            0, _safe_int(node.get("semantic_bundle_member_count", 0), 0)
+        ),
+        "semantic_bundle_member_edge_count": max(
+            0, _safe_int(node.get("semantic_bundle_member_edge_count", 0), 0)
+        ),
+        "bundle_boost": bundle_boost,
         "route_node_id": "",
         "route_prev_node_id": "",
         "route_probability": 0.0,
@@ -2825,6 +2964,19 @@ def build_probabilistic_daimoi_particles(
         resource_pressure = max(resource_pressure, _clamp01(util / 100.0))
     compute_pressure = _clamp01(len(compute_jobs) / 28.0)
     queue_pressure = _clamp01(_safe_float(queue_ratio, 0.0))
+    queue_headroom = _clamp01(1.0 - queue_pressure)
+    compute_headroom = _clamp01(1.0 - compute_pressure)
+    resource_headroom = _clamp01(1.0 - resource_pressure)
+    compute_availability = _clamp01(
+        (resource_headroom * 0.56) + (queue_headroom * 0.24) + (compute_headroom * 0.2)
+    )
+    availability_scale = max(0.72, min(1.64, 0.82 + (compute_availability * 0.74)))
+    decompression_hint = bool(
+        compute_availability >= 0.58
+        and queue_pressure <= 0.34
+        and compute_pressure <= 0.3
+        and resource_pressure <= 0.62
+    )
 
     anchors = _presence_anchor_map(presence_impacts)
     presence_ids = [presence_id for presence_id in anchors.keys() if presence_id]
@@ -2945,6 +3097,7 @@ def build_probabilistic_daimoi_particles(
             load_scale = 0.78
         elif prior_tick_ms >= 52.0:
             load_scale = 0.88
+        load_scale = max(0.46, min(1.72, load_scale * availability_scale))
 
         per_presence_cap = 96
         nexus_cap = 180
@@ -2965,6 +3118,19 @@ def build_probabilistic_daimoi_particles(
             per_presence_cap = 74
             nexus_cap = 160
             chaos_target_count = 7
+        cap_scale = max(
+            0.66,
+            min(
+                1.68,
+                availability_scale * (1.08 if decompression_hint else 0.96),
+            ),
+        )
+        per_presence_cap = max(24, min(168, int(round(per_presence_cap * cap_scale))))
+        nexus_cap = max(72, min(320, int(round(nexus_cap * cap_scale))))
+        chaos_target_count = max(
+            3,
+            min(16, int(round(float(chaos_target_count) * max(0.72, cap_scale)))),
+        )
 
         active_ids: set[str] = set()
         for impact in presence_impacts:
@@ -3199,7 +3365,24 @@ def build_probabilistic_daimoi_particles(
             active_ids.add(particle_id)
 
         # Spawn/refresh nexus particles (passive daimo without agency).
-        node_rows = file_nodes[:nexus_cap]
+        prioritized_bundle_nodes = [
+            row
+            for row in file_nodes
+            if isinstance(row, dict)
+            and bool(row.get("is_view_compaction_bundle", False))
+        ]
+        prioritized_bundle_ids = {
+            str(row.get("id", "")).strip()
+            for row in prioritized_bundle_nodes
+            if isinstance(row, dict) and str(row.get("id", "")).strip()
+        }
+        remaining_nodes = [
+            row
+            for row in file_nodes
+            if isinstance(row, dict)
+            and str(row.get("id", "")).strip() not in prioritized_bundle_ids
+        ]
+        node_rows = [*prioritized_bundle_nodes, *remaining_nodes][:nexus_cap]
         fallback_owner = "anchor_registry"
         if fallback_owner not in anchors and presence_ids:
             fallback_owner = presence_ids[0]
@@ -3222,10 +3405,49 @@ def build_probabilistic_daimoi_particles(
                 existing["target"] = owner_id
                 existing["preferred_x"] = _clamp01(_safe_float(node.get("x", 0.5), 0.5))
                 existing["preferred_y"] = _clamp01(_safe_float(node.get("y", 0.5), 0.5))
+                bundle_mass = _clamp01(
+                    _safe_float(node.get("semantic_bundle_mass", 0.0), 0.0)
+                )
+                bundle_charge = _clamp01(
+                    _safe_float(node.get("semantic_bundle_charge", 0.0), 0.0)
+                )
+                bundle_gravity = _clamp01(
+                    _safe_float(node.get("semantic_bundle_gravity", 0.0), 0.0)
+                )
+                importance = _clamp01(_safe_float(node.get("importance", 0.3), 0.3))
+                existing["mass"] = (
+                    2.4
+                    + (importance * 1.6)
+                    + (bundle_mass * 3.2)
+                    + (bundle_gravity * 2.4)
+                )
+                existing["radius"] = (
+                    0.01 + (importance * 0.01) + (bundle_gravity * 0.008)
+                )
+                existing["size"] = 0.72 + (importance * 1.1) + (bundle_mass * 0.95)
                 existing["is_nexus"] = True
                 existing["is_static_daimoi"] = True
                 existing["source_node_id"] = node_id
                 existing["graph_node_id"] = node_id
+                existing["is_view_compaction_bundle"] = bool(
+                    node.get("is_view_compaction_bundle", False)
+                ) or node_id.startswith("file:projection:")
+                existing["simulation_semantic_role"] = str(
+                    node.get("simulation_semantic_role", "")
+                ).strip() or (
+                    "view_compaction_aggregate"
+                    if node_id.startswith("file:projection:")
+                    else ""
+                )
+                existing["semantic_bundle_mass"] = bundle_mass
+                existing["semantic_bundle_charge"] = bundle_charge
+                existing["semantic_bundle_gravity"] = bundle_gravity
+                existing["semantic_bundle_member_count"] = max(
+                    0, _safe_int(node.get("semantic_bundle_member_count", 0), 0)
+                )
+                existing["semantic_bundle_member_edge_count"] = max(
+                    0, _safe_int(node.get("semantic_bundle_member_edge_count", 0), 0)
+                )
                 existing["route_node_id"] = str(
                     existing.get("route_node_id", "")
                 ).strip()
@@ -3364,6 +3586,8 @@ def build_probabilistic_daimoi_particles(
 
         nexus_position_by_node_id: dict[str, tuple[float, float]] = {}
         nexus_balance_seed_by_node_id: dict[str, float] = {}
+        nexus_bundle_gravity_by_node_id: dict[str, float] = {}
+        nexus_bundle_charge_by_node_id: dict[str, float] = {}
         for row in states:
             if not isinstance(row, dict) or not bool(row.get("is_nexus", False)):
                 continue
@@ -3375,6 +3599,12 @@ def build_probabilistic_daimoi_particles(
                 _clamp01(_safe_float(row.get("y", 0.5), 0.5)),
             )
             node_meta = file_node_lookup.get(node_id, {})
+            nexus_bundle_gravity_by_node_id[node_id] = _clamp01(
+                _safe_float(node_meta.get("semantic_bundle_gravity", 0.0), 0.0)
+            )
+            nexus_bundle_charge_by_node_id[node_id] = _clamp01(
+                _safe_float(node_meta.get("semantic_bundle_charge", 0.0), 0.0)
+            )
             seed_balance = max(
                 0.0,
                 _safe_float(
@@ -3394,6 +3624,10 @@ def build_probabilistic_daimoi_particles(
                         * 0.28
                     ),
                 )
+            seed_balance += (
+                nexus_bundle_gravity_by_node_id[node_id] * 0.36
+                + nexus_bundle_charge_by_node_id[node_id] * 0.22
+            )
             nexus_balance_seed_by_node_id[node_id] = seed_balance
 
         for state in states:
@@ -3518,6 +3752,8 @@ def build_probabilistic_daimoi_particles(
                         target_xy=(owner_anchor_x, owner_anchor_y),
                         semantic_vector=_state_unit_vector(state, "e_curr"),
                         node_vector_by_id=file_node_vectors_by_id,
+                        node_bundle_gravity_by_id=nexus_bundle_gravity_by_node_id,
+                        node_bundle_charge_by_id=nexus_bundle_charge_by_node_id,
                         previous_node_id=str(
                             state.get("route_prev_node_id", "")
                         ).strip(),
@@ -3856,6 +4092,10 @@ def build_probabilistic_daimoi_particles(
             nexus_position_by_node_id.update(nexus_position_by_node)
 
         semantic_budget = max(220, min(1200, state_count * 2))
+        semantic_budget = max(
+            180,
+            min(1600, int(round(float(semantic_budget) * availability_scale))),
+        )
         semantic_updates = 0
         semantic_stride = 2
         if state_count > 760:
@@ -3872,9 +4112,21 @@ def build_probabilistic_daimoi_particles(
             semantic_stride += 2
         elif prior_tick_ms >= 82.0:
             semantic_stride += 1
+        semantic_stride += 1
 
         pair_scan_budget = max(2200, min(26000, state_count * 30))
         max_collisions_per_tick = max(700, min(9000, state_count * 9))
+        pair_scan_budget = max(
+            1600,
+            min(36000, int(round(float(pair_scan_budget) * availability_scale))),
+        )
+        max_collisions_per_tick = max(
+            520,
+            min(
+                12000,
+                int(round(float(max_collisions_per_tick) * availability_scale)),
+            ),
+        )
         if prior_tick_ms >= 120.0:
             pair_scan_budget = int(pair_scan_budget * 0.5)
             max_collisions_per_tick = int(max_collisions_per_tick * 0.45)
@@ -4080,6 +4332,8 @@ def build_probabilistic_daimoi_particles(
                                 target_xy=target_xy,
                                 semantic_vector=_state_unit_vector(left, "e_curr"),
                                 node_vector_by_id=file_node_vectors_by_id,
+                                node_bundle_gravity_by_id=nexus_bundle_gravity_by_node_id,
+                                node_bundle_charge_by_id=nexus_bundle_charge_by_node_id,
                                 previous_node_id=str(
                                     left.get("route_prev_node_id", previous_node_id)
                                 ).strip(),
@@ -4196,12 +4450,54 @@ def build_probabilistic_daimoi_particles(
                     else:
                         impulse = overlap * 0.014
 
-                    left_vx = left_vx - ((impulse / left_mass) * nx)
-                    left_vy = left_vy - ((impulse / left_mass) * ny)
+                    impulse_coupling = 0.46
+                    impulse_scaled = impulse * impulse_coupling
+                    left_vx = left_vx - ((impulse_scaled / left_mass) * nx)
+                    left_vy = left_vy - ((impulse_scaled / left_mass) * ny)
+
+                    kick_seed = int(
+                        hashlib.sha1(
+                            f"{left_id}|{right_id}|collision-kick".encode("utf-8")
+                        ).hexdigest()[:8],
+                        16,
+                    )
+                    kick_phase = now_seconds * 0.73
+                    kick_overlap = _clamp01(overlap / max(1e-6, contact))
+                    kick_amp = 0.00082 + (kick_overlap * 0.0024)
+                    left_kick_x = _simplex_noise_2d(
+                        (left_x * 6.2) + kick_phase,
+                        (left_y * 6.0) + (kick_phase * 0.67),
+                        seed=(kick_seed % 251) + 37,
+                    )
+                    left_kick_y = _simplex_noise_2d(
+                        (left_x * 6.1) + 111.0 + (kick_phase * 0.59),
+                        (left_y * 6.3) + kick_phase,
+                        seed=(kick_seed % 251) + 73,
+                    )
+                    right_kick_x = _simplex_noise_2d(
+                        (right_x * 6.2) + kick_phase + 17.0,
+                        (right_y * 6.0) + (kick_phase * 0.71),
+                        seed=(kick_seed % 251) + 101,
+                    )
+                    right_kick_y = _simplex_noise_2d(
+                        (right_x * 6.1) + 149.0 + (kick_phase * 0.63),
+                        (right_y * 6.3) + kick_phase,
+                        seed=(kick_seed % 251) + 149,
+                    )
+                    left_vx += left_kick_x * kick_amp
+                    left_vy += left_kick_y * kick_amp
                     left["vx"] = left_vx
                     left["vy"] = left_vy
-                    right["vx"] = rvx + ((impulse / mass_right) * nx)
-                    right["vy"] = rvy + ((impulse / mass_right) * ny)
+                    right["vx"] = (
+                        rvx
+                        + ((impulse_scaled / mass_right) * nx)
+                        + (right_kick_x * kick_amp)
+                    )
+                    right["vy"] = (
+                        rvy
+                        + ((impulse_scaled / mass_right) * ny)
+                        + (right_kick_y * kick_amp)
+                    )
 
                 left_collision_count += 1
                 left["collisions"] = left_collision_count
@@ -4210,7 +4506,7 @@ def build_probabilistic_daimoi_particles(
                 if not right_is_nexus:
                     should_update_semantics = semantic_updates < semantic_budget and (
                         (collision_count % semantic_stride == 0)
-                        or (abs(impulse) >= (DAIMOI_IMPULSE_REFERENCE * 0.65))
+                        or (abs(impulse) >= (DAIMOI_IMPULSE_REFERENCE * 0.9))
                     )
                     if should_update_semantics:
                         semantics = _collision_semantic_update(
@@ -4316,9 +4612,22 @@ def build_probabilistic_daimoi_particles(
             job_probs = _job_probabilities(state)
             message_prob = _message_probability(state)
             action_probs = _action_probabilities(job_probs, message_prob)
+            state_collision_signal = _clamp01(
+                _safe_float(state.get("collisions", 0.0), 0.0) / 6.0
+            )
+            global_congestion_signal = _clamp01(
+                _safe_float(collision_count, 0.0) / 900.0
+            )
             diffuse_prob = _clamp01(_safe_float(action_probs.get("diffuse", 0.5), 0.5))
+            diffuse_prob = _clamp01(
+                diffuse_prob
+                + (state_collision_signal * 0.24)
+                + (global_congestion_signal * 0.12)
+            )
             if best_presence == owner_id:
-                diffuse_prob = _clamp01(diffuse_prob * 0.45)
+                diffuse_prob = _clamp01(
+                    diffuse_prob * (0.45 + (state_collision_signal * 0.42))
+                )
 
             roll = _stable_ratio(
                 f"{particle_id}|surface|{best_presence}|{now_seconds_tenths_int}",
@@ -4582,6 +4891,18 @@ def build_probabilistic_daimoi_particles(
         output_owner_cap = 160
         output_nexus_cap = 220
         output_total_cap = max(320, min(1400, state_count + 280))
+        output_owner_cap = max(
+            28,
+            min(240, int(round(float(output_owner_cap) * cap_scale))),
+        )
+        output_nexus_cap = max(
+            64,
+            min(340, int(round(float(output_nexus_cap) * cap_scale))),
+        )
+        output_total_cap = max(
+            260,
+            min(2200, int(round(float(output_total_cap) * availability_scale))),
+        )
         if prior_tick_ms >= 120.0:
             output_owner_cap = 44
             output_nexus_cap = 90
@@ -4597,9 +4918,49 @@ def build_probabilistic_daimoi_particles(
 
         if len(active_states) > output_total_cap:
             limited_states: list[dict[str, Any]] = []
+            limited_state_ids: set[int] = set()
             owner_counts: dict[str, int] = {}
             nexus_count = 0
+
+            priority_bundle_nexus_cap = max(8, min(output_nexus_cap, 48))
             for state in active_states:
+                if not bool(state.get("is_nexus", False)):
+                    continue
+                if not (
+                    bool(state.get("is_view_compaction_bundle", False))
+                    or str(state.get("source_node_id", "")).startswith(
+                        "file:projection:"
+                    )
+                ):
+                    continue
+                if nexus_count >= priority_bundle_nexus_cap:
+                    continue
+                limited_states.append(state)
+                limited_state_ids.add(id(state))
+                nexus_count += 1
+                if len(limited_states) >= output_total_cap:
+                    break
+
+            priority_owner_id = "presence.user.operator"
+            priority_owner_cap = max(4, min(output_owner_cap, 24))
+            for state in active_states:
+                if bool(state.get("is_nexus", False)):
+                    continue
+                owner_key = str(state.get("owner", "")).strip()
+                if owner_key != priority_owner_id:
+                    continue
+                owner_hit_count = owner_counts.get(owner_key, 0)
+                if owner_hit_count >= priority_owner_cap:
+                    continue
+                owner_counts[owner_key] = owner_hit_count + 1
+                limited_states.append(state)
+                limited_state_ids.add(id(state))
+                if len(limited_states) >= output_total_cap:
+                    break
+
+            for state in active_states:
+                if id(state) in limited_state_ids:
+                    continue
                 is_nexus = bool(state.get("is_nexus", False))
                 if is_nexus:
                     if nexus_count >= output_nexus_cap:
@@ -4747,12 +5108,54 @@ def build_probabilistic_daimoi_particles(
                 ),
             }
 
+            origin_presence_id = str(state.get("origin_presence_id", "") or "").strip()
+            if not origin_presence_id:
+                state_id_for_origin = str(state.get("id", "") or "").strip()
+                if state_id_for_origin.startswith("field:"):
+                    origin_presence_id = (
+                        state_id_for_origin[6:].rsplit(":", 1)[0].strip()
+                    )
+                else:
+                    origin_presence_id = owner_id
+                state["origin_presence_id"] = origin_presence_id
+
             output_row = {
                 "id": str(state.get("id", "")),
                 "presence_id": owner_id,
                 "owner_presence_id": owner_id,
+                "origin_presence_id": origin_presence_id,
                 "target_presence_id": str(state.get("target", owner_id)),
                 "source_node_id": str(state.get("source_node_id", "")),
+                "is_view_compaction_bundle": bool(
+                    state.get("is_view_compaction_bundle", False)
+                )
+                or str(state.get("source_node_id", "")).startswith("file:projection:"),
+                "simulation_semantic_role": (
+                    str(state.get("simulation_semantic_role", "")).strip()
+                    or (
+                        "view_compaction_aggregate"
+                        if str(state.get("source_node_id", "")).startswith(
+                            "file:projection:"
+                        )
+                        else ""
+                    )
+                ),
+                "semantic_bundle_mass": round(
+                    _clamp01(_safe_float(state.get("semantic_bundle_mass", 0.0), 0.0)),
+                    6,
+                ),
+                "semantic_bundle_charge": round(
+                    _clamp01(
+                        _safe_float(state.get("semantic_bundle_charge", 0.0), 0.0)
+                    ),
+                    6,
+                ),
+                "semantic_bundle_gravity": round(
+                    _clamp01(
+                        _safe_float(state.get("semantic_bundle_gravity", 0.0), 0.0)
+                    ),
+                    6,
+                ),
                 "graph_node_id": str(state.get("graph_node_id", "")).strip(),
                 "route_node_id": str(state.get("route_node_id", "")).strip(),
                 "node_balance": round(
@@ -4897,6 +5300,12 @@ def build_probabilistic_daimoi_particles(
         },
         "matrix_mean": matrix_mean,
         "behavior_defaults": list(DAIMOI_BEHAVIOR_DEFAULTS),
+        "resource_pressure": round(resource_pressure, 6),
+        "queue_pressure": round(queue_pressure, 6),
+        "compute_pressure": round(compute_pressure, 6),
+        "compute_availability": round(compute_availability, 6),
+        "availability_scale": round(availability_scale, 6),
+        "decompression_hint": bool(decompression_hint),
     }
     return output_rows, summary
 

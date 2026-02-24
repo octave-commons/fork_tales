@@ -8,6 +8,7 @@ import json
 import math
 import mimetypes
 import os
+import queue
 import shutil
 import socket
 import struct
@@ -21,7 +22,7 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterator, cast
 from urllib.parse import parse_qs, quote, unquote, urlparse
 from urllib.request import Request, urlopen
 
@@ -177,6 +178,100 @@ _SIMULATION_HTTP_WARMUP_DELAY_SECONDS = max(
     0.0,
     float(os.getenv("SIMULATION_HTTP_WARMUP_DELAY_SECONDS", "2.0") or "2.0"),
 )
+
+
+def _normalize_query_text(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    return " ".join(raw.split())[:220]
+
+
+def _query_variant_terms(query_text: str) -> list[str]:
+    base = _normalize_query_text(query_text)
+    if not base:
+        return []
+
+    lowered = base.lower()
+    token_rows = [
+        token
+        for token in "".join(
+            ch if (ch.isalnum() or ch.isspace()) else " " for ch in lowered
+        ).split()
+        if token
+    ]
+
+    variants: list[str] = []
+    for candidate in (
+        base,
+        lowered,
+        " ".join(token_rows),
+        " ".join(token_rows[:4]),
+        " ".join(token_rows[-4:]),
+    ):
+        clean = _normalize_query_text(candidate)
+        if clean and clean not in variants:
+            variants.append(clean)
+        if len(variants) >= 6:
+            break
+    return variants
+
+
+def _build_search_daimoi_meta(
+    query_text: str,
+    *,
+    target: str,
+    model: str | None,
+) -> dict[str, Any]:
+    variants = _query_variant_terms(query_text)
+    if not variants:
+        return {}
+
+    target_text = str(target or "").strip().lower()
+    target_presence_ids: list[str] = []
+    for row in ENTITY_MANIFEST:
+        if not isinstance(row, dict):
+            continue
+        presence_id = str(row.get("id", "") or "").strip()
+        if not presence_id:
+            continue
+        if (
+            presence_id.lower() in target_text
+            and presence_id not in target_presence_ids
+        ):
+            target_presence_ids.append(presence_id)
+
+    component_rows: list[dict[str, Any]] = []
+    for index, term in enumerate(variants[:6]):
+        component_id = hashlib.sha1(f"{term}|{index}".encode("utf-8")).hexdigest()[:12]
+        embedding = _normalize_embedding_vector(_ollama_embed(term, model=model))
+        component: dict[str, Any] = {
+            "component_id": f"query:{component_id}",
+            "component_type": "query-term",
+            "kind": "search",
+            "text": term,
+            "weight": round(max(0.2, 1.0 - (index * 0.12)), 6),
+            "variant_rank": index,
+            "embedding_dim": 0,
+        }
+        if embedding:
+            component["embedding_dim"] = len(embedding)
+            component["embedding_preview"] = [
+                round(float(value), 6) for value in embedding[:8]
+            ]
+        component_rows.append(component)
+
+    return {
+        "record": "ημ.user-search-daimoi.v1",
+        "schema_version": "user.search.daimoi.v1",
+        "query": variants[0],
+        "variant_count": len(variants),
+        "embed_model": str(model or "").strip(),
+        "target_presence_ids": target_presence_ids,
+        "components": component_rows,
+    }
+
+
 _SIMULATION_HTTP_WARMUP_TIMEOUT_SECONDS = max(
     6.0,
     float(os.getenv("SIMULATION_HTTP_WARMUP_TIMEOUT_SECONDS", "90.0") or "90.0"),
@@ -289,6 +384,34 @@ _SIMULATION_HTTP_FAILURE_STATE: dict[str, Any] = {
     "streak": 0,
 }
 _SERVER_BOOT_MONOTONIC = time.monotonic()
+_SIMULATION_BOOTSTRAP_REPORT_LOCK = threading.Lock()
+_SIMULATION_BOOTSTRAP_LAST_REPORT: dict[str, Any] = {}
+_SIMULATION_BOOTSTRAP_JOB_LOCK = threading.Lock()
+_SIMULATION_BOOTSTRAP_JOB: dict[str, Any] = {
+    "status": "idle",
+    "job_id": "",
+    "started_at": "",
+    "updated_at": "",
+    "completed_at": "",
+    "phase": "",
+    "phase_started_at": "",
+    "phase_detail": {},
+    "error": "",
+    "request": {},
+    "report": None,
+}
+_SIMULATION_BOOTSTRAP_MAX_SECONDS = max(
+    30.0,
+    float(os.getenv("SIMULATION_BOOTSTRAP_MAX_SECONDS", "240.0") or "240.0"),
+)
+_SIMULATION_BOOTSTRAP_HEARTBEAT_SECONDS = max(
+    0.5,
+    float(os.getenv("SIMULATION_BOOTSTRAP_HEARTBEAT_SECONDS", "3.0") or "3.0"),
+)
+_SIMULATION_BOOTSTRAP_MAX_EXCLUDED_FILES = max(
+    24,
+    int(float(os.getenv("SIMULATION_BOOTSTRAP_MAX_EXCLUDED_FILES", "320") or "320")),
+)
 
 _RUNTIME_WS_CLIENT_LOCK = threading.Lock()
 _RUNTIME_WS_CLIENT_COUNT = 0
@@ -336,6 +459,10 @@ _SIMULATION_WS_PROJECTION_HEARTBEAT_SECONDS = max(
     0.0,
     float(os.getenv("SIMULATION_WS_PROJECTION_HEARTBEAT_SECONDS", "2.5") or "2.5"),
 )
+_SIMULATION_WS_GRAPH_POSITION_HEARTBEAT_SECONDS = max(
+    0.0,
+    float(os.getenv("SIMULATION_WS_GRAPH_POSITION_HEARTBEAT_SECONDS", "2.0") or "2.0"),
+)
 _SIMULATION_WS_DELTA_STREAM_MODE = (
     str(os.getenv("SIMULATION_WS_DELTA_STREAM_MODE", "world") or "world")
     .strip()
@@ -374,6 +501,10 @@ _SIMULATION_WS_CHUNK_MAX_CHUNKS = max(
     8,
     int(float(os.getenv("SIMULATION_WS_CHUNK_MAX_CHUNKS", "256") or "256")),
 )
+_CATALOG_STREAM_CHUNK_ROWS = max(
+    16,
+    int(float(os.getenv("CATALOG_STREAM_CHUNK_ROWS", "192") or "192")),
+)
 _SIMULATION_WS_CHUNK_MESSAGE_TYPES = {
     str(item).strip().lower()
     for item in str(
@@ -385,6 +516,11 @@ _SIMULATION_WS_CHUNK_MESSAGE_TYPES = {
     ).split(",")
     if str(item).strip()
 }
+_SIMULATION_WS_PARTICLE_PAYLOAD_MODE_DEFAULT = (
+    str(os.getenv("SIMULATION_WS_PARTICLE_PAYLOAD_MODE", "lite") or "lite")
+    .strip()
+    .lower()
+)
 _WS_WIRE_ARRAY_SCHEMA = "eta-mu.ws.arr.v1"
 _WS_WIRE_MODE_DEFAULT = str(os.getenv("WS_WIRE_MODE", "json") or "json").strip().lower()
 _WS_PACK_TAG_OBJECT = -1
@@ -392,6 +528,40 @@ _WS_PACK_TAG_ARRAY = -2
 _WS_PACK_TAG_STRING = -3
 _WS_PACK_TAG_BOOL = -4
 _WS_PACK_TAG_NULL = -5
+_CATALOG_STREAM_SECTION_PATHS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("items", ("items",)),
+    ("file_nodes", ("file_graph", "file_nodes")),
+    ("file_edges", ("file_graph", "edges")),
+    ("file_embed_layers", ("file_graph", "embed_layers")),
+    ("crawler_nodes", ("crawler_graph", "crawler_nodes")),
+    ("crawler_edges", ("crawler_graph", "edges")),
+)
+_SIMULATION_WS_PARTICLE_LITE_KEYS: tuple[str, ...] = (
+    "id",
+    "presence_id",
+    "owner_presence_id",
+    "target_presence_id",
+    "presence_role",
+    "particle_mode",
+    "is_nexus",
+    "x",
+    "y",
+    "size",
+    "r",
+    "g",
+    "b",
+    "vx",
+    "vy",
+    "resource_daimoi",
+    "resource_type",
+    "resource_consume_type",
+    "top_job",
+    "route_node_id",
+    "graph_node_id",
+    "route_probability",
+    "influence_power",
+    "route_resource_focus",
+)
 
 
 def _runtime_ws_client_snapshot() -> dict[str, int]:
@@ -1588,6 +1758,36 @@ def _simulation_ws_trim_simulation_payload(
     return trimmed
 
 
+def _simulation_ws_compact_graph_payload(
+    simulation: dict[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(simulation, dict):
+        return {}
+
+    catalog_like: dict[str, Any] = {}
+    file_graph = simulation.get("file_graph")
+    crawler_graph = simulation.get("crawler_graph")
+    if isinstance(file_graph, dict):
+        catalog_like["file_graph"] = file_graph
+    if isinstance(crawler_graph, dict):
+        catalog_like["crawler_graph"] = crawler_graph
+    if not catalog_like:
+        return {}
+
+    compact_catalog = _simulation_http_trim_catalog(catalog_like)
+    if not isinstance(compact_catalog, dict):
+        return {}
+
+    graph_payload: dict[str, Any] = {}
+    compact_file_graph = compact_catalog.get("file_graph")
+    if isinstance(compact_file_graph, dict):
+        graph_payload["file_graph"] = compact_file_graph
+    compact_crawler_graph = compact_catalog.get("crawler_graph")
+    if isinstance(compact_crawler_graph, dict):
+        graph_payload["crawler_graph"] = compact_crawler_graph
+    return graph_payload
+
+
 def _simulation_ws_placeholder_payload(
     *,
     perspective: str,
@@ -1859,6 +2059,725 @@ def _simulation_ws_extract_stream_particles(
     return compact_rows
 
 
+def _simulation_ws_decode_cached_payload(cached_body: Any) -> dict[str, Any] | None:
+    if not isinstance(cached_body, (bytes, bytearray)):
+        return None
+    body = bytes(cached_body)
+    if not body:
+        return None
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _simulation_ws_payload_is_sparse(payload: dict[str, Any]) -> bool:
+    if not isinstance(payload, dict):
+        return True
+    total_count = max(0, int(_safe_float(payload.get("total", 0), 0.0)))
+    point_rows = payload.get("points", [])
+    point_count = len(point_rows) if isinstance(point_rows, list) else 0
+
+    particle_count = 0
+    dynamics = payload.get("presence_dynamics", {})
+    if isinstance(dynamics, dict):
+        rows = dynamics.get("field_particles", [])
+        if isinstance(rows, list):
+            particle_count = len(rows)
+
+    return total_count <= 0 and point_count <= 0 and particle_count <= 0
+
+
+def _simulation_bootstrap_store_report(report: dict[str, Any]) -> None:
+    if not isinstance(report, dict):
+        return
+    with _SIMULATION_BOOTSTRAP_REPORT_LOCK:
+        _SIMULATION_BOOTSTRAP_LAST_REPORT.clear()
+        _SIMULATION_BOOTSTRAP_LAST_REPORT.update(dict(report))
+
+
+def _simulation_bootstrap_snapshot_report() -> dict[str, Any] | None:
+    with _SIMULATION_BOOTSTRAP_REPORT_LOCK:
+        if not isinstance(_SIMULATION_BOOTSTRAP_LAST_REPORT, dict):
+            return None
+        if not _SIMULATION_BOOTSTRAP_LAST_REPORT:
+            return None
+        return dict(_SIMULATION_BOOTSTRAP_LAST_REPORT)
+
+
+def _simulation_bootstrap_job_snapshot() -> dict[str, Any]:
+    with _SIMULATION_BOOTSTRAP_JOB_LOCK:
+        snapshot = dict(_SIMULATION_BOOTSTRAP_JOB)
+        request_payload = snapshot.get("request", {})
+        if isinstance(request_payload, dict):
+            snapshot["request"] = dict(request_payload)
+        else:
+            snapshot["request"] = {}
+        if isinstance(snapshot.get("report"), dict):
+            snapshot["report"] = dict(snapshot.get("report", {}))
+        else:
+            snapshot["report"] = None
+        phase_detail = snapshot.get("phase_detail", {})
+        snapshot["phase_detail"] = (
+            dict(phase_detail) if isinstance(phase_detail, dict) else {}
+        )
+        return snapshot
+
+
+def _simulation_bootstrap_job_start(
+    *,
+    request_payload: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    request_row = dict(request_payload) if isinstance(request_payload, dict) else {}
+    with _SIMULATION_BOOTSTRAP_JOB_LOCK:
+        if (
+            str(_SIMULATION_BOOTSTRAP_JOB.get("status", "")).strip().lower()
+            == "running"
+        ):
+            snapshot = dict(_SIMULATION_BOOTSTRAP_JOB)
+            request_snapshot = snapshot.get("request", {})
+            snapshot["request"] = (
+                dict(request_snapshot) if isinstance(request_snapshot, dict) else {}
+            )
+            report_snapshot = snapshot.get("report")
+            snapshot["report"] = (
+                dict(report_snapshot) if isinstance(report_snapshot, dict) else None
+            )
+            return False, snapshot
+
+        seed = (
+            f"{now_iso}|{request_row.get('perspective', '')}|"
+            f"{request_row.get('sync_inbox', False)}"
+        )
+        job_id = "bootstrap:" + hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
+        _SIMULATION_BOOTSTRAP_JOB["status"] = "running"
+        _SIMULATION_BOOTSTRAP_JOB["job_id"] = job_id
+        _SIMULATION_BOOTSTRAP_JOB["started_at"] = now_iso
+        _SIMULATION_BOOTSTRAP_JOB["updated_at"] = now_iso
+        _SIMULATION_BOOTSTRAP_JOB["completed_at"] = ""
+        _SIMULATION_BOOTSTRAP_JOB["phase"] = "queued"
+        _SIMULATION_BOOTSTRAP_JOB["phase_started_at"] = now_iso
+        _SIMULATION_BOOTSTRAP_JOB["phase_detail"] = {}
+        _SIMULATION_BOOTSTRAP_JOB["error"] = ""
+        _SIMULATION_BOOTSTRAP_JOB["request"] = request_row
+        _SIMULATION_BOOTSTRAP_JOB["report"] = None
+        snapshot = dict(_SIMULATION_BOOTSTRAP_JOB)
+        snapshot["request"] = dict(request_row)
+        snapshot["phase_detail"] = {}
+        snapshot["report"] = None
+        return True, snapshot
+
+
+def _simulation_bootstrap_job_mark_phase(
+    *,
+    job_id: str,
+    phase: str,
+    detail: dict[str, Any] | None = None,
+) -> None:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with _SIMULATION_BOOTSTRAP_JOB_LOCK:
+        if str(_SIMULATION_BOOTSTRAP_JOB.get("job_id", "")) != str(job_id):
+            return
+        next_phase = str(phase or "").strip().lower()
+        if not next_phase:
+            return
+        current_phase = str(_SIMULATION_BOOTSTRAP_JOB.get("phase", "")).strip().lower()
+        _SIMULATION_BOOTSTRAP_JOB["phase"] = next_phase
+        if next_phase != current_phase:
+            _SIMULATION_BOOTSTRAP_JOB["phase_started_at"] = now_iso
+        _SIMULATION_BOOTSTRAP_JOB["updated_at"] = now_iso
+        _SIMULATION_BOOTSTRAP_JOB["phase_detail"] = (
+            dict(detail) if isinstance(detail, dict) else {}
+        )
+
+
+def _simulation_bootstrap_job_complete(
+    *,
+    job_id: str,
+    report: dict[str, Any],
+) -> None:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with _SIMULATION_BOOTSTRAP_JOB_LOCK:
+        if str(_SIMULATION_BOOTSTRAP_JOB.get("job_id", "")) != str(job_id):
+            return
+        _SIMULATION_BOOTSTRAP_JOB["status"] = "completed"
+        _SIMULATION_BOOTSTRAP_JOB["phase"] = "completed"
+        _SIMULATION_BOOTSTRAP_JOB["phase_started_at"] = now_iso
+        _SIMULATION_BOOTSTRAP_JOB["phase_detail"] = {}
+        _SIMULATION_BOOTSTRAP_JOB["updated_at"] = now_iso
+        _SIMULATION_BOOTSTRAP_JOB["completed_at"] = now_iso
+        _SIMULATION_BOOTSTRAP_JOB["error"] = ""
+        _SIMULATION_BOOTSTRAP_JOB["report"] = dict(report)
+
+
+def _simulation_bootstrap_job_fail(
+    *,
+    job_id: str,
+    error: str,
+    report: dict[str, Any] | None = None,
+) -> None:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with _SIMULATION_BOOTSTRAP_JOB_LOCK:
+        if str(_SIMULATION_BOOTSTRAP_JOB.get("job_id", "")) != str(job_id):
+            return
+        _SIMULATION_BOOTSTRAP_JOB["status"] = "failed"
+        _SIMULATION_BOOTSTRAP_JOB["phase"] = "failed"
+        _SIMULATION_BOOTSTRAP_JOB["phase_started_at"] = now_iso
+        _SIMULATION_BOOTSTRAP_JOB["phase_detail"] = {}
+        _SIMULATION_BOOTSTRAP_JOB["updated_at"] = now_iso
+        _SIMULATION_BOOTSTRAP_JOB["completed_at"] = now_iso
+        _SIMULATION_BOOTSTRAP_JOB["error"] = str(error or "simulation_bootstrap_failed")
+        _SIMULATION_BOOTSTRAP_JOB["report"] = (
+            dict(report) if isinstance(report, dict) else None
+        )
+
+
+def _simulation_bootstrap_embed_layer_row(layer: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(layer.get("id", "") or "").strip(),
+        "label": str(layer.get("label", "") or "").strip(),
+        "collection": str(layer.get("collection", "") or "").strip(),
+        "space_id": str(layer.get("space_id", "") or "").strip(),
+        "model_name": str(layer.get("model_name", "") or "").strip(),
+        "file_count": max(0, int(_safe_float(layer.get("file_count", 0), 0.0))),
+        "reference_count": max(
+            0, int(_safe_float(layer.get("reference_count", 0), 0.0))
+        ),
+        "active": bool(layer.get("active", False)),
+    }
+
+
+def _simulation_bootstrap_normalize_path(value: Any) -> str:
+    text = str(value or "").strip().replace("\\", "/")
+    while text.startswith("./"):
+        text = text[2:]
+    return text
+
+
+def _simulation_bootstrap_file_path(row: dict[str, Any]) -> str:
+    for key in (
+        "source_rel_path",
+        "archive_rel_path",
+        "archived_rel_path",
+        "archive_member_path",
+        "name",
+        "label",
+        "node_id",
+        "id",
+    ):
+        text = _simulation_bootstrap_normalize_path(row.get(key, ""))
+        if text:
+            return text
+    return ""
+
+
+def _simulation_bootstrap_file_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(row.get("id", "") or "").strip(),
+        "node_id": str(row.get("node_id", "") or "").strip(),
+        "name": str(row.get("name", "") or "").strip(),
+        "kind": str(row.get("kind", "") or "").strip(),
+        "path": _simulation_bootstrap_file_path(row),
+        "source_rel_path": _simulation_bootstrap_normalize_path(
+            row.get("source_rel_path", "")
+        ),
+        "archive_rel_path": _simulation_bootstrap_normalize_path(
+            row.get("archive_rel_path", "")
+        ),
+        "archived_rel_path": _simulation_bootstrap_normalize_path(
+            row.get("archived_rel_path", "")
+        ),
+        "projection_overflow": bool(row.get("projection_overflow", False)),
+        "consolidated": bool(row.get("consolidated", False)),
+        "consolidated_count": max(
+            0, int(_safe_float(row.get("consolidated_count", 0), 0.0))
+        ),
+        "projection_group_id": str(row.get("projection_group_id", "") or "").strip(),
+    }
+
+
+def _simulation_bootstrap_graph_diff(
+    *,
+    catalog: dict[str, Any],
+    simulation: dict[str, Any],
+) -> dict[str, Any]:
+    catalog_file_graph = (
+        catalog.get("file_graph", {})
+        if isinstance(catalog, dict) and isinstance(catalog.get("file_graph", {}), dict)
+        else {}
+    )
+    simulation_file_graph = (
+        simulation.get("file_graph", {})
+        if isinstance(simulation, dict)
+        and isinstance(simulation.get("file_graph", {}), dict)
+        else {}
+    )
+
+    true_file_nodes = [
+        row
+        for row in (
+            catalog_file_graph.get("file_nodes", [])
+            if isinstance(catalog_file_graph.get("file_nodes", []), list)
+            else []
+        )
+        if isinstance(row, dict)
+    ]
+    view_file_nodes = [
+        row
+        for row in (
+            simulation_file_graph.get("file_nodes", [])
+            if isinstance(simulation_file_graph.get("file_nodes", []), list)
+            else []
+        )
+        if isinstance(row, dict)
+    ]
+
+    true_by_id: dict[str, dict[str, Any]] = {}
+    view_ids: set[str] = set()
+    for row in true_file_nodes:
+        row_id = str(row.get("id", "") or "").strip()
+        if row_id and row_id not in true_by_id:
+            true_by_id[row_id] = row
+    for row in view_file_nodes:
+        row_id = str(row.get("id", "") or "").strip()
+        if row_id:
+            view_ids.add(row_id)
+
+    projection_payload = (
+        simulation_file_graph.get("projection", {})
+        if isinstance(simulation_file_graph.get("projection", {}), dict)
+        else {}
+    )
+    groups = [
+        row
+        for row in (
+            projection_payload.get("groups", [])
+            if isinstance(projection_payload.get("groups", []), list)
+            else []
+        )
+        if isinstance(row, dict)
+    ]
+
+    grouped_sources: dict[str, list[dict[str, Any]]] = {}
+    surface_visible_group_count = 0
+    for group in groups:
+        group_id = str(group.get("id", "") or "").strip()
+        if not group_id:
+            continue
+        surface_visible = bool(group.get("surface_visible", False))
+        if surface_visible:
+            surface_visible_group_count += 1
+        reasons_payload = (
+            group.get("reasons", {})
+            if isinstance(group.get("reasons", {}), dict)
+            else {}
+        )
+        reason_rows = {
+            str(key): int(_safe_float(value, 0.0))
+            for key, value in reasons_payload.items()
+            if str(key).strip()
+        }
+        refs = {
+            "group_id": group_id,
+            "kind": str(group.get("kind", "") or "").strip(),
+            "target": str(group.get("target", "") or "").strip(),
+            "surface_visible": surface_visible,
+            "reasons": reason_rows,
+        }
+        member_source_ids = (
+            group.get("member_source_ids", [])
+            if isinstance(group.get("member_source_ids", []), list)
+            else []
+        )
+        for source_id in member_source_ids:
+            clean_source_id = str(source_id or "").strip()
+            if not clean_source_id:
+                continue
+            rows = grouped_sources.setdefault(clean_source_id, [])
+            if len(rows) < 4:
+                rows.append(dict(refs))
+
+    overflow_rows = [
+        _simulation_bootstrap_file_row(row)
+        for row in view_file_nodes
+        if bool(row.get("projection_overflow", False))
+        or bool(row.get("consolidated", False))
+        or str(row.get("kind", "") or "").strip().lower() == "projection_overflow"
+    ]
+    overflow_rows.sort(
+        key=lambda row: (
+            -max(0, int(_safe_float(row.get("consolidated_count", 0), 0.0))),
+            str(row.get("name", "")),
+            str(row.get("id", "")),
+        )
+    )
+
+    missing_ids = sorted({*true_by_id.keys()} - view_ids)
+    missing_rows: list[dict[str, Any]] = []
+    for node_id in missing_ids:
+        source_row = true_by_id.get(node_id, {})
+        group_refs = grouped_sources.get(node_id, [])
+        reason = "trimmed_before_projection"
+        if group_refs:
+            if any(bool(row.get("surface_visible", False)) for row in group_refs):
+                reason = "grouped_in_projection_bundle"
+            else:
+                reason = "grouped_in_hidden_projection_bundle"
+        row_payload = _simulation_bootstrap_file_row(source_row)
+        row_payload["reason"] = reason
+        row_payload["projection_group_refs"] = [
+            {
+                "group_id": str(row.get("group_id", "") or ""),
+                "kind": str(row.get("kind", "") or ""),
+                "target": str(row.get("target", "") or ""),
+                "surface_visible": bool(row.get("surface_visible", False)),
+                "reasons": (
+                    dict(row.get("reasons", {}))
+                    if isinstance(row.get("reasons", {}), dict)
+                    else {}
+                ),
+            }
+            for row in group_refs
+        ]
+        missing_rows.append(row_payload)
+
+    missing_rows.sort(
+        key=lambda row: (
+            str(row.get("path", "")),
+            str(row.get("name", "")),
+            str(row.get("id", "")),
+        )
+    )
+
+    item_rows: dict[str, dict[str, Any]] = {}
+    catalog_items = (
+        catalog.get("items", [])
+        if isinstance(catalog, dict) and isinstance(catalog.get("items", []), list)
+        else []
+    )
+    for item in catalog_items:
+        if not isinstance(item, dict):
+            continue
+        rel_path = _simulation_bootstrap_normalize_path(item.get("rel_path", ""))
+        if not rel_path:
+            continue
+        if rel_path not in item_rows:
+            item_rows[rel_path] = {
+                "path": rel_path,
+                "kind": str(item.get("kind", "") or "").strip(),
+                "name": str(item.get("name", "") or "").strip(),
+                "role": str(item.get("role", "") or "").strip(),
+            }
+
+    true_paths = {
+        _simulation_bootstrap_file_path(row)
+        for row in true_file_nodes
+        if _simulation_bootstrap_file_path(row)
+    }
+    missing_item_rows = [
+        {
+            **item_rows[path],
+            "reason": "ingested_item_not_present_in_true_graph",
+        }
+        for path in sorted(item_rows)
+        if path not in true_paths
+    ]
+
+    max_rows = _SIMULATION_BOOTSTRAP_MAX_EXCLUDED_FILES
+    collapsed_edges = max(
+        0, int(_safe_float(projection_payload.get("collapsed_edges", 0), 0.0))
+    )
+    compaction_mode = "identity_or_within_limits"
+    if collapsed_edges > 0 and overflow_rows:
+        compaction_mode = "compacted_with_projection_overflow"
+    elif collapsed_edges > 0:
+        compaction_mode = "pruned_without_overflow_nodes"
+    elif missing_rows:
+        compaction_mode = "trimmed_before_projection"
+
+    return {
+        "truth_file_node_count": len(true_file_nodes),
+        "view_file_node_count": len(view_file_nodes),
+        "truth_file_nodes_missing_from_view_count": len(missing_rows),
+        "truth_file_nodes_missing_from_view": missing_rows[:max_rows],
+        "truth_file_nodes_missing_from_view_truncated": len(missing_rows) > max_rows,
+        "view_projection_overflow_node_count": len(overflow_rows),
+        "view_projection_overflow_nodes": overflow_rows[:max_rows],
+        "view_projection_overflow_nodes_truncated": len(overflow_rows) > max_rows,
+        "projection_group_count": len(groups),
+        "projection_surface_visible_group_count": surface_visible_group_count,
+        "projection_hidden_group_count": max(
+            0,
+            len(groups) - surface_visible_group_count,
+        ),
+        "projection_group_member_source_count": len(grouped_sources),
+        "ingested_item_count": len(item_rows),
+        "ingested_items_missing_from_truth_graph_count": len(missing_item_rows),
+        "ingested_items_missing_from_truth_graph": missing_item_rows[:max_rows],
+        "ingested_items_missing_from_truth_graph_truncated": len(missing_item_rows)
+        > max_rows,
+        "compaction_mode": compaction_mode,
+        "view_graph_reconstructable_from_truth_graph": True,
+        "notes": [
+            "truth graph remains canonical; view graph is derived by projection rules",
+            "projection bundles preserve edge-member lineage for reconstructability",
+        ],
+    }
+
+
+def _simulation_bootstrap_graph_report(
+    *,
+    perspective: str,
+    catalog: dict[str, Any],
+    simulation: dict[str, Any],
+    projection: dict[str, Any],
+    phase_ms: dict[str, float] | None = None,
+    reset_summary: dict[str, Any] | None = None,
+    inbox_sync: dict[str, Any] | None = None,
+    cache_key: str = "",
+) -> dict[str, Any]:
+    catalog_file_graph = (
+        catalog.get("file_graph", {})
+        if isinstance(catalog, dict) and isinstance(catalog.get("file_graph", {}), dict)
+        else {}
+    )
+    simulation_file_graph = (
+        simulation.get("file_graph", {})
+        if isinstance(simulation, dict)
+        and isinstance(simulation.get("file_graph", {}), dict)
+        else {}
+    )
+
+    embed_layers_raw = simulation_file_graph.get("embed_layers", [])
+    if not isinstance(embed_layers_raw, list) or not embed_layers_raw:
+        embed_layers_raw = catalog_file_graph.get("embed_layers", [])
+    embed_layers = [row for row in embed_layers_raw if isinstance(row, dict)]
+    active_layers = [row for row in embed_layers if bool(row.get("active", False))]
+    selected_layers = active_layers if active_layers else embed_layers
+
+    projection_payload = simulation_file_graph.get("projection", {})
+    if not isinstance(projection_payload, dict):
+        projection_payload = {}
+
+    projection_before = (
+        projection_payload.get("before", {})
+        if isinstance(projection_payload.get("before", {}), dict)
+        else {}
+    )
+    projection_after = (
+        projection_payload.get("after", {})
+        if isinstance(projection_payload.get("after", {}), dict)
+        else {}
+    )
+    projection_limits = (
+        projection_payload.get("limits", {})
+        if isinstance(projection_payload.get("limits", {}), dict)
+        else {}
+    )
+
+    before_edges = max(
+        0,
+        int(
+            _safe_float(
+                projection_before.get(
+                    "edges",
+                    len(catalog_file_graph.get("edges", []))
+                    if isinstance(catalog_file_graph.get("edges", []), list)
+                    else 0,
+                ),
+                0.0,
+            )
+        ),
+    )
+    after_edges = max(
+        0,
+        int(
+            _safe_float(
+                projection_after.get(
+                    "edges",
+                    len(simulation_file_graph.get("edges", []))
+                    if isinstance(simulation_file_graph.get("edges", []), list)
+                    else before_edges,
+                ),
+                0.0,
+            )
+        ),
+    )
+    before_file_nodes = max(
+        0,
+        int(
+            _safe_float(
+                projection_before.get(
+                    "file_nodes",
+                    len(catalog_file_graph.get("file_nodes", []))
+                    if isinstance(catalog_file_graph.get("file_nodes", []), list)
+                    else 0,
+                ),
+                0.0,
+            )
+        ),
+    )
+    after_file_nodes = max(
+        0,
+        int(
+            _safe_float(
+                projection_after.get(
+                    "file_nodes",
+                    len(simulation_file_graph.get("file_nodes", []))
+                    if isinstance(simulation_file_graph.get("file_nodes", []), list)
+                    else before_file_nodes,
+                ),
+                0.0,
+            )
+        ),
+    )
+
+    collapsed_edges = max(
+        0,
+        int(
+            _safe_float(
+                projection_payload.get(
+                    "collapsed_edges",
+                    max(0, before_edges - after_edges),
+                ),
+                0.0,
+            )
+        ),
+    )
+    overflow_nodes = max(
+        0, int(_safe_float(projection_payload.get("overflow_nodes", 0), 0.0))
+    )
+    overflow_edges = max(
+        0, int(_safe_float(projection_payload.get("overflow_edges", 0), 0.0))
+    )
+    group_count = max(
+        0, int(_safe_float(projection_payload.get("group_count", 0), 0.0))
+    )
+    edge_cap = max(0, int(_safe_float(projection_limits.get("edge_cap", 0), 0.0)))
+
+    edge_reduction_ratio = 0.0
+    if before_edges > 0:
+        edge_reduction_ratio = max(
+            0.0,
+            min(1.0, collapsed_edges / float(max(1, before_edges))),
+        )
+
+    edge_cap_utilization = 0.0
+    if edge_cap > 0:
+        edge_cap_utilization = max(
+            0.0,
+            min(2.0, after_edges / float(max(1, edge_cap))),
+        )
+
+    presence_dynamics = (
+        simulation.get("presence_dynamics", {})
+        if isinstance(simulation, dict)
+        and isinstance(simulation.get("presence_dynamics", {}), dict)
+        else {}
+    )
+    field_particles = presence_dynamics.get("field_particles", [])
+
+    report: dict[str, Any] = {
+        "ok": True,
+        "record": "eta-mu.simulation-bootstrap.v1",
+        "schema_version": "simulation.bootstrap.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "perspective": normalize_projection_perspective(perspective),
+        "runtime_config_version": _config_runtime_version_snapshot(),
+        "cache_key": str(cache_key or "").strip(),
+        "selection": {
+            "graph_surface": (
+                "projected-hub-overflow"
+                if bool(projection_payload.get("active", False))
+                else "full-file-graph"
+            ),
+            "projection_mode": str(projection_payload.get("mode", "hub-overflow")),
+            "projection_reason": str(projection_payload.get("reason", "")),
+            "embed_layer_count": len(embed_layers),
+            "active_embed_layer_count": len(active_layers),
+            "selected_embed_layers": [
+                _simulation_bootstrap_embed_layer_row(row)
+                for row in selected_layers[:16]
+            ],
+        },
+        "compression": {
+            "before_edges": before_edges,
+            "after_edges": after_edges,
+            "collapsed_edges": collapsed_edges,
+            "edge_reduction_ratio": round(edge_reduction_ratio, 6),
+            "edge_cap": edge_cap,
+            "edge_cap_utilization": round(edge_cap_utilization, 6),
+            "before_file_nodes": before_file_nodes,
+            "after_file_nodes": after_file_nodes,
+            "overflow_nodes": overflow_nodes,
+            "overflow_edges": overflow_edges,
+            "group_count": group_count,
+            "active": bool(projection_payload.get("active", False)),
+            "limits": {
+                str(key): value
+                for key, value in projection_limits.items()
+                if str(key).strip()
+            },
+        },
+        "graph_counts": {
+            "catalog": {
+                "file_nodes": len(catalog_file_graph.get("file_nodes", []))
+                if isinstance(catalog_file_graph.get("file_nodes", []), list)
+                else 0,
+                "edges": len(catalog_file_graph.get("edges", []))
+                if isinstance(catalog_file_graph.get("edges", []), list)
+                else 0,
+            },
+            "simulation": {
+                "file_nodes": len(simulation_file_graph.get("file_nodes", []))
+                if isinstance(simulation_file_graph.get("file_nodes", []), list)
+                else 0,
+                "edges": len(simulation_file_graph.get("edges", []))
+                if isinstance(simulation_file_graph.get("edges", []), list)
+                else 0,
+            },
+        },
+        "graph_diff": _simulation_bootstrap_graph_diff(
+            catalog=catalog,
+            simulation=simulation,
+        ),
+        "simulation_counts": {
+            "total_points": max(0, int(_safe_float(simulation.get("total", 0), 0.0))),
+            "point_rows": len(simulation.get("points", []))
+            if isinstance(simulation.get("points", []), list)
+            else 0,
+            "embedding_particles": len(simulation.get("embedding_particles", []))
+            if isinstance(simulation.get("embedding_particles", []), list)
+            else 0,
+            "field_particles": len(field_particles)
+            if isinstance(field_particles, list)
+            else 0,
+        },
+    }
+
+    if isinstance(phase_ms, dict) and phase_ms:
+        report["phase_ms"] = {
+            str(key): round(max(0.0, _safe_float(value, 0.0)), 3)
+            for key, value in phase_ms.items()
+            if str(key).strip()
+        }
+    if isinstance(reset_summary, dict) and reset_summary:
+        report["reset"] = dict(reset_summary)
+    if isinstance(inbox_sync, dict) and inbox_sync:
+        report["inbox_sync"] = dict(inbox_sync)
+    if isinstance(projection, dict) and projection:
+        report["projection"] = {
+            "record": str(projection.get("record", "") or "").strip(),
+            "perspective": str(projection.get("perspective", "") or "").strip(),
+            "ts": int(_safe_float(projection.get("ts", 0), 0.0)),
+        }
+    return report
+
+
 def _simulation_ws_load_cached_payload(
     *,
     part_root: Path,
@@ -1866,6 +2785,17 @@ def _simulation_ws_load_cached_payload(
     payload_mode: str = "trimmed",
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
     payload_mode_key = _simulation_ws_normalize_payload_mode(payload_mode)
+
+    def _load_stale_disk_payload() -> dict[str, Any] | None:
+        stale_cache_path = _simulation_http_disk_cache_path(part_root, perspective)
+        try:
+            if stale_cache_path.exists() and stale_cache_path.is_file():
+                stale_body = stale_cache_path.read_bytes()
+                return _simulation_ws_decode_cached_payload(stale_body)
+        except Exception:
+            return None
+        return None
+
     cached_body = _simulation_http_cached_body(
         perspective=perspective,
         max_age_seconds=_SIMULATION_WS_CACHE_MAX_AGE_SECONDS,
@@ -1876,23 +2806,20 @@ def _simulation_ws_load_cached_payload(
             perspective=perspective,
             max_age_seconds=_SIMULATION_WS_CACHE_MAX_AGE_SECONDS,
         )
-    if cached_body is None and payload_mode_key == "full":
-        stale_cache_path = _simulation_http_disk_cache_path(part_root, perspective)
-        try:
-            if stale_cache_path.exists() and stale_cache_path.is_file():
-                stale_body = stale_cache_path.read_bytes()
-                if stale_body:
-                    cached_body = stale_body
-        except Exception:
-            cached_body = None
-    if cached_body is None:
-        return None
 
-    try:
-        payload = json.loads(cached_body.decode("utf-8"))
-    except Exception:
-        return None
-    if not isinstance(payload, dict):
+    payload = _simulation_ws_decode_cached_payload(cached_body)
+    if payload_mode_key == "full":
+        stale_payload = _load_stale_disk_payload()
+        if payload is None:
+            payload = stale_payload
+        elif (
+            _simulation_ws_payload_is_sparse(payload)
+            and isinstance(stale_payload, dict)
+            and not _simulation_ws_payload_is_sparse(stale_payload)
+        ):
+            payload = stale_payload
+
+    if payload is None:
         return None
 
     projection = payload.get("projection", {})
@@ -1906,6 +2833,7 @@ def _simulation_ws_load_cached_payload(
     node_positions, node_text_chars = _simulation_ws_collect_node_positions(payload)
     simulation_payload = _simulation_ws_trim_simulation_payload(payload)
     simulation_payload.pop("projection", None)
+    simulation_payload.update(_simulation_ws_compact_graph_payload(payload))
     _simulation_ws_extract_stream_particles(
         simulation_payload,
         node_positions=node_positions,
@@ -1948,6 +2876,134 @@ def _simulation_ws_normalize_payload_mode(mode: str) -> str:
     if clean in {"full", "complete", "debug", "debug-full"}:
         return "full"
     return "trimmed"
+
+
+def _simulation_ws_normalize_particle_payload_mode(mode: str) -> str:
+    clean = str(mode or "").strip().lower()
+    if clean in {"full", "rich", "complete", "debug"}:
+        return "full"
+    return "lite"
+
+
+def _simulation_ws_lite_field_particles(rows: Any) -> list[dict[str, Any]]:
+    if not isinstance(rows, list):
+        return []
+    compact_rows: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        compact: dict[str, Any] = {}
+        for key in _SIMULATION_WS_PARTICLE_LITE_KEYS:
+            if key in row:
+                compact[key] = row.get(key)
+        if not str(compact.get("id", "") or "").strip():
+            compact["id"] = str(row.get("id", "") or f"ws:{index}")
+        compact_rows.append(compact)
+    return compact_rows
+
+
+def _catalog_stream_chunk_rows(value: Any) -> int:
+    return max(
+        1,
+        min(
+            2048,
+            int(_safe_float(value, float(_CATALOG_STREAM_CHUNK_ROWS))),
+        ),
+    )
+
+
+def _catalog_stream_get_path_value(
+    payload: dict[str, Any], path: tuple[str, ...]
+) -> Any:
+    cursor: Any = payload
+    for part in path:
+        if not isinstance(cursor, dict):
+            return None
+        cursor = cursor.get(part)
+    return cursor
+
+
+def _catalog_stream_set_path_value(
+    payload: dict[str, Any],
+    path: tuple[str, ...],
+    value: Any,
+) -> None:
+    if not path:
+        return
+    cursor: dict[str, Any] = payload
+    for part in path[:-1]:
+        nested = cursor.get(part)
+        if not isinstance(nested, dict):
+            nested = {}
+            cursor[part] = nested
+        cursor = nested
+    cursor[path[-1]] = value
+
+
+def _catalog_stream_meta(catalog: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(catalog, dict):
+        return {}
+    meta = copy.deepcopy(catalog)
+    for section_name, path in _CATALOG_STREAM_SECTION_PATHS:
+        rows = _catalog_stream_get_path_value(catalog, path)
+        if isinstance(rows, list):
+            _catalog_stream_set_path_value(
+                meta,
+                path,
+                {
+                    "streamed": True,
+                    "section": section_name,
+                    "count": len(rows),
+                },
+            )
+    return meta
+
+
+def _catalog_stream_iter_rows(
+    catalog: dict[str, Any],
+    *,
+    chunk_rows: int,
+) -> Iterator[dict[str, Any]]:
+    chunk_size = _catalog_stream_chunk_rows(chunk_rows)
+    catalog_payload = catalog if isinstance(catalog, dict) else {}
+    section_stats: dict[str, dict[str, int]] = {}
+    yield {
+        "type": "meta",
+        "record": "eta-mu.catalog.stream.meta.v1",
+        "schema_version": "catalog.stream.meta.v1",
+        "catalog": _catalog_stream_meta(catalog_payload),
+    }
+
+    for section_name, path in _CATALOG_STREAM_SECTION_PATHS:
+        rows = _catalog_stream_get_path_value(catalog_payload, path)
+        if not isinstance(rows, list):
+            continue
+        total = len(rows)
+        chunk_count = 0
+        for offset in range(0, total, chunk_size):
+            chunk = rows[offset : offset + chunk_size]
+            yield {
+                "type": "rows",
+                "record": "eta-mu.catalog.stream.rows.v1",
+                "schema_version": "catalog.stream.rows.v1",
+                "section": section_name,
+                "offset": offset,
+                "rows": chunk,
+            }
+            chunk_count += 1
+        section_stats[section_name] = {
+            "total": total,
+            "chunks": chunk_count,
+        }
+
+    yield {
+        "type": "done",
+        "ok": True,
+        "record": "eta-mu.catalog.stream.done.v1",
+        "schema_version": "catalog.stream.done.v1",
+        "chunk_rows": chunk_size,
+        "sections": section_stats,
+    }
 
 
 def _simulation_ws_chunk_messages(
@@ -2999,6 +4055,197 @@ class WorldHandler(BaseHTTPRequestHandler):
             status=status,
         )
 
+    def _send_ndjson_row(self, payload: dict[str, Any]) -> bool:
+        line = (_json_compact(payload) + "\n").encode("utf-8")
+        try:
+            self.wfile.write(line)
+            self.wfile.flush()
+            return True
+        except (
+            BrokenPipeError,
+            ConnectionResetError,
+            ConnectionAbortedError,
+            OSError,
+        ):
+            return False
+
+    def _send_catalog_stream(
+        self,
+        *,
+        perspective: str,
+        chunk_rows: int,
+        trim_catalog: bool,
+    ) -> None:
+        stream_chunk_rows = _catalog_stream_chunk_rows(chunk_rows)
+        self.send_response(HTTPStatus.OK)
+        self._set_cors_headers()
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+
+        if not self._send_ndjson_row(
+            {
+                "type": "start",
+                "ok": True,
+                "record": "eta-mu.catalog.stream.v1",
+                "schema_version": "catalog.stream.v1",
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "perspective": perspective,
+                "chunk_rows": stream_chunk_rows,
+                "trimmed": bool(trim_catalog),
+            }
+        ):
+            return
+
+        stream_started = time.monotonic()
+        progress_rows: queue.Queue[dict[str, Any]] = queue.Queue()
+        done = threading.Event()
+        result: dict[str, Any] = {}
+
+        def emit_progress(stage: str, detail: dict[str, Any] | None = None) -> None:
+            progress_rows.put(
+                {
+                    "stage": str(stage or "").strip().lower(),
+                    "detail": dict(detail) if isinstance(detail, dict) else {},
+                }
+            )
+
+        def collect_worker() -> None:
+            try:
+                emit_progress("collect_inline_start")
+                catalog = collect_catalog(
+                    self.part_root,
+                    self.vault_root,
+                    sync_inbox=False,
+                    include_pi_archive=False,
+                    include_world_log=False,
+                    progress_callback=emit_progress,
+                )
+
+                emit_progress("runtime_enrichment_start")
+                queue_snapshot = self.task_queue.snapshot(include_pending=False)
+                council_snapshot = self.council_chamber.snapshot(
+                    include_decisions=False
+                )
+                catalog["task_queue"] = queue_snapshot
+                catalog["council"] = council_snapshot
+                resource_snapshot = _resource_monitor_snapshot(part_root=self.part_root)
+                _INFLUENCE_TRACKER.record_resource_heartbeat(
+                    resource_snapshot,
+                    source="runtime.catalog.stream",
+                )
+                influence_snapshot = _INFLUENCE_TRACKER.snapshot(
+                    queue_snapshot=queue_snapshot,
+                    part_root=self.part_root,
+                )
+                catalog["presence_runtime"] = influence_snapshot
+                catalog["muse_runtime"] = self._muse_manager().snapshot()
+                attach_ui_projection(
+                    catalog,
+                    perspective=perspective,
+                    queue_snapshot=queue_snapshot,
+                    influence_snapshot=influence_snapshot,
+                )
+                emit_progress(
+                    "runtime_enrichment_done",
+                    {
+                        "item_count": len(catalog.get("items", []))
+                        if isinstance(catalog.get("items", []), list)
+                        else 0,
+                    },
+                )
+                result["catalog"] = catalog
+            except Exception as exc:
+                result["error"] = exc
+            finally:
+                done.set()
+
+        threading.Thread(
+            target=collect_worker,
+            daemon=True,
+            name="catalog-stream-collector",
+        ).start()
+
+        heartbeat_count = 0
+        while not done.is_set() or not progress_rows.empty():
+            try:
+                progress_row = progress_rows.get(timeout=1.0)
+            except queue.Empty:
+                heartbeat_count += 1
+                if not self._send_ndjson_row(
+                    {
+                        "type": "heartbeat",
+                        "record": "eta-mu.catalog.stream.progress.v1",
+                        "schema_version": "catalog.stream.progress.v1",
+                        "heartbeat_count": heartbeat_count,
+                        "elapsed_ms": round(
+                            (time.monotonic() - stream_started) * 1000.0,
+                            3,
+                        ),
+                    }
+                ):
+                    return
+                continue
+
+            if not self._send_ndjson_row(
+                {
+                    "type": "progress",
+                    "record": "eta-mu.catalog.stream.progress.v1",
+                    "schema_version": "catalog.stream.progress.v1",
+                    "stage": str(progress_row.get("stage", "") or ""),
+                    "detail": (
+                        dict(progress_row.get("detail", {}))
+                        if isinstance(progress_row.get("detail", {}), dict)
+                        else {}
+                    ),
+                    "elapsed_ms": round(
+                        (time.monotonic() - stream_started) * 1000.0,
+                        3,
+                    ),
+                }
+            ):
+                return
+
+        if "error" in result:
+            exc = cast(Exception, result.get("error"))
+            self._send_ndjson_row(
+                {
+                    "type": "error",
+                    "ok": False,
+                    "record": "eta-mu.catalog.stream.error.v1",
+                    "schema_version": "catalog.stream.error.v1",
+                    "error": f"catalog_stream_failed:{exc.__class__.__name__}",
+                    "detail": str(exc),
+                }
+            )
+            self._send_ndjson_row(
+                {
+                    "type": "done",
+                    "ok": False,
+                    "record": "eta-mu.catalog.stream.done.v1",
+                    "schema_version": "catalog.stream.done.v1",
+                    "chunk_rows": stream_chunk_rows,
+                }
+            )
+            return
+
+        stream_catalog = (
+            _simulation_http_trim_catalog(result.get("catalog", {}))
+            if trim_catalog
+            else dict(result.get("catalog", {}))
+            if isinstance(result.get("catalog", {}), dict)
+            else {}
+        )
+        for row in _catalog_stream_iter_rows(
+            stream_catalog,
+            chunk_rows=stream_chunk_rows,
+        ):
+            if not self._send_ndjson_row(row):
+                return
+
     def _send_ws_event(
         self, payload: dict[str, Any], *, wire_mode: str = "json"
     ) -> None:
@@ -3190,7 +4437,12 @@ class WorldHandler(BaseHTTPRequestHandler):
 
         threading.Thread(target=_refresh, daemon=True).start()
 
-    def _runtime_catalog_base(self) -> dict[str, Any]:
+    def _runtime_catalog_base(
+        self,
+        *,
+        allow_inline_collect: bool = True,
+        strict_collect: bool = False,
+    ) -> dict[str, Any]:
         now_monotonic = time.monotonic()
         with _RUNTIME_CATALOG_CACHE_LOCK:
             cached_catalog = _RUNTIME_CATALOG_CACHE.get("catalog")
@@ -3205,8 +4457,12 @@ class WorldHandler(BaseHTTPRequestHandler):
                 self.vault_root,
             )
             try:
-                if fresh_catalog is None:
+                if fresh_catalog is None and allow_inline_collect:
                     fresh_catalog = self._collect_catalog_fast()
+                if fresh_catalog is None and strict_collect:
+                    raise RuntimeError(isolated_error or "catalog_collect_unavailable")
+                if fresh_catalog is None:
+                    raise RuntimeError(isolated_error or "catalog_collect_unavailable")
                 cache_error = isolated_error
                 if cache_error == "catalog_subprocess_disabled":
                     cache_error = ""
@@ -3223,6 +4479,8 @@ class WorldHandler(BaseHTTPRequestHandler):
                     _RUNTIME_CATALOG_CACHE["last_error"] = (
                         f"catalog_inline_failed:{exc.__class__.__name__}"
                     )
+                if strict_collect:
+                    raise
 
         cache_age = now_monotonic - refreshed_monotonic
         if cache_age >= _RUNTIME_CATALOG_CACHE_SECONDS:
@@ -3240,6 +4498,8 @@ class WorldHandler(BaseHTTPRequestHandler):
         *,
         perspective: str = PROJECTION_DEFAULT_PERSPECTIVE,
         include_projection: bool = True,
+        allow_inline_collect: bool = True,
+        strict_collect: bool = False,
     ) -> tuple[
         dict[str, Any],
         dict[str, Any],
@@ -3247,7 +4507,10 @@ class WorldHandler(BaseHTTPRequestHandler):
         dict[str, Any],
         dict[str, Any],
     ]:
-        catalog = self._runtime_catalog_base()
+        catalog = self._runtime_catalog_base(
+            allow_inline_collect=allow_inline_collect,
+            strict_collect=strict_collect,
+        )
         queue_snapshot = self.task_queue.snapshot(include_pending=False)
         council_snapshot = self.council_chamber.snapshot(include_decisions=False)
         catalog["task_queue"] = queue_snapshot
@@ -3322,6 +4585,263 @@ class WorldHandler(BaseHTTPRequestHandler):
         simulation["projection"] = projection
         simulation["perspective"] = perspective
         return simulation, projection
+
+    def _run_simulation_bootstrap(
+        self,
+        *,
+        perspective: str,
+        sync_inbox: bool,
+        include_simulation_payload: bool,
+        phase_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
+    ) -> tuple[dict[str, Any], HTTPStatus]:
+        normalized_perspective = normalize_projection_perspective(perspective)
+        phase_started = time.perf_counter()
+        phase_ms: dict[str, float] = {}
+        current_phase = "queued"
+
+        def _mark_phase(phase: str, detail: dict[str, Any] | None = None) -> None:
+            nonlocal current_phase
+            current_phase = str(phase or "").strip().lower() or current_phase
+            if callable(phase_callback):
+                try:
+                    phase_callback(current_phase, detail)
+                except Exception:
+                    pass
+
+        def _check_timeout() -> None:
+            elapsed = time.perf_counter() - phase_started
+            if elapsed > _SIMULATION_BOOTSTRAP_MAX_SECONDS:
+                raise TimeoutError(
+                    f"bootstrap_timeout:{round(elapsed, 3)}s>"
+                    f"{round(_SIMULATION_BOOTSTRAP_MAX_SECONDS, 3)}s"
+                )
+
+        def _run_with_phase(
+            *,
+            phase: str,
+            operation: Callable[[], Any],
+            detail: dict[str, Any] | None = None,
+            heartbeat: bool = False,
+        ) -> Any:
+            phase_detail = dict(detail) if isinstance(detail, dict) else {}
+            _mark_phase(phase, phase_detail if phase_detail else None)
+            if not heartbeat or not callable(phase_callback):
+                return operation()
+
+            stop_heartbeat = threading.Event()
+            phase_started_local = time.perf_counter()
+
+            def _heartbeat_loop() -> None:
+                heartbeat_count = 0
+                while not stop_heartbeat.wait(_SIMULATION_BOOTSTRAP_HEARTBEAT_SECONDS):
+                    heartbeat_count += 1
+                    heartbeat_detail = dict(phase_detail)
+                    heartbeat_detail["heartbeat_count"] = heartbeat_count
+                    heartbeat_detail["phase_elapsed_ms"] = round(
+                        (time.perf_counter() - phase_started_local) * 1000.0,
+                        3,
+                    )
+                    _mark_phase(phase, heartbeat_detail)
+
+            threading.Thread(
+                target=_heartbeat_loop,
+                daemon=True,
+                name=f"simulation-bootstrap-heartbeat-{phase}",
+            ).start()
+            try:
+                return operation()
+            finally:
+                stop_heartbeat.set()
+                final_detail = dict(phase_detail)
+                final_detail["phase_elapsed_ms"] = round(
+                    (time.perf_counter() - phase_started_local) * 1000.0,
+                    3,
+                )
+                _mark_phase(phase, final_detail if final_detail else None)
+
+        reset_summary: dict[str, Any] = {}
+        _mark_phase(
+            "reset",
+            {
+                "perspective": normalized_perspective,
+                "sync_inbox": bool(sync_inbox),
+            },
+        )
+        try:
+            reset_summary = simulation_module.reset_simulation_bootstrap_state(
+                clear_layout_cache=True,
+                rearm_boot_reset=True,
+            )
+        except Exception as exc:
+            reset_summary = {
+                "ok": False,
+                "error": f"bootstrap_reset_failed:{exc.__class__.__name__}",
+            }
+        phase_ms["reset"] = (time.perf_counter() - phase_started) * 1000.0
+
+        _mark_phase("cache_invalidate")
+        with _RUNTIME_CATALOG_CACHE_LOCK:
+            _RUNTIME_CATALOG_CACHE["catalog"] = None
+            _RUNTIME_CATALOG_CACHE["refreshed_monotonic"] = 0.0
+            _RUNTIME_CATALOG_CACHE["last_error"] = ""
+            if sync_inbox:
+                _RUNTIME_CATALOG_CACHE["inbox_sync_monotonic"] = 0.0
+                _RUNTIME_CATALOG_CACHE["inbox_sync_snapshot"] = None
+                _RUNTIME_CATALOG_CACHE["inbox_sync_error"] = ""
+
+        _simulation_http_cache_invalidate(part_root=self.part_root)
+        phase_ms["cache_invalidate"] = (time.perf_counter() - phase_started) * 1000.0
+
+        inbox_sync: dict[str, Any] = {"status": "skipped"}
+        _mark_phase("inbox_sync", {"enabled": bool(sync_inbox)})
+        if sync_inbox:
+            try:
+                inbox_snapshot = sync_eta_mu_inbox(self.vault_root)
+                inbox_sync = {
+                    "status": "completed",
+                    "pending_count": max(
+                        0,
+                        int(_safe_float(inbox_snapshot.get("pending_count", 0), 0.0)),
+                    ),
+                    "processed_count": max(
+                        0,
+                        int(_safe_float(inbox_snapshot.get("processed_count", 0), 0.0)),
+                    ),
+                    "failed_count": max(
+                        0,
+                        int(_safe_float(inbox_snapshot.get("failed_count", 0), 0.0)),
+                    ),
+                }
+                with _RUNTIME_CATALOG_CACHE_LOCK:
+                    _RUNTIME_CATALOG_CACHE["inbox_sync_monotonic"] = time.monotonic()
+                    _RUNTIME_CATALOG_CACHE["inbox_sync_snapshot"] = dict(inbox_snapshot)
+                    _RUNTIME_CATALOG_CACHE["inbox_sync_error"] = ""
+            except Exception as exc:
+                inbox_sync = {
+                    "status": "failed",
+                    "error": f"{exc.__class__.__name__}: {exc}",
+                }
+                with _RUNTIME_CATALOG_CACHE_LOCK:
+                    _RUNTIME_CATALOG_CACHE["inbox_sync_error"] = (
+                        f"inbox_sync_failed:{exc.__class__.__name__}"
+                    )
+        phase_ms["inbox_sync"] = (time.perf_counter() - phase_started) * 1000.0
+
+        try:
+            catalog_phase_detail = {
+                "strict_collect": True,
+                "allow_inline_collect": False,
+            }
+            try:
+                catalog, queue_snapshot, _, influence_snapshot, _ = _run_with_phase(
+                    phase="catalog",
+                    detail=catalog_phase_detail,
+                    heartbeat=True,
+                    operation=lambda: self._runtime_catalog(
+                        perspective=normalized_perspective,
+                        include_projection=False,
+                        allow_inline_collect=False,
+                        strict_collect=True,
+                    ),
+                )
+            except RuntimeError as catalog_exc:
+                fallback_reason = str(catalog_exc or "").strip()
+                catalog, queue_snapshot, _, influence_snapshot, _ = _run_with_phase(
+                    phase="catalog_fallback_inline",
+                    detail={
+                        "strict_collect": False,
+                        "allow_inline_collect": True,
+                        "fallback_from": "catalog",
+                        "fallback_reason": fallback_reason,
+                    },
+                    heartbeat=True,
+                    operation=lambda: self._runtime_catalog(
+                        perspective=normalized_perspective,
+                        include_projection=False,
+                        allow_inline_collect=True,
+                        strict_collect=False,
+                    ),
+                )
+                phase_ms["catalog_fallback_inline"] = (
+                    time.perf_counter() - phase_started
+                ) * 1000.0
+            phase_ms["catalog"] = (time.perf_counter() - phase_started) * 1000.0
+            _check_timeout()
+
+            simulation, projection = _run_with_phase(
+                phase="simulation",
+                heartbeat=True,
+                operation=lambda: self._runtime_simulation(
+                    catalog,
+                    queue_snapshot,
+                    influence_snapshot,
+                    perspective=normalized_perspective,
+                ),
+            )
+            phase_ms["simulation"] = (time.perf_counter() - phase_started) * 1000.0
+            _check_timeout()
+
+            _mark_phase("cache_store")
+            simulation_response_payload = dict(simulation)
+            simulation_response_payload["projection"] = projection
+            response_body = _json_compact(simulation_response_payload).encode("utf-8")
+            cache_key = _simulation_http_cache_key(
+                perspective=normalized_perspective,
+                catalog=catalog,
+                queue_snapshot=queue_snapshot,
+                influence_snapshot=influence_snapshot,
+            )
+            _simulation_http_cache_store(cache_key, response_body)
+            _simulation_http_disk_cache_store(
+                self.part_root,
+                perspective=normalized_perspective,
+                body=response_body,
+            )
+            phase_ms["cache_store"] = (time.perf_counter() - phase_started) * 1000.0
+            _check_timeout()
+
+            _mark_phase("report")
+            payload = _simulation_bootstrap_graph_report(
+                perspective=normalized_perspective,
+                catalog=catalog,
+                simulation=simulation,
+                projection=projection,
+                phase_ms=phase_ms,
+                reset_summary=reset_summary,
+                inbox_sync=inbox_sync,
+                cache_key=cache_key,
+            )
+            if include_simulation_payload:
+                payload["simulation"] = simulation
+                payload["projection_payload"] = projection
+            _simulation_bootstrap_store_report(payload)
+            return payload, HTTPStatus.OK
+        except Exception as exc:
+            failed_phase = current_phase
+            _mark_phase(
+                "failed",
+                {
+                    "failed_phase": failed_phase,
+                    "error": f"{exc.__class__.__name__}: {exc}",
+                },
+            )
+            payload = {
+                "ok": False,
+                "record": "eta-mu.simulation-bootstrap.v1",
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "perspective": normalized_perspective,
+                "error": f"simulation_bootstrap_failed:{exc.__class__.__name__}",
+                "detail": f"{exc.__class__.__name__}: {exc}",
+                "failed_phase": failed_phase,
+                "phase_ms": {
+                    str(key): round(max(0.0, _safe_float(value, 0.0)), 3)
+                    for key, value in phase_ms.items()
+                },
+                "reset": reset_summary,
+                "inbox_sync": inbox_sync,
+            }
+            _simulation_bootstrap_store_report(payload)
+            return payload, HTTPStatus.INTERNAL_SERVER_ERROR
 
     def _handle_docker_websocket(self, *, wire_mode: str) -> None:
         ws_key = str(self.headers.get("Sec-WebSocket-Key", "")).strip()
@@ -3441,7 +4961,10 @@ class WorldHandler(BaseHTTPRequestHandler):
         delta_stream_mode: str,
         wire_mode: str,
         payload_mode: str,
+        particle_payload_mode: str,
         chunk_stream_enabled: bool,
+        catalog_events_enabled: bool,
+        skip_catalog_bootstrap: bool,
     ) -> None:
         ws_key = str(self.headers.get("Sec-WebSocket-Key", "")).strip()
         if not ws_key:
@@ -3483,7 +5006,13 @@ class WorldHandler(BaseHTTPRequestHandler):
         perspective_key = normalize_projection_perspective(perspective)
         stream_mode = _simulation_ws_normalize_delta_stream_mode(delta_stream_mode)
         payload_mode_key = _simulation_ws_normalize_payload_mode(payload_mode)
+        particle_payload_key = _simulation_ws_normalize_particle_payload_mode(
+            particle_payload_mode
+        )
         use_cached_snapshots = _SIMULATION_WS_USE_CACHED_SNAPSHOTS
+        effective_skip_catalog_bootstrap = bool(
+            skip_catalog_bootstrap and use_cached_snapshots
+        )
         ws_wire_mode = _normalize_ws_wire_mode(wire_mode)
         if use_cached_snapshots and ws_wire_mode == "arr":
             ws_wire_mode = "json"
@@ -3519,6 +5048,7 @@ class WorldHandler(BaseHTTPRequestHandler):
         last_docker_fingerprint = ""
         simulation_worker_seq = 0
         last_projection_delta_broadcast = 0.0
+        last_graph_position_broadcast = 0.0
         last_cached_simulation_timestamp = ""
         stream_particles: list[dict[str, Any]] = []
         last_muse_poll = 0.0
@@ -3532,6 +5062,7 @@ class WorldHandler(BaseHTTPRequestHandler):
 
             snapshot_payload = _simulation_ws_trim_simulation_payload(simulation)
             snapshot_payload.pop("projection", None)
+            snapshot_payload.update(_simulation_ws_compact_graph_payload(simulation))
             _simulation_ws_extract_stream_particles(snapshot_payload)
             return snapshot_payload
 
@@ -3592,7 +5123,7 @@ class WorldHandler(BaseHTTPRequestHandler):
             last_muse_poll = now_monotonic
 
         try:
-            if use_cached_snapshots and _SIMULATION_WS_SKIP_CATALOG_BOOTSTRAP:
+            if effective_skip_catalog_bootstrap:
                 catalog = {}
                 queue_snapshot = {}
                 influence_snapshot = {}
@@ -3604,7 +5135,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                     )
                 )
 
-            if not _SIMULATION_WS_SKIP_CATALOG_BOOTSTRAP:
+            if catalog_events_enabled and not effective_skip_catalog_bootstrap:
                 catalog_payload = _simulation_http_trim_catalog(catalog)
                 _, mix_meta = build_mix_stream(catalog, self.vault_root)
                 send_ws(
@@ -3688,6 +5219,7 @@ class WorldHandler(BaseHTTPRequestHandler):
             boot_tick = time.monotonic()
             last_simulation_full_broadcast = boot_tick
             last_projection_delta_broadcast = boot_tick
+            last_graph_position_broadcast = boot_tick
             last_simulation_cache_refresh = boot_tick
 
             if not use_cached_snapshots:
@@ -3770,6 +5302,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                         )
                         last_simulation_full_broadcast = now_monotonic
                         last_projection_delta_broadcast = now_monotonic
+                        last_graph_position_broadcast = now_monotonic
                         last_simulation_cache_refresh = now_monotonic
                         last_sim_tick = now_monotonic
 
@@ -3823,7 +5356,8 @@ class WorldHandler(BaseHTTPRequestHandler):
                 )
 
                 if (
-                    not _SIMULATION_WS_SKIP_CATALOG_BOOTSTRAP
+                    catalog_events_enabled
+                    and not effective_skip_catalog_bootstrap
                     and now_monotonic - last_catalog_broadcast
                     >= catalog_broadcast_interval
                 ):
@@ -3968,13 +5502,30 @@ class WorldHandler(BaseHTTPRequestHandler):
                         tick_changed_keys = ["timestamp"]
                         dynamics_patch: dict[str, Any] = {}
                         if stream_particles:
-                            dynamics_patch["field_particles"] = stream_particles
+                            tick_particles = (
+                                _simulation_ws_lite_field_particles(stream_particles)
+                                if particle_payload_key == "lite"
+                                else [
+                                    dict(row)
+                                    for row in stream_particles
+                                    if isinstance(row, dict)
+                                ]
+                            )
+                            dynamics_patch["field_particles"] = tick_particles
                             tick_changed_keys.append(
                                 "presence_dynamics.field_particles"
                             )
+                        graph_position_heartbeat_due = (
+                            _SIMULATION_WS_GRAPH_POSITION_HEARTBEAT_SECONDS <= 0.0
+                            or (
+                                now_monotonic - last_graph_position_broadcast
+                                >= _SIMULATION_WS_GRAPH_POSITION_HEARTBEAT_SECONDS
+                            )
+                        )
                         if (
                             isinstance(graph_node_positions, dict)
                             and graph_node_positions
+                            and graph_position_heartbeat_due
                         ):
                             dynamics_patch["graph_node_positions"] = (
                                 graph_node_positions
@@ -3985,6 +5536,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                         if (
                             isinstance(presence_anchor_positions, dict)
                             and presence_anchor_positions
+                            and graph_position_heartbeat_due
                         ):
                             dynamics_patch["presence_anchor_positions"] = (
                                 presence_anchor_positions
@@ -3992,6 +5544,17 @@ class WorldHandler(BaseHTTPRequestHandler):
                             tick_changed_keys.append(
                                 "presence_dynamics.presence_anchor_positions"
                             )
+                        if graph_position_heartbeat_due and (
+                            (
+                                isinstance(graph_node_positions, dict)
+                                and bool(graph_node_positions)
+                            )
+                            or (
+                                isinstance(presence_anchor_positions, dict)
+                                and bool(presence_anchor_positions)
+                            )
+                        ):
+                            last_graph_position_broadcast = now_monotonic
                         if dynamics_patch:
                             tick_patch["presence_dynamics"] = dynamics_patch
 
@@ -4265,6 +5828,13 @@ class WorldHandler(BaseHTTPRequestHandler):
                 )[0]
                 or ""
             )
+            particle_payload_mode = str(
+                params.get(
+                    "particle_payload",
+                    [params.get("particle_mode", [""])[0]],
+                )[0]
+                or _SIMULATION_WS_PARTICLE_PAYLOAD_MODE_DEFAULT
+            )
             ws_chunk = _safe_bool_query(
                 str(
                     params.get(
@@ -4275,12 +5845,35 @@ class WorldHandler(BaseHTTPRequestHandler):
                 ),
                 default=_SIMULATION_WS_CHUNK_ENABLED,
             )
+            catalog_events = _safe_bool_query(
+                str(
+                    params.get(
+                        "catalog_events",
+                        [params.get("catalog_ws", [""])[0]],
+                    )[0]
+                    or ""
+                ),
+                default=not _SIMULATION_WS_SKIP_CATALOG_BOOTSTRAP,
+            )
+            skip_catalog_bootstrap = _safe_bool_query(
+                str(
+                    params.get(
+                        "skip_catalog_bootstrap",
+                        [params.get("skip_catalog", [""])[0]],
+                    )[0]
+                    or ""
+                ),
+                default=_SIMULATION_WS_SKIP_CATALOG_BOOTSTRAP,
+            )
             self._handle_websocket(
                 perspective=perspective,
                 delta_stream_mode=delta_stream,
                 wire_mode=wire_mode,
                 payload_mode=payload_mode,
+                particle_payload_mode=particle_payload_mode,
                 chunk_stream_enabled=ws_chunk,
+                catalog_events_enabled=catalog_events,
+                skip_catalog_bootstrap=skip_catalog_bootstrap,
             )
             return
 
@@ -4517,6 +6110,19 @@ class WorldHandler(BaseHTTPRequestHandler):
                 self._send_json({"presets": []})
             return
 
+        if parsed.path == "/api/simulation/bootstrap":
+            report = _simulation_bootstrap_snapshot_report()
+            self._send_json(
+                {
+                    "ok": True,
+                    "record": "eta-mu.simulation-bootstrap.status.v1",
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "job": _simulation_bootstrap_job_snapshot(),
+                    "report": report,
+                }
+            )
+            return
+
         if parsed.path == "/api/simulation/instances":
             try:
                 res = subprocess.check_output(
@@ -4548,6 +6154,39 @@ class WorldHandler(BaseHTTPRequestHandler):
             )
             catalog, _, _, _, _ = self._runtime_catalog(perspective=perspective)
             self._send_json(_simulation_http_trim_catalog(catalog))
+            return
+
+        if parsed.path == "/api/catalog/stream":
+            perspective = normalize_projection_perspective(
+                str(
+                    params.get(
+                        "perspective",
+                        [PROJECTION_DEFAULT_PERSPECTIVE],
+                    )[0]
+                    or PROJECTION_DEFAULT_PERSPECTIVE
+                )
+            )
+            chunk_rows = _catalog_stream_chunk_rows(
+                str(
+                    params.get("chunk_rows", [str(_CATALOG_STREAM_CHUNK_ROWS)])[0]
+                    or str(_CATALOG_STREAM_CHUNK_ROWS)
+                )
+            )
+            trim_catalog = _safe_bool_query(
+                str(
+                    params.get(
+                        "trim",
+                        [params.get("trimmed", ["0"])[0]],
+                    )[0]
+                    or "0"
+                ),
+                default=False,
+            )
+            self._send_catalog_stream(
+                perspective=perspective,
+                chunk_rows=chunk_rows,
+                trim_catalog=trim_catalog,
+            )
             return
 
         if parsed.path == "/api/docker/simulations":
@@ -5391,6 +7030,119 @@ class WorldHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
 
+        if parsed.path == "/api/simulation/bootstrap":
+            req = self._read_json_body() or {}
+            perspective = str(
+                req.get("perspective", PROJECTION_DEFAULT_PERSPECTIVE) or ""
+            )
+            sync_inbox = _safe_bool_query(
+                str(req.get("sync_inbox", "false") or "false"),
+                default=False,
+            )
+            include_simulation_payload = _safe_bool_query(
+                str(req.get("include_simulation", "false") or "false"),
+                default=False,
+            )
+            wait = _safe_bool_query(
+                str(req.get("wait", "false") or "false"),
+                default=False,
+            )
+
+            if wait:
+                payload, status = self._run_simulation_bootstrap(
+                    perspective=perspective,
+                    sync_inbox=sync_inbox,
+                    include_simulation_payload=include_simulation_payload,
+                )
+                self._send_json(payload, status=status)
+                return
+
+            request_payload = {
+                "perspective": normalize_projection_perspective(perspective),
+                "sync_inbox": bool(sync_inbox),
+                "include_simulation": bool(include_simulation_payload),
+            }
+            started, job_snapshot = _simulation_bootstrap_job_start(
+                request_payload=request_payload
+            )
+            if not started:
+                self._send_json(
+                    {
+                        "ok": True,
+                        "record": "eta-mu.simulation-bootstrap.queue.v1",
+                        "status": "running",
+                        "job": job_snapshot,
+                    },
+                    status=HTTPStatus.ACCEPTED,
+                )
+                return
+
+            job_id = str(job_snapshot.get("job_id", "") or "")
+
+            def _run_bootstrap_job() -> None:
+                try:
+                    payload, status = self._run_simulation_bootstrap(
+                        perspective=perspective,
+                        sync_inbox=sync_inbox,
+                        include_simulation_payload=include_simulation_payload,
+                        phase_callback=lambda phase, detail: (
+                            _simulation_bootstrap_job_mark_phase(
+                                job_id=job_id,
+                                phase=phase,
+                                detail=detail,
+                            )
+                        ),
+                    )
+                    if status == HTTPStatus.OK and bool(payload.get("ok", False)):
+                        _simulation_bootstrap_job_complete(
+                            job_id=job_id,
+                            report=payload,
+                        )
+                    else:
+                        _simulation_bootstrap_job_fail(
+                            job_id=job_id,
+                            error=str(
+                                payload.get(
+                                    "error", "simulation_bootstrap_failed:unknown"
+                                )
+                            ),
+                            report=payload,
+                        )
+                except Exception as exc:
+                    _simulation_bootstrap_job_fail(
+                        job_id=job_id,
+                        error=f"simulation_bootstrap_failed:{exc.__class__.__name__}",
+                        report={
+                            "ok": False,
+                            "record": "eta-mu.simulation-bootstrap.v1",
+                            "generated_at": datetime.now(timezone.utc).isoformat(),
+                            "perspective": normalize_projection_perspective(
+                                perspective
+                            ),
+                            "error": f"simulation_bootstrap_failed:{exc.__class__.__name__}",
+                            "detail": f"{exc.__class__.__name__}: {exc}",
+                        },
+                    )
+
+            thread_name = "simulation-bootstrap-" + (
+                job_id.split(":")[-1][:8] if job_id else "job"
+            )
+            threading.Thread(
+                target=_run_bootstrap_job,
+                daemon=True,
+                name=thread_name,
+            ).start()
+            self._send_json(
+                {
+                    "ok": True,
+                    "record": "eta-mu.simulation-bootstrap.queue.v1",
+                    "status": "running",
+                    "job": job_snapshot,
+                },
+                status=HTTPStatus.ACCEPTED,
+            )
+            return
+
         if parsed.path == "/api/config/update":
             req = self._read_json_body() or {}
             result = _config_apply_update(
@@ -6073,6 +7825,29 @@ class WorldHandler(BaseHTTPRequestHandler):
                     else:
                         message = f"{kind} on {target}"
 
+                meta = row.get("meta") if isinstance(row.get("meta"), dict) else None
+                if not isinstance(meta, dict):
+                    meta = default_meta if isinstance(default_meta, dict) else None
+                meta_copy = dict(meta) if isinstance(meta, dict) else {}
+
+                if kind in {"search", "search_query", "query", "semantic_search"}:
+                    meta_query = _normalize_query_text(
+                        str(meta_copy.get("query", "") or "")
+                    )
+                    query_text = meta_query or _normalize_query_text(message)
+                    if query_text:
+                        search_meta = _build_search_daimoi_meta(
+                            query_text,
+                            target=target,
+                            model=_effective_request_embed_model(
+                                meta_copy.get("model")
+                            ),
+                        )
+                        if search_meta:
+                            meta_copy["query"] = query_text
+                            meta_copy["search_daimoi"] = search_meta
+                            message = query_text
+
                 event_unix = batch_now_unix + (index * 0.0001)
                 event_mono = batch_now_mono + (index * 0.0001)
                 event_iso = datetime.fromtimestamp(event_unix, timezone.utc).isoformat()
@@ -6096,10 +7871,10 @@ class WorldHandler(BaseHTTPRequestHandler):
                 if has_pointer:
                     event_row["x_ratio"] = round(x_ratio, 6)
                     event_row["y_ratio"] = round(y_ratio, 6)
-
-                meta = row.get("meta") if isinstance(row.get("meta"), dict) else None
-                if not isinstance(meta, dict):
-                    meta = default_meta if isinstance(default_meta, dict) else None
+                if meta_copy:
+                    event_row["meta"] = {
+                        str(key): value for key, value in list(meta_copy.items())[:16]
+                    }
 
                 processed_events.append(event_row)
                 tracker_events.append(
@@ -6111,7 +7886,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                         "x_ratio": x_ratio,
                         "y_ratio": y_ratio,
                         "embed_daimoi": embed_daimoi,
-                        "meta": meta,
+                        "meta": meta_copy,
                         "event_unix": event_unix,
                         "event_mono": event_mono,
                     }

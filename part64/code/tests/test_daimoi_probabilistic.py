@@ -102,6 +102,12 @@ def test_probabilistic_builder_emits_job_distribution_and_actions() -> None:
     absorb_contract = model_summary.get("absorb_sampler", {})
     assert absorb_contract.get("schema_version") == "daimoi.absorb-sampler.v1"
     assert absorb_contract.get("method") == "gumbel-max"
+    assert 0.0 <= float(model_summary.get("resource_pressure", 0.0)) <= 1.0
+    assert 0.0 <= float(model_summary.get("queue_pressure", 0.0)) <= 1.0
+    assert 0.0 <= float(model_summary.get("compute_pressure", 0.0)) <= 1.0
+    assert 0.0 <= float(model_summary.get("compute_availability", 0.0)) <= 1.0
+    assert float(model_summary.get("availability_scale", 0.0)) >= 0.72
+    assert model_summary.get("decompression_hint") is True
 
 
 def test_absorb_sampler_emits_component_logits_and_gumbel_scores() -> None:
@@ -883,6 +889,253 @@ def test_simulation_cpu_daimoi_gate_disables_cpu_core_emitter_at_threshold(
     assert policy.get("cpu_daimoi_stop_percent") == 75.0
 
 
+def test_simulation_cpu_sentinel_idles_below_burn_threshold(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setenv("SIM_PARTICLE_BACKEND", "python")
+    monkeypatch.setenv("SIMULATION_PRESENCE_PROFILE", "concept_cpu")
+    monkeypatch.setenv("SIMULATION_CORE_RESOURCES", "cpu")
+    monkeypatch.setenv("SIMULATION_CPU_SENTINEL_BURN_START_PERCENT", "90")
+    monkeypatch.setenv("SIMULATION_RESET_DAIMOI_ON_BOOT", "0")
+    monkeypatch.setattr(
+        simulation_module,
+        "_resource_monitor_snapshot",
+        lambda: {
+            "devices": {
+                "cpu": {"utilization": 82.0},
+                "gpu1": {"utilization": 18.0},
+                "gpu2": {"utilization": 16.0},
+                "npu0": {"utilization": 20.0},
+            },
+            "resource_monitor": {
+                "cpu_percent": 82.0,
+                "memory_percent": 52.0,
+                "disk_percent": 34.0,
+                "network_percent": 27.0,
+            },
+        },
+    )
+
+    from code.world_web.presence_runtime import get_presence_runtime_manager
+
+    manager = get_presence_runtime_manager()
+    manager.reset()
+    sentinel_state = manager.get_state("health_sentinel_cpu")
+    sentinel_wallet = sentinel_state.setdefault("resource_wallet", {})
+    sentinel_wallet["cpu"] = 16.0
+
+    simulation = build_simulation_state(
+        {
+            "items": [],
+            "counts": {"audio": 0, "image": 0, "video": 0},
+            "file_graph": {"file_nodes": []},
+        },
+        influence_snapshot={
+            "clicks_45s": 1,
+            "file_changes_120s": 1,
+            "recent_click_targets": ["witness_thread"],
+            "recent_file_paths": ["receipts.log"],
+        },
+        queue_snapshot={"pending_count": 0, "event_count": 0},
+    )
+
+    dynamics = simulation.get("presence_dynamics", {})
+    field_particles = dynamics.get("field_particles", [])
+    sentinel_rows = [
+        row
+        for row in field_particles
+        if str(row.get("presence_id", "")).strip() == "health_sentinel_cpu"
+    ]
+    assert sentinel_rows
+    assert all("resource_consume_type" not in row for row in sentinel_rows)
+    assert any(bool(row.get("resource_sentinel_idle", False)) for row in sentinel_rows)
+
+    resource_consumption = dynamics.get("resource_consumption", {})
+    assert resource_consumption.get("cpu_sentinel_burn_active") is False
+    active_presence_ids = {
+        str(row.get("presence_id", "")).strip()
+        for row in resource_consumption.get("active_presences", [])
+        if isinstance(row, dict)
+    }
+    assert "health_sentinel_cpu" not in active_presence_ids
+
+
+def test_simulation_cpu_sentinel_burns_wallet_above_threshold(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setenv("SIM_PARTICLE_BACKEND", "python")
+    monkeypatch.setenv("SIMULATION_PRESENCE_PROFILE", "concept_cpu")
+    monkeypatch.setenv("SIMULATION_CORE_RESOURCES", "cpu")
+    monkeypatch.setenv("SIMULATION_CPU_SENTINEL_BURN_START_PERCENT", "90")
+    monkeypatch.setenv("SIMULATION_RESET_DAIMOI_ON_BOOT", "0")
+    monkeypatch.setattr(
+        simulation_module,
+        "_resource_monitor_snapshot",
+        lambda: {
+            "devices": {
+                "cpu": {"utilization": 96.0},
+                "gpu1": {"utilization": 31.0},
+                "gpu2": {"utilization": 24.0},
+                "npu0": {"utilization": 29.0},
+            },
+            "resource_monitor": {
+                "cpu_percent": 96.0,
+                "memory_percent": 63.0,
+                "disk_percent": 39.0,
+                "network_percent": 31.0,
+            },
+        },
+    )
+
+    from code.world_web.presence_runtime import get_presence_runtime_manager
+
+    manager = get_presence_runtime_manager()
+    manager.reset()
+    sentinel_state = manager.get_state("health_sentinel_cpu")
+    sentinel_wallet = sentinel_state.setdefault("resource_wallet", {})
+    sentinel_wallet["cpu"] = 24.0
+
+    simulation = build_simulation_state(
+        {
+            "items": [],
+            "counts": {"audio": 0, "image": 0, "video": 0},
+            "file_graph": {"file_nodes": []},
+        },
+        influence_snapshot={
+            "clicks_45s": 0,
+            "file_changes_120s": 0,
+            "recent_click_targets": [],
+            "recent_file_paths": [],
+        },
+        queue_snapshot={"pending_count": 0, "event_count": 0},
+    )
+
+    dynamics = simulation.get("presence_dynamics", {})
+    field_particles = dynamics.get("field_particles", [])
+    sentinel_rows = [
+        row
+        for row in field_particles
+        if str(row.get("presence_id", "")).strip() == "health_sentinel_cpu"
+        and str(row.get("resource_consume_type", "")).strip() == "cpu"
+    ]
+    assert sentinel_rows
+    assert any(
+        float(row.get("resource_action_cost", 0.0) or 0.0) > 0.0
+        for row in sentinel_rows
+    )
+    assert any(
+        float(row.get("resource_sentinel_burn_intensity", 0.0) or 0.0) > 0.0
+        for row in sentinel_rows
+    )
+    assert all(
+        not bool(row.get("resource_sentinel_idle", False)) for row in sentinel_rows
+    )
+    assert any(
+        str(row.get("top_job", "")).strip()
+        in {"burn_resource_packet", "resource_starved"}
+        for row in sentinel_rows
+    )
+
+    resource_consumption = dynamics.get("resource_consumption", {})
+    assert resource_consumption.get("cpu_sentinel_burn_active") is True
+    active_ids = {
+        str(row.get("presence_id", "")).strip()
+        for row in resource_consumption.get("active_presences", [])
+        if isinstance(row, dict)
+    }
+    starved_ids = {
+        str(row.get("presence_id", "")).strip()
+        for row in resource_consumption.get("starved_presences", [])
+        if isinstance(row, dict)
+    }
+    assert "health_sentinel_cpu" in (active_ids | starved_ids)
+
+
+def test_simulation_cpu_sentinel_forces_cpu_resource_targets_when_hot(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setenv("SIM_PARTICLE_BACKEND", "python")
+    monkeypatch.setenv("SIMULATION_PRESENCE_PROFILE", "concept_cpu")
+    monkeypatch.setenv("SIMULATION_CORE_RESOURCES", "cpu")
+    monkeypatch.setenv("SIMULATION_CPU_SENTINEL_BURN_START_PERCENT", "90")
+    monkeypatch.setenv("SIMULATION_CPU_SENTINEL_ATTRACTOR_START_PERCENT", "90")
+    monkeypatch.setenv("SIMULATION_CPU_SENTINEL_ATTRACTOR_ALL_DAIMOI", "1")
+    monkeypatch.setenv("SIMULATION_RESET_DAIMOI_ON_BOOT", "0")
+    monkeypatch.setitem(simulation_module._RESOURCE_DAIMOI_WALLET_CAP, "cpu", 1.0)
+    monkeypatch.setattr(
+        simulation_module,
+        "_resource_monitor_snapshot",
+        lambda: {
+            "devices": {
+                "cpu": {"utilization": 96.0},
+                "gpu1": {"utilization": 20.0},
+                "gpu2": {"utilization": 18.0},
+                "npu0": {"utilization": 14.0},
+            },
+            "resource_monitor": {
+                "cpu_percent": 96.0,
+                "memory_percent": 46.0,
+                "disk_percent": 29.0,
+                "network_percent": 23.0,
+            },
+        },
+    )
+
+    from code.world_web.presence_runtime import get_presence_runtime_manager
+
+    manager = get_presence_runtime_manager()
+    manager.reset()
+    witness_wallet = manager.get_state("witness_thread").setdefault(
+        "resource_wallet", {}
+    )
+    witness_wallet["cpu"] = 28.0
+    anchor_wallet = manager.get_state("anchor_registry").setdefault(
+        "resource_wallet", {}
+    )
+    anchor_wallet["cpu"] = 22.0
+    sentinel_wallet = manager.get_state("health_sentinel_cpu").setdefault(
+        "resource_wallet", {}
+    )
+    sentinel_wallet["cpu"] = 18.0
+
+    simulation = build_simulation_state(
+        {
+            "items": [],
+            "counts": {"audio": 0, "image": 0, "video": 0},
+            "file_graph": {"file_nodes": []},
+        },
+        influence_snapshot={
+            "clicks_45s": 0,
+            "file_changes_120s": 0,
+            "recent_click_targets": [],
+            "recent_file_paths": [],
+        },
+        queue_snapshot={"pending_count": 0, "event_count": 0},
+    )
+
+    dynamics = simulation.get("presence_dynamics", {})
+    field_particles = dynamics.get("field_particles", [])
+    cpu_resource_rows = [
+        row
+        for row in field_particles
+        if bool(row.get("resource_daimoi", False))
+        and str(row.get("resource_type", "")).strip() == "cpu"
+    ]
+    assert cpu_resource_rows
+    assert all(
+        str(row.get("resource_target_presence_id", "")).strip() == "health_sentinel_cpu"
+        for row in cpu_resource_rows
+    )
+    assert any(
+        bool(row.get("cpu_sentinel_attractor_active", False))
+        for row in cpu_resource_rows
+    )
+
+    resource_daimoi = dynamics.get("resource_daimoi", {})
+    assert resource_daimoi.get("cpu_sentinel_attractor_active") is True
+    assert int(float(resource_daimoi.get("cpu_sentinel_forced_packets", 0) or 0.0)) > 0
+
+
 def test_config_payload_exposes_magic_number_constants_by_module() -> None:
     payload = server_module._config_payload()
 
@@ -1085,6 +1338,64 @@ def test_field_particle_friction_is_split_between_daimoi_and_nexus(
     row_by_id = {str(row.get("id", "")): row for row in rows if isinstance(row, dict)}
     assert float(row_by_id["daimoi"]["vx"]) == pytest.approx(0.19, abs=1e-6)
     assert float(row_by_id["nexus"]["vx"]) == pytest.approx(0.16, abs=1e-6)
+
+
+def test_field_particle_prefers_target_presence_over_origin_attractor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SIM_TICK_SECONDS", "0.08")
+    monkeypatch.setattr(simulation_module, "SIMULATION_STREAM_DAIMOI_FRICTION", 1.0)
+    monkeypatch.setattr(simulation_module, "SIMULATION_STREAM_NEXUS_FRICTION", 1.0)
+    monkeypatch.setattr(simulation_module, "SIMULATION_STREAM_VELOCITY_SCALE", 1.0)
+    monkeypatch.setattr(simulation_module, "SIMULATION_STREAM_FIELD_FORCE", 0.4)
+    monkeypatch.setattr(simulation_module, "SIMULATION_STREAM_CENTER_GRAVITY", 0.0)
+    monkeypatch.setattr(simulation_module, "SIMULATION_STREAM_JITTER_FORCE", 0.0)
+    monkeypatch.setattr(simulation_module, "SIMULATION_STREAM_MAX_SPEED", 1.0)
+    monkeypatch.setattr(simulation_module, "SIMULATION_STREAM_NOOI_FLOW_GAIN", 0.0)
+    monkeypatch.setattr(
+        simulation_module, "SIMULATION_STREAM_NOOI_NEXUS_FLOW_GAIN", 0.0
+    )
+    simulation_module._reset_nooi_field_state()
+
+    simulation: dict[str, Any] = {
+        "presence_dynamics": {
+            "field_particles": [
+                {
+                    "id": "field:presence.alpha:000001",
+                    "presence_id": "presence.alpha",
+                    "owner_presence_id": "presence.alpha",
+                    "origin_presence_id": "presence.alpha",
+                    "target_presence_id": "presence.beta",
+                    "x": 0.2,
+                    "y": 0.5,
+                    "vx": 0.0,
+                    "vy": 0.0,
+                    "is_nexus": False,
+                },
+                {
+                    "id": "center:beta",
+                    "presence_id": "presence.beta",
+                    "x": 0.8,
+                    "y": 0.5,
+                    "vx": 0.0,
+                    "vy": 0.0,
+                    "is_nexus": True,
+                },
+            ]
+        }
+    }
+
+    simulation_module.advance_simulation_field_particles(
+        simulation,
+        dt_seconds=0.08,
+        now_seconds=0.0,
+    )
+
+    rows = simulation.get("presence_dynamics", {}).get("field_particles", [])
+    row_by_id = {str(row.get("id", "")): row for row in rows if isinstance(row, dict)}
+    mover = row_by_id["field:presence.alpha:000001"]
+    assert float(mover.get("vx", 0.0)) > 0.0
+    assert float(mover.get("x", 0.0)) > 0.2
 
 
 def test_nexus_payload_weighting_increases_semantic_pull(

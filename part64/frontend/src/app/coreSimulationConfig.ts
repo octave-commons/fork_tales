@@ -13,13 +13,15 @@ export interface CoreSimulationTuning {
   motionSpeed: number;
   mouseInfluence: number;
   layerDepth: number;
+  graphNodeSmoothness: number;
+  graphNodeStepScale: number;
 }
 
 export type CoreLayerId =
   | "presence"
   | "file-impact"
   | "file-graph"
-  | "crawler-graph"
+  | "true-graph"
   | "truth-gate"
   | "logic"
   | "pain-field";
@@ -33,6 +35,7 @@ export const CORE_LAYER_OPTIONS: CoreLayerOption[] = [
   { id: "presence", label: "Presence currents" },
   { id: "file-impact", label: "File influence" },
   { id: "file-graph", label: "Nexus graph" },
+  { id: "true-graph", label: "TrueGraph" },
   { id: "truth-gate", label: "Truth gate" },
   { id: "logic", label: "Logic graph" },
   { id: "pain-field", label: "Pain field" },
@@ -42,7 +45,7 @@ export const DEFAULT_CORE_LAYER_VISIBILITY: Record<CoreLayerId, boolean> = {
   presence: true,
   "file-impact": false,
   "file-graph": true,
-  "crawler-graph": false,
+  "true-graph": true,
   "truth-gate": false,
   logic: false,
   "pain-field": false,
@@ -80,6 +83,10 @@ export const CORE_SIM_MOUSE_INFLUENCE_MIN = 0;
 export const CORE_SIM_MOUSE_INFLUENCE_MAX = 1.8;
 export const CORE_SIM_LAYER_DEPTH_MIN = 0.4;
 export const CORE_SIM_LAYER_DEPTH_MAX = 1.9;
+export const CORE_SIM_GRAPH_NODE_SMOOTHING_MIN = 0.6;
+export const CORE_SIM_GRAPH_NODE_SMOOTHING_MAX = 2.4;
+export const CORE_SIM_GRAPH_NODE_STEP_SCALE_MIN = 0.45;
+export const CORE_SIM_GRAPH_NODE_STEP_SCALE_MAX = 2.2;
 
 export const CORE_VISUAL_BRIGHTNESS_MIN = 0.55;
 export const CORE_VISUAL_BRIGHTNESS_MAX = 1.8;
@@ -114,8 +121,10 @@ export const HIGH_VISIBILITY_CORE_VISUAL_TUNING: CoreVisualTuning = {
 
 export const DEFAULT_CORE_SIMULATION_TUNING: CoreSimulationTuning = {
   particleDensity: 0.52,
-  particleScale: 0.88,
+  particleScale: 1.34,
   motionSpeed: 0.82,
   mouseInfluence: 1.15,
   layerDepth: 1.25,
+  graphNodeSmoothness: 1.25,
+  graphNodeStepScale: 0.9,
 };

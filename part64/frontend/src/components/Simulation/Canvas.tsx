@@ -1,4 +1,5 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from "react";
+import { createPortal } from "react-dom";
 import type {
   SimulationState,
   Catalog,
@@ -32,6 +33,8 @@ interface Props {
   motionSpeed?: number;
   mouseInfluence?: number;
   layerDepth?: number;
+  graphNodeSmoothness?: number;
+  graphNodeStepScale?: number;
   backgroundWash?: number;
   layerVisibility?: OverlayLayerVisibility;
   glassCenterRatio?: { x: number; y: number };
@@ -83,6 +86,9 @@ interface GraphWorldscreenState {
   summaryText?: string;
   tagsText?: string;
   labelsText?: string;
+  projectionGroupId?: string;
+  projectionConsolidatedCount?: number;
+  projectionMemberManifest?: string[];
 }
 
 type GraphNodeResourceKind =
@@ -120,6 +126,15 @@ interface GraphNodeTitleOverlay {
   x: number;
   y: number;
   kind: "file" | "crawler" | "presence" | "nexus";
+  isTrueGraph?: boolean;
+  isProjectionOverflow?: boolean;
+}
+
+interface MusicNexusHotspot {
+  id: string;
+  label: string;
+  x: number;
+  y: number;
 }
 
 interface PresenceAccountEntry {
@@ -167,6 +182,23 @@ interface ComputeJobInsightSummary {
   error: number;
   byResource: Record<string, number>;
   byBackend: Record<string, number>;
+}
+
+interface UserQueryEdgeRow {
+  id: string;
+  source: string;
+  target: string;
+  query: string;
+  hits: number;
+  life: number;
+  strength: number;
+}
+
+interface HologramAudioVisualization {
+  sourceUrl: string;
+  durationSeconds: number;
+  waveformBins: Float32Array;
+  spectrogramBins: Float32Array[];
 }
 
 const COMPUTE_JOB_FILTER_OPTIONS: Array<{ id: ComputeJobFilter; label: string }> = [
@@ -526,12 +558,21 @@ function normalizePresenceKey(raw: string): string {
 }
 
 function canonicalPresenceId(raw: string): string {
-  const value = String(raw || "").trim();
+  let value = String(raw || "").trim();
   if (!value) {
     return "";
   }
+  if (value.startsWith("nexus:field:")) {
+    value = value.slice("nexus:field:".length).trim();
+  }
   if (value.startsWith("field:")) {
     return value.slice("field:".length).trim();
+  }
+  if (value.startsWith("presence:concept:")) {
+    return value.slice("presence:concept:".length).trim();
+  }
+  if (value.startsWith("presence:")) {
+    return value.slice("presence:".length).trim();
   }
   return value;
 }
@@ -753,6 +794,38 @@ function normalizeComputeJobInsightRows(payload: unknown): ComputeJobInsightRow[
   return rows;
 }
 
+function normalizeUserQueryEdgeRows(payload: unknown): UserQueryEdgeRow[] {
+  if (!Array.isArray(payload)) {
+    return [];
+  }
+  const rows: UserQueryEdgeRow[] = [];
+  for (let index = 0; index < payload.length; index += 1) {
+    const row = asRecord(payload[index]);
+    if (!row) {
+      continue;
+    }
+    const id = String(row.id ?? `query-edge:${index}`).trim() || `query-edge:${index}`;
+    const source = String(row.source ?? "").trim();
+    const target = String(row.target ?? "").trim();
+    if (!source || !target) {
+      continue;
+    }
+    const hits = Math.max(1, Number(row.hits ?? 1));
+    const lifeRaw = Number(row.life ?? 1);
+    const strengthRaw = Number(row.strength ?? 0);
+    rows.push({
+      id,
+      source,
+      target,
+      query: String(row.query ?? "").trim(),
+      hits: Number.isFinite(hits) ? Math.max(1, Math.round(hits)) : 1,
+      life: Number.isFinite(lifeRaw) ? clamp01(lifeRaw) : 1,
+      strength: Number.isFinite(strengthRaw) ? clamp01(strengthRaw) : 0,
+    });
+  }
+  return rows.slice(0, 96);
+}
+
 function summarizeComputeJobs(rows: ComputeJobInsightRow[]): ComputeJobInsightSummary {
   const summary: ComputeJobInsightSummary = {
     total: rows.length,
@@ -805,11 +878,308 @@ function computeJobAgeLabel(tsMs: number): string {
   return `${hours}h`;
 }
 
+function formatPlaybackClock(secondsInput: number): string {
+  const seconds = Number.isFinite(secondsInput) ? Math.max(0, secondsInput) : 0;
+  const whole = Math.floor(seconds + 0.0001);
+  const minuteTotal = Math.floor(whole / 60);
+  const sec = whole % 60;
+  const hour = Math.floor(minuteTotal / 60);
+  const min = minuteTotal % 60;
+  if (hour > 0) {
+    return `${hour}:${String(min).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  }
+  return `${minuteTotal}:${String(sec).padStart(2, "0")}`;
+}
+
+function resolveWorldscreenMediaUrl(rawUrl: string): string {
+  const value = String(rawUrl || "").trim();
+  if (!value) {
+    return "";
+  }
+  if (value.startsWith("http://") || value.startsWith("https://")) {
+    return value;
+  }
+  const normalizedPath = value.startsWith("/") ? value : `/${value}`;
+  const base = runtimeBaseUrl();
+  return base ? `${base}${normalizedPath}` : normalizedPath;
+}
+
+function buildHannWindow(windowSize: number): Float32Array {
+  const safeSize = Math.max(8, Math.floor(windowSize));
+  const window = new Float32Array(safeSize);
+  for (let index = 0; index < safeSize; index += 1) {
+    window[index] = 0.5 * (1 - Math.cos((2 * Math.PI * index) / Math.max(1, safeSize - 1)));
+  }
+  return window;
+}
+
+function fftMagnitudes(windowedSamples: Float32Array): Float32Array {
+  const sampleCount = windowedSamples.length;
+  const real = new Float32Array(sampleCount);
+  const imag = new Float32Array(sampleCount);
+  real.set(windowedSamples);
+
+  let swapIndex = 0;
+  for (let index = 0; index < sampleCount; index += 1) {
+    if (index < swapIndex) {
+      const realTmp = real[index];
+      const imagTmp = imag[index];
+      real[index] = real[swapIndex];
+      imag[index] = imag[swapIndex];
+      real[swapIndex] = realTmp;
+      imag[swapIndex] = imagTmp;
+    }
+    let bitMask = sampleCount >> 1;
+    while (bitMask >= 1 && swapIndex >= bitMask) {
+      swapIndex -= bitMask;
+      bitMask >>= 1;
+    }
+    swapIndex += bitMask;
+  }
+
+  for (let step = 2; step <= sampleCount; step <<= 1) {
+    const half = step >> 1;
+    const stepAngle = (-2 * Math.PI) / step;
+    const stepCos = Math.cos(stepAngle);
+    const stepSin = Math.sin(stepAngle);
+    for (let base = 0; base < sampleCount; base += step) {
+      let twiddleReal = 1;
+      let twiddleImag = 0;
+      for (let offset = 0; offset < half; offset += 1) {
+        const even = base + offset;
+        const odd = even + half;
+        const oddReal = real[odd];
+        const oddImag = imag[odd];
+        const tempReal = (twiddleReal * oddReal) - (twiddleImag * oddImag);
+        const tempImag = (twiddleReal * oddImag) + (twiddleImag * oddReal);
+
+        real[odd] = real[even] - tempReal;
+        imag[odd] = imag[even] - tempImag;
+        real[even] += tempReal;
+        imag[even] += tempImag;
+
+        const nextReal = (twiddleReal * stepCos) - (twiddleImag * stepSin);
+        twiddleImag = (twiddleReal * stepSin) + (twiddleImag * stepCos);
+        twiddleReal = nextReal;
+      }
+    }
+  }
+
+  const halfCount = sampleCount >> 1;
+  const magnitudes = new Float32Array(halfCount);
+  for (let index = 0; index < halfCount; index += 1) {
+    const realValue = real[index];
+    const imagValue = imag[index];
+    magnitudes[index] = Math.sqrt((realValue * realValue) + (imagValue * imagValue));
+  }
+  return magnitudes;
+}
+
+function buildHologramAudioVisualization(
+  audioBuffer: AudioBuffer,
+  sourceUrl: string,
+): HologramAudioVisualization {
+  const sampleLength = Math.max(1, audioBuffer.length);
+  const channelCount = Math.max(1, audioBuffer.numberOfChannels);
+  const merged = new Float32Array(sampleLength);
+  for (let channel = 0; channel < channelCount; channel += 1) {
+    const channelData = audioBuffer.getChannelData(channel);
+    for (let index = 0; index < sampleLength; index += 1) {
+      merged[index] += channelData[index] / channelCount;
+    }
+  }
+
+  const waveformBinCount = Math.max(900, Math.min(2400, Math.floor(sampleLength / 200)));
+  const waveformBins = new Float32Array(waveformBinCount);
+  const samplesPerWaveBin = Math.max(1, Math.floor(sampleLength / waveformBinCount));
+  for (let bin = 0; bin < waveformBinCount; bin += 1) {
+    const from = bin * samplesPerWaveBin;
+    const to = Math.min(sampleLength, from + samplesPerWaveBin);
+    let peak = 0;
+    for (let cursor = from; cursor < to; cursor += 1) {
+      const value = Math.abs(merged[cursor]);
+      if (value > peak) {
+        peak = value;
+      }
+    }
+    waveformBins[bin] = peak;
+  }
+
+  const fftSize = 1024;
+  const hopSize = 256;
+  const bandCount = 96;
+  const maxFrameCount = 360;
+  const baseFrameCount = Math.max(1, Math.floor((sampleLength - fftSize) / hopSize) + 1);
+  const frameStride = Math.max(1, Math.floor(baseFrameCount / maxFrameCount));
+  const window = buildHannWindow(fftSize);
+  const spectrogramBins: Float32Array[] = [];
+  let maxBandValue = 1e-9;
+
+  for (let frame = 0; frame < baseFrameCount; frame += frameStride) {
+    const start = frame * hopSize;
+    const windowed = new Float32Array(fftSize);
+    for (let index = 0; index < fftSize; index += 1) {
+      const sample = start + index < sampleLength ? merged[start + index] : 0;
+      windowed[index] = sample * window[index];
+    }
+    const magnitudes = fftMagnitudes(windowed);
+    const bands = new Float32Array(bandCount);
+    for (let band = 0; band < bandCount; band += 1) {
+      const startNorm = Math.pow(band / bandCount, 2.15);
+      const endNorm = Math.pow((band + 1) / bandCount, 2.15);
+      const low = Math.max(0, Math.floor(startNorm * (magnitudes.length - 1)));
+      const high = Math.max(low + 1, Math.floor(endNorm * (magnitudes.length - 1)));
+      let sum = 0;
+      let count = 0;
+      for (let magIndex = low; magIndex <= high && magIndex < magnitudes.length; magIndex += 1) {
+        sum += magnitudes[magIndex];
+        count += 1;
+      }
+      const energy = Math.log1p(sum / Math.max(1, count));
+      bands[band] = energy;
+      if (energy > maxBandValue) {
+        maxBandValue = energy;
+      }
+    }
+    spectrogramBins.push(bands);
+  }
+
+  const normalizeBy = Math.max(1e-6, maxBandValue);
+  for (const bands of spectrogramBins) {
+    for (let index = 0; index < bands.length; index += 1) {
+      bands[index] = clamp01(bands[index] / normalizeBy);
+    }
+  }
+
+  return {
+    sourceUrl,
+    durationSeconds: Math.max(0, audioBuffer.duration),
+    waveformBins,
+    spectrogramBins,
+  };
+}
+
+function syncCanvasToDisplaySize(canvas: HTMLCanvasElement): { width: number; height: number; scale: number } {
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const rect = canvas.getBoundingClientRect();
+  const width = Math.max(1, Math.round(rect.width * dpr));
+  const height = Math.max(1, Math.round(rect.height * dpr));
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  return {
+    width,
+    height,
+    scale: dpr,
+  };
+}
+
+function drawHologramAudioBaseCanvas(
+  canvas: HTMLCanvasElement,
+  visualization: HologramAudioVisualization,
+): void {
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return;
+  }
+  const { width, height } = syncCanvasToDisplaySize(canvas);
+  context.clearRect(0, 0, width, height);
+
+  const topHeight = Math.max(40, Math.floor(height * 0.66));
+  const waveHeight = Math.max(22, height - topHeight);
+  const spectrogramFrames = visualization.spectrogramBins;
+  const spectrogramImage = context.createImageData(width, topHeight);
+  const pixelData = spectrogramImage.data;
+  const frameCount = Math.max(1, spectrogramFrames.length);
+  const bandCount = Math.max(1, spectrogramFrames[0]?.length ?? 0);
+
+  for (let x = 0; x < width; x += 1) {
+    const frameIndex = Math.min(frameCount - 1, Math.floor((x / Math.max(1, width - 1)) * (frameCount - 1)));
+    const frameBins = spectrogramFrames[frameIndex] ?? spectrogramFrames[0];
+    for (let y = 0; y < topHeight; y += 1) {
+      const bandIndex = Math.min(
+        bandCount - 1,
+        Math.floor(((topHeight - 1 - y) / Math.max(1, topHeight - 1)) * (bandCount - 1)),
+      );
+      const energy = clamp01(Number(frameBins?.[bandIndex] ?? 0));
+      const luminance = Math.pow(energy, 0.8);
+      const r = Math.round(14 + (luminance * 235));
+      const g = Math.round(30 + (Math.pow(luminance, 0.9) * 196));
+      const b = Math.round(72 + (Math.pow(1 - luminance, 1.2) * 140));
+      const pixelOffset = ((y * width) + x) * 4;
+      pixelData[pixelOffset] = r;
+      pixelData[pixelOffset + 1] = g;
+      pixelData[pixelOffset + 2] = b;
+      pixelData[pixelOffset + 3] = 255;
+    }
+  }
+
+  context.putImageData(spectrogramImage, 0, 0);
+
+  const waveTop = topHeight;
+  context.fillStyle = "rgba(6, 16, 28, 0.96)";
+  context.fillRect(0, waveTop, width, waveHeight);
+  context.strokeStyle = "rgba(120, 188, 220, 0.42)";
+  context.lineWidth = Math.max(1, width / 1100);
+  context.beginPath();
+  context.moveTo(0, waveTop + (waveHeight / 2));
+  context.lineTo(width, waveTop + (waveHeight / 2));
+  context.stroke();
+
+  const waveBins = visualization.waveformBins;
+  const waveBinCount = Math.max(1, waveBins.length);
+  context.strokeStyle = "rgba(176, 236, 255, 0.92)";
+  context.lineWidth = Math.max(1.2, width / 820);
+  context.beginPath();
+  for (let x = 0; x < width; x += 1) {
+    const sampleIndex = Math.min(waveBinCount - 1, Math.floor((x / Math.max(1, width - 1)) * (waveBinCount - 1)));
+    const amplitude = clamp01(Number(waveBins[sampleIndex] ?? 0));
+    const y = waveTop + (waveHeight / 2) - (amplitude * waveHeight * 0.44);
+    if (x === 0) {
+      context.moveTo(x, y);
+    } else {
+      context.lineTo(x, y);
+    }
+  }
+  context.stroke();
+}
+
+function drawHologramAudioPlayhead(
+  canvas: HTMLCanvasElement,
+  ratioInput: number,
+): void {
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return;
+  }
+  const { width, height } = syncCanvasToDisplaySize(canvas);
+  const ratio = clamp01(ratioInput);
+  const x = ratio * width;
+  context.clearRect(0, 0, width, height);
+  context.strokeStyle = "rgba(255, 242, 204, 0.94)";
+  context.lineWidth = Math.max(1.2, width / 1100);
+  context.shadowColor = "rgba(255, 227, 160, 0.76)";
+  context.shadowBlur = Math.max(4, width / 250);
+  context.beginPath();
+  context.moveTo(x, 0);
+  context.lineTo(x, height);
+  context.stroke();
+  context.shadowBlur = 0;
+
+  const markerRadius = Math.max(3.5, width / 220);
+  context.fillStyle = "rgba(255, 236, 188, 0.94)";
+  context.beginPath();
+  context.arc(x, markerRadius + 2, markerRadius, 0, Math.PI * 2);
+  context.fill();
+}
+
 export type OverlayViewId =
   | "omni"
   | "presence"
   | "file-impact"
   | "file-graph"
+  | "true-graph"
   | "crawler-graph"
   | "truth-gate"
   | "logic"
@@ -843,6 +1213,11 @@ export const OVERLAY_VIEW_OPTIONS: OverlayViewOption[] = [
     id: "file-graph",
     label: "Nexus Graph",
     description: "Unified nexus topology from file and crawler sources.",
+  },
+  {
+    id: "true-graph",
+    label: "TrueGraph",
+    description: "Static lineage graph from the uncompressed source ledger.",
   },
   {
     id: "truth-gate",
@@ -952,6 +1327,37 @@ function sourcePathFromNode(node: any): string {
   );
 }
 
+function pathLikeHasMp3Extension(pathLike: unknown): boolean {
+  const pathText = String(pathLike ?? "").trim();
+  if (!pathText) {
+    return false;
+  }
+  if (extensionFromPathLike(pathText) === "mp3") {
+    return true;
+  }
+  const query = pathText.split("?")[1] ?? "";
+  if (!query) {
+    return false;
+  }
+  const member = new URLSearchParams(query.split("#")[0] ?? "").get("member");
+  if (!member) {
+    return false;
+  }
+  return extensionFromPathLike(decodeURIComponent(member)) === "mp3";
+}
+
+function isMp3ContentType(value: unknown): boolean {
+  const contentType = String(value ?? "").trim().toLowerCase();
+  if (!contentType) {
+    return false;
+  }
+  return (
+    contentType.includes("audio/mpeg")
+    || contentType.includes("audio/mp3")
+    || contentType.includes("mpeg3")
+  );
+}
+
 function classifyFileResourceKind(node: any): GraphNodeResourceKind {
   const kind = String(node?.kind ?? "").trim().toLowerCase();
   const sourcePath = sourcePathFromNode(node);
@@ -1009,12 +1415,98 @@ function classifyCrawlerResourceKind(node: any): GraphNodeResourceKind {
   return "unknown";
 }
 
+function normalizeResourceKind(value: unknown): GraphNodeResourceKind | null {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  switch (normalized) {
+    case "text":
+    case "image":
+    case "audio":
+    case "archive":
+    case "blob":
+    case "link":
+    case "website":
+    case "video":
+    case "unknown":
+      return normalized;
+    default:
+      return null;
+  }
+}
+
+function resourceKindFromModality(value: unknown): GraphNodeResourceKind | null {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (normalized === "web") {
+    return "website";
+  }
+  if (normalized === "binary") {
+    return "blob";
+  }
+  if (normalized === "archive") {
+    return "archive";
+  }
+  return normalizeResourceKind(normalized);
+}
+
 function resourceKindForNode(node: any): GraphNodeResourceKind {
+  const explicitResourceKind = normalizeResourceKind(node?.resource_kind);
+  if (explicitResourceKind) {
+    return explicitResourceKind;
+  }
+  const modalityResourceKind = resourceKindFromModality(node?.modality);
+  if (modalityResourceKind) {
+    return modalityResourceKind;
+  }
   const nodeKind = String(node?.node_type ?? "file");
   if (nodeKind === "crawler") {
     return classifyCrawlerResourceKind(node);
   }
   return classifyFileResourceKind(node);
+}
+
+function isMusicNexusNode(node: any, resourceKind: GraphNodeResourceKind): boolean {
+  const nodeType = String(node?.node_type ?? "").trim().toLowerCase();
+  const kind = String(node?.kind ?? "").trim().toLowerCase();
+  const audioClassified = (
+    resourceKind === "audio"
+    || nodeType === "audio"
+    || kind === "audio"
+    || kind === "music"
+    || kind === "song"
+    || kind === "midi"
+  );
+  if (!audioClassified) {
+    return false;
+  }
+
+  const pathCandidates = [
+    node?.archive_member_path,
+    node?.archived_member_path,
+    node?.member_path,
+    node?.member_rel_path,
+    node?.source_rel_path,
+    node?.archive_rel_path,
+    node?.archived_rel_path,
+    node?.url,
+    node?.source_url,
+    node?.title,
+    node?.name,
+    node?.label,
+    node?.id,
+  ];
+  for (const candidate of pathCandidates) {
+    if (pathLikeHasMp3Extension(candidate)) {
+      return true;
+    }
+  }
+
+  return (
+    isMp3ContentType(node?.content_type)
+    || isMp3ContentType(node?.mime)
+    || isMp3ContentType(node?.mime_type)
+    || isMp3ContentType(node?.detected_content_type)
+    || isMp3ContentType(node?.media_type)
+    || isMp3ContentType(node?.resource_mime)
+  );
 }
 
 function resourceKindLabel(resourceKind: GraphNodeResourceKind): string {
@@ -1064,6 +1556,9 @@ function worldscreenViewForNode(
     return "metadata";
   }
   if (resourceKind === "image") {
+    return "metadata";
+  }
+  if (resourceKind === "audio") {
     return "metadata";
   }
   if (resourceKind === "video") {
@@ -1166,6 +1661,67 @@ function joinListValues(value: unknown): string {
   return flattened.join(", ");
 }
 
+function resolveProjectionBundleManifest(node: any, fileGraph: any): { groupId: string; members: string[] } {
+  const groupId = String(node?.projection_group_id ?? "").trim();
+  if (!groupId || !fileGraph || typeof fileGraph !== "object") {
+    return { groupId: "", members: [] };
+  }
+  const projection = (fileGraph as any)?.projection;
+  const groups = Array.isArray(projection?.groups) ? projection.groups : [];
+  const group = groups.find((row: any) => String(row?.id ?? "").trim() === groupId);
+  if (!group || typeof group !== "object") {
+    return { groupId, members: [] };
+  }
+
+  const sourceIds = Array.isArray(group.member_source_ids)
+    ? group.member_source_ids.map((value: unknown) => String(value ?? "").trim()).filter((value: string) => value.length > 0)
+    : [];
+  if (sourceIds.length <= 0) {
+    return { groupId, members: [] };
+  }
+
+  const fileNodes = Array.isArray((fileGraph as any)?.file_nodes) ? (fileGraph as any).file_nodes : [];
+  const nodeById = new Map<string, any>();
+  for (const fileNode of fileNodes) {
+    const fileNodeId = String(fileNode?.id ?? "").trim();
+    if (!fileNodeId || nodeById.has(fileNodeId)) {
+      continue;
+    }
+    nodeById.set(fileNodeId, fileNode);
+  }
+
+  const members = sourceIds.map((sourceId: string) => {
+    const sourceNode = nodeById.get(sourceId);
+    const pathText = String(
+      sourceNode?.source_rel_path
+      ?? sourceNode?.archived_rel_path
+      ?? sourceNode?.archive_rel_path
+      ?? sourceNode?.label
+      ?? sourceNode?.name
+      ?? sourceId,
+    ).trim();
+    return pathText || sourceId;
+  });
+  return {
+    groupId,
+    members,
+  };
+}
+
+function semanticWeightScaleForParticle(row: BackendFieldParticle): number {
+  const textChars = Math.max(0, Number((row as any)?.semantic_text_chars ?? 0));
+  const semanticMass = Math.max(0, Number((row as any)?.semantic_mass ?? row.mass ?? 0));
+  const daimoiEnergy = Math.max(0, Number((row as any)?.daimoi_energy ?? 0));
+  const messageProbability = clamp01(Number((row as any)?.message_probability ?? 0));
+  const packageEntropy = Math.max(0, Number((row as any)?.package_entropy ?? 0));
+  const textTerm = Math.log1p(textChars) * 0.22;
+  const energyTerm = Math.log1p((daimoiEnergy * 2.2) + (messageProbability * 3.0)) * 0.28;
+  const entropyTerm = packageEntropy * 0.06;
+  const massTerm = semanticMass * 0.12;
+  const scale = 0.9 + textTerm + energyTerm + entropyTerm + massTerm;
+  return clampValue(scale, 0.78, 2.2);
+}
+
 function remoteFrameUrlForNode(
   node: any,
   worldscreenUrl: string,
@@ -1216,6 +1772,13 @@ function worldscreenMetadataRows(worldscreen: GraphWorldscreenState): Array<{ ke
     { key: "summary", value: String(worldscreen.summaryText ?? "") },
     { key: "tags", value: String(worldscreen.tagsText ?? "") },
     { key: "labels", value: String(worldscreen.labelsText ?? "") },
+    { key: "projection-group", value: String(worldscreen.projectionGroupId ?? "") },
+    {
+      key: "bundle-members",
+      value: worldscreen.projectionConsolidatedCount === undefined
+        ? ""
+        : String(Math.max(0, Math.floor(worldscreen.projectionConsolidatedCount))),
+    },
   ];
 
   return rows.filter((row) => row.value.trim().length > 0);
@@ -1444,6 +2007,8 @@ export function SimulationCanvas({
   motionSpeed = 1,
   mouseInfluence = 1,
   layerDepth = 1,
+  graphNodeSmoothness = 1,
+  graphNodeStepScale = 1,
   backgroundWash = 0.58,
   layerVisibility,
   glassCenterRatio = { x: 0.5, y: 0.5 },
@@ -1469,6 +2034,8 @@ export function SimulationCanvas({
   const motionSpeedRef = useRef(clampValue(motionSpeed, 0.25, 2.2));
   const mouseInfluenceRef = useRef(clampValue(mouseInfluence, 0, 2.5));
   const layerDepthRef = useRef(clampValue(layerDepth, 0.35, 2.2));
+  const graphNodeSmoothnessRef = useRef(clampValue(graphNodeSmoothness, 0.5, 2.8));
+  const graphNodeStepScaleRef = useRef(clampValue(graphNodeStepScale, 0.35, 2.8));
   const layerVisibilityRef = useRef(layerVisibility);
   const backgroundModeRef = useRef(backgroundMode);
   const backgroundWashRef = useRef(backgroundWash);
@@ -1487,6 +2054,14 @@ export function SimulationCanvas({
   const [worldscreen, setWorldscreen] = useState<GraphWorldscreenState | null>(null);
   const [worldscreenPinnedCenterRatio, setWorldscreenPinnedCenterRatio] = useState<{ x: number; y: number } | null>(null);
   const [worldscreenMode, setWorldscreenMode] = useState<GraphWorldscreenMode>("overview");
+  const worldscreenAudioElementRef = useRef<HTMLAudioElement | null>(null);
+  const worldscreenAudioBaseCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const worldscreenAudioPlayheadCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const worldscreenAudioSeekPointerIdRef = useRef<number | null>(null);
+  const [worldscreenAudioViz, setWorldscreenAudioViz] = useState<HologramAudioVisualization | null>(null);
+  const [worldscreenAudioVizStatus, setWorldscreenAudioVizStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [worldscreenAudioVizError, setWorldscreenAudioVizError] = useState("");
+  const [worldscreenAudioClockText, setWorldscreenAudioClockText] = useState("0:00 / 0:00");
   const [editorPreview, setEditorPreview] = useState<EditorPreviewState>({
     status: "idle",
     content: "",
@@ -1508,7 +2083,12 @@ export function SimulationCanvas({
   const [modelDockOpen, setModelDockOpen] = useState(false);
   const [computeJobFilter, setComputeJobFilter] = useState<ComputeJobFilter>("all");
   const [computePanelCollapsed, setComputePanelCollapsed] = useState(false);
+  const [musicNexusSpotlight, setMusicNexusSpotlight] = useState(false);
+  const [musicNexusJumpLabel, setMusicNexusJumpLabel] = useState("");
   const [graphNodeTitleOverlays, setGraphNodeTitleOverlays] = useState<GraphNodeTitleOverlay[]>([]);
+  const musicNexusSpotlightRef = useRef(musicNexusSpotlight);
+  const musicNexusHotspotsRef = useRef<MusicNexusHotspot[]>([]);
+  const musicNexusCycleRef = useRef(0);
   const interactAtRef = useRef<
     ((xRatio: number, yRatio: number, options?: { openWorldscreen?: boolean }) => {
       hitNode: boolean;
@@ -1518,6 +2098,10 @@ export function SimulationCanvas({
       yRatio: number;
     }) | null
   >(null);
+
+  useEffect(() => {
+    musicNexusSpotlightRef.current = musicNexusSpotlight;
+  }, [musicNexusSpotlight]);
 
   // Mouse Daimon refs - synced from props (managed in CoreControlPanel)
   const mouseDaimonEnabledRef = useRef(mouseDaimonEnabled);
@@ -1595,6 +2179,48 @@ export function SimulationCanvas({
       total180s: Number(simulation?.presence_dynamics?.compute_jobs_180s ?? catalog?.presence_runtime?.compute_jobs_180s ?? rows.length),
     };
   }, [catalog, compactHud, computeJobFilter, simulation]);
+
+  const worldscreenAudioUrl = useMemo(() => {
+    if (!worldscreen || worldscreen.resourceKind !== "audio") {
+      return "";
+    }
+    const preferred = resolveWorldscreenMediaUrl(worldscreen.url);
+    if (preferred) {
+      return preferred;
+    }
+    return resolveWorldscreenMediaUrl(worldscreen.remoteFrameUrl || "");
+  }, [worldscreen]);
+
+  const seekWorldscreenAudioToRatio = useCallback((ratioInput: number) => {
+    const audio = worldscreenAudioElementRef.current;
+    if (!audio) {
+      return;
+    }
+    const duration = Number.isFinite(audio.duration) && audio.duration > 0
+      ? audio.duration
+      : (worldscreenAudioViz?.durationSeconds ?? 0);
+    if (!(duration > 0)) {
+      return;
+    }
+    const ratio = clamp01(ratioInput);
+    audio.currentTime = ratio * duration;
+    setWorldscreenAudioClockText(
+      `${formatPlaybackClock(audio.currentTime)} / ${formatPlaybackClock(duration)}`,
+    );
+  }, [worldscreenAudioViz?.durationSeconds]);
+
+  const seekWorldscreenAudioFromClientX = useCallback((clientX: number) => {
+    const canvas = worldscreenAudioPlayheadCanvasRef.current || worldscreenAudioBaseCanvasRef.current;
+    if (!canvas) {
+      return;
+    }
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0) {
+      return;
+    }
+    const ratio = clamp01((clientX - rect.left) / rect.width);
+    seekWorldscreenAudioToRatio(ratio);
+  }, [seekWorldscreenAudioToRatio]);
 
   const loadPresenceAccounts = useCallback(
     async (signal?: AbortSignal): Promise<PresenceAccountEntry[]> => {
@@ -1837,6 +2463,14 @@ export function SimulationCanvas({
   }, [layerDepth]);
 
   useEffect(() => {
+    graphNodeSmoothnessRef.current = clampValue(graphNodeSmoothness, 0.5, 2.8);
+  }, [graphNodeSmoothness]);
+
+  useEffect(() => {
+    graphNodeStepScaleRef.current = clampValue(graphNodeStepScale, 0.35, 2.8);
+  }, [graphNodeStepScale]);
+
+  useEffect(() => {
     layerVisibilityRef.current = layerVisibility;
   }, [layerVisibility]);
 
@@ -1891,6 +2525,144 @@ export function SimulationCanvas({
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [worldscreen]);
+
+  useEffect(() => {
+    if (!worldscreenAudioUrl) {
+      setWorldscreenAudioViz(null);
+      setWorldscreenAudioVizStatus("idle");
+      setWorldscreenAudioVizError("");
+      setWorldscreenAudioClockText("0:00 / 0:00");
+      return;
+    }
+
+    const controller = new AbortController();
+    let active = true;
+    setWorldscreenAudioVizStatus("loading");
+    setWorldscreenAudioVizError("");
+    setWorldscreenAudioClockText("0:00 / 0:00");
+
+    void (async () => {
+      let context: AudioContext | null = null;
+      try {
+        const response = await fetch(worldscreenAudioUrl, {
+          method: "GET",
+          credentials: "same-origin",
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error(`audio analysis fetch failed (${response.status})`);
+        }
+        const payload = await response.arrayBuffer();
+        if (!active || controller.signal.aborted) {
+          return;
+        }
+
+        context = new AudioContext();
+        const decoded = await context.decodeAudioData(payload.slice(0));
+        if (!active || controller.signal.aborted) {
+          return;
+        }
+
+        const visualization = buildHologramAudioVisualization(
+          decoded,
+          worldscreenAudioUrl,
+        );
+        if (!active || controller.signal.aborted) {
+          return;
+        }
+        setWorldscreenAudioViz(visualization);
+        setWorldscreenAudioVizStatus("ready");
+        setWorldscreenAudioClockText(
+          `0:00 / ${formatPlaybackClock(visualization.durationSeconds)}`,
+        );
+      } catch (error: unknown) {
+        if (!active || controller.signal.aborted) {
+          return;
+        }
+        setWorldscreenAudioViz(null);
+        setWorldscreenAudioVizStatus("error");
+        setWorldscreenAudioVizError(
+          errorMessage(error, "unable to compute waveform/spectrogram for this audio resource"),
+        );
+      } finally {
+        if (context && context.state !== "closed") {
+          void context.close().catch(() => {});
+        }
+      }
+    })();
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [worldscreenAudioUrl]);
+
+  useEffect(() => {
+    const canvas = worldscreenAudioBaseCanvasRef.current;
+    if (!canvas || !worldscreenAudioViz || worldscreenAudioViz.sourceUrl !== worldscreenAudioUrl) {
+      return;
+    }
+
+    const draw = () => {
+      drawHologramAudioBaseCanvas(canvas, worldscreenAudioViz);
+      drawHologramAudioPlayhead(worldscreenAudioPlayheadCanvasRef.current ?? canvas, 0);
+    };
+
+    draw();
+
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const observer = new ResizeObserver(() => {
+      draw();
+    });
+    observer.observe(canvas);
+    return () => {
+      observer.disconnect();
+    };
+  }, [worldscreenAudioUrl, worldscreenAudioViz]);
+
+  useEffect(() => {
+    if (!worldscreenAudioUrl) {
+      return;
+    }
+
+    const audio = worldscreenAudioElementRef.current;
+    const playheadCanvas = worldscreenAudioPlayheadCanvasRef.current;
+    if (!audio || !playheadCanvas) {
+      return;
+    }
+
+    let rafId = 0;
+    let lastLabelAt = 0;
+    const tick = () => {
+      const duration = Number.isFinite(audio.duration) && audio.duration > 0
+        ? audio.duration
+        : (worldscreenAudioViz?.durationSeconds ?? 0);
+      const current = Number.isFinite(audio.currentTime) && audio.currentTime > 0
+        ? audio.currentTime
+        : 0;
+      const ratio = duration > 0 ? clamp01(current / duration) : 0;
+      drawHologramAudioPlayhead(playheadCanvas, ratio);
+
+      const now = performance.now();
+      if (now - lastLabelAt >= 120) {
+        setWorldscreenAudioClockText(
+          `${formatPlaybackClock(current)} / ${formatPlaybackClock(duration)}`,
+        );
+        lastLabelAt = now;
+      }
+
+      rafId = window.requestAnimationFrame(tick);
+    };
+
+    rafId = window.requestAnimationFrame(tick);
+    return () => {
+      if (rafId !== 0) {
+        window.cancelAnimationFrame(rafId);
+      }
+    };
+  }, [worldscreenAudioUrl, worldscreenAudioViz?.durationSeconds]);
 
   useEffect(() => {
     if (!worldscreen || worldscreen.view !== "editor") {
@@ -2936,10 +3708,14 @@ export function SimulationCanvas({
       x: number;
       y: number;
       radius: number;
+      radiusNorm: number;
       node?: any;
       nodeKind?: "file" | "crawler" | "nexus";
       nodeType?: string;
       resourceKind?: GraphNodeResourceKind;
+      isMusicNexus?: boolean;
+      isProjectionOverflow?: boolean;
+      isTrueGraph?: boolean;
     }
 
     const fallbackNamedForms = [
@@ -3069,6 +3845,15 @@ export function SimulationCanvas({
     let lastNodeTitleOverlaySyncMs = 0;
     let graphNodePositionMapCacheKey = "";
     let graphNodePositionMap = new Map<string, { x: number; y: number }>();
+    let graphNodeSmoothingPruneAtMs = 0;
+    const smoothedGraphNodeStateById = new Map<string, { x: number; y: number; seenAtMs: number }>();
+    let simulationTimestampCacheKey = "";
+    let simulationTimestampMs = 0;
+    let particleSmoothingPruneAtMs = 0;
+    const smoothedParticleStateById = new Map<string, { x: number; y: number; seenAtMs: number }>();
+    const smoothedParticleRows: BackendFieldParticle[] = [];
+    const smoothedParticleX: number[] = [];
+    const smoothedParticleY: number[] = [];
     const pointRows: number[] = [];
     const lineRows: number[] = [];
     const presencePointRowsCurrent: number[] = [];
@@ -3082,6 +3867,7 @@ export function SimulationCanvas({
         node: any;
         nodeKind: "file" | "crawler" | "nexus";
         nodeType: string;
+        isProjectionOverflow: boolean;
       }
     >();
     const daimoiFlowLanes = new Map<
@@ -3127,6 +3913,7 @@ export function SimulationCanvas({
       sourceHotspots: OverlayHotspot[],
       options: {
         showFileLayer: boolean;
+        showTrueGraphLayer: boolean;
         showCrawlerLayer: boolean;
         showPresenceLayer: boolean;
         interactiveEnabled: boolean;
@@ -3137,10 +3924,10 @@ export function SimulationCanvas({
       }
       const rows = sourceHotspots
         .filter((row) => (
-          (row.kind === "file" && options.showFileLayer)
+          (row.kind === "file" && (options.showFileLayer || options.showTrueGraphLayer))
           || (row.kind === "crawler" && options.showCrawlerLayer)
           || (row.kind === "presence" && options.showPresenceLayer)
-          || (row.kind === "nexus" && (options.showFileLayer || options.showCrawlerLayer))
+          || (row.kind === "nexus" && (options.showFileLayer || options.showTrueGraphLayer || options.showCrawlerLayer))
         ))
         .map((row) => {
           const importance = row.kind === "presence"
@@ -3154,13 +3941,16 @@ export function SimulationCanvas({
                 ? 0.11
                 : 0.05;
           const textBoost = row.resourceKind === "text" ? 0.08 : 0;
-          const score = clampValue(importance + kindBoost + textBoost, 0, 2);
+          const musicBoost = row.isMusicNexus ? 0.2 : 0;
+          const score = clampValue(importance + kindBoost + textBoost + musicBoost, 0, 2);
           return {
             id: row.id,
             kind: row.kind,
             label: row.label,
             x: clamp01(row.x),
             y: clamp01(row.y),
+            isTrueGraph: Boolean(row.isTrueGraph),
+            isProjectionOverflow: Boolean(row.isProjectionOverflow),
             score,
           };
         })
@@ -3179,6 +3969,8 @@ export function SimulationCanvas({
           x: centerX,
           y: centerY,
           kind: row.kind,
+          isTrueGraph: row.isTrueGraph,
+          isProjectionOverflow: row.isProjectionOverflow,
           halfWidth,
         });
       }
@@ -3189,23 +3981,25 @@ export function SimulationCanvas({
         x: row.x,
         y: row.y,
         kind: row.kind,
+        isTrueGraph: row.isTrueGraph,
+        isProjectionOverflow: row.isProjectionOverflow,
       }));
     };
 
     const findNearestHotspotAt = (xRatio: number, yRatio: number): { row: OverlayHotspot | null; distance: number } => {
       let match: { row: OverlayHotspot; distance: number } | null = null;
-      for (const row of hotspots) {
-        const distance = Math.hypot(xRatio - row.x, yRatio - row.y);
-        const threshold = row.kind === "presence"
-          ? row.radius * 1.6
-          : row.kind === "nexus"
-            ? row.radius * 1.42
-            : row.radius * 1.35;
+      for (const hit of hotspots) {
+        const distance = Math.hypot(xRatio - hit.x, yRatio - hit.y);
+        const threshold = hit.kind === "presence"
+          ? Math.max(0.012, hit.radiusNorm * 1.8)
+          : hit.kind === "nexus"
+            ? hit.radiusNorm * 1.42
+            : hit.radiusNorm * 1.35;
         if (distance > threshold) {
           continue;
         }
         if (!match || distance < match.distance) {
-          match = { row, distance };
+          match = { row: hit, distance };
         }
       }
       return {
@@ -3241,6 +4035,8 @@ export function SimulationCanvas({
 
     const openWorldscreenForNode = (node: any, nodeKind: "file" | "crawler" | "nexus", xRatio: number, yRatio: number) => {
       const resourceKind = resourceKindForNode(node);
+      const currentFileGraph = simulationRef.current?.file_graph ?? catalogRef.current?.file_graph;
+      const projectionBundle = resolveProjectionBundleManifest(node, currentFileGraph);
       const graphNodeId = String(node?.id ?? "").trim();
       const label = shortPathLabel(
         String(
@@ -3300,6 +4096,9 @@ export function SimulationCanvas({
         summaryText: String(node?.summary ?? node?.text_excerpt ?? "").trim(),
         tagsText: joinListValues(node?.tags),
         labelsText: joinListValues(node?.labels),
+        projectionGroupId: projectionBundle.groupId,
+        projectionConsolidatedCount: Number(node?.consolidated_count ?? projectionBundle.members.length),
+        projectionMemberManifest: projectionBundle.members,
       });
     };
 
@@ -3357,18 +4156,79 @@ export function SimulationCanvas({
         return;
       }
 
+      if (simulationTimestamp !== simulationTimestampCacheKey) {
+        simulationTimestampCacheKey = simulationTimestamp;
+        const parsedMs = Date.parse(simulationTimestamp);
+        simulationTimestampMs = Number.isFinite(parsedMs) ? parsedMs : 0;
+      }
+
+      const nowWallMs = Date.now();
+      const snapshotAgeMs = simulationTimestampMs > 0
+        ? Math.max(0, nowWallMs - simulationTimestampMs)
+        : 0;
+      const extrapolationSeconds = Math.min(0.45, snapshotAgeMs * 0.001);
+      const smoothingAlpha = clampValue(0.18 + (effectiveFrameMs / 120), 0.18, 0.72);
+      smoothedParticleRows.length = 0;
+      smoothedParticleX.length = 0;
+      smoothedParticleY.length = 0;
+
+      for (let index = 0; index < allFieldParticles.length; index += 1) {
+        const row = allFieldParticles[index] as BackendFieldParticle;
+        const rowId = String(row?.id ?? row?.presence_id ?? `particle:${index}`).trim() || `particle:${index}`;
+        const baseX = toRatio(Number(row?.x ?? 0.5));
+        const baseY = toRatio(Number(row?.y ?? 0.5));
+        const vx = Number.isFinite(Number(row?.vx)) ? Number(row?.vx ?? 0) : 0;
+        const vy = Number.isFinite(Number(row?.vy)) ? Number(row?.vy ?? 0) : 0;
+        const projectedX = clamp01(baseX + (vx * extrapolationSeconds));
+        const projectedY = clamp01(baseY + (vy * extrapolationSeconds));
+        const previous = smoothedParticleStateById.get(rowId);
+
+        let x = projectedX;
+        let y = projectedY;
+        if (previous) {
+          const jumpMagnitude = Math.hypot(projectedX - previous.x, projectedY - previous.y);
+          if (jumpMagnitude <= 0.48) {
+            x = previous.x + (projectedX - previous.x) * smoothingAlpha;
+            y = previous.y + (projectedY - previous.y) * smoothingAlpha;
+          }
+        }
+
+        x = clamp01(x);
+        y = clamp01(y);
+        smoothedParticleStateById.set(rowId, {
+          x,
+          y,
+          seenAtMs: nowWallMs,
+        });
+        smoothedParticleRows.push(row);
+        smoothedParticleX.push(x);
+        smoothedParticleY.push(y);
+      }
+
+      if (nowWallMs - particleSmoothingPruneAtMs >= 1200) {
+        particleSmoothingPruneAtMs = nowWallMs;
+        for (const [rowId, value] of smoothedParticleStateById.entries()) {
+          if (nowWallMs - Number(value?.seenAtMs ?? 0) > 2200) {
+            smoothedParticleStateById.delete(rowId);
+          }
+        }
+      }
+
       const centroidStride = isLowPowerOverlay
         ? Math.max(1, Math.ceil(allFieldParticles.length / 880))
         : 1;
       livePresenceCentroids.clear();
-      for (let index = 0; index < allFieldParticles.length; index += centroidStride) {
-        const row = allFieldParticles[index] as any;
+      for (let index = 0; index < smoothedParticleRows.length; index += centroidStride) {
+        const row = smoothedParticleRows[index];
+        if (!row) {
+          continue;
+        }
         const presenceId = String(row?.presence_id ?? "").trim();
         if (!presenceId) {
           continue;
         }
-        const xRatio = toRatio(Number(row?.x ?? 0.5));
-        const yRatio = toRatio(Number(row?.y ?? 0.5));
+        const xRatio = smoothedParticleX[index] ?? 0.5;
+        const yRatio = smoothedParticleY[index] ?? 0.5;
         const current = livePresenceCentroids.get(presenceId) ?? { sumX: 0, sumY: 0, count: 0 };
         current.sumX += xRatio * centroidStride;
         current.sumY += yRatio * centroidStride;
@@ -3442,17 +4302,30 @@ export function SimulationCanvas({
         currentOverlayView === "omni"
         || currentOverlayView === "presence"
         || currentOverlayView === "file-graph"
+        || currentOverlayView === "true-graph"
         || currentOverlayView === "crawler-graph"
       );
       const showFileGraphLayer = currentLayerVisibility?.["file-graph"]
         ?? (!isBackgroundMode && (currentOverlayView === "omni" || currentOverlayView === "file-graph"));
       const showCrawlerGraphLayer = currentLayerVisibility?.["crawler-graph"]
         ?? (!isBackgroundMode && (currentOverlayView === "omni" || currentOverlayView === "crawler-graph"));
-      const showGraphFocusedView = showFileGraphLayer || showCrawlerGraphLayer;
+      const showTrueGraphLayer = currentLayerVisibility?.["true-graph"]
+        ?? (!isBackgroundMode && (currentOverlayView === "omni" || currentOverlayView === "true-graph"));
+      const showGraphFocusedView = showFileGraphLayer || showCrawlerGraphLayer || showTrueGraphLayer;
+      const lockGraphToStaticLayout = showTrueGraphLayer && currentOverlayView === "true-graph";
       const showAmbientPresenceParticles = showPresenceLayer;
       const showRouteLaneTelemetry = showPresenceLayer || showGraphFocusedView;
 
       const namedForms = resolveNamedFormsForWebgl();
+      const presenceAnchorById = new Map<string, { x: number; y: number }>();
+      for (const form of namedForms) {
+        const id = canonicalPresenceId(String((form as any)?.id ?? "").trim());
+        const x = clamp01(Number((form as any)?.x ?? 0.5));
+        const y = clamp01(Number((form as any)?.y ?? 0.5));
+        if (id) {
+          presenceAnchorById.set(id, { x, y });
+        }
+      }
       if (showAmbientPresenceParticles && renderFallbackManifestAnchors) {
         for (let index = 0; index < namedForms.length; index += 1) {
           const form = namedForms[index] as any;
@@ -3476,6 +4349,7 @@ export function SimulationCanvas({
             x,
             y,
             radius: 0.03,
+            radiusNorm: 0.03,
           });
         }
       }
@@ -3492,7 +4366,86 @@ export function SimulationCanvas({
         );
         graphNodePositionMapCacheKey = graphPositionSourceKey;
       }
-      const restrictGraphNodesToViewMap = showGraphFocusedView && graphNodePositionMap.size > 0;
+      const graphNodeSmoothness = graphNodeSmoothnessRef.current;
+      const graphNodeStepScale = graphNodeStepScaleRef.current;
+      const graphNodeSmoothingAlphaBase = clampValue(
+        (0.06 + (effectiveFrameMs / 320)) / graphNodeSmoothness,
+        0.03,
+        0.22,
+      );
+      const graphNodeSmoothingAlpha = clampValue(
+        graphNodeSmoothingAlphaBase + clampValue(snapshotAgeMs / 1800, 0, 0.12 / graphNodeSmoothness),
+        0.03,
+        0.34,
+      );
+      const graphNodeSmoothingMaxStep = clampValue(
+        (0.008 + (effectiveFrameMs / 1200)) * graphNodeStepScale,
+        0.004,
+        0.08,
+      );
+      let smoothedGraphNodeX = 0.5;
+      let smoothedGraphNodeY = 0.5;
+      const resolveSmoothedGraphNodePosition = (nodeId: string, targetXInput: number, targetYInput: number): void => {
+        const targetX = clampValue(targetXInput, 0.012, 0.988);
+        const targetY = clampValue(targetYInput, 0.012, 0.988);
+        if (!nodeId) {
+          smoothedGraphNodeX = targetX;
+          smoothedGraphNodeY = targetY;
+          return;
+        }
+        const previous = smoothedGraphNodeStateById.get(nodeId);
+        let x = targetX;
+        let y = targetY;
+        if (previous) {
+          const deltaX = targetX - previous.x;
+          const deltaY = targetY - previous.y;
+          const jumpMagnitude = Math.hypot(deltaX, deltaY);
+          const adaptiveAlpha = clampValue(
+            graphNodeSmoothingAlpha + clampValue(jumpMagnitude * 0.22, 0, 0.2),
+            0.08,
+            0.56,
+          );
+          let nextX = previous.x + deltaX * adaptiveAlpha;
+          let nextY = previous.y + deltaY * adaptiveAlpha;
+
+          const stepX = nextX - previous.x;
+          const stepY = nextY - previous.y;
+          const stepMagnitude = Math.hypot(stepX, stepY);
+          const maxStep = jumpMagnitude > 0.84
+            ? graphNodeSmoothingMaxStep * 4.5
+            : jumpMagnitude > 0.52
+              ? graphNodeSmoothingMaxStep * 2.6
+              : graphNodeSmoothingMaxStep;
+          if (stepMagnitude > maxStep && stepMagnitude > 1e-6) {
+            const scale = maxStep / stepMagnitude;
+            nextX = previous.x + stepX * scale;
+            nextY = previous.y + stepY * scale;
+          }
+          x = nextX;
+          y = nextY;
+        }
+        x = clampValue(x, 0.012, 0.988);
+        y = clampValue(y, 0.012, 0.988);
+        smoothedGraphNodeStateById.set(nodeId, {
+          x,
+          y,
+          seenAtMs: nowWallMs,
+        });
+        smoothedGraphNodeX = x;
+        smoothedGraphNodeY = y;
+      };
+      if (nowWallMs - graphNodeSmoothingPruneAtMs >= 1500) {
+        graphNodeSmoothingPruneAtMs = nowWallMs;
+        for (const [nodeId, value] of smoothedGraphNodeStateById.entries()) {
+          if (nowWallMs - Number(value?.seenAtMs ?? 0) > 6400) {
+            smoothedGraphNodeStateById.delete(nodeId);
+          }
+        }
+      }
+      const restrictGraphNodesToViewMap = !showTrueGraphLayer && showGraphFocusedView && graphNodePositionMap.size > 0;
+      const spotlightMusicNexus = musicNexusSpotlightRef.current;
+      const musicNodeIds = new Set<string>();
+      const musicHotspots: MusicNexusHotspot[] = [];
 
       const ingestNodeRows = (nodes: any, sourceLayer: "file" | "crawler") => {
         if (!Array.isArray(nodes)) {
@@ -3505,52 +4458,112 @@ export function SimulationCanvas({
             continue;
           }
 
-          if (sourceLayer === "file" && !showFileGraphLayer) {
+          if (sourceLayer === "file" && !showFileGraphLayer && !showTrueGraphLayer) {
             continue;
           }
           if (sourceLayer === "crawler" && !showCrawlerGraphLayer) {
-            continue;
-          }
-          if (restrictGraphNodesToViewMap && !graphNodePositionMap.has(nodeId)) {
             continue;
           }
           seenNodeIds.add(nodeId);
 
           const rawType = String(node?.node_type ?? "").trim().toLowerCase();
           const hasCrawlerKind = String(node?.crawler_kind ?? "").trim().length > 0;
-          const nodeKind: "file" | "crawler" | "nexus" = (
-            rawType === "crawler" || hasCrawlerKind
-          )
-            ? "crawler"
-            : (rawType === "file" || rawType.length === 0)
-              ? "file"
-              : "nexus";
-          const nodeType = rawType || (nodeKind === "crawler" ? "crawler" : "file");
-
-          const baseX = toRatio(Number(node?.x ?? 0.5));
-          const baseY = toRatio(Number(node?.y ?? 0.5));
-          const backendNodePosition = graphNodePositionMap.get(nodeId);
-          const xRatio = clampValue(Number(backendNodePosition?.x ?? baseX), 0.012, 0.988);
-          const yRatio = clampValue(Number(backendNodePosition?.y ?? baseY), 0.012, 0.988);
+          const nodeRole = String(node?.kind ?? node?.presence_kind ?? "").trim().toLowerCase();
+          const presenceKind = String(node?.presence_kind ?? "").trim().toLowerCase();
+          const isPresenceNode = rawType === "presence"
+            || nodeRole === "presence"
+            || presenceKind === "presence"
+            || nodeId.startsWith("presence:")
+            || String(node?.node_id ?? "").trim().startsWith("presence:");
           const sourceRelPath = String(
             node?.source_rel_path
             ?? node?.archived_rel_path
             ?? node?.archive_rel_path
             ?? "",
           ).trim();
-          const nodeLabelText = nodeKind === "crawler"
+          const isProjectionOverflowNode = Boolean(node?.projection_overflow)
+            || nodeRole === "projection_overflow"
+            || sourceRelPath.startsWith("_projection/");
+          const isConsolidatedNode = Boolean(node?.consolidated)
+            || sourceRelPath.startsWith("_consolidated/");
+          const isCompactionArtifactNode = isProjectionOverflowNode || isConsolidatedNode;
+          if (
+            restrictGraphNodesToViewMap
+            && !graphNodePositionMap.has(nodeId)
+            && !isCompactionArtifactNode
+            && !isPresenceNode
+          ) {
+            continue;
+          }
+          if (lockGraphToStaticLayout && isCompactionArtifactNode) {
+            continue;
+          }
+          let nodeKind: "file" | "crawler" | "nexus" = (
+            rawType === "crawler" || hasCrawlerKind
+          )
+            ? "crawler"
+            : (rawType === "file" || rawType.length === 0)
+              ? "file"
+              : "nexus";
+          let nodeType = rawType || (nodeKind === "crawler" ? "crawler" : "file");
+          if (isProjectionOverflowNode) {
+            nodeKind = "nexus";
+            nodeType = "projection_overflow";
+          }
+
+          const baseX = toRatio(Number(node?.x ?? 0.5));
+          const baseY = toRatio(Number(node?.y ?? 0.5));
+          const backendNodePosition = graphNodePositionMap.get(nodeId);
+          const presenceAnchorFallback = isPresenceNode
+            ? (
+              presenceAnchorById.get(canonicalPresenceId(nodeId))
+              ?? presenceAnchorById.get(canonicalPresenceId(String(node?.presence_id ?? "")))
+              ?? presenceAnchorById.get(canonicalPresenceId(String(node?.node_id ?? "")))
+            )
+            : undefined;
+          const targetXRatio = clampValue(
+            Number(backendNodePosition?.x ?? presenceAnchorFallback?.x ?? baseX),
+            0.012,
+            0.988,
+          );
+          const targetYRatio = clampValue(
+            Number(backendNodePosition?.y ?? presenceAnchorFallback?.y ?? baseY),
+            0.012,
+            0.988,
+          );
+          let xRatio = targetXRatio;
+          let yRatio = targetYRatio;
+          if (lockGraphToStaticLayout) {
+            xRatio = baseX;
+            yRatio = baseY;
+          } else {
+            resolveSmoothedGraphNodePosition(nodeId, targetXRatio, targetYRatio);
+            xRatio = smoothedGraphNodeX;
+            yRatio = smoothedGraphNodeY;
+          }
+          const nodeLabelTextBase = nodeKind === "crawler"
             ? shortPathLabel(String(node?.title ?? node?.domain ?? node?.url ?? node?.label ?? nodeId))
             : nodeType === "tag"
               ? `#${shortPathLabel(String(node?.label ?? node?.tag ?? nodeId))}`
               : nodeType === "field"
                 ? shortPathLabel(String(node?.label ?? node?.node_id ?? nodeId))
-                : nodeType === "presence"
+              : nodeType === "presence"
                 ? shortPathLabel(String(node?.label ?? node?.node_id ?? nodeId))
                 : shortPathLabel(String(sourceRelPath || node?.name || node?.label || nodeId));
-          const resourceKind = resourceKindForNode(node);
+          const nodeLabelText = isProjectionOverflowNode
+            ? `[bundle] ${nodeLabelTextBase}`
+            : nodeLabelTextBase;
+          const resourceKind = isProjectionOverflowNode ? "unknown" : resourceKindForNode(node);
+          const isTrueGraphNode = lockGraphToStaticLayout && sourceLayer === "file";
+          const isMusicNode = !isProjectionOverflowNode && isMusicNexusNode(node, resourceKind);
+          if (isMusicNode) {
+            musicNodeIds.add(nodeId);
+          }
           const importance = clamp01(Number(node?.importance ?? 0.35));
           let [r, g, b] = resourceColor(resourceKind);
-          if (nodeKind === "nexus") {
+          if (isProjectionOverflowNode) {
+            [r, g, b] = [1.0, 0.74, 0.3];
+          } else if (nodeKind === "nexus") {
             if (nodeType === "tag") {
               [r, g, b] = [0.73, 0.68, 0.98];
             } else if (nodeType === "field") {
@@ -3561,18 +4574,61 @@ export function SimulationCanvas({
               [r, g, b] = [0.74, 0.8, 0.9];
             }
           }
-          const nodeSize = nodeKind === "crawler"
-            ? 4.2 + importance * 4.1
-            : nodeKind === "nexus"
-              ? 3.7 + importance * 3.4
-              : 5.0 + importance * 4.2;
-          addPoint(xRatio, yRatio, nodeSize * dpr, r, g, b, nodeKind === "nexus" ? 0.72 : 0.82);
+          if (isMusicNode) {
+            [r, g, b] = [0.42, 0.96, 1.0];
+          }
+          if (isTrueGraphNode) {
+            if (isProjectionOverflowNode) {
+              [r, g, b] = [0.98, 0.74, 0.36];
+            } else if (nodeKind === "crawler") {
+              [r, g, b] = [0.44, 0.78, 0.9];
+            } else if (nodeKind === "nexus") {
+              [r, g, b] = [0.58, 0.9, 0.98];
+            } else {
+              [r, g, b] = [0.5, 0.86, 0.95];
+            }
+          }
+          const nodeSize = isProjectionOverflowNode
+            ? 7.2 + importance * 5.6
+            : nodeKind === "crawler"
+              ? 4.2 + importance * 4.1
+              : nodeKind === "nexus"
+                ? 3.7 + importance * 3.4
+                : 5.0 + importance * 4.2;
+          const spotlightDim = spotlightMusicNexus && !isMusicNode ? 0.22 : 1;
+          const trueGraphNodeAlphaScale = isTrueGraphNode ? 0.78 : 1;
+          const trueGraphNodeSizeScale = isTrueGraphNode ? 0.94 : 1;
+          const nodeAlpha = (isProjectionOverflowNode ? 0.96 : (nodeKind === "nexus" ? 0.72 : 0.82)) * spotlightDim * trueGraphNodeAlphaScale;
+          const nodeScale = spotlightMusicNexus && isMusicNode ? 1.24 : (spotlightMusicNexus ? 0.82 : 1);
+          addPoint(
+            xRatio,
+            yRatio,
+            nodeSize * dpr * nodeScale * trueGraphNodeSizeScale,
+            r,
+            g,
+            b,
+            nodeAlpha,
+          );
+          if (isProjectionOverflowNode) {
+            const ring = clampValue(0.008 + importance * 0.018, 0.008, 0.028);
+            addLine(xRatio, yRatio - ring, xRatio + ring, yRatio, r, g, b, 0.58);
+            addLine(xRatio + ring, yRatio, xRatio, yRatio + ring, r, g, b, 0.58);
+            addLine(xRatio, yRatio + ring, xRatio - ring, yRatio, r, g, b, 0.58);
+            addLine(xRatio - ring, yRatio, xRatio, yRatio - ring, r, g, b, 0.58);
+          } else if (isMusicNode) {
+            const ring = clampValue(0.006 + importance * 0.012, 0.006, 0.02);
+            addLine(xRatio - ring, yRatio - ring, xRatio + ring, yRatio - ring, r, g, b, 0.66);
+            addLine(xRatio + ring, yRatio - ring, xRatio + ring, yRatio + ring, r, g, b, 0.66);
+            addLine(xRatio + ring, yRatio + ring, xRatio - ring, yRatio + ring, r, g, b, 0.66);
+            addLine(xRatio - ring, yRatio + ring, xRatio - ring, yRatio - ring, r, g, b, 0.66);
+          }
           graphNodeLookup.set(nodeId, {
             x: xRatio,
             y: yRatio,
             node,
             nodeKind,
             nodeType,
+            isProjectionOverflow: isProjectionOverflowNode,
           });
           hotspots.push({
             id: nodeId,
@@ -3581,11 +4637,23 @@ export function SimulationCanvas({
             nodeKind,
             nodeType,
             resourceKind,
-            label: nodeLabelText,
+            isMusicNexus: isMusicNode,
+            label: isMusicNode ? `[music] ${nodeLabelText}` : nodeLabelText,
             x: xRatio,
             y: yRatio,
             radius: nodeKind === "crawler" ? 0.022 : nodeKind === "nexus" ? 0.018 : 0.02,
+            radiusNorm: nodeKind === "crawler" ? 0.022 : nodeKind === "nexus" ? 0.018 : 0.02,
+            isProjectionOverflow: isProjectionOverflowNode,
+            isTrueGraph: isTrueGraphNode,
           });
+          if (isMusicNode) {
+            musicHotspots.push({
+              id: nodeId,
+              label: nodeLabelText,
+              x: xRatio,
+              y: yRatio,
+            });
+          }
         }
       };
 
@@ -3597,8 +4665,11 @@ export function SimulationCanvas({
           if (!nodeId || graphNodeLookup.size >= maxNodeCount || graphNodeLookup.has(nodeId)) {
             continue;
           }
-          const xRatio = clampValue(Number(nodePosition?.x ?? 0.5), 0.012, 0.988);
-          const yRatio = clampValue(Number(nodePosition?.y ?? 0.5), 0.012, 0.988);
+          const targetXRatio = clampValue(Number(nodePosition?.x ?? 0.5), 0.012, 0.988);
+          const targetYRatio = clampValue(Number(nodePosition?.y ?? 0.5), 0.012, 0.988);
+          resolveSmoothedGraphNodePosition(nodeId, targetXRatio, targetYRatio);
+          const xRatio = smoothedGraphNodeX;
+          const yRatio = smoothedGraphNodeY;
           const node = {
             id: nodeId,
             node_type: "nexus",
@@ -3612,6 +4683,7 @@ export function SimulationCanvas({
             node,
             nodeKind: "nexus",
             nodeType: "nexus",
+            isProjectionOverflow: false,
           });
           hotspots.push({
             id: nodeId,
@@ -3624,6 +4696,7 @@ export function SimulationCanvas({
             x: xRatio,
             y: yRatio,
             radius: 0.016,
+            radiusNorm: 0.016,
           });
         }
       };
@@ -3633,9 +4706,13 @@ export function SimulationCanvas({
       ingestNodeRows(fileGraph?.crawler_nodes, "file");
       ingestNodeRows(crawlerGraph?.nodes, "crawler");
       ingestNodeRows(crawlerGraph?.crawler_nodes, "crawler");
-      ingestFallbackGraphPositions();
+      if (!lockGraphToStaticLayout) {
+        ingestFallbackGraphPositions();
+      }
 
-      const fileEdges = showFileGraphLayer && Array.isArray(fileGraph?.edges) ? fileGraph.edges : [];
+      const fileEdges = (showFileGraphLayer || showTrueGraphLayer) && Array.isArray(fileGraph?.edges)
+        ? fileGraph.edges
+        : [];
       const crawlerEdges = showCrawlerGraphLayer && Array.isArray(crawlerGraph?.edges) ? crawlerGraph.edges : [];
       const maxEdgeCount = isLowPowerOverlay ? 1200 : 3200;
 
@@ -3679,6 +4756,22 @@ export function SimulationCanvas({
       const drawEdgeRows = (edges: any[]) => {
         for (let index = 0; index < edges.length && renderedEdgeCount < maxEdgeCount; index += 1) {
           const edge = edges[index] as any;
+          const trueGraphEdgeMode = lockGraphToStaticLayout;
+          if (trueGraphEdgeMode) {
+            const edgeId = String(edge?.id ?? "").trim();
+            const sourceText = String(edge?.source ?? "").trim();
+            const targetText = String(edge?.target ?? "").trim();
+            const projectionGroupId = String(edge?.projection_group_id ?? "").trim();
+            const isCompactionArtifactEdge = Boolean(edge?.projection_overflow)
+              || Boolean(edge?.consolidated)
+              || projectionGroupId.length > 0
+              || edgeId.includes("projection:")
+              || sourceText.includes("projection:")
+              || targetText.includes("projection:");
+            if (isCompactionArtifactEdge) {
+              continue;
+            }
+          }
           const sourceId = String(edge?.source ?? "").trim();
           const targetId = String(edge?.target ?? "").trim();
           if (!sourceId || !targetId || sourceId === targetId) {
@@ -3689,14 +4782,19 @@ export function SimulationCanvas({
           if (!source || !target) {
             continue;
           }
+          if (spotlightMusicNexus && !musicNodeIds.has(sourceId) && !musicNodeIds.has(targetId)) {
+            continue;
+          }
           const kind = String(edge?.kind ?? "").trim().toLowerCase();
           const [r, g, b, a] = edgeColorByKind(kind);
 
-          const mix = flowIntensity * strobe * 0.6;
+          const mix = trueGraphEdgeMode ? 0 : flowIntensity * strobe * 0.6;
           const fr = r * (1 - mix) + dr * mix;
           const fg = g * (1 - mix) + dg * mix;
           const fb = b * (1 - mix) + db * mix;
-          const fa = Math.min(1.0, a + (flowIntensity * 0.3));
+          const fa = trueGraphEdgeMode
+            ? Math.max(0.08, a * 0.62)
+            : Math.min(1.0, a + (flowIntensity * 0.3));
 
           addLine(source.x, source.y, target.x, target.y, fr, fg, fb, fa);
           renderedEdgeCount += 1;
@@ -3710,9 +4808,219 @@ export function SimulationCanvas({
         drawEdgeRows(crawlerEdges);
       }
 
+      const transientQueryEdges = normalizeUserQueryEdgeRows(
+        currentSimulation?.presence_dynamics?.user_query_transient_edges,
+      );
+      const promotedQueryEdges = normalizeUserQueryEdgeRows(
+        currentSimulation?.presence_dynamics?.user_query_promoted_edges,
+      );
+      if ((showPresenceLayer || showGraphFocusedView) && (transientQueryEdges.length > 0 || promotedQueryEdges.length > 0)) {
+        const userPresence = asRecord(currentSimulation?.presence_dynamics?.user_presence);
+        const userAnchorX = clampValue(Number(userPresence?.anchor_x ?? 0.5), 0.02, 0.98);
+        const userAnchorY = clampValue(Number(userPresence?.anchor_y ?? 0.72), 0.02, 0.98);
+        const queryRows = [
+          ...promotedQueryEdges.map((row) => ({ ...row, promoted: true })),
+          ...transientQueryEdges.map((row) => ({ ...row, promoted: false })),
+        ].slice(0, isLowPowerOverlay ? 28 : 72);
+
+        const resolveTargetAnchor = (targetIdRaw: string): { x: number; y: number } | null => {
+          const cleanTargetRaw = String(targetIdRaw || "").trim();
+          const cleanTarget = canonicalPresenceId(cleanTargetRaw);
+          if (!cleanTarget) {
+            return null;
+          }
+
+          if (cleanTarget === "nexus") {
+            const nexusNode = graphNodeLookup.get("nexus.user.cursor")
+              ?? graphNodeLookup.get("nexus")
+              ?? Array.from(graphNodeLookup.values()).find((row) => row.nodeKind === "nexus");
+            if (nexusNode) {
+              return { x: nexusNode.x, y: nexusNode.y };
+            }
+            return { x: 0.5, y: 0.5 };
+          }
+
+          const nodeRow = graphNodeLookup.get(cleanTargetRaw) ?? graphNodeLookup.get(cleanTarget);
+          if (nodeRow) {
+            return { x: nodeRow.x, y: nodeRow.y };
+          }
+
+          const presenceRow = presenceAnchorById.get(cleanTarget);
+          if (presenceRow) {
+            return { x: presenceRow.x, y: presenceRow.y };
+          }
+          return null;
+        };
+
+        for (let queryIndex = 0; queryIndex < queryRows.length; queryIndex += 1) {
+          const row = queryRows[queryIndex];
+          const targetAnchor = resolveTargetAnchor(row.target);
+          if (!targetAnchor) {
+            continue;
+          }
+
+          const seed = stablePresenceRatio(`${row.id}|${row.source}`, 61 + queryIndex);
+          const angle = seed * Math.PI * 2;
+          const radius = 0.012 + (stablePresenceRatio(row.source, 73) * (row.promoted ? 0.05 : 0.032));
+          const sourceX = clampValue(userAnchorX + Math.cos(angle) * radius, 0.02, 0.98);
+          const sourceY = clampValue(userAnchorY + Math.sin(angle) * radius, 0.02, 0.98);
+
+          const intensity = row.promoted ? clampValue(0.45 + row.strength * 0.55, 0.45, 1.0) : clampValue(0.35 + row.life * 0.65, 0.35, 1.0);
+          const r = row.promoted ? 1.0 : 0.52;
+          const g = row.promoted ? 0.78 : 0.88;
+          const b = row.promoted ? 0.42 : 1.0;
+          const lineAlpha = row.promoted ? (0.2 + intensity * 0.44) : (0.1 + intensity * 0.3);
+          const nodeAlpha = row.promoted ? 0.88 : 0.68;
+
+          addLine(sourceX, sourceY, targetAnchor.x, targetAnchor.y, r, g, b, lineAlpha);
+          addPoint(sourceX, sourceY, (2.0 + Math.min(6, row.hits) * 0.34) * dpr, r, g, b, clamp01(nodeAlpha - 0.1));
+          addPoint(targetAnchor.x, targetAnchor.y, (2.6 + Math.min(7, row.hits) * 0.42) * dpr, r, g, b, nodeAlpha);
+        }
+      }
+
+      if (!lockGraphToStaticLayout && (showFileGraphLayer || showTrueGraphLayer) && fileGraph) {
+        const projectionGroups = Array.isArray((fileGraph as any)?.projection?.groups)
+          ? (fileGraph as any).projection.groups
+          : [];
+        const projectionActive = Boolean((fileGraph as any)?.projection?.active);
+        const fileNodes = Array.isArray((fileGraph as any)?.file_nodes) ? (fileGraph as any).file_nodes : [];
+        const graphNodes = Array.isArray((fileGraph as any)?.nodes) ? (fileGraph as any).nodes : [];
+        const fieldNodes = Array.isArray((fileGraph as any)?.field_nodes) ? (fileGraph as any).field_nodes : [];
+        const tagNodes = Array.isArray((fileGraph as any)?.tag_nodes) ? (fileGraph as any).tag_nodes : [];
+        const trueNodePositionById = new Map<string, { x: number; y: number }>();
+        const registerProjectionNode = (node: any) => {
+          const nodeId = String(node?.id ?? "").trim();
+          if (!nodeId || trueNodePositionById.has(nodeId)) {
+            return;
+          }
+          trueNodePositionById.set(nodeId, {
+            x: clampValue(Number(node?.x ?? 0.5), 0.012, 0.988),
+            y: clampValue(Number(node?.y ?? 0.5), 0.012, 0.988),
+          });
+        };
+        graphNodes.forEach(registerProjectionNode);
+        fieldNodes.forEach(registerProjectionNode);
+        tagNodes.forEach(registerProjectionNode);
+        fileNodes.forEach(registerProjectionNode);
+
+        const overflowAnchorByGroupId = new Map<string, { x: number; y: number }>();
+        for (const node of fileNodes) {
+          const groupId = String(node?.projection_group_id ?? "").trim();
+          if (!groupId || overflowAnchorByGroupId.has(groupId) || !node?.projection_overflow) {
+            continue;
+          }
+          const id = String(node?.id ?? "").trim();
+          const dynamic = graphNodeLookup.get(id);
+          overflowAnchorByGroupId.set(groupId, {
+            x: dynamic ? dynamic.x : clampValue(Number(node?.x ?? 0.5), 0.012, 0.988),
+            y: dynamic ? dynamic.y : clampValue(Number(node?.y ?? 0.5), 0.012, 0.988),
+          });
+        }
+
+        const resolveTrueNodeAnchor = (nodeId: string): { x: number; y: number } | null => {
+          const cleanId = String(nodeId ?? "").trim();
+          if (!cleanId) {
+            return null;
+          }
+          const dynamic = graphNodeLookup.get(cleanId);
+          if (dynamic) {
+            return { x: dynamic.x, y: dynamic.y };
+          }
+          const staticNode = trueNodePositionById.get(cleanId);
+          if (staticNode) {
+            return staticNode;
+          }
+          const presenceRow = presenceAnchorById.get(cleanId);
+          if (presenceRow) {
+            return {
+              x: clampValue(Number(presenceRow.x ?? 0.5), 0.012, 0.988),
+              y: clampValue(Number(presenceRow.y ?? 0.5), 0.012, 0.988),
+            };
+          }
+          return null;
+        };
+
+        const maxTrueGraphEdges = isLowPowerOverlay ? 320 : 1280;
+        let trueGraphEdgeCount = 0;
+        for (const group of projectionGroups) {
+          if (trueGraphEdgeCount >= maxTrueGraphEdges) {
+            break;
+          }
+          const groupId = String(group?.id ?? "").trim();
+          if (!groupId || !projectionActive || !group?.surface_visible) {
+            continue;
+          }
+          const sourceIds = Array.isArray(group?.member_source_ids)
+            ? group.member_source_ids.map((value: unknown) => String(value ?? "").trim()).filter((value: string) => value.length > 0)
+            : [];
+          const targetIds = Array.isArray(group?.member_target_ids)
+            ? group.member_target_ids.map((value: unknown) => String(value ?? "").trim()).filter((value: string) => value.length > 0)
+            : [];
+          if (sourceIds.length <= 0 && targetIds.length <= 0) {
+            continue;
+          }
+
+          const anchor = overflowAnchorByGroupId.get(groupId);
+          if (!anchor) {
+            continue;
+          }
+          const memberEdgeCount = Math.max(1, Number(group?.member_edge_count ?? 1));
+          const bridgeIntensity = clamp01(0.24 + (Math.log1p(memberEdgeCount) / 6.2));
+          const sourceLimit = Math.min(sourceIds.length, isLowPowerOverlay ? 20 : 48);
+          for (let sourceIndex = 0; sourceIndex < sourceLimit && trueGraphEdgeCount < maxTrueGraphEdges; sourceIndex += 1) {
+            const sourceId = sourceIds[sourceIndex];
+            const source = resolveTrueNodeAnchor(sourceId);
+            if (!source) {
+              continue;
+            }
+            addLine(
+              source.x,
+              source.y,
+              anchor.x,
+              anchor.y,
+              1.0,
+              0.84,
+              0.44,
+              0.16 + (bridgeIntensity * 0.32),
+            );
+            trueGraphEdgeCount += 1;
+          }
+
+          const targetLimit = Math.min(targetIds.length, isLowPowerOverlay ? 12 : 28);
+          for (let targetIndex = 0; targetIndex < targetLimit && trueGraphEdgeCount < maxTrueGraphEdges; targetIndex += 1) {
+            const targetId = targetIds[targetIndex];
+            const target = resolveTrueNodeAnchor(targetId);
+            if (!target) {
+              continue;
+            }
+            addLine(
+              anchor.x,
+              anchor.y,
+              target.x,
+              target.y,
+              0.56,
+              0.92,
+              1.0,
+              0.12 + (bridgeIntensity * 0.24),
+            );
+            trueGraphEdgeCount += 1;
+          }
+
+          addPoint(
+            anchor.x,
+            anchor.y,
+            (5.4 + Math.min(12, sourceIds.length + targetIds.length) * 0.18) * dpr,
+            1.0,
+            0.86,
+            0.48,
+            0.54,
+          );
+        }
+      }
+
 
       if (showAmbientPresenceParticles || showRouteLaneTelemetry) {
-        const particleRows = allFieldParticles;
+        const particleRows = smoothedParticleRows;
         const maxParticleCount = Math.max(
           isLowPowerOverlay ? 180 : 240,
           Math.round((isLowPowerOverlay ? 980 : 2600) * particleDensityRef.current),
@@ -3720,14 +5028,19 @@ export function SimulationCanvas({
         const step = Math.max(1, Math.ceil(particleRows.length / Math.max(1, maxParticleCount)));
         for (let index = 0; index < particleRows.length; index += step) {
           const row = particleRows[index] as any;
-          const xRatio = toRatio(Number(row?.x ?? 0.5));
-          const yRatio = toRatio(Number(row?.y ?? 0.5));
+          if (!row) {
+            continue;
+          }
+          const xRatio = smoothedParticleX[index] ?? 0.5;
+          const yRatio = smoothedParticleY[index] ?? 0.5;
           if (showAmbientPresenceParticles) {
             const size = clampValue(Number(row?.size ?? 1.1), 0.3, 5.4);
+            const semanticWeightScale = semanticWeightScaleForParticle(row as BackendFieldParticle);
+            const scaledParticleSize = (size * 3.1 + 1.1) * semanticWeightScale * particleScaleRef.current * dpr;
             addPoint(
               xRatio,
               yRatio,
-              (size * 3.1 + 1.1) * particleScaleRef.current * dpr,
+              scaledParticleSize,
               Number(row?.r ?? 0.58),
               Number(row?.g ?? 0.72),
               Number(row?.b ?? 0.92),
@@ -3736,7 +5049,7 @@ export function SimulationCanvas({
             presencePointRowsCurrent.push(
               xRatio * canvasWidth,
               yRatio * canvasHeight,
-              Math.max(1.2, (size * 3.1 + 1.1) * particleScaleRef.current * dpr),
+              Math.max(1.2, scaledParticleSize),
               clamp01(Number(row?.r ?? 0.58)),
               clamp01(Number(row?.g ?? 0.72)),
               clamp01(Number(row?.b ?? 0.92)),
@@ -3806,6 +5119,7 @@ export function SimulationCanvas({
               x: clamp01(centroid.sumX / centroid.count),
               y: clamp01(centroid.sumY / centroid.count),
               radius: 0.022,
+              radiusNorm: 0.022,
             });
           }
         }
@@ -3851,9 +5165,50 @@ export function SimulationCanvas({
           const laneDx = lane.targetX - lane.sourceX;
           const laneDy = lane.targetY - lane.sourceY;
           const laneLength = Math.hypot(laneDx, laneDy);
-          if (laneLength > 0.0005 && throughput > 0.22) {
+          if (laneLength > 0.0005) {
             const ux = laneDx / laneLength;
             const uy = laneDy / laneLength;
+            if (throughput > 0.12) {
+              const pulseCount = isLowPowerOverlay ? 1 : (throughput > 0.62 ? 2 : 1);
+              const pulseTravelRate = 0.00008 + (throughput * 0.00014);
+              const lanePhaseBase = (ts * pulseTravelRate) + (lane.seed * 11.0);
+              for (let pulseIndex = 0; pulseIndex < pulseCount; pulseIndex += 1) {
+                const pulsePhase = lanePhaseBase + (pulseIndex / Math.max(1, pulseCount));
+                const pulseProgress = pulsePhase - Math.floor(pulsePhase);
+                const laneProgress = clampValue(0.06 + (pulseProgress * 0.88), 0.04, 0.96);
+                const pulseX = lane.sourceX + (laneDx * laneProgress);
+                const pulseY = lane.sourceY + (laneDy * laneProgress);
+                const pulseShimmer = 0.8 + (Math.sin((pulseProgress + lane.seed) * Math.PI * 2) * 0.2);
+                const pulseAlpha = clamp01((0.24 + (throughput * 0.46)) * pulseShimmer);
+                const pulseSize = (2.7 + (throughput * 4.8)) * dpr;
+                addPoint(
+                  pulseX,
+                  pulseY,
+                  pulseSize,
+                  streamR,
+                  streamG,
+                  streamB,
+                  pulseAlpha,
+                );
+                if (!isLowPowerOverlay && throughput > 0.34) {
+                  const tailLen = 0.005 + (throughput * 0.01);
+                  addLine(
+                    pulseX - (ux * tailLen),
+                    pulseY - (uy * tailLen),
+                    pulseX,
+                    pulseY,
+                    streamR,
+                    streamG,
+                    streamB,
+                    pulseAlpha * 0.68,
+                  );
+                }
+              }
+            }
+
+            if (throughput <= 0.22) {
+              continue;
+            }
             const px = -uy;
             const py = ux;
             const arrowLen = 0.009 + (throughput * 0.018);
@@ -3891,6 +5246,7 @@ export function SimulationCanvas({
         lastNodeTitleOverlaySyncMs = nowMs;
         const nextGraphNodeTitleOverlays = selectGraphNodeTitleOverlays(hotspots, {
           showFileLayer: showFileGraphLayer,
+          showTrueGraphLayer: showTrueGraphLayer,
           showCrawlerLayer: showCrawlerGraphLayer,
           showPresenceLayer: showPresenceLayer,
           interactiveEnabled: isInteractive,
@@ -3906,6 +5262,8 @@ export function SimulationCanvas({
                 row.id === nextRow.id
                 && row.label === nextRow.label
                 && row.kind === nextRow.kind
+                && Boolean(row.isTrueGraph) === Boolean(nextRow.isTrueGraph)
+                && Boolean(row.isProjectionOverflow) === Boolean(nextRow.isProjectionOverflow)
                 && Math.abs(row.x - nextRow.x) < 0.001
                 && Math.abs(row.y - nextRow.y) < 0.001
               );
@@ -4059,6 +5417,7 @@ export function SimulationCanvas({
       if (metaRef.current) {
         metaRef.current.textContent = `webgl overlay particles:${allFieldParticles.length} nodes:${graphNodeLookup.size} hotspots:${hotspots.length}`;
       }
+      musicNexusHotspotsRef.current = musicHotspots;
 
       if (isLowPowerOverlay) {
         lastLowPowerSimulationTimestamp = simulationTimestamp;
@@ -4102,7 +5461,8 @@ export function SimulationCanvas({
         if (openWorldscreen) {
           openWorldscreenForNode(hit.node, hit.nodeKind, nodeXRatio, nodeYRatio);
         }
-        onNexusInteractionRef.current?.({
+        const onNexusInteraction = onNexusInteractionRef.current;
+        onNexusInteraction?.({
           nodeId: hit.id,
           nodeKind: hit.nodeKind,
           resourceKind: hit.resourceKind ?? "unknown",
@@ -4419,6 +5779,12 @@ export function SimulationCanvas({
   const activeFieldParticleRows = useMemo<BackendFieldParticle[]>(() => {
     return resolveFieldParticleRows(simulation);
   }, [resolveFieldParticleRows, simulation]);
+  const queryTransientEdgeRows = useMemo(() => {
+    return normalizeUserQueryEdgeRows(simulation?.presence_dynamics?.user_query_transient_edges);
+  }, [simulation?.presence_dynamics?.user_query_transient_edges]);
+  const queryPromotedEdgeRows = useMemo(() => {
+    return normalizeUserQueryEdgeRows(simulation?.presence_dynamics?.user_query_promoted_edges);
+  }, [simulation?.presence_dynamics?.user_query_promoted_edges]);
   const resourceEconomyHud = useMemo(() => {
     if (!interactive) {
       return EMPTY_RESOURCE_ECONOMY_HUD;
@@ -4446,6 +5812,137 @@ export function SimulationCanvas({
   }, [interactive, simulation]);
   const liveFieldParticleCount = activeFieldParticleRows.length;
   const fallbackPointCount = Array.isArray(simulation?.points) ? simulation.points.length : 0;
+  const graphStructureHud = useMemo(() => {
+    const truthGraph = simulation?.truth_graph as any;
+    const viewGraph = simulation?.view_graph as any;
+    const fileGraph = (simulation?.file_graph ?? catalog?.file_graph ?? null) as any;
+    const hasFileGraph = Boolean(fileGraph && typeof fileGraph === "object");
+    const projection = (fileGraph?.projection ?? viewGraph?.projection ?? null) as any;
+    const projectionPolicy = (projection?.policy ?? null) as any;
+    const fileNodes = Array.isArray(fileGraph?.file_nodes) ? fileGraph.file_nodes : [];
+    const fileEdges = Array.isArray(fileGraph?.edges) ? fileGraph.edges : [];
+    const projectionGroups = Array.isArray(projection?.groups) ? projection.groups : [];
+    const overflowNodeCount = fileNodes.reduce((count: number, node: any) => {
+      const groupId = String(node?.projection_group_id ?? "").trim();
+      if (node?.projection_overflow || node?.kind === "projection_overflow" || groupId.length > 0) {
+        return count + 1;
+      }
+      return count;
+    }, 0);
+
+    const truthNodeCount = Math.max(0, Number(truthGraph?.node_count ?? 0));
+    const truthEdgeCount = Math.max(0, Number(truthGraph?.edge_count ?? 0));
+    const viewNodeCount = Math.max(0, Number(viewGraph?.node_count ?? 0));
+    const viewEdgeCount = Math.max(0, Number(viewGraph?.edge_count ?? 0));
+    const projectionActive = Boolean(projection?.active ?? viewGraph?.projection?.active ?? false);
+    const projectionMode = String(projection?.mode ?? viewGraph?.projection?.mode ?? "n/a");
+    const projectionReason = String(projection?.reason ?? viewGraph?.projection?.reason ?? "n/a");
+    const projectionBundleLedgerCount = Math.max(0, Number(viewGraph?.projection?.bundle_ledger_count ?? 0));
+    const projectionCompactionDrive = Math.max(
+      0,
+      Math.min(
+        1,
+        Number(viewGraph?.projection?.compaction_drive ?? projectionPolicy?.compaction_drive ?? 0),
+      ),
+    );
+    const projectionCpuPressure = Math.max(
+      0,
+      Math.min(
+        1,
+        Number(viewGraph?.projection?.cpu_pressure ?? projectionPolicy?.cpu_pressure ?? 0),
+      ),
+    );
+    const projectionViewEdgePressure = Math.max(
+      0,
+      Math.min(
+        1,
+        Number(viewGraph?.projection?.view_edge_pressure ?? projectionPolicy?.view_edge_pressure ?? 0),
+      ),
+    );
+    const projectionCpuUtilization = Math.max(
+      0,
+      Math.min(
+        100,
+        Number(viewGraph?.projection?.cpu_utilization ?? projectionPolicy?.cpu_utilization ?? 0),
+      ),
+    );
+    const projectionEdgeThresholdBase = Math.max(
+      0,
+      Number(viewGraph?.projection?.edge_threshold_base ?? projection?.limits?.edge_threshold_base ?? 0),
+    );
+    const projectionEdgeThresholdEffective = Math.max(
+      0,
+      Number(viewGraph?.projection?.edge_threshold_effective ?? projection?.limits?.edge_threshold ?? 0),
+    );
+    const projectionEdgeCapBase = Math.max(
+      0,
+      Number(viewGraph?.projection?.edge_cap_base ?? projection?.limits?.edge_cap_base ?? 0),
+    );
+    const projectionEdgeCapEffective = Math.max(
+      0,
+      Number(viewGraph?.projection?.edge_cap_effective ?? projection?.limits?.edge_cap ?? 0),
+    );
+    const projectionCpuSentinelId = String(
+      viewGraph?.projection?.cpu_sentinel_id ?? projectionPolicy?.presence_id ?? "",
+    ).trim();
+    const queryTransientEdgeCount = queryTransientEdgeRows.length;
+    const queryPromotedEdgeCount = queryPromotedEdgeRows.length;
+    const queryPeakHits = Math.max(
+      0,
+      ...queryTransientEdgeRows.map((row) => row.hits),
+      ...queryPromotedEdgeRows.map((row) => row.hits),
+    );
+    const queryTopTarget = (
+      queryTransientEdgeRows[0]?.target
+      ?? queryPromotedEdgeRows[0]?.target
+      ?? ""
+    ).trim();
+    const viewToTruthEdgeRatio = truthEdgeCount > 0 ? (viewEdgeCount / truthEdgeCount) : null;
+    const hasContracts = (
+      truthNodeCount > 0
+      || truthEdgeCount > 0
+      || viewNodeCount > 0
+      || viewEdgeCount > 0
+    );
+
+    return {
+      hasContracts,
+      truthNodeCount,
+      truthEdgeCount,
+      viewNodeCount,
+      viewEdgeCount,
+      fileNodeCount: fileNodes.length,
+      fileEdgeCount: fileEdges.length,
+      hasFileGraph,
+      projectionActive,
+      projectionMode,
+      projectionReason,
+      projectionCompactionDrive,
+      projectionCpuPressure,
+      projectionViewEdgePressure,
+      projectionCpuUtilization,
+      projectionEdgeThresholdBase,
+      projectionEdgeThresholdEffective,
+      projectionEdgeCapBase,
+      projectionEdgeCapEffective,
+      projectionCpuSentinelId,
+      projectionGroupCount: projectionGroups.length,
+      projectionBundleLedgerCount,
+      overflowNodeCount,
+      viewToTruthEdgeRatio,
+      queryTransientEdgeCount,
+      queryPromotedEdgeCount,
+      queryPeakHits,
+      queryTopTarget,
+    };
+  }, [
+    catalog?.file_graph,
+    queryPromotedEdgeRows,
+    queryTransientEdgeRows,
+    simulation?.file_graph,
+    simulation?.truth_graph,
+    simulation?.view_graph,
+  ]);
   const particleLegendStats = useMemo(() => {
     if (!interactive || activeFieldParticleRows.length <= 0) {
       return EMPTY_PARTICLE_LEGEND_STATS;
@@ -4501,6 +5998,57 @@ export function SimulationCanvas({
       overlays,
     };
   }, [activeFieldParticleRows, interactive]);
+  const musicNexusNodeCount = useMemo(() => {
+    const uniqueIds = new Set<string>();
+    const sourceGraphs = [
+      simulation?.file_graph,
+      simulation?.crawler_graph,
+      catalog?.file_graph,
+      catalog?.crawler_graph,
+    ];
+    for (const graph of sourceGraphs) {
+      if (!graph) {
+        continue;
+      }
+      const graphRow = graph as any;
+      const nodeRows = [graphRow.nodes, graphRow.file_nodes, graphRow.crawler_nodes];
+      for (const rows of nodeRows) {
+        if (!Array.isArray(rows)) {
+          continue;
+        }
+        for (const row of rows) {
+          const node = row as any;
+          const nodeId = String(node?.id ?? "").trim();
+          if (!nodeId || uniqueIds.has(nodeId)) {
+            continue;
+          }
+          if (!isMusicNexusNode(node, resourceKindForNode(node))) {
+            continue;
+          }
+          uniqueIds.add(nodeId);
+        }
+      }
+    }
+    return uniqueIds.size;
+  }, [catalog, simulation]);
+  const focusNextMusicNexus = useCallback(() => {
+    const hotspots = musicNexusHotspotsRef.current;
+    if (hotspots.length <= 0) {
+      setMusicNexusJumpLabel("no mp3 nexus visible in current overlay");
+      if (metaRef.current) {
+        metaRef.current.textContent = "mp3 nexus jump unavailable";
+      }
+      return;
+    }
+    const nextIndex = musicNexusCycleRef.current % hotspots.length;
+    const target = hotspots[nextIndex];
+    musicNexusCycleRef.current = nextIndex + 1;
+    setMusicNexusJumpLabel(target.label);
+    interactAtRef.current?.(target.x, target.y, { openWorldscreen: true });
+    if (metaRef.current) {
+      metaRef.current.textContent = `mp3 nexus focused: ${target.label}`;
+    }
+  }, []);
   const overlayParticleModeActive = renderRichOverlayParticles && liveFieldParticleCount > 0;
 
   return (
@@ -4513,7 +6061,13 @@ export function SimulationCanvas({
             <div
               key={`graph-node-title-${row.id}`}
               className={`absolute pointer-events-auto max-w-[15rem] -translate-x-1/2 -translate-y-full rounded border px-1.5 py-0.5 text-[10px] leading-4 whitespace-nowrap overflow-hidden text-ellipsis shadow-[0_8px_22px_rgba(0,0,0,0.32)] ${
-                row.kind === "file"
+                row.isTrueGraph && row.label.toLowerCase().startsWith("[bundle]")
+                  ? "border-[rgba(255,142,220,0.9)] bg-[rgba(61,12,51,0.9)] text-[#ffe3ff]"
+                  : row.isTrueGraph
+                    ? "border-[rgba(230,129,255,0.82)] bg-[rgba(42,9,63,0.86)] text-[#f6d7ff]"
+                  : row.label.toLowerCase().startsWith("[bundle]")
+                  ? "border-[rgba(255,196,108,0.58)] bg-[rgba(58,36,10,0.72)] text-[#ffe7bf]"
+                  : row.kind === "file"
                   ? "border-[rgba(152,216,255,0.44)] bg-[rgba(11,30,48,0.68)] text-[#dff3ff]"
                   : row.kind === "crawler"
                     ? "border-[rgba(186,210,164,0.38)] bg-[rgba(23,36,30,0.65)] text-[#d7f0dc]"
@@ -4570,6 +6124,35 @@ export function SimulationCanvas({
             {interactive ? (
               <p className="mt-1 text-[10px] text-[#c4d7f0]">single tap centers nexus in glass lane · double tap opens hologram / 単タップで中心化・ダブルで起動</p>
             ) : null}
+            <div className="mt-2 rounded border border-[rgba(122,198,228,0.32)] bg-[rgba(10,27,42,0.56)] px-2 py-1.5">
+              <p className="text-[9px] uppercase tracking-[0.11em] text-[#9fd5f2]">mp3 nexus tools</p>
+              <p className="mt-1 text-[10px] text-[#c8e4f5]">
+                mp3 matches: {musicNexusNodeCount} · visible matches: {musicNexusHotspotsRef.current.length}
+              </p>
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                <button
+                  type="button"
+                  onClick={() => setMusicNexusSpotlight((previous) => !previous)}
+                  className={`rounded border px-2 py-0.5 text-[10px] font-semibold transition-colors ${
+                    musicNexusSpotlight
+                      ? "border-[rgba(128,236,255,0.82)] bg-[rgba(62,172,192,0.38)] text-[#ecfbff]"
+                      : "border-[rgba(122,177,209,0.42)] bg-[rgba(12,33,52,0.62)] text-[#bed8ee] hover:bg-[rgba(26,58,85,0.74)]"
+                  }`}
+                >
+                  {musicNexusSpotlight ? "mp3 spotlight on" : "mp3 spotlight off"}
+                </button>
+                <button
+                  type="button"
+                  onClick={focusNextMusicNexus}
+                  className="rounded border border-[rgba(128,236,255,0.64)] bg-[rgba(25,94,116,0.38)] px-2 py-0.5 text-[10px] font-semibold text-[#dff7ff] hover:bg-[rgba(38,126,150,0.44)]"
+                >
+                  jump to next mp3 nexus
+                </button>
+              </div>
+              {musicNexusJumpLabel ? (
+                <p className="mt-1 text-[10px] text-[#a9d9ee]">focus: {musicNexusJumpLabel}</p>
+              ) : null}
+            </div>
           </div>
           <div className="mt-2 rounded-md border border-[rgba(126,214,247,0.34)] bg-[rgba(7,19,33,0.76)] px-2 py-2 shadow-[0_14px_30px_rgba(0,9,20,0.34)]">
             <div className="flex items-center justify-between gap-2">
@@ -4680,6 +6263,7 @@ export function SimulationCanvas({
             <span className="text-[#c8dcf3]"> · </span>
             <span className="text-[#ff9f77]">VIDEO</span>
           </p>
+          <p className="text-[10px] text-[#a7f2ff]">MUSIC NEXUS: cyan ring + [music] label</p>
           <p className="text-[10px] text-[#cfdcff]">NEXUS META: tag / field / presence nodes</p>
         </div>
       ) : null}
@@ -4694,6 +6278,65 @@ export function SimulationCanvas({
             compactHud ? "bottom-10 max-w-[19rem]" : "bottom-12 max-w-[24rem]"
           }`}
         >
+          <p className="uppercase tracking-[0.1em] text-[#d8b9ff]">graph contracts</p>
+          {graphStructureHud.hasContracts ? (
+            <>
+              <p className="text-[#f0ccff]">
+                truth n/e {graphStructureHud.truthNodeCount}/{graphStructureHud.truthEdgeCount}
+              </p>
+              <p className="text-[#e4beff]">
+                view n/e {graphStructureHud.viewNodeCount}/{graphStructureHud.viewEdgeCount}
+                {graphStructureHud.viewToTruthEdgeRatio !== null
+                  ? ` · edge ratio ${(graphStructureHud.viewToTruthEdgeRatio).toFixed(2)}`
+                  : ""}
+              </p>
+              <p className="text-[#c9def4]">
+                projection {graphStructureHud.projectionActive ? "active" : "inactive"}
+                {` · mode ${graphStructureHud.projectionMode}`}
+              </p>
+              <p className="text-[#c9def4]">
+                reason {graphStructureHud.projectionReason}
+                {` · groups ${graphStructureHud.projectionGroupCount}`}
+                {` · ledgers ${graphStructureHud.projectionBundleLedgerCount}`}
+              </p>
+              <p className="text-[#c9def4]">
+                drive {graphStructureHud.projectionCompactionDrive.toFixed(2)}
+                {` · cpu ${graphStructureHud.projectionCpuUtilization.toFixed(1)}%`}
+                {` · cpuP ${graphStructureHud.projectionCpuPressure.toFixed(2)}`}
+                {` · edgeP ${graphStructureHud.projectionViewEdgePressure.toFixed(2)}`}
+              </p>
+              <p className="text-[#c9def4]">
+                threshold {Math.round(graphStructureHud.projectionEdgeThresholdEffective)}/{Math.round(graphStructureHud.projectionEdgeThresholdBase)}
+                {` · cap ${Math.round(graphStructureHud.projectionEdgeCapEffective)}/${Math.round(graphStructureHud.projectionEdgeCapBase)}`}
+              </p>
+              {graphStructureHud.projectionCpuSentinelId ? (
+                <p className="text-[#d4baff]">sentinel {graphStructureHud.projectionCpuSentinelId}</p>
+              ) : null}
+              {graphStructureHud.hasFileGraph ? (
+                <p className="text-[#c9def4]">
+                  rendered file n/e {graphStructureHud.fileNodeCount}/{graphStructureHud.fileEdgeCount}
+                  {` · bundle nodes ${graphStructureHud.overflowNodeCount}`}
+                </p>
+              ) : (
+                <p className="text-[#9fbed7]">rendered file graph unavailable in current snapshot.</p>
+              )}
+              <p className="text-[#9ecbe8]">
+                query edges transient/promoted {graphStructureHud.queryTransientEdgeCount}/{graphStructureHud.queryPromotedEdgeCount}
+                {graphStructureHud.queryPeakHits > 0 ? ` · peak hits ${graphStructureHud.queryPeakHits}` : ""}
+              </p>
+              {graphStructureHud.queryTopTarget ? (
+                <p className="text-[#9ecbe8]">top query target {graphStructureHud.queryTopTarget}</p>
+              ) : null}
+              <p className={graphStructureHud.projectionActive ? "text-[#ffd8b0]" : "text-[#a7c7df]"}>
+                {graphStructureHud.projectionActive
+                  ? "projection active: bundle nodes should be present when groups > 0."
+                  : "projection inactive: compression bypassed, so bundle nodes can be zero."}
+              </p>
+            </>
+          ) : (
+            <p className="text-[#a7c7df]">truth/view contracts not present in current simulation snapshot.</p>
+          )}
+          <div className="my-1 border-t border-[rgba(117,158,190,0.3)]" />
           <p className="uppercase tracking-[0.1em] text-[#9fd2f3]">particle key</p>
           {overlayParticleModeActive ? (
             <>
@@ -4709,7 +6352,7 @@ export function SimulationCanvas({
               <p className="text-[#9ecbe8]">ghost trails: smart daimoi keep short path memory for easier tracing.</p>
               <p className="text-[#9ecbe8]">flow lanes: backend simulation drives nexus routing telemetry.</p>
               <p className="text-[#9ecbe8]">all nexus node movement now comes from backend simulation deltas.</p>
-              <p className="text-[#9ecbe8]">graph view: daimoi flow is shown as lane lines + arrowheads from backend state.</p>
+              <p className="text-[#9ecbe8]">graph view: daimoi flow is shown as lane lines + pulses + arrowheads from backend state.</p>
               <p className="mt-1 text-[#ffd7aa]">
                 economy: packets {resourceEconomyHud.packets} · actions {resourceEconomyHud.actionPackets} · blocked {resourceEconomyHud.blockedPackets}
               </p>
@@ -4739,8 +6382,13 @@ export function SimulationCanvas({
           </button>
         </div>
       ) : null}
-      {interactive && worldscreen ? (
-        <div className="absolute inset-0 z-20 pointer-events-none">
+      {interactive && worldscreen ? (() => {
+        const overlay = (
+          <div
+            className="fixed inset-0 z-[92] pointer-events-auto"
+            data-core-pointer="block"
+            data-core-wheel="block"
+          >
           {worldscreenConnector ? (
             <svg className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden="true">
               <defs>
@@ -4777,6 +6425,7 @@ export function SimulationCanvas({
           ) : null}
           <section
             data-core-pointer="block"
+            data-core-wheel="block"
             className="pointer-events-auto absolute rounded-2xl border border-[rgba(126,218,255,0.58)] bg-[linear-gradient(164deg,rgba(6,16,30,0.88),rgba(10,30,48,0.82),rgba(7,18,34,0.9))] backdrop-blur-[5px] shadow-[0_30px_90px_rgba(0,18,42,0.56)] overflow-hidden"
             style={
               worldscreenPlacement
@@ -4902,6 +6551,21 @@ export function SimulationCanvas({
                         <p className="text-[11px] text-[#c9e7fb]">comments {imageCommentStats.total} · participants {imageCommentStats.participants}</p>
                         <p className="text-[11px] text-[#c9e7fb]">threads {imageCommentStats.rootCommentCount} · depth {imageCommentStats.deepestDepth}</p>
                       </div>
+                      {worldscreen.projectionMemberManifest && worldscreen.projectionMemberManifest.length > 0 ? (
+                        <div className="mt-3 rounded border border-[rgba(224,176,108,0.34)] bg-[rgba(46,30,10,0.45)] p-2">
+                          <p className="text-[10px] uppercase tracking-[0.1em] text-[#ffd8a9]">bundle manifest</p>
+                          <p className="text-[10px] text-[#f2d9bb]">
+                            group <code>{worldscreen.projectionGroupId || "(unknown)"}</code> · files {worldscreen.projectionMemberManifest.length}
+                          </p>
+                          <div className="mt-1.5 max-h-40 overflow-auto rounded border border-[rgba(225,172,112,0.28)] bg-[rgba(24,15,5,0.56)] p-1.5">
+                            {worldscreen.projectionMemberManifest.map((path, index) => (
+                              <p key={`${worldscreen.projectionGroupId || "bundle"}:${path}`} className="text-[10px] leading-5 text-[#ffe8cd] break-all">
+                                {index + 1}. {path}
+                              </p>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
                     </aside>
 
                     <section className="overflow-auto rounded-lg border border-[rgba(124,205,247,0.3)] bg-[rgba(6,17,29,0.56)] p-2">
@@ -4951,7 +6615,80 @@ export function SimulationCanvas({
 
                       {worldscreen.view === "metadata" ? (
                         <>
-                          {worldscreen.resourceKind === "video" ? (
+                          {worldscreen.resourceKind === "audio" ? (
+                            <div className="rounded-md border border-[rgba(136,205,238,0.34)] bg-[rgba(5,15,28,0.84)] p-2">
+                              <audio
+                                ref={worldscreenAudioElementRef}
+                                controls
+                                preload="metadata"
+                                src={worldscreenAudioUrl || worldscreen.url}
+                                className="w-full"
+                              >
+                                <track kind="captions" />
+                              </audio>
+                              <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[10px] text-[#bcdcf1]">
+                                <p className="uppercase tracking-[0.09em] text-[#a9d7f2]">mp3 waveform + spectrogram</p>
+                                <p className="font-mono text-[#dff2ff]">{worldscreenAudioClockText}</p>
+                              </div>
+                              <div
+                                data-core-pointer="block"
+                                className="mt-2 relative h-56 w-full cursor-ew-resize overflow-hidden rounded border border-[rgba(126,190,226,0.34)] bg-[rgba(5,12,20,0.92)]"
+                                onPointerDown={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  worldscreenAudioSeekPointerIdRef.current = event.pointerId;
+                                  event.currentTarget.setPointerCapture(event.pointerId);
+                                  seekWorldscreenAudioFromClientX(event.clientX);
+                                }}
+                                onPointerMove={(event) => {
+                                  if (worldscreenAudioSeekPointerIdRef.current !== event.pointerId) {
+                                    return;
+                                  }
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  seekWorldscreenAudioFromClientX(event.clientX);
+                                }}
+                                onPointerUp={(event) => {
+                                  if (worldscreenAudioSeekPointerIdRef.current !== event.pointerId) {
+                                    return;
+                                  }
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  seekWorldscreenAudioFromClientX(event.clientX);
+                                  worldscreenAudioSeekPointerIdRef.current = null;
+                                  if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                                    event.currentTarget.releasePointerCapture(event.pointerId);
+                                  }
+                                }}
+                                onPointerCancel={(event) => {
+                                  if (worldscreenAudioSeekPointerIdRef.current === event.pointerId) {
+                                    worldscreenAudioSeekPointerIdRef.current = null;
+                                  }
+                                  if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                                    event.currentTarget.releasePointerCapture(event.pointerId);
+                                  }
+                                }}
+                              >
+                                <canvas
+                                  ref={worldscreenAudioBaseCanvasRef}
+                                  className="absolute inset-0 h-full w-full"
+                                />
+                                <canvas
+                                  ref={worldscreenAudioPlayheadCanvasRef}
+                                  className="pointer-events-none absolute inset-0 h-full w-full"
+                                />
+                              </div>
+                              <p className="mt-1 text-[10px] text-[#9ec4dc]">
+                                click or drag the visual to seek. the vertical line follows playback in real-time.
+                              </p>
+                              {worldscreenAudioVizStatus === "loading" ? (
+                                <p className="mt-1 text-[10px] text-[#a9d8ee]">building waveform and spectrogram...</p>
+                              ) : null}
+                              {worldscreenAudioVizStatus === "error" ? (
+                                <p className="mt-1 text-[10px] text-[#ffd8be]">{worldscreenAudioVizError}</p>
+                              ) : null}
+                            </div>
+                          ) : worldscreen.resourceKind === "video" ? (
                             <video
                               controls
                               preload="metadata"
@@ -5168,8 +6905,13 @@ export function SimulationCanvas({
               ) : null}
             </div>
           </section>
-        </div>
-      ) : null}
+          </div>
+        );
+        if (typeof document !== "undefined") {
+          return createPortal(overlay, document.body);
+        }
+        return overlay;
+      })() : null}
     </div>
   );
 }

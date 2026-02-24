@@ -6,6 +6,10 @@ import {
   CORE_ORBIT_SPEED_MIN,
   CORE_SIM_LAYER_DEPTH_MAX,
   CORE_SIM_LAYER_DEPTH_MIN,
+  CORE_SIM_GRAPH_NODE_SMOOTHING_MAX,
+  CORE_SIM_GRAPH_NODE_SMOOTHING_MIN,
+  CORE_SIM_GRAPH_NODE_STEP_SCALE_MAX,
+  CORE_SIM_GRAPH_NODE_STEP_SCALE_MIN,
   CORE_SIM_MOTION_SPEED_MAX,
   CORE_SIM_MOTION_SPEED_MIN,
   CORE_SIM_MOUSE_INFLUENCE_MAX,
@@ -88,7 +92,7 @@ interface Props {
   onOpenRuntimeConfig: () => void;
 }
 
-const INTERFACE_OPACITY_MIN = 0.38;
+const INTERFACE_OPACITY_MIN = 0.72;
 const INTERFACE_OPACITY_MAX = 1;
 
 export function CoreControlPanel({
@@ -167,7 +171,9 @@ export function CoreControlPanel({
             <code>{coreSimulationTuning.particleScale.toFixed(2)}x</code> motion
             <code>{coreSimulationTuning.motionSpeed.toFixed(2)}x</code> mouse
             <code>{coreSimulationTuning.mouseInfluence.toFixed(2)}x</code> depth
-            <code>{coreSimulationTuning.layerDepth.toFixed(2)}x</code>
+            <code>{coreSimulationTuning.layerDepth.toFixed(2)}x</code> node smooth
+            <code>{coreSimulationTuning.graphNodeSmoothness.toFixed(2)}x</code> node step
+            <code>{coreSimulationTuning.graphNodeStepScale.toFixed(2)}x</code>
           </span>
           {activeChatLens ? (
             <span>chat-lens: <code>{activeChatLens.presence}</code> ({activeChatLens.status})</span>
@@ -493,6 +499,32 @@ export function CoreControlPanel({
                     step={0.01}
                     value={coreSimulationTuning.layerDepth}
                     onChange={(event) => onSetCoreSimulationDial("layerDepth", Number(event.target.value))}
+                    className="h-1 w-full accent-[#8ed8ff]"
+                  />
+                </label>
+
+                <label className="grid gap-1">
+                  <span className="text-[10px] text-[#cde4f8]">graph smooth <code>{coreSimulationTuning.graphNodeSmoothness.toFixed(2)}x</code></span>
+                  <input
+                    type="range"
+                    min={CORE_SIM_GRAPH_NODE_SMOOTHING_MIN}
+                    max={CORE_SIM_GRAPH_NODE_SMOOTHING_MAX}
+                    step={0.01}
+                    value={coreSimulationTuning.graphNodeSmoothness}
+                    onChange={(event) => onSetCoreSimulationDial("graphNodeSmoothness", Number(event.target.value))}
+                    className="h-1 w-full accent-[#8ed8ff]"
+                  />
+                </label>
+
+                <label className="grid gap-1">
+                  <span className="text-[10px] text-[#cde4f8]">graph catch-up <code>{coreSimulationTuning.graphNodeStepScale.toFixed(2)}x</code></span>
+                  <input
+                    type="range"
+                    min={CORE_SIM_GRAPH_NODE_STEP_SCALE_MIN}
+                    max={CORE_SIM_GRAPH_NODE_STEP_SCALE_MAX}
+                    step={0.01}
+                    value={coreSimulationTuning.graphNodeStepScale}
+                    onChange={(event) => onSetCoreSimulationDial("graphNodeStepScale", Number(event.target.value))}
                     className="h-1 w-full accent-[#8ed8ff]"
                   />
                 </label>

@@ -106,6 +106,8 @@ export function CoreBackdrop({
           motionSpeed={coreSimulationTuning.motionSpeed}
           mouseInfluence={coreSimulationTuning.mouseInfluence}
           layerDepth={coreSimulationTuning.layerDepth}
+          graphNodeSmoothness={coreSimulationTuning.graphNodeSmoothness}
+          graphNodeStepScale={coreSimulationTuning.graphNodeStepScale}
           backgroundWash={coreVisualTuning.backgroundWash}
           layerVisibility={coreLayerVisibility}
           museWorkspaceBindings={museWorkspaceBindings}

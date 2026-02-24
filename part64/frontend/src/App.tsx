@@ -48,6 +48,10 @@ import {
   CORE_ORBIT_SPEED_MIN,
   CORE_SIM_LAYER_DEPTH_MAX,
   CORE_SIM_LAYER_DEPTH_MIN,
+  CORE_SIM_GRAPH_NODE_SMOOTHING_MAX,
+  CORE_SIM_GRAPH_NODE_SMOOTHING_MIN,
+  CORE_SIM_GRAPH_NODE_STEP_SCALE_MAX,
+  CORE_SIM_GRAPH_NODE_STEP_SCALE_MIN,
   CORE_SIM_MOTION_SPEED_MAX,
   CORE_SIM_MOTION_SPEED_MIN,
   CORE_SIM_MOUSE_INFLUENCE_MAX,
@@ -246,11 +250,13 @@ const PANEL_TOOL_HINTS: Record<string, string[]> = {
 const COUNCIL_BOOST_STORAGE_KEY = "eta_mu.council_boosts.v1";
 const TERTIARY_PIN_STORAGE_KEY = "eta_mu.tertiary_pin.v1";
 const MUSE_WORKSPACE_STORAGE_KEY = "eta_mu.muse_workspace.v1";
-const INTERFACE_OPACITY_STORAGE_KEY = "eta_mu.interface_opacity.v1";
+const INTERFACE_OPACITY_STORAGE_KEY = "eta_mu.interface_opacity.v2";
 const GLASS_VIEWPORT_PANEL_ID = "nexus.ui.glass_viewport";
 const RUNTIME_CONFIG_PANEL_ID = "nexus.ui.runtime_config";
-const INTERFACE_OPACITY_MIN = 0.38;
+const INTERFACE_OPACITY_MIN = 0.72;
 const INTERFACE_OPACITY_MAX = 1;
+const DEFAULT_INTERFACE_TRANSPARENCY_PERCENT = 0;
+const DEFAULT_INTERFACE_OPACITY = 1 - (DEFAULT_INTERFACE_TRANSPARENCY_PERCENT / 100);
 const FIXED_MUSE_PRESENCES = [
   {
     id: "nexus.ui.chat.witness_thread",
@@ -292,45 +298,70 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+function resolveEventElement(target: EventTarget | null): Element | null {
+  if (target instanceof Element) {
+    return target;
+  }
+  if (target instanceof Node) {
+    return target.parentElement;
+  }
+  return null;
+}
+
 function isTextEntryTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) {
+  const element = resolveEventElement(target);
+  if (!(element instanceof HTMLElement)) {
     return false;
   }
-  if (target.isContentEditable) {
+  if (element.isContentEditable) {
     return true;
   }
-  const tagName = target.tagName.toLowerCase();
+  const tagName = element.tagName.toLowerCase();
   return tagName === "input" || tagName === "textarea" || tagName === "select";
 }
 
 function isCorePointerBlockedTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof Element)) {
+  const element = resolveEventElement(target);
+  if (!element) {
     return false;
   }
-  if (isTextEntryTarget(target)) {
+  if (isTextEntryTarget(element)) {
     return true;
   }
   return Boolean(
-    target.closest(
+    element.closest(
       "button, a, [role='button'], [data-core-pointer='block'], [data-panel-interactive='true']",
     ),
   );
 }
 
-function shouldRouteWheelToCore(target: EventTarget | null): boolean {
-  if (!(target instanceof Element)) {
+function shouldRouteWheelToCore(target: EventTarget | null, deltaY = 0): boolean {
+  const element = resolveEventElement(target);
+  if (!element) {
     return true;
   }
   if (
-    target.closest(
+    element.closest(
       "input, textarea, select, option, [contenteditable='true'], [role='slider'], [data-core-wheel='block']",
     )
   ) {
     return false;
   }
 
-  if (target.closest(".world-panel-body")) {
+  if (element.closest("button, a, [role='button'], [data-panel-interactive='true']")) {
     return false;
+  }
+
+  const panelBody = element.closest(".world-panel-body");
+  if (panelBody instanceof HTMLElement) {
+    const maxScrollTop = Math.max(0, panelBody.scrollHeight - panelBody.clientHeight);
+    if (maxScrollTop > 1) {
+      const atTop = panelBody.scrollTop <= 1;
+      const atBottom = panelBody.scrollTop >= maxScrollTop - 1;
+      if ((deltaY < 0 && !atTop) || (deltaY > 0 && !atBottom) || Math.abs(deltaY) < 0.5) {
+        return false;
+      }
+    }
   }
 
   return true;
@@ -594,11 +625,15 @@ export default function App() {
   const [coreLayerManagerOpen, setCoreLayerManagerOpen] = useState(true);
   const [interfaceOpacity, setInterfaceOpacity] = useState(() => {
     if (typeof window === "undefined") {
-      return 1;
+      return DEFAULT_INTERFACE_OPACITY;
     }
-    const raw = Number(window.localStorage.getItem(INTERFACE_OPACITY_STORAGE_KEY));
+    const stored = window.localStorage.getItem(INTERFACE_OPACITY_STORAGE_KEY);
+    if (stored === null) {
+      return DEFAULT_INTERFACE_OPACITY;
+    }
+    const raw = Number(stored);
     if (!Number.isFinite(raw)) {
-      return 1;
+      return DEFAULT_INTERFACE_OPACITY;
     }
     return clamp(raw, INTERFACE_OPACITY_MIN, INTERFACE_OPACITY_MAX);
   });
@@ -682,7 +717,7 @@ export default function App() {
     if (typeof window === "undefined") {
       return;
     }
-    if (Math.abs(interfaceOpacity - 1) < 0.0001) {
+    if (Math.abs(interfaceOpacity - DEFAULT_INTERFACE_OPACITY) < 0.0001) {
       window.localStorage.removeItem(INTERFACE_OPACITY_STORAGE_KEY);
       return;
     }
@@ -1582,9 +1617,34 @@ export default function App() {
           layerDepth: clamp(value, CORE_SIM_LAYER_DEPTH_MIN, CORE_SIM_LAYER_DEPTH_MAX),
         };
       }
+      if (dial === "graphNodeSmoothness") {
+        return {
+          ...prev,
+          graphNodeSmoothness: clamp(
+            value,
+            CORE_SIM_GRAPH_NODE_SMOOTHING_MIN,
+            CORE_SIM_GRAPH_NODE_SMOOTHING_MAX,
+          ),
+        };
+      }
+      if (dial === "graphNodeStepScale") {
+        return {
+          ...prev,
+          graphNodeStepScale: clamp(
+            value,
+            CORE_SIM_GRAPH_NODE_STEP_SCALE_MIN,
+            CORE_SIM_GRAPH_NODE_STEP_SCALE_MAX,
+          ),
+        };
+      }
+      if (dial === "motionSpeed") {
+        return {
+          ...prev,
+          motionSpeed: clamp(value, CORE_SIM_MOTION_SPEED_MIN, CORE_SIM_MOTION_SPEED_MAX),
+        };
+      }
       return {
         ...prev,
-        motionSpeed: clamp(value, CORE_SIM_MOTION_SPEED_MIN, CORE_SIM_MOTION_SPEED_MAX),
       };
     });
   }, []);
@@ -1865,7 +1925,7 @@ export default function App() {
   }, []);
 
   const resetInterfaceOpacity = useCallback(() => {
-    setInterfaceOpacity(1);
+    setInterfaceOpacity(DEFAULT_INTERFACE_OPACITY);
   }, []);
 
   const boostCoreVisibility = useCallback(() => {
@@ -1884,7 +1944,7 @@ export default function App() {
       presence: normalizedView === "presence" || nexusGraphView,
       "file-impact": normalizedView === "file-impact",
       "file-graph": nexusGraphView,
-      "crawler-graph": false,
+      "true-graph": normalizedView === "true-graph" || nexusGraphView,
       "truth-gate": normalizedView === "truth-gate",
       logic: normalizedView === "logic",
       "pain-field": normalizedView === "pain-field",
@@ -1903,7 +1963,7 @@ export default function App() {
       presence: enabled,
       "file-impact": enabled,
       "file-graph": enabled,
-      "crawler-graph": enabled,
+      "true-graph": enabled,
       "truth-gate": enabled,
       logic: enabled,
       "pain-field": enabled,
@@ -2330,7 +2390,7 @@ export default function App() {
     if (event.defaultPrevented) {
       return;
     }
-    if (!shouldRouteWheelToCore(event.target)) {
+    if (!shouldRouteWheelToCore(event.target, event.deltaY)) {
       return;
     }
     event.preventDefault();
@@ -2342,7 +2402,7 @@ export default function App() {
       if (event.defaultPrevented) {
         return;
       }
-      if (!shouldRouteWheelToCore(event.target)) {
+      if (!shouldRouteWheelToCore(event.target, event.deltaY)) {
         return;
       }
       event.preventDefault();
@@ -3244,6 +3304,8 @@ export default function App() {
                   motionSpeed={deferredCoreSimulationTuning.motionSpeed}
                   mouseInfluence={deferredCoreSimulationTuning.mouseInfluence}
                   layerDepth={deferredCoreSimulationTuning.layerDepth}
+                  graphNodeSmoothness={deferredCoreSimulationTuning.graphNodeSmoothness}
+                  graphNodeStepScale={deferredCoreSimulationTuning.graphNodeStepScale}
                   museWorkspaceBindings={museWorkspaceBindings}
                 />
               </section>
@@ -3515,6 +3577,7 @@ export default function App() {
                 catalog={catalog}
                 simulation={simulation}
                 onFocusAnchor={flyCameraToAnchor}
+                onEmitUserInput={handleUserPresenceInput}
               />
             </Suspense>
           ) : (
@@ -3585,6 +3648,7 @@ export default function App() {
     dedicatedOverlayViews,
     deferredPanelsReady,
     flyCameraToAnchor,
+    handleUserPresenceInput,
     handleMuseWorkspaceBindingsChange,
     handleMuseWorkspaceContextChange,
     handleMuseWorkspaceSend,
@@ -4502,7 +4566,10 @@ export default function App() {
           </div>
         </header>
 
-        <aside className="fixed inset-x-2 bottom-20 z-[74] max-h-[46vh] overflow-y-auto rounded-xl border border-[rgba(137,198,235,0.36)] bg-[linear-gradient(180deg,rgba(7,17,27,0.92),rgba(6,15,24,0.96))] p-3 shadow-[0_12px_30px_rgba(2,8,14,0.34)] pointer-events-auto lg:inset-x-auto lg:bottom-4 lg:right-2 lg:top-24 lg:w-[23rem] lg:max-h-[calc(100vh-8rem)]">
+        <aside
+          data-core-wheel="block"
+          className="fixed inset-x-2 bottom-20 z-[74] max-h-[46vh] overflow-y-auto rounded-xl border border-[rgba(137,198,235,0.36)] bg-[linear-gradient(180deg,rgba(7,17,27,0.92),rgba(6,15,24,0.96))] p-3 shadow-[0_12px_30px_rgba(2,8,14,0.34)] pointer-events-auto lg:inset-x-auto lg:bottom-4 lg:right-2 lg:top-24 lg:w-[23rem] lg:max-h-[calc(100vh-8rem)]"
+        >
           <div className="mb-2 flex items-center justify-between gap-2">
             <p className="text-[11px] uppercase tracking-[0.12em] text-[#a3d3ef]">Simulation Controls</p>
             <p className="text-[10px] text-[#beddf0]">ui opacity <code>{Math.round(interfaceOpacity * 100)}%</code></p>

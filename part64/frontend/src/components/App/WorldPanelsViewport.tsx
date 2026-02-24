@@ -107,6 +107,32 @@ function panelGlyph(presenceId: string, fallbackLabel: string): string {
   return fallbackLabel.slice(0, 2).toUpperCase();
 }
 
+function canonicalPresenceRailToken(raw: string): string {
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized) {
+    return "";
+  }
+  const stripped = normalized
+    .replace(/^presence[._:]/, "")
+    .replace(/^nexus[._:]ui[._:]chat[._:]/, "")
+    .replace(/^nexus[._:]ui[._:]/, "");
+  return stripped.replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+}
+
+function presenceRailKey(panel: SortedPanel): string {
+  const normalizedPresence = canonicalPresenceRailToken(panel.presenceId);
+  if (normalizedPresence && normalizedPresence !== "particle_field") {
+    return `presence:${normalizedPresence}`;
+  }
+  const normalizedLabel = canonicalPresenceRailToken(
+    panel.presenceLabel || panel.presenceLabelJa,
+  );
+  if (normalizedLabel) {
+    return `label:${normalizedLabel}`;
+  }
+  return `panel:${canonicalPresenceRailToken(panel.id) || panel.id}`;
+}
+
 function clampRatio(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
@@ -897,24 +923,15 @@ function WorldPanelsViewportInner({
   }, [onNudgeCameraPan]);
 
   const handleGlassPaneWheel = useCallback((
-    panelId: string,
+    _panelId: string,
     event: ReactWheelEvent<HTMLElement>,
   ) => {
     if (isGlassInteractiveTarget(event.target)) {
+      event.preventDefault();
+      event.stopPropagation();
       return;
     }
-    const paneRect = event.currentTarget.getBoundingClientRect();
-    const width = Math.max(220, paneRect.width);
-    const height = Math.max(180, paneRect.height);
-    const dx = clampRatio((-event.deltaX / width) * 3.2, -0.24, 0.24);
-    const dy = clampRatio((-event.deltaY / height) * 3.2, -0.24, 0.24);
-    if (Math.abs(dx) < 0.0006 && Math.abs(dy) < 0.0006) {
-      return;
-    }
-    onNudgeCameraPan(dx, dy, panelId);
-    event.preventDefault();
-    event.stopPropagation();
-  }, [onNudgeCameraPan]);
+  }, []);
 
   const togglePanelGlassMode = useCallback((
     panel: SortedPanel,
@@ -1204,10 +1221,18 @@ function WorldPanelsViewportInner({
     const nextIconPanels: SortedPanel[] = [];
     const nextSmartPilePanels: SortedPanel[] = [];
     const nextSmartPileFallbackPanels: SortedPanel[] = [];
+    const countedPresenceKeys = new Set<string>();
+    const iconPresenceKeys = new Set<string>();
+    const smartPresenceKeys = new Set<string>();
+    const smartFallbackPresenceKeys = new Set<string>();
 
     sortedPanels.forEach((panel) => {
+      const presenceKey = presenceRailKey(panel);
       const status = operationalMetaByPanelId.get(panel.id)?.state ?? "running";
-      counts[status] += 1;
+      if (!countedPresenceKeys.has(presenceKey)) {
+        countedPresenceKeys.add(presenceKey);
+        counts[status] += 1;
+      }
       if (statusFilter !== "all" && status !== statusFilter) {
         return;
       }
@@ -1219,9 +1244,13 @@ function WorldPanelsViewportInner({
         }
       }
 
-      nextIconPanels.push(panel);
+      if (!iconPresenceKeys.has(presenceKey)) {
+        iconPresenceKeys.add(presenceKey);
+        nextIconPanels.push(panel);
+      }
 
-      if (panel.id !== trayPanelId) {
+      if (panel.id !== trayPanelId && !smartFallbackPresenceKeys.has(presenceKey)) {
+        smartFallbackPresenceKeys.add(presenceKey);
         nextSmartPileFallbackPanels.push(panel);
       }
 
@@ -1235,6 +1264,10 @@ function WorldPanelsViewportInner({
       if (pinnedPanels[panel.id]) {
         return;
       }
+      if (smartPresenceKeys.has(presenceKey)) {
+        return;
+      }
+      smartPresenceKeys.add(presenceKey);
       nextSmartPilePanels.push(panel);
     });
 
@@ -1778,7 +1811,7 @@ function WorldPanelsViewportInner({
             <p className="world-glass-title">glass viewport</p>
             <div className="world-glass-grid">
               <p className="world-glass-row">
-                middle drag or touch drag to pan · trackpad two-finger scroll pans · click opens/focuses nexus
+                middle drag or touch drag to pan · wheel zooms sim · click opens/focuses nexus
               </p>
               {detailsOpen ? (
                 <>

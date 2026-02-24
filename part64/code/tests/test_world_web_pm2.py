@@ -742,9 +742,9 @@ def test_ollama_embed_records_compute_job_event(monkeypatch: Any) -> None:
     monkeypatch.setattr(
         world_web_module,
         "_torch_embed",
-        lambda text, model=None, record_job=True: [0.2, 0.4]
-        if text == "job probe"
-        else None,
+        lambda text, model=None, record_job=True: (
+            [0.2, 0.4] if text == "job probe" else None
+        ),
         raising=False,
     )
 
@@ -1805,6 +1805,35 @@ def test_collect_catalog_runtime_fast_mode_skips_pi_archive_build() -> None:
         assert pi_archive.get("record") == "ημ.pi-archive.v1"
         assert pi_archive.get("status") == "deferred"
         assert pi_archive.get("ledger_count") == 0
+
+
+def test_collect_catalog_runtime_fast_mode_emits_progress_events() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+        part = vault / "ημ_op_mf_part_64"
+        _create_fixture_tree(part)
+
+        events: list[str] = []
+
+        def _progress(stage: str, detail: dict[str, Any] | None) -> None:
+            del detail
+            events.append(str(stage or "").strip())
+
+        catalog = collect_catalog(
+            part,
+            vault,
+            sync_inbox=False,
+            include_pi_archive=False,
+            include_world_log=False,
+            progress_callback=_progress,
+        )
+
+        assert isinstance(catalog, dict)
+        assert events
+        assert "catalog_begin" in events
+        assert "file_graph_start" in events
+        assert "file_graph_done" in events
+        assert "catalog_done" in events
 
 
 def test_collect_catalog_runtime_fast_mode_defers_world_log(
@@ -3597,6 +3626,1088 @@ def test_simulation_ws_chunk_messages_round_trip() -> None:
     assert json.loads(merged_text) == payload
 
 
+def test_simulation_ws_compact_graph_payload_keeps_node_labels() -> None:
+    from code.world_web import server as server_module
+
+    simulation_payload: dict[str, Any] = {
+        "timestamp": "2026-02-23T00:00:00Z",
+        "file_graph": {
+            "record": "ημ.file-graph.v1",
+            "nodes": [
+                {
+                    "id": "file:abc",
+                    "node_type": "file",
+                    "label": "evidence-note.md",
+                    "name": "evidence-note.md",
+                    "source_rel_path": ".ημ/evidence-note.md",
+                    "x": 0.42,
+                    "y": 0.33,
+                    "hue": 205,
+                    "importance": 0.51,
+                }
+            ],
+            "file_nodes": [
+                {
+                    "id": "file:abc",
+                    "node_type": "file",
+                    "label": "evidence-note.md",
+                    "name": "evidence-note.md",
+                    "source_rel_path": ".ημ/evidence-note.md",
+                    "x": 0.42,
+                    "y": 0.33,
+                    "hue": 205,
+                    "importance": 0.51,
+                }
+            ],
+            "edges": [],
+            "stats": {"file_count": 1, "edge_count": 0},
+        },
+        "crawler_graph": {
+            "record": "ημ.crawler-graph.v1",
+            "nodes": [
+                {
+                    "id": "crawler:def",
+                    "node_type": "crawler",
+                    "label": "example.org",
+                    "crawler_kind": "domain",
+                    "domain": "example.org",
+                    "x": 0.6,
+                    "y": 0.21,
+                    "hue": 176,
+                    "importance": 0.48,
+                }
+            ],
+            "crawler_nodes": [
+                {
+                    "id": "crawler:def",
+                    "node_type": "crawler",
+                    "label": "example.org",
+                    "crawler_kind": "domain",
+                    "domain": "example.org",
+                    "x": 0.6,
+                    "y": 0.21,
+                    "hue": 176,
+                    "importance": 0.48,
+                }
+            ],
+            "edges": [],
+            "stats": {"crawler_count": 1, "edge_count": 0},
+        },
+    }
+
+    compact = server_module._simulation_ws_compact_graph_payload(simulation_payload)
+    file_graph = compact.get("file_graph", {})
+    crawler_graph = compact.get("crawler_graph", {})
+    assert isinstance(file_graph, dict)
+    assert isinstance(crawler_graph, dict)
+    assert file_graph.get("nodes", [])[0].get("label") == "evidence-note.md"
+    assert (
+        file_graph.get("nodes", [])[0].get("source_rel_path") == ".ημ/evidence-note.md"
+    )
+    assert crawler_graph.get("nodes", [])[0].get("label") == "example.org"
+
+
+def test_simulation_ws_load_cached_payload_trimmed_includes_compact_graphs() -> None:
+    from code.world_web import server as server_module
+
+    cached_payload = {
+        "timestamp": "2026-02-23T00:00:00Z",
+        "total": 2,
+        "points": [{"id": "pt:1"}, {"id": "pt:2"}],
+        "presence_dynamics": {
+            "field_particles": [{"id": "dm:1", "presence_id": "witness_thread"}],
+        },
+        "file_graph": {
+            "record": "ημ.file-graph.v1",
+            "nodes": [
+                {
+                    "id": "file:abc",
+                    "node_type": "file",
+                    "label": "evidence-note.md",
+                    "name": "evidence-note.md",
+                    "source_rel_path": ".ημ/evidence-note.md",
+                    "x": 0.42,
+                    "y": 0.33,
+                    "hue": 205,
+                    "importance": 0.51,
+                }
+            ],
+            "file_nodes": [
+                {
+                    "id": "file:abc",
+                    "node_type": "file",
+                    "label": "evidence-note.md",
+                    "name": "evidence-note.md",
+                    "source_rel_path": ".ημ/evidence-note.md",
+                    "x": 0.42,
+                    "y": 0.33,
+                    "hue": 205,
+                    "importance": 0.51,
+                }
+            ],
+            "edges": [],
+            "stats": {"file_count": 1, "edge_count": 0},
+        },
+        "crawler_graph": {
+            "record": "ημ.crawler-graph.v1",
+            "nodes": [
+                {
+                    "id": "crawler:def",
+                    "node_type": "crawler",
+                    "label": "example.org",
+                    "crawler_kind": "domain",
+                    "domain": "example.org",
+                    "x": 0.6,
+                    "y": 0.21,
+                    "hue": 176,
+                    "importance": 0.48,
+                }
+            ],
+            "crawler_nodes": [
+                {
+                    "id": "crawler:def",
+                    "node_type": "crawler",
+                    "label": "example.org",
+                    "crawler_kind": "domain",
+                    "domain": "example.org",
+                    "x": 0.6,
+                    "y": 0.21,
+                    "hue": 176,
+                    "importance": 0.48,
+                }
+            ],
+            "edges": [],
+            "stats": {"crawler_count": 1, "edge_count": 0},
+        },
+        "projection": {"perspective": "hybrid"},
+    }
+
+    with tempfile.TemporaryDirectory() as td:
+        part_root = Path(td)
+        monkeypatch_payload = json.dumps(cached_payload).encode("utf-8")
+
+        original_cached_body = server_module._simulation_http_cached_body
+        original_disk_cache_load = server_module._simulation_http_disk_cache_load
+        try:
+            server_module._simulation_http_cached_body = lambda **kwargs: (
+                monkeypatch_payload
+            )  # type: ignore[assignment]
+            server_module._simulation_http_disk_cache_load = lambda *args, **kwargs: (
+                None
+            )  # type: ignore[assignment]
+            loaded = server_module._simulation_ws_load_cached_payload(
+                part_root=part_root,
+                perspective="hybrid",
+                payload_mode="trimmed",
+            )
+        finally:
+            server_module._simulation_http_cached_body = original_cached_body  # type: ignore[assignment]
+            server_module._simulation_http_disk_cache_load = original_disk_cache_load  # type: ignore[assignment]
+
+    assert loaded is not None
+    simulation_payload, projection = loaded
+    assert projection == {"perspective": "hybrid"}
+    assert (
+        simulation_payload.get("file_graph", {}).get("nodes", [])[0].get("label")
+        == "evidence-note.md"
+    )
+    assert (
+        simulation_payload.get("crawler_graph", {}).get("nodes", [])[0].get("label")
+        == "example.org"
+    )
+
+
+def test_catalog_stream_iter_rows_chunks_lists_and_reports_done() -> None:
+    from code.world_web import server as server_module
+
+    catalog = {
+        "record": "eta-mu.catalog.v1",
+        "items": [{"id": "item:1"}, {"id": "item:2"}, {"id": "item:3"}],
+        "file_graph": {
+            "file_nodes": [{"id": "file:1"}, {"id": "file:2"}],
+            "edges": [{"id": "edge:1"}, {"id": "edge:2"}, {"id": "edge:3"}],
+            "embed_layers": [{"id": "layer:1"}],
+        },
+        "crawler_graph": {
+            "crawler_nodes": [{"id": "crawler:1"}],
+            "edges": [],
+        },
+    }
+
+    rows = list(server_module._catalog_stream_iter_rows(catalog, chunk_rows=2))
+    assert rows
+    meta_row = rows[0]
+    assert meta_row.get("type") == "meta"
+    meta_catalog = meta_row.get("catalog", {})
+    assert isinstance(meta_catalog, dict)
+    assert meta_catalog.get("items", {}).get("streamed") is True
+    assert meta_catalog.get("items", {}).get("count") == 3
+    assert (
+        meta_catalog.get("file_graph", {}).get("file_nodes", {}).get("streamed") is True
+    )
+
+    item_rows = [
+        row
+        for row in rows
+        if str(row.get("type", "")) == "rows" and str(row.get("section", "")) == "items"
+    ]
+    assert len(item_rows) == 2
+    assert item_rows[0].get("offset") == 0
+    assert len(item_rows[0].get("rows", [])) == 2
+    assert item_rows[1].get("offset") == 2
+    assert len(item_rows[1].get("rows", [])) == 1
+
+    done_row = rows[-1]
+    assert done_row.get("type") == "done"
+    assert done_row.get("ok") is True
+    sections = done_row.get("sections", {})
+    assert isinstance(sections, dict)
+    assert sections.get("items", {}).get("total") == 3
+    assert sections.get("items", {}).get("chunks") == 2
+    assert sections.get("file_edges", {}).get("total") == 3
+
+
+def test_catalog_stream_chunk_rows_clamps_bounds() -> None:
+    from code.world_web import server as server_module
+
+    assert server_module._catalog_stream_chunk_rows("0") == 1
+    assert server_module._catalog_stream_chunk_rows("17") == 17
+    assert server_module._catalog_stream_chunk_rows("5000") == 2048
+
+
+def test_reset_simulation_bootstrap_state_clears_layout_cache_and_rearms_boot() -> None:
+    from code.world_web import simulation as simulation_module
+
+    with simulation_module._SIMULATION_LAYOUT_CACHE_LOCK:
+        previous_layout_cache = dict(simulation_module._SIMULATION_LAYOUT_CACHE)
+        simulation_module._SIMULATION_LAYOUT_CACHE["key"] = "test-layout-key"
+        simulation_module._SIMULATION_LAYOUT_CACHE["prepared_monotonic"] = 123.0
+        simulation_module._SIMULATION_LAYOUT_CACHE["prepared_graph"] = {"ok": True}
+        simulation_module._SIMULATION_LAYOUT_CACHE["embedding_points"] = [
+            {"x": 0.1, "y": 0.2}
+        ]
+
+    previous_boot_applied = bool(simulation_module._SIMULATION_BOOT_RESET_APPLIED)
+    with simulation_module._SIMULATION_BOOT_RESET_LOCK:
+        simulation_module._SIMULATION_BOOT_RESET_APPLIED = True
+
+    try:
+        result = simulation_module.reset_simulation_bootstrap_state(
+            clear_layout_cache=True,
+            rearm_boot_reset=True,
+        )
+        assert result.get("ok") is True
+        assert result.get("cleared_layout_cache") is True
+        assert result.get("previous_layout_key") == "test-layout-key"
+        assert int(result.get("previous_embedding_points", 0)) == 1
+        assert result.get("rearmed_boot_reset") is True
+
+        with simulation_module._SIMULATION_LAYOUT_CACHE_LOCK:
+            assert simulation_module._SIMULATION_LAYOUT_CACHE["key"] == ""
+            assert (
+                simulation_module._SIMULATION_LAYOUT_CACHE["prepared_monotonic"] == 0.0
+            )
+            assert simulation_module._SIMULATION_LAYOUT_CACHE["prepared_graph"] is None
+            assert simulation_module._SIMULATION_LAYOUT_CACHE["embedding_points"] == []
+        with simulation_module._SIMULATION_BOOT_RESET_LOCK:
+            assert simulation_module._SIMULATION_BOOT_RESET_APPLIED is False
+    finally:
+        with simulation_module._SIMULATION_LAYOUT_CACHE_LOCK:
+            simulation_module._SIMULATION_LAYOUT_CACHE.clear()
+            simulation_module._SIMULATION_LAYOUT_CACHE.update(previous_layout_cache)
+        with simulation_module._SIMULATION_BOOT_RESET_LOCK:
+            simulation_module._SIMULATION_BOOT_RESET_APPLIED = previous_boot_applied
+
+
+def test_simulation_bootstrap_graph_report_summarizes_projection_and_layers() -> None:
+    from code.world_web import server as server_module
+
+    catalog = {
+        "items": [
+            {"rel_path": "src/a.py", "kind": "text", "name": "a.py"},
+            {"rel_path": "src/b.py", "kind": "text", "name": "b.py"},
+            {"rel_path": "docs/extra.md", "kind": "text", "name": "extra.md"},
+        ],
+        "file_graph": {
+            "file_nodes": [
+                {
+                    "id": "file:a",
+                    "node_id": "n:a",
+                    "name": "a.py",
+                    "kind": "text",
+                    "source_rel_path": "src/a.py",
+                },
+                {
+                    "id": "file:b",
+                    "node_id": "n:b",
+                    "name": "b.py",
+                    "kind": "text",
+                    "source_rel_path": "src/b.py",
+                },
+                {
+                    "id": "file:c",
+                    "node_id": "n:c",
+                    "name": "c.py",
+                    "kind": "text",
+                    "source_rel_path": "src/c.py",
+                },
+                {
+                    "id": "file:d",
+                    "node_id": "n:d",
+                    "name": "d.py",
+                    "kind": "text",
+                    "source_rel_path": "src/d.py",
+                },
+            ],
+            "edges": [{"id": f"edge:{index}"} for index in range(20)],
+            "embed_layers": [
+                {
+                    "id": "layer:active",
+                    "label": "active",
+                    "collection": "eta_mu",
+                    "space_id": "space-a",
+                    "model_name": "nomic",
+                    "file_count": 6,
+                    "reference_count": 11,
+                    "active": True,
+                },
+                {
+                    "id": "layer:inactive",
+                    "label": "inactive",
+                    "collection": "eta_mu",
+                    "space_id": "space-b",
+                    "model_name": "nomic",
+                    "file_count": 2,
+                    "reference_count": 3,
+                    "active": False,
+                },
+            ],
+        },
+    }
+    simulation = {
+        "total": 16,
+        "points": [{"x": 0.1, "y": 0.2} for _ in range(16)],
+        "embedding_particles": [{"x": 0.0, "y": 0.0}],
+        "presence_dynamics": {
+            "field_particles": [{"id": "dm-1"}, {"id": "dm-2"}],
+        },
+        "file_graph": {
+            "file_nodes": [
+                {
+                    "id": "file:a",
+                    "node_id": "n:a",
+                    "name": "a.py",
+                    "kind": "text",
+                    "source_rel_path": "src/a.py",
+                },
+                {
+                    "id": "file:c",
+                    "node_id": "n:c",
+                    "name": "c.py",
+                    "kind": "text",
+                    "source_rel_path": "src/c.py",
+                },
+                {
+                    "id": "file:projection:overflow1",
+                    "node_id": "file:projection:overflow1",
+                    "name": "Overflow categorizes -> Field",
+                    "kind": "projection_overflow",
+                    "projection_overflow": True,
+                    "consolidated": True,
+                    "consolidated_count": 2,
+                    "projection_group_id": "projection-group:1",
+                },
+            ],
+            "edges": [{"id": f"edge:{index}"} for index in range(12)],
+            "embed_layers": catalog["file_graph"]["embed_layers"],
+            "projection": {
+                "active": True,
+                "mode": "hub-overflow",
+                "reason": "edge_budget",
+                "before": {"file_nodes": 6, "edges": 20},
+                "after": {"file_nodes": 8, "edges": 12},
+                "collapsed_edges": 8,
+                "overflow_nodes": 2,
+                "overflow_edges": 2,
+                "group_count": 3,
+                "limits": {"edge_cap": 12},
+                "groups": [
+                    {
+                        "id": "projection-group:1",
+                        "kind": "categorizes",
+                        "target": "field:anchor_registry",
+                        "field": "f3",
+                        "member_edge_count": 6,
+                        "member_source_count": 2,
+                        "member_target_count": 1,
+                        "member_source_ids": ["file:b", "file:d"],
+                        "surface_visible": False,
+                        "reasons": {
+                            "global_cap": 4,
+                            "per_source_cap": 2,
+                        },
+                    }
+                ],
+            },
+        },
+    }
+
+    report = server_module._simulation_bootstrap_graph_report(
+        perspective="hybrid",
+        catalog=catalog,
+        simulation=simulation,
+        projection={"record": "projection.v1", "perspective": "hybrid", "ts": 7},
+        phase_ms={"catalog": 12.4, "simulation": 27.9},
+        reset_summary={"ok": True},
+        inbox_sync={"status": "completed"},
+        cache_key="hybrid|demo|simulation",
+    )
+
+    assert report.get("ok") is True
+    assert report.get("selection", {}).get("graph_surface") == "projected-hub-overflow"
+    assert report.get("selection", {}).get("active_embed_layer_count") == 1
+    selected_layers = report.get("selection", {}).get("selected_embed_layers", [])
+    assert isinstance(selected_layers, list)
+    assert selected_layers[0].get("id") == "layer:active"
+
+    compression = report.get("compression", {})
+    assert compression.get("before_edges") == 20
+    assert compression.get("after_edges") == 12
+    assert compression.get("collapsed_edges") == 8
+    assert compression.get("edge_cap") == 12
+    assert compression.get("group_count") == 3
+
+    sim_counts = report.get("simulation_counts", {})
+    assert sim_counts.get("total_points") == 16
+    assert sim_counts.get("embedding_particles") == 1
+    assert sim_counts.get("field_particles") == 2
+
+    graph_diff = report.get("graph_diff", {})
+    assert graph_diff.get("truth_file_node_count") == 4
+    assert graph_diff.get("view_file_node_count") == 3
+    assert graph_diff.get("truth_file_nodes_missing_from_view_count") == 2
+    missing_rows = graph_diff.get("truth_file_nodes_missing_from_view", [])
+    assert isinstance(missing_rows, list)
+    assert missing_rows[0].get("reason") == "grouped_in_hidden_projection_bundle"
+    assert graph_diff.get("view_projection_overflow_node_count") == 1
+    assert graph_diff.get("ingested_items_missing_from_truth_graph_count") == 1
+    assert graph_diff.get("compaction_mode") == "compacted_with_projection_overflow"
+
+
+def test_simulation_bootstrap_graph_diff_flags_visible_bundle_without_overflow() -> (
+    None
+):
+    from code.world_web import server as server_module
+
+    catalog = {
+        "items": [{"rel_path": "src/b.py", "kind": "text", "name": "b.py"}],
+        "file_graph": {
+            "file_nodes": [
+                {
+                    "id": "file:a",
+                    "name": "a.py",
+                    "kind": "text",
+                    "source_rel_path": "src/a.py",
+                },
+                {
+                    "id": "file:b",
+                    "name": "b.py",
+                    "kind": "text",
+                    "source_rel_path": "src/b.py",
+                },
+            ]
+        },
+    }
+    simulation = {
+        "file_graph": {
+            "file_nodes": [
+                {
+                    "id": "file:a",
+                    "name": "a.py",
+                    "kind": "text",
+                    "source_rel_path": "src/a.py",
+                }
+            ],
+            "projection": {
+                "collapsed_edges": 3,
+                "groups": [
+                    {
+                        "id": "projection-group:visible",
+                        "kind": "categorizes",
+                        "target": "field:anchor_registry",
+                        "member_source_ids": ["file:b"],
+                        "surface_visible": True,
+                        "reasons": {"global_cap": 2},
+                    }
+                ],
+            },
+        }
+    }
+
+    graph_diff = server_module._simulation_bootstrap_graph_diff(
+        catalog=catalog,
+        simulation=simulation,
+    )
+
+    assert graph_diff.get("truth_file_nodes_missing_from_view_count") == 1
+    missing = graph_diff.get("truth_file_nodes_missing_from_view", [])
+    assert isinstance(missing, list)
+    assert missing[0].get("reason") == "grouped_in_projection_bundle"
+    assert graph_diff.get("view_projection_overflow_node_count") == 0
+    assert graph_diff.get("projection_surface_visible_group_count") == 1
+    assert graph_diff.get("projection_hidden_group_count") == 0
+    assert graph_diff.get("compaction_mode") == "pruned_without_overflow_nodes"
+
+
+def test_simulation_bootstrap_graph_diff_classifies_trimmed_and_identity_modes() -> (
+    None
+):
+    from code.world_web import server as server_module
+
+    catalog = {
+        "file_graph": {
+            "file_nodes": [
+                {
+                    "id": "file:a",
+                    "name": "a.py",
+                    "kind": "text",
+                    "source_rel_path": "src/a.py",
+                }
+            ]
+        }
+    }
+
+    trimmed_diff = server_module._simulation_bootstrap_graph_diff(
+        catalog=catalog,
+        simulation={
+            "file_graph": {"file_nodes": [], "projection": {"collapsed_edges": 0}}
+        },
+    )
+    assert trimmed_diff.get("compaction_mode") == "trimmed_before_projection"
+    assert trimmed_diff.get("truth_file_nodes_missing_from_view_count") == 1
+
+    identity_diff = server_module._simulation_bootstrap_graph_diff(
+        catalog=catalog,
+        simulation={
+            "file_graph": {
+                "file_nodes": [
+                    {
+                        "id": "file:a",
+                        "name": "a.py",
+                        "kind": "text",
+                        "source_rel_path": "src/a.py",
+                    }
+                ],
+                "projection": {"collapsed_edges": 0},
+            }
+        },
+    )
+    assert identity_diff.get("compaction_mode") == "identity_or_within_limits"
+    assert identity_diff.get("truth_file_nodes_missing_from_view_count") == 0
+
+
+def test_run_simulation_bootstrap_reports_phase_progress(monkeypatch: Any) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        catalog_kwargs: dict[str, Any] = {}
+
+        class _FakeHandler:
+            def __init__(self, root: Path) -> None:
+                self.part_root = root
+                self.vault_root = root
+
+            def _runtime_catalog(self, **kwargs: Any) -> tuple[Any, ...]:
+                catalog_kwargs.update(kwargs)
+                return (
+                    {"file_graph": {"file_nodes": [], "edges": [], "embed_layers": []}},
+                    {},
+                    {},
+                    {},
+                    {},
+                )
+
+            def _runtime_simulation(self, *args: Any, **kwargs: Any) -> tuple[Any, Any]:
+                return (
+                    {
+                        "total": 1,
+                        "points": [{"id": "p1"}],
+                        "embedding_particles": [],
+                        "presence_dynamics": {"field_particles": []},
+                        "file_graph": {
+                            "file_nodes": [],
+                            "edges": [],
+                            "embed_layers": [],
+                            "projection": {
+                                "active": False,
+                                "before": {"file_nodes": 0, "edges": 0},
+                                "after": {"file_nodes": 0, "edges": 0},
+                                "limits": {"edge_cap": 10},
+                            },
+                        },
+                    },
+                    {"record": "projection.v1", "perspective": "hybrid", "ts": 1},
+                )
+
+        monkeypatch.setattr(
+            server_module.simulation_module,
+            "reset_simulation_bootstrap_state",
+            lambda **kwargs: {"ok": True},
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cache_invalidate",
+            lambda **kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cache_key",
+            lambda **kwargs: "bootstrap|cache|key",
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cache_store",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_disk_cache_store",
+            lambda *args, **kwargs: None,
+        )
+
+        phases: list[tuple[str, dict[str, Any] | None]] = []
+        handler = _FakeHandler(Path(td))
+        payload, status = server_module.WorldHandler._run_simulation_bootstrap(
+            cast(Any, handler),
+            perspective="hybrid",
+            sync_inbox=False,
+            include_simulation_payload=False,
+            phase_callback=lambda phase, detail: phases.append((phase, detail)),
+        )
+
+        assert status == server_module.HTTPStatus.OK
+        assert payload.get("ok") is True
+        phase_order: list[str] = []
+        for row in phases:
+            phase_name = str(row[0])
+            if not phase_order or phase_order[-1] != phase_name:
+                phase_order.append(phase_name)
+        assert phase_order == [
+            "reset",
+            "cache_invalidate",
+            "inbox_sync",
+            "catalog",
+            "simulation",
+            "cache_store",
+            "report",
+        ]
+        catalog_phase = [row for row in phases if row[0] == "catalog"]
+        assert catalog_phase
+        assert catalog_phase[0][1] == {
+            "strict_collect": True,
+            "allow_inline_collect": False,
+        }
+        assert catalog_kwargs.get("allow_inline_collect") is False
+        assert catalog_kwargs.get("strict_collect") is True
+
+
+def test_run_simulation_bootstrap_timeout_sets_failed_phase(monkeypatch: Any) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+
+        class _FakeHandler:
+            def __init__(self, root: Path) -> None:
+                self.part_root = root
+                self.vault_root = root
+
+            def _runtime_catalog(self, **kwargs: Any) -> tuple[Any, ...]:
+                time.sleep(0.01)
+                return ({"file_graph": {}}, {}, {}, {}, {})
+
+            def _runtime_simulation(self, *args: Any, **kwargs: Any) -> tuple[Any, Any]:
+                return ({"total": 0, "points": []}, {})
+
+        monkeypatch.setattr(server_module, "_SIMULATION_BOOTSTRAP_MAX_SECONDS", 0.001)
+        monkeypatch.setattr(
+            server_module.simulation_module,
+            "reset_simulation_bootstrap_state",
+            lambda **kwargs: {"ok": True},
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cache_invalidate",
+            lambda **kwargs: None,
+        )
+
+        phases: list[tuple[str, dict[str, Any] | None]] = []
+        handler = _FakeHandler(Path(td))
+        payload, status = server_module.WorldHandler._run_simulation_bootstrap(
+            cast(Any, handler),
+            perspective="hybrid",
+            sync_inbox=False,
+            include_simulation_payload=False,
+            phase_callback=lambda phase, detail: phases.append((phase, detail)),
+        )
+
+        assert status == server_module.HTTPStatus.INTERNAL_SERVER_ERROR
+        assert payload.get("ok") is False
+        assert payload.get("error") == "simulation_bootstrap_failed:TimeoutError"
+        assert payload.get("failed_phase") == "catalog"
+        assert phases[-1][0] == "failed"
+
+
+def test_run_simulation_bootstrap_falls_back_to_inline_catalog(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        catalog_calls: list[dict[str, Any]] = []
+
+        class _FakeHandler:
+            def __init__(self, root: Path) -> None:
+                self.part_root = root
+                self.vault_root = root
+
+            def _runtime_catalog(self, **kwargs: Any) -> tuple[Any, ...]:
+                catalog_calls.append(dict(kwargs))
+                if bool(kwargs.get("strict_collect", False)):
+                    raise RuntimeError("catalog_subprocess_exit:1")
+                return (
+                    {"file_graph": {"file_nodes": [], "edges": [], "embed_layers": []}},
+                    {},
+                    {},
+                    {},
+                    {},
+                )
+
+            def _runtime_simulation(self, *args: Any, **kwargs: Any) -> tuple[Any, Any]:
+                return (
+                    {
+                        "total": 1,
+                        "points": [{"id": "p1"}],
+                        "embedding_particles": [],
+                        "presence_dynamics": {"field_particles": []},
+                        "file_graph": {
+                            "file_nodes": [],
+                            "edges": [],
+                            "embed_layers": [],
+                            "projection": {
+                                "active": False,
+                                "before": {"file_nodes": 0, "edges": 0},
+                                "after": {"file_nodes": 0, "edges": 0},
+                                "limits": {"edge_cap": 10},
+                            },
+                        },
+                    },
+                    {"record": "projection.v1", "perspective": "hybrid", "ts": 1},
+                )
+
+        monkeypatch.setattr(
+            server_module.simulation_module,
+            "reset_simulation_bootstrap_state",
+            lambda **kwargs: {"ok": True},
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cache_invalidate",
+            lambda **kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cache_key",
+            lambda **kwargs: "bootstrap|cache|key",
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cache_store",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_disk_cache_store",
+            lambda *args, **kwargs: None,
+        )
+
+        phases: list[tuple[str, dict[str, Any] | None]] = []
+        handler = _FakeHandler(Path(td))
+        payload, status = server_module.WorldHandler._run_simulation_bootstrap(
+            cast(Any, handler),
+            perspective="hybrid",
+            sync_inbox=False,
+            include_simulation_payload=False,
+            phase_callback=lambda phase, detail: phases.append((phase, detail)),
+        )
+
+        assert status == server_module.HTTPStatus.OK
+        assert payload.get("ok") is True
+        assert len(catalog_calls) == 2
+        assert catalog_calls[0].get("allow_inline_collect") is False
+        assert catalog_calls[0].get("strict_collect") is True
+        assert catalog_calls[1].get("allow_inline_collect") is True
+        assert catalog_calls[1].get("strict_collect") is False
+
+        phase_order: list[str] = []
+        for row in phases:
+            phase_name = str(row[0])
+            if not phase_order or phase_order[-1] != phase_name:
+                phase_order.append(phase_name)
+        assert "catalog_fallback_inline" in phase_order
+
+        fallback_rows = [
+            row[1]
+            for row in phases
+            if row[0] == "catalog_fallback_inline" and isinstance(row[1], dict)
+        ]
+        assert fallback_rows
+        first_fallback = fallback_rows[0]
+        assert first_fallback.get("fallback_from") == "catalog"
+        assert str(first_fallback.get("fallback_reason", "")).startswith(
+            "catalog_subprocess_exit:1"
+        )
+
+
+def test_simulation_bootstrap_job_mark_phase_preserves_phase_started_at() -> None:
+    from code.world_web import server as server_module
+
+    previous_snapshot = server_module._simulation_bootstrap_job_snapshot()
+    started, snapshot = server_module._simulation_bootstrap_job_start(
+        request_payload={"perspective": "hybrid", "sync_inbox": False}
+    )
+    assert started is True
+    job_id = str(snapshot.get("job_id", "") or "")
+    assert job_id
+
+    try:
+        server_module._simulation_bootstrap_job_mark_phase(
+            job_id=job_id,
+            phase="catalog",
+            detail={"heartbeat_count": 1},
+        )
+        first_snapshot = server_module._simulation_bootstrap_job_snapshot()
+        phase_started_at = str(first_snapshot.get("phase_started_at", "") or "")
+        first_updated_at = str(first_snapshot.get("updated_at", "") or "")
+        assert phase_started_at
+        time.sleep(0.01)
+
+        server_module._simulation_bootstrap_job_mark_phase(
+            job_id=job_id,
+            phase="catalog",
+            detail={"heartbeat_count": 2},
+        )
+        second_snapshot = server_module._simulation_bootstrap_job_snapshot()
+        assert second_snapshot.get("phase") == "catalog"
+        assert second_snapshot.get("phase_started_at") == phase_started_at
+        assert str(second_snapshot.get("updated_at", "") or "") >= first_updated_at
+        assert second_snapshot.get("phase_detail") == {"heartbeat_count": 2}
+    finally:
+        with server_module._SIMULATION_BOOTSTRAP_JOB_LOCK:
+            server_module._SIMULATION_BOOTSTRAP_JOB.clear()
+            server_module._SIMULATION_BOOTSTRAP_JOB.update(previous_snapshot)
+
+
+def test_run_simulation_bootstrap_emits_catalog_heartbeats(monkeypatch: Any) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+
+        class _FakeHandler:
+            def __init__(self, root: Path) -> None:
+                self.part_root = root
+                self.vault_root = root
+
+            def _runtime_catalog(self, **kwargs: Any) -> tuple[Any, ...]:
+                time.sleep(0.03)
+                return (
+                    {"file_graph": {"file_nodes": [], "edges": [], "embed_layers": []}},
+                    {},
+                    {},
+                    {},
+                    {},
+                )
+
+            def _runtime_simulation(self, *args: Any, **kwargs: Any) -> tuple[Any, Any]:
+                return (
+                    {
+                        "total": 1,
+                        "points": [{"id": "p1"}],
+                        "embedding_particles": [],
+                        "presence_dynamics": {"field_particles": []},
+                        "file_graph": {
+                            "file_nodes": [],
+                            "edges": [],
+                            "embed_layers": [],
+                            "projection": {
+                                "active": False,
+                                "before": {"file_nodes": 0, "edges": 0},
+                                "after": {"file_nodes": 0, "edges": 0},
+                                "limits": {"edge_cap": 10},
+                            },
+                        },
+                    },
+                    {"record": "projection.v1", "perspective": "hybrid", "ts": 1},
+                )
+
+        monkeypatch.setattr(
+            server_module.simulation_module,
+            "reset_simulation_bootstrap_state",
+            lambda **kwargs: {"ok": True},
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cache_invalidate",
+            lambda **kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cache_key",
+            lambda **kwargs: "bootstrap|cache|key",
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cache_store",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_disk_cache_store",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_SIMULATION_BOOTSTRAP_HEARTBEAT_SECONDS",
+            0.005,
+        )
+
+        phases: list[tuple[str, dict[str, Any] | None]] = []
+        handler = _FakeHandler(Path(td))
+        payload, status = server_module.WorldHandler._run_simulation_bootstrap(
+            cast(Any, handler),
+            perspective="hybrid",
+            sync_inbox=False,
+            include_simulation_payload=False,
+            phase_callback=lambda phase, detail: phases.append((phase, detail)),
+        )
+
+        assert status == server_module.HTTPStatus.OK
+        assert payload.get("ok") is True
+        catalog_details = [
+            row[1] for row in phases if row[0] == "catalog" and isinstance(row[1], dict)
+        ]
+        assert catalog_details
+        assert any(
+            max(0, int(float(str(detail.get("heartbeat_count", 0) or "0")))) >= 1
+            for detail in catalog_details
+        )
+        assert any("phase_elapsed_ms" in detail for detail in catalog_details)
+
+
+def test_simulation_ws_load_cached_payload_full_falls_back_when_cache_bytes_invalid(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        part_root = Path(td)
+        cache_path = server_module._simulation_http_disk_cache_path(part_root, "hybrid")
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_payload = {
+            "timestamp": "2026-02-23T06:00:00Z",
+            "total": 2,
+            "points": [{"id": "a"}, {"id": "b"}],
+            "presence_dynamics": {
+                "field_particles": [{"id": "dm-1"}],
+            },
+            "projection": {"perspective": "hybrid"},
+        }
+        cache_path.write_text(json.dumps(cache_payload), encoding="utf-8")
+
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cached_body",
+            lambda **kwargs: b"{invalid-json",
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_disk_cache_load",
+            lambda *args, **kwargs: None,
+        )
+
+        cached_payload = server_module._simulation_ws_load_cached_payload(
+            part_root=part_root,
+            perspective="hybrid",
+            payload_mode="full",
+        )
+        assert cached_payload is not None
+        simulation_payload, projection = cached_payload
+        assert simulation_payload.get("total") == 2
+        assert len(simulation_payload.get("points", [])) == 2
+        assert simulation_payload.get("projection") is None
+        assert projection == {"perspective": "hybrid"}
+
+
+def test_simulation_ws_load_cached_payload_full_prefers_non_sparse_disk_payload(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    in_memory_sparse = {
+        "timestamp": "2026-02-23T06:01:00Z",
+        "total": 0,
+        "points": [],
+        "presence_dynamics": {
+            "field_particles": [],
+        },
+        "projection": {"perspective": "in-memory"},
+    }
+
+    with tempfile.TemporaryDirectory() as td:
+        part_root = Path(td)
+        cache_path = server_module._simulation_http_disk_cache_path(part_root, "hybrid")
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        disk_payload = {
+            "timestamp": "2026-02-23T05:59:00Z",
+            "total": 5,
+            "points": [{"id": f"pt:{index}"} for index in range(5)],
+            "presence_dynamics": {
+                "field_particles": [{"id": "dm-1"}, {"id": "dm-2"}],
+            },
+            "projection": {"perspective": "hybrid"},
+        }
+        cache_path.write_text(json.dumps(disk_payload), encoding="utf-8")
+
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cached_body",
+            lambda **kwargs: json.dumps(in_memory_sparse).encode("utf-8"),
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_disk_cache_load",
+            lambda *args, **kwargs: None,
+        )
+
+        cached_payload = server_module._simulation_ws_load_cached_payload(
+            part_root=part_root,
+            perspective="hybrid",
+            payload_mode="full",
+        )
+        assert cached_payload is not None
+        simulation_payload, projection = cached_payload
+        assert simulation_payload.get("total") == 5
+        assert len(simulation_payload.get("points", [])) == 5
+        assert (
+            len(
+                simulation_payload.get("presence_dynamics", {}).get(
+                    "field_particles", []
+                )
+            )
+            == 2
+        )
+        assert projection == {"perspective": "hybrid"}
+
+
 def test_ws_wire_mode_normalization_aliases() -> None:
     from code.world_web import server as server_module
 
@@ -3880,6 +4991,8 @@ def test_eta_mu_inbox_is_ingested_and_graphed() -> None:
             if node.get("name") == "new_witness_note.md"
         )
         assert note_node.get("archive_kind") == "zip"
+        assert note_node.get("resource_kind") == "text"
+        assert note_node.get("modality") == "text"
         assert note_node.get("archive_member_path") == note_entry.get(
             "archive_member_path"
         )
@@ -3892,6 +5005,10 @@ def test_eta_mu_inbox_is_ingested_and_graphed() -> None:
         assert isinstance(embed_layers, list)
         assert len(embed_layers) >= 1
         assert file_graph.get("stats", {}).get("embed_layer_count", 0) >= 1
+        assert (
+            file_graph.get("stats", {}).get("resource_kind_counts", {}).get("text", 0)
+            >= 1
+        )
         organizer = file_graph.get("organizer_presence", {})
         assert organizer.get("id") == "presence:file_organizer"
         concept_presences = file_graph.get("concept_presences", [])
@@ -5121,6 +6238,17 @@ def test_catalog_includes_crawler_graph_nodes_and_edges(monkeypatch: Any) -> Non
                         "kind": "domain",
                         "domain": "example.org",
                     },
+                    {
+                        "id": "content:https://example.org/audio.mp3",
+                        "kind": "content",
+                        "url": "https://example.org/audio.mp3",
+                        "domain": "example.org",
+                        "title": "Field Song",
+                        "content_type": "audio/mpeg",
+                        "status": "fetched",
+                        "depth": 2,
+                        "compliance": "allowed",
+                    },
                 ],
                 "edges": [
                     {
@@ -5130,7 +6258,7 @@ def test_catalog_includes_crawler_graph_nodes_and_edges(monkeypatch: Any) -> Non
                         "kind": "domain_membership",
                     }
                 ],
-                "counts": {"nodes_total": 2, "edges_total": 1, "url_nodes_total": 1},
+                "counts": {"nodes_total": 3, "edges_total": 1, "url_nodes_total": 1},
             },
         }
 
@@ -5150,6 +6278,19 @@ def test_catalog_includes_crawler_graph_nodes_and_edges(monkeypatch: Any) -> Non
         assert any(
             str(node.get("url", "")).startswith("https://")
             for node in crawler_graph.get("crawler_nodes", [])
+        )
+        audio_node = next(
+            node
+            for node in crawler_graph.get("crawler_nodes", [])
+            if str(node.get("content_type", "")).startswith("audio/")
+        )
+        assert audio_node.get("resource_kind") == "audio"
+        assert audio_node.get("modality") == "audio"
+        assert (
+            crawler_graph.get("stats", {})
+            .get("resource_kind_counts", {})
+            .get("audio", 0)
+            >= 1
         )
 
 
@@ -5323,6 +6464,11 @@ def test_simulation_state_unifies_crawler_nodes_into_nexus_graph() -> None:
 
     assert any(str(node.get("id", "")) == "crawler:abc" for node in graph_nodes)
     assert any(str(node.get("id", "")) == "crawler:abc" for node in crawler_rows)
+    crawler_node = next(
+        node for node in crawler_rows if str(node.get("id", "")) == "crawler:abc"
+    )
+    assert crawler_node.get("resource_kind") == "link"
+    assert crawler_node.get("modality") == "web"
     assert any(
         str(edge.get("source", "")) == "field:gates_of_truth"
         and str(edge.get("target", "")) == "crawler:abc"
@@ -5840,6 +6986,8 @@ def test_canonical_nexus_node_builder_maps_legacy_types() -> None:
         "id": "test-crawler",
         "node_type": "crawler",
         "crawler_kind": "url",
+        "resource_kind": "audio",
+        "modality": "audio",
         "label": "Test URL",
         "x": 0.7,
         "y": 0.4,
@@ -5851,6 +6999,8 @@ def test_canonical_nexus_node_builder_maps_legacy_types() -> None:
     )
     assert crawler_canonical.get("role") == "crawler"
     assert crawler_canonical.get("extension", {}).get("url") == "https://example.com"
+    assert crawler_canonical.get("extension", {}).get("resource_kind") == "audio"
+    assert crawler_canonical.get("extension", {}).get("modality") == "audio"
 
     # Test field node
     field_legacy = {
