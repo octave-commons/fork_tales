@@ -198,6 +198,20 @@ static _Thread_local uint32_t *g_scratch_u32_c = NULL;
 static _Thread_local uint32_t g_scratch_u32_c_cap = 0u;
 static _Thread_local float *g_scratch_edge_cost = NULL;
 static _Thread_local uint32_t g_scratch_edge_cost_cap = 0u;
+static _Thread_local int32_t *g_collision_cell_head = NULL;
+static _Thread_local uint32_t g_collision_cell_head_cap = 0u;
+static _Thread_local int32_t *g_collision_next = NULL;
+static _Thread_local uint32_t g_collision_next_cap = 0u;
+static _Thread_local float *g_collision_dx = NULL;
+static _Thread_local uint32_t g_collision_dx_cap = 0u;
+static _Thread_local float *g_collision_dy = NULL;
+static _Thread_local uint32_t g_collision_dy_cap = 0u;
+static _Thread_local float *g_collision_dvx = NULL;
+static _Thread_local uint32_t g_collision_dvx_cap = 0u;
+static _Thread_local float *g_collision_dvy = NULL;
+static _Thread_local uint32_t g_collision_dvy_cap = 0u;
+static _Thread_local uint32_t *g_collision_hits = NULL;
+static _Thread_local uint32_t g_collision_hits_cap = 0u;
 
 void cdb_release_thread_scratch(void) {
     free(g_scratch_dist);
@@ -227,6 +241,34 @@ void cdb_release_thread_scratch(void) {
     free(g_scratch_edge_cost);
     g_scratch_edge_cost = NULL;
     g_scratch_edge_cost_cap = 0u;
+
+    free(g_collision_cell_head);
+    g_collision_cell_head = NULL;
+    g_collision_cell_head_cap = 0u;
+
+    free(g_collision_next);
+    g_collision_next = NULL;
+    g_collision_next_cap = 0u;
+
+    free(g_collision_dx);
+    g_collision_dx = NULL;
+    g_collision_dx_cap = 0u;
+
+    free(g_collision_dy);
+    g_collision_dy = NULL;
+    g_collision_dy_cap = 0u;
+
+    free(g_collision_dvx);
+    g_collision_dvx = NULL;
+    g_collision_dvx_cap = 0u;
+
+    free(g_collision_dvy);
+    g_collision_dvy = NULL;
+    g_collision_dvy_cap = 0u;
+
+    free(g_collision_hits);
+    g_collision_hits = NULL;
+    g_collision_hits_cap = 0u;
 }
 
 static int cdb_ensure_scratch_float(float **buffer, uint32_t *capacity, uint32_t count) {
@@ -269,6 +311,22 @@ static int cdb_ensure_scratch_u8(uint8_t **buffer, uint32_t *capacity, uint32_t 
         return 0;
     }
     uint8_t *next = (uint8_t *)realloc(*buffer, (size_t)count * sizeof(uint8_t));
+    if (next == NULL) {
+        return -1;
+    }
+    *buffer = next;
+    *capacity = count;
+    return 0;
+}
+
+static int cdb_ensure_scratch_i32(int32_t **buffer, uint32_t *capacity, uint32_t count) {
+    if (count == 0u) {
+        return 0;
+    }
+    if (*capacity >= count && *buffer != NULL) {
+        return 0;
+    }
+    int32_t *next = (int32_t *)realloc(*buffer, (size_t)count * sizeof(int32_t));
     if (next == NULL) {
         return -1;
     }
@@ -1596,13 +1654,23 @@ uint32_t cdb_resolve_semantic_collisions(
     uint32_t rows = cols;
     uint32_t cell_count = cols * rows;
 
-    int32_t *cell_head = (int32_t *)malloc((size_t)cell_count * sizeof(int32_t));
-    int32_t *next = (int32_t *)malloc((size_t)count * sizeof(int32_t));
-    if (cell_head == NULL || next == NULL) {
-        free(cell_head);
-        free(next);
+    if (
+        cdb_ensure_scratch_i32(
+            &g_collision_cell_head,
+            &g_collision_cell_head_cap,
+            cell_count
+        ) != 0
+        || cdb_ensure_scratch_i32(
+            &g_collision_next,
+            &g_collision_next_cap,
+            count
+        ) != 0
+    ) {
         return 0u;
     }
+    int32_t *cell_head = g_collision_cell_head;
+    int32_t *next = g_collision_next;
+
     for (uint32_t cell = 0u; cell < cell_count; cell += 1u) {
         cell_head[cell] = -1;
     }
@@ -1647,6 +1715,38 @@ uint32_t cdb_resolve_semantic_collisions(
         workers = 1u;
     }
 
+    if (count > 0u && workers > (UINT32_MAX / count)) {
+        return 0u;
+    }
+    uint32_t work_slots = count * workers;
+    if (
+        cdb_ensure_scratch_float(&g_collision_dx, &g_collision_dx_cap, work_slots) != 0
+        || cdb_ensure_scratch_float(&g_collision_dy, &g_collision_dy_cap, work_slots) != 0
+        || cdb_ensure_scratch_float(
+            &g_collision_dvx,
+            &g_collision_dvx_cap,
+            work_slots
+        ) != 0
+        || cdb_ensure_scratch_float(
+            &g_collision_dvy,
+            &g_collision_dvy_cap,
+            work_slots
+        ) != 0
+        || cdb_ensure_scratch_u32(
+            &g_collision_hits,
+            &g_collision_hits_cap,
+            work_slots
+        ) != 0
+    ) {
+        return 0u;
+    }
+
+    memset(g_collision_dx, 0, (size_t)work_slots * sizeof(float));
+    memset(g_collision_dy, 0, (size_t)work_slots * sizeof(float));
+    memset(g_collision_dvx, 0, (size_t)work_slots * sizeof(float));
+    memset(g_collision_dvy, 0, (size_t)work_slots * sizeof(float));
+    memset(g_collision_hits, 0, (size_t)work_slots * sizeof(uint32_t));
+
     CDBCollisionResolveContext ctx;
     ctx.count = count;
     ctx.cols = cols;
@@ -1663,58 +1763,26 @@ uint32_t cdb_resolve_semantic_collisions(
     ctx.restitution = bounded_restitution;
     ctx.separation_percent = bounded_separation;
 
-    CDBCollisionResolveTask *tasks = (CDBCollisionResolveTask *)calloc(
-        workers,
-        sizeof(CDBCollisionResolveTask)
-    );
-    pthread_t *threads = (pthread_t *)calloc(workers, sizeof(pthread_t));
-    uint8_t *thread_started = (uint8_t *)calloc(workers, sizeof(uint8_t));
-    if (tasks == NULL || threads == NULL || thread_started == NULL) {
-        free(tasks);
-        free(threads);
-        free(thread_started);
-        free(cell_head);
-        free(next);
-        return 0u;
-    }
+    CDBCollisionResolveTask tasks[32];
+    pthread_t threads[32];
+    uint8_t thread_started[32];
+    memset(tasks, 0, sizeof(tasks));
+    memset(threads, 0, sizeof(threads));
+    memset(thread_started, 0, sizeof(thread_started));
 
-    int alloc_failed = 0;
     for (uint32_t w = 0u; w < workers; w += 1u) {
+        size_t base = (size_t)w * (size_t)count;
         tasks[w].ctx = &ctx;
-        tasks[w].dx = (float *)calloc((size_t)count, sizeof(float));
-        tasks[w].dy = (float *)calloc((size_t)count, sizeof(float));
-        tasks[w].dvx = (float *)calloc((size_t)count, sizeof(float));
-        tasks[w].dvy = (float *)calloc((size_t)count, sizeof(float));
-        tasks[w].hit_count = (uint32_t *)calloc((size_t)count, sizeof(uint32_t));
-        if (
-            tasks[w].dx == NULL
-            || tasks[w].dy == NULL
-            || tasks[w].dvx == NULL
-            || tasks[w].dvy == NULL
-            || tasks[w].hit_count == NULL
-        ) {
-            alloc_failed = 1;
-            break;
-        }
-    }
-    if (alloc_failed != 0) {
-        for (uint32_t w = 0u; w < workers; w += 1u) {
-            free(tasks[w].dx);
-            free(tasks[w].dy);
-            free(tasks[w].dvx);
-            free(tasks[w].dvy);
-            free(tasks[w].hit_count);
-        }
-        free(tasks);
-        free(threads);
-        free(thread_started);
-        free(cell_head);
-        free(next);
-        return 0u;
+        tasks[w].dx = g_collision_dx + base;
+        tasks[w].dy = g_collision_dy + base;
+        tasks[w].dvx = g_collision_dvx + base;
+        tasks[w].dvy = g_collision_dvy + base;
+        tasks[w].hit_count = g_collision_hits + base;
     }
 
     uint32_t chunk = (cell_count + workers - 1u) / workers;
     for (uint32_t w = 0u; w < workers; w += 1u) {
+        tasks[w].ctx = &ctx;
         uint32_t start = w * chunk;
         uint32_t end = start + chunk;
         if (start > cell_count) {
@@ -1742,7 +1810,7 @@ uint32_t cdb_resolve_semantic_collisions(
     }
     for (uint32_t w = 1u; w < workers; w += 1u) {
         if (thread_started[w] != 0u) {
-            pthread_join(threads[w], NULL);
+            (void)pthread_join(threads[w], NULL);
         }
     }
 
@@ -1773,18 +1841,6 @@ uint32_t cdb_resolve_semantic_collisions(
         }
     }
 
-    for (uint32_t w = 0u; w < workers; w += 1u) {
-        free(tasks[w].dx);
-        free(tasks[w].dy);
-        free(tasks[w].dvx);
-        free(tasks[w].dvy);
-        free(tasks[w].hit_count);
-    }
-    free(tasks);
-    free(threads);
-    free(thread_started);
-    free(cell_head);
-    free(next);
     return collision_pairs;
 }
 

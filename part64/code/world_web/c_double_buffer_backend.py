@@ -15,8 +15,11 @@ import time
 from pathlib import Path
 from typing import Any
 
-
-print("DEBUG: c_double_buffer_backend imported", flush=True)
+from .daimoi_probabilistic import (
+    DAIMOI_ANTI_CLUMP_TARGET,
+    _anti_clump_controller_update,
+    _anti_clump_scales,
+)
 
 CDB_FLAG_NEXUS = 0x1
 CDB_FLAG_CHAOS = 0x2
@@ -51,6 +54,51 @@ _VALVE_ALPHA_GRAVITY = 1.0
 _VALVE_ALPHA_AFFINITY = 0.36
 _VALVE_ALPHA_SATURATION = 0.52
 _VALVE_ALPHA_HEALTH = 0.34
+
+try:
+    _CDB_GRAPH_VARIABILITY_NODE_LIMIT = max(
+        64,
+        int(float(os.getenv("CDB_GRAPH_VARIABILITY_NODE_LIMIT", "4096") or "4096")),
+    )
+except Exception:
+    _CDB_GRAPH_VARIABILITY_NODE_LIMIT = 4096
+try:
+    _CDB_GRAPH_VARIABILITY_DISTANCE_REF = max(
+        0.001,
+        float(os.getenv("CDB_GRAPH_VARIABILITY_DISTANCE_REF", "0.02") or "0.02"),
+    )
+except Exception:
+    _CDB_GRAPH_VARIABILITY_DISTANCE_REF = 0.02
+try:
+    _CDB_GRAPH_VARIABILITY_SCORE_EMA_ALPHA = max(
+        0.01,
+        min(
+            1.0,
+            float(os.getenv("CDB_GRAPH_VARIABILITY_SCORE_EMA_ALPHA", "0.2") or "0.2"),
+        ),
+    )
+except Exception:
+    _CDB_GRAPH_VARIABILITY_SCORE_EMA_ALPHA = 0.2
+try:
+    _CDB_GRAPH_VARIABILITY_NOISE_GAIN = max(
+        0.0,
+        min(
+            2.0,
+            float(os.getenv("CDB_GRAPH_VARIABILITY_NOISE_GAIN", "1.0") or "1.0"),
+        ),
+    )
+except Exception:
+    _CDB_GRAPH_VARIABILITY_NOISE_GAIN = 1.0
+try:
+    _CDB_GRAPH_VARIABILITY_ROUTE_DAMP = max(
+        0.0,
+        min(
+            0.8,
+            float(os.getenv("CDB_GRAPH_VARIABILITY_ROUTE_DAMP", "0.35") or "0.35"),
+        ),
+    )
+except Exception:
+    _CDB_GRAPH_VARIABILITY_ROUTE_DAMP = 0.35
 
 _RESOURCE_TYPES: tuple[str, ...] = (
     "cpu",
@@ -138,6 +186,11 @@ _EMBED_MODEL_DOWNLOAD_LOCK = threading.Lock()
 _EMBED_MODEL_DOWNLOAD_ATTEMPTED = False
 _EMBED_VECTOR_CACHE_LOCK = threading.Lock()
 _EMBED_VECTOR_CACHE: dict[str, tuple[float, ...]] = {}
+_COLLISION_CTYPE_SCRATCH = threading.local()
+_COLLISION_SCRATCH_SHRINK_FACTOR = 4
+_COLLISION_SCRATCH_SHRINK_RUNS = 24
+_COLLISION_SCRATCH_SHRINK_MIN_CAPACITY = 1024
+_COLLISION_NATIVE_RELEASE_COOLDOWN_SECONDS = 45.0
 
 _CDB_MAX_PRESENCE_SLOTS = 64
 _DEFAULT_PRESENCE_LAYOUT: tuple[tuple[str, float, float, float], ...] = (
@@ -178,6 +231,127 @@ def _clamp01(value: float) -> float:
     if value >= 1.0:
         return 1.0
     return value
+
+
+def _quantile(values: list[float], q: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(max(0.0, _safe_float(value, 0.0)) for value in values)
+    if not ordered:
+        return 0.0
+    q_clamped = _clamp01(_safe_float(q, 0.0))
+    if len(ordered) == 1:
+        return ordered[0]
+    index = int(round((len(ordered) - 1) * q_clamped))
+    index = max(0, min(len(ordered) - 1, index))
+    return ordered[index]
+
+
+def _graph_node_position_map(
+    *,
+    node_ids: list[Any],
+    node_positions: list[Any],
+) -> dict[str, tuple[float, float]]:
+    if not isinstance(node_ids, list) or not isinstance(node_positions, list):
+        return {}
+
+    node_count = min(
+        len(node_ids),
+        len(node_positions),
+        max(1, int(_CDB_GRAPH_VARIABILITY_NODE_LIMIT)),
+    )
+    if node_count <= 0:
+        return {}
+
+    mapped: dict[str, tuple[float, float]] = {}
+    for index in range(node_count):
+        node_id = str(node_ids[index] or "").strip()
+        if not node_id:
+            continue
+        row = node_positions[index]
+        if not isinstance(row, (list, tuple)) or len(row) < 2:
+            continue
+        mapped[node_id] = (
+            _clamp01(_safe_float(row[0], 0.5)),
+            _clamp01(_safe_float(row[1], 0.5)),
+        )
+    return mapped
+
+
+def _graph_node_variability_update(
+    engine: Any,
+    *,
+    node_ids: list[Any],
+    node_positions: list[Any],
+) -> dict[str, Any]:
+    current_positions = _graph_node_position_map(
+        node_ids=node_ids,
+        node_positions=node_positions,
+    )
+    previous_positions_raw = getattr(engine, "_graph_node_positions_prev", {})
+    previous_positions = (
+        dict(previous_positions_raw) if isinstance(previous_positions_raw, dict) else {}
+    )
+
+    displacements: list[float] = []
+    moved_count = 0
+    moved_threshold = max(0.0005, _CDB_GRAPH_VARIABILITY_DISTANCE_REF * 0.35)
+    for node_id, (cx, cy) in current_positions.items():
+        prior = previous_positions.get(node_id)
+        if not isinstance(prior, tuple) or len(prior) < 2:
+            continue
+        px = _clamp01(_safe_float(prior[0], cx))
+        py = _clamp01(_safe_float(prior[1], cy))
+        displacement = math.hypot(cx - px, cy - py)
+        displacements.append(displacement)
+        if displacement >= moved_threshold:
+            moved_count += 1
+
+    shared_nodes = len(displacements)
+    mean_displacement = (
+        (sum(displacements) / float(shared_nodes)) if shared_nodes > 0 else 0.0
+    )
+    p90_displacement = _quantile(displacements, 0.9)
+    active_share = (
+        (float(moved_count) / float(shared_nodes)) if shared_nodes > 0 else 0.0
+    )
+
+    mean_term = _clamp01(
+        mean_displacement / max(1e-6, _CDB_GRAPH_VARIABILITY_DISTANCE_REF)
+    )
+    p90_term = _clamp01(
+        p90_displacement / max(1e-6, _CDB_GRAPH_VARIABILITY_DISTANCE_REF * 1.8)
+    )
+    active_term = _clamp01(active_share / 0.45)
+    raw_score = _clamp01((mean_term * 0.55) + (p90_term * 0.25) + (active_term * 0.2))
+
+    previous_state_raw = getattr(engine, "_graph_node_variability_state", {})
+    previous_state = (
+        dict(previous_state_raw) if isinstance(previous_state_raw, dict) else {}
+    )
+    alpha = _clamp01(_safe_float(_CDB_GRAPH_VARIABILITY_SCORE_EMA_ALPHA, 0.2))
+    previous_score = _clamp01(
+        _safe_float(previous_state.get("score", raw_score), raw_score)
+    )
+    score = _clamp01((previous_score * (1.0 - alpha)) + (raw_score * alpha))
+    peak_score = max(
+        score,
+        _clamp01(_safe_float(previous_state.get("peak_score", score), score) * 0.92),
+    )
+
+    state = {
+        "score": score,
+        "raw_score": raw_score,
+        "peak_score": peak_score,
+        "mean_displacement": mean_displacement,
+        "p90_displacement": p90_displacement,
+        "active_share": active_share,
+        "shared_nodes": shared_nodes,
+        "sampled_nodes": len(current_positions),
+    }
+    setattr(engine, "_graph_node_variability_state", dict(state))
+    setattr(engine, "_graph_node_positions_prev", dict(current_positions))
+    return state
 
 
 def _is_cpu_fallback_signal(text: str) -> bool:
@@ -805,6 +979,17 @@ def _core_resource_type_from_presence_id(presence_id: str) -> str:
     if token.startswith("presence.core."):
         return _canonical_resource_type(token.rsplit(".", 1)[-1])
     return ""
+
+
+def _presence_priority_rank(presence_id: str) -> int:
+    token = str(presence_id or "").strip().lower()
+    if token.startswith("presence.core."):
+        return 0
+    if token.startswith("health_sentinel_"):
+        return 1
+    if token == "presence.user.operator":
+        return 2
+    return 3
 
 
 def _resource_wallet_by_type(wallet: dict[str, Any] | None) -> dict[str, float]:
@@ -2751,7 +2936,112 @@ def shutdown_c_double_buffer_backend() -> None:
 atexit.register(shutdown_c_double_buffer_backend)
 
 
-def resolve_semantic_collisions_native(
+def _collision_worker_count(*, count: int, worker_count: int | None) -> int:
+    if worker_count is None:
+        cpu_count = int(os.cpu_count() or 1)
+        cpu_count = max(1, min(64, cpu_count))
+        default_workers = cpu_count
+        if default_workers > 4:
+            default_workers -= 3
+        default_workers = max(1, min(32, default_workers))
+        worker_count = _int_env(
+            "CDB_COLLISION_WORKERS",
+            _int_env("CDB_FORCE_WORKERS", default_workers, minimum=1, maximum=32),
+            minimum=1,
+            maximum=32,
+        )
+    workers = max(1, min(32, int(worker_count)))
+    return max(1, min(workers, count))
+
+
+def _collision_ctype_state(capacity: int) -> dict[str, Any]:
+    float_array = ctypes.c_float * capacity
+    uint32_array = ctypes.c_uint32 * capacity
+    return {
+        "capacity": capacity,
+        "x": float_array(),
+        "y": float_array(),
+        "vx": float_array(),
+        "vy": float_array(),
+        "radius": float_array(),
+        "mass": float_array(),
+        "collision": uint32_array(),
+        "shrink_candidate_runs": 0,
+        "last_native_release_at": 0.0,
+    }
+
+
+def _collision_release_native_thread_scratch_if_needed(
+    *,
+    prior_capacity: int,
+    next_capacity: int,
+    state: dict[str, Any],
+) -> None:
+    if prior_capacity < (_COLLISION_SCRATCH_SHRINK_MIN_CAPACITY * 2):
+        return
+    if next_capacity > max(2, prior_capacity // _COLLISION_SCRATCH_SHRINK_FACTOR):
+        return
+    now_value = time.monotonic()
+    last_release = _safe_float(state.get("last_native_release_at", 0.0), 0.0)
+    if (now_value - last_release) < _COLLISION_NATIVE_RELEASE_COOLDOWN_SECONDS:
+        return
+    try:
+        lib = _load_native_lib()
+    except Exception:
+        state["last_native_release_at"] = now_value
+        return
+    if hasattr(lib, "cdb_release_thread_scratch"):
+        try:
+            lib.cdb_release_thread_scratch()
+        except Exception:
+            pass
+    state["last_native_release_at"] = now_value
+
+
+def _collision_ctype_scratch(count: int) -> dict[str, Any]:
+    cap_target = max(2, int(count))
+    cap_target = 1 << (cap_target - 1).bit_length()
+
+    state = getattr(_COLLISION_CTYPE_SCRATCH, "state", None)
+    if not isinstance(state, dict):
+        state = {}
+        _COLLISION_CTYPE_SCRATCH.state = state
+
+    capacity = int(_safe_float(state.get("capacity", 0), 0.0))
+    if capacity >= cap_target:
+        low_water_runs = int(_safe_float(state.get("shrink_candidate_runs", 0), 0.0))
+        if capacity >= _COLLISION_SCRATCH_SHRINK_MIN_CAPACITY and cap_target <= max(
+            2, capacity // _COLLISION_SCRATCH_SHRINK_FACTOR
+        ):
+            low_water_runs += 1
+            state["shrink_candidate_runs"] = low_water_runs
+            if low_water_runs >= _COLLISION_SCRATCH_SHRINK_RUNS:
+                next_state = _collision_ctype_state(cap_target)
+                next_state["last_native_release_at"] = _safe_float(
+                    state.get("last_native_release_at", 0.0),
+                    0.0,
+                )
+                _collision_release_native_thread_scratch_if_needed(
+                    prior_capacity=capacity,
+                    next_capacity=cap_target,
+                    state=next_state,
+                )
+                _COLLISION_CTYPE_SCRATCH.state = next_state
+                return next_state
+        else:
+            state["shrink_candidate_runs"] = 0
+        return state
+
+    next_state = _collision_ctype_state(cap_target)
+    next_state["last_native_release_at"] = _safe_float(
+        state.get("last_native_release_at", 0.0),
+        0.0,
+    )
+    _COLLISION_CTYPE_SCRATCH.state = next_state
+    return next_state
+
+
+def _resolve_semantic_collisions_native_buffers(
     *,
     x: list[float],
     y: list[float],
@@ -2759,20 +3049,12 @@ def resolve_semantic_collisions_native(
     vy: list[float],
     radius: list[float],
     mass: list[float],
-    restitution: float = 0.88,
-    separation_percent: float = 0.72,
-    cell_size: float = 0.04,
-    worker_count: int | None = None,
-) -> tuple[list[float], list[float], list[float], list[float], list[int]] | None:
+    restitution: float,
+    separation_percent: float,
+    cell_size: float,
+    worker_count: int | None,
+) -> tuple[int, Any, Any, Any, Any, Any] | None:
     count = len(x)
-    if count <= 1:
-        return (
-            list(x),
-            list(y),
-            list(vx),
-            list(vy),
-            [0 for _ in range(max(0, count))],
-        )
     if not (
         len(y) == count
         and len(vx) == count
@@ -2789,36 +3071,40 @@ def resolve_semantic_collisions_native(
     if not hasattr(lib, "cdb_resolve_semantic_collisions"):
         return None
 
-    if worker_count is None:
-        cpu_count = int(os.cpu_count() or 1)
-        cpu_count = max(1, min(64, cpu_count))
-        default_workers = cpu_count
-        if default_workers > 4:
-            default_workers -= 3
-        default_workers = max(1, min(32, default_workers))
-        worker_count = _int_env(
-            "CDB_COLLISION_WORKERS",
-            _int_env("CDB_FORCE_WORKERS", default_workers, minimum=1, maximum=32),
-            minimum=1,
-            maximum=32,
-        )
-    workers = max(1, min(32, int(worker_count)))
-    workers = max(1, min(workers, count))
+    workers = _collision_worker_count(count=count, worker_count=worker_count)
 
     bounded_restitution = max(0.0, min(1.0, _safe_float(restitution, 0.88)))
     bounded_separation = max(0.0, min(1.2, _safe_float(separation_percent, 0.72)))
     bounded_cell_size = max(0.005, min(0.25, _safe_float(cell_size, 0.04)))
 
-    float_array = ctypes.c_float * count
-    uint32_array = ctypes.c_uint32 * count
+    scratch = _collision_ctype_scratch(count)
+    x_arr = scratch.get("x")
+    y_arr = scratch.get("y")
+    vx_arr = scratch.get("vx")
+    vy_arr = scratch.get("vy")
+    radius_arr = scratch.get("radius")
+    mass_arr = scratch.get("mass")
+    collision_arr = scratch.get("collision")
 
-    x_arr = float_array(*[_clamp01(_safe_float(value, 0.5)) for value in x])
-    y_arr = float_array(*[_clamp01(_safe_float(value, 0.5)) for value in y])
-    vx_arr = float_array(*[_safe_float(value, 0.0) for value in vx])
-    vy_arr = float_array(*[_safe_float(value, 0.0) for value in vy])
-    radius_arr = float_array(*[max(0.0, _safe_float(value, 0.0)) for value in radius])
-    mass_arr = float_array(*[max(0.2, _safe_float(value, 1.0)) for value in mass])
-    collision_arr = uint32_array()
+    if (
+        x_arr is None
+        or y_arr is None
+        or vx_arr is None
+        or vy_arr is None
+        or radius_arr is None
+        or mass_arr is None
+        or collision_arr is None
+    ):
+        return None
+
+    for idx in range(count):
+        x_arr[idx] = _clamp01(_safe_float(x[idx], 0.5))
+        y_arr[idx] = _clamp01(_safe_float(y[idx], 0.5))
+        vx_arr[idx] = _safe_float(vx[idx], 0.0)
+        vy_arr[idx] = _safe_float(vy[idx], 0.0)
+        radius_arr[idx] = max(0.0, _safe_float(radius[idx], 0.0))
+        mass_arr[idx] = max(0.2, _safe_float(mass[idx], 1.0))
+        collision_arr[idx] = 0
 
     try:
         lib.cdb_resolve_semantic_collisions(
@@ -2838,6 +3124,55 @@ def resolve_semantic_collisions_native(
     except Exception:
         return None
 
+    return count, x_arr, y_arr, vx_arr, vy_arr, collision_arr
+
+
+def resolve_semantic_collisions_native(
+    *,
+    x: list[float],
+    y: list[float],
+    vx: list[float],
+    vy: list[float],
+    radius: list[float],
+    mass: list[float],
+    restitution: float = 0.88,
+    separation_percent: float = 0.72,
+    cell_size: float = 0.04,
+    worker_count: int | None = None,
+) -> tuple[list[float], list[float], list[float], list[float], list[int]] | None:
+    count = len(x)
+    if count <= 1:
+        if not (
+            len(y) == count
+            and len(vx) == count
+            and len(vy) == count
+            and len(radius) == count
+            and len(mass) == count
+        ):
+            return None
+        return (
+            list(x),
+            list(y),
+            list(vx),
+            list(vy),
+            [0 for _ in range(max(0, count))],
+        )
+    resolved = _resolve_semantic_collisions_native_buffers(
+        x=x,
+        y=y,
+        vx=vx,
+        vy=vy,
+        radius=radius,
+        mass=mass,
+        restitution=restitution,
+        separation_percent=separation_percent,
+        cell_size=cell_size,
+        worker_count=worker_count,
+    )
+    if not (isinstance(resolved, tuple) and len(resolved) == 6):
+        return None
+    count, x_arr, y_arr, vx_arr, vy_arr, collision_arr = resolved
+
     return (
         [float(x_arr[i]) for i in range(count)],
         [float(y_arr[i]) for i in range(count)],
@@ -2845,6 +3180,73 @@ def resolve_semantic_collisions_native(
         [float(vy_arr[i]) for i in range(count)],
         [int(collision_arr[i]) for i in range(count)],
     )
+
+
+def resolve_semantic_collisions_native_inplace(
+    *,
+    x: list[float],
+    y: list[float],
+    vx: list[float],
+    vy: list[float],
+    radius: list[float],
+    mass: list[float],
+    collisions_out: list[int] | None = None,
+    restitution: float = 0.88,
+    separation_percent: float = 0.72,
+    cell_size: float = 0.04,
+    worker_count: int | None = None,
+) -> bool:
+    count = len(x)
+    if not (
+        len(y) == count
+        and len(vx) == count
+        and len(vy) == count
+        and len(radius) == count
+        and len(mass) == count
+    ):
+        return False
+
+    if count <= 1:
+        if collisions_out is not None:
+            if len(collisions_out) > count:
+                del collisions_out[count:]
+            while len(collisions_out) < count:
+                collisions_out.append(0)
+            for idx in range(count):
+                collisions_out[idx] = 0
+        return True
+
+    resolved = _resolve_semantic_collisions_native_buffers(
+        x=x,
+        y=y,
+        vx=vx,
+        vy=vy,
+        radius=radius,
+        mass=mass,
+        restitution=restitution,
+        separation_percent=separation_percent,
+        cell_size=cell_size,
+        worker_count=worker_count,
+    )
+    if not (isinstance(resolved, tuple) and len(resolved) == 6):
+        return False
+    count, x_arr, y_arr, vx_arr, vy_arr, collision_arr = resolved
+
+    for idx in range(count):
+        x[idx] = float(x_arr[idx])
+        y[idx] = float(y_arr[idx])
+        vx[idx] = float(vx_arr[idx])
+        vy[idx] = float(vy_arr[idx])
+
+    if collisions_out is not None:
+        if len(collisions_out) > count:
+            del collisions_out[count:]
+        while len(collisions_out) < count:
+            collisions_out.append(0)
+        for idx in range(count):
+            collisions_out[idx] = int(collision_arr[idx])
+
+    return True
 
 
 def compute_growth_guard_scores_native(
@@ -4338,14 +4740,29 @@ def build_double_buffer_field_particles(
         min(
             100.0,
             _safe_float(
-                os.getenv("SIMULATION_CPU_DAIMOI_STOP_PERCENT", "75") or "75",
-                75.0,
+                os.getenv("SIMULATION_CPU_DAIMOI_STOP_PERCENT", "50") or "50",
+                50.0,
             ),
         ),
     )
     cpu_core_emitter_enabled = cpu_util < cpu_daimoi_stop_percent
     if not cpu_core_emitter_enabled:
-        presence_ids = [pid for pid in presence_ids if pid != "presence.core.cpu"]
+        presence_ids = [
+            pid for pid in presence_ids if not str(pid).startswith("presence.core.")
+        ]
+
+    if presence_ids:
+        order_index = {
+            presence_id: index for index, presence_id in enumerate(presence_ids)
+        }
+        presence_ids = sorted(
+            presence_ids,
+            key=lambda pid: (
+                _presence_priority_rank(pid),
+                order_index.get(pid, 0),
+            ),
+        )
+
     if not presence_ids:
         fallback_presence_id = "health_sentinel_cpu"
         presence_ids = [fallback_presence_id]
@@ -4441,6 +4858,46 @@ def build_double_buffer_field_particles(
     # or rather update the engine.
     # Note: _get_engine returns a persistent singleton if parameters match.
     engine = _get_engine(count=target_count, seed=seed)
+
+    anti_clump_runtime = getattr(engine, "_anti_clump_runtime", {})
+    if not isinstance(anti_clump_runtime, dict):
+        anti_clump_runtime = {}
+    anti_clump_prev_drive = max(
+        -1.0,
+        min(1.0, _safe_float(anti_clump_runtime.get("drive", 0.0), 0.0)),
+    )
+    anti_clump_scale_map = _anti_clump_scales(anti_clump_prev_drive)
+    anti_clump_spawn_scale = max(
+        0.35,
+        min(1.0, _safe_float(anti_clump_scale_map.get("spawn", 1.0), 1.0)),
+    )
+    anti_clump_anchor_scale = max(
+        0.45,
+        min(1.2, _safe_float(anti_clump_scale_map.get("anchor", 1.0), 1.0)),
+    )
+    anti_clump_semantic_scale = max(
+        0.35,
+        min(1.2, _safe_float(anti_clump_scale_map.get("semantic", 1.0), 1.0)),
+    )
+    anti_clump_edge_scale = max(
+        0.4,
+        min(1.2, _safe_float(anti_clump_scale_map.get("edge", 1.0), 1.0)),
+    )
+    anti_clump_tangent_scale_base = max(
+        0.8,
+        min(1.8, _safe_float(anti_clump_scale_map.get("tangent", 1.0), 1.0)),
+    )
+    anti_clump_tangent_scale = anti_clump_tangent_scale_base
+    graph_variability_score = 0.0
+    graph_variability_raw_score = 0.0
+    graph_variability_peak_score = 0.0
+    graph_variability_mean_displacement = 0.0
+    graph_variability_p90_displacement = 0.0
+    graph_variability_active_share = 0.0
+    graph_variability_shared_nodes = 0
+    graph_variability_sampled_nodes = 0
+    graph_noise_gain = 1.0
+    graph_route_damp = 1.0
 
     # Set simulation flags from env
     # 1 = Spatial Collision (Particle-Particle)
@@ -4616,6 +5073,62 @@ def build_double_buffer_field_particles(
         max(
             (max(0.0, _safe_float(value, 0.0)) for value in graph_gravity), default=0.0
         ),
+    )
+
+    graph_variability_state = _graph_node_variability_update(
+        engine,
+        node_ids=graph_node_ids,
+        node_positions=graph_node_positions,
+    )
+    graph_variability_score = _clamp01(
+        _safe_float(graph_variability_state.get("score", 0.0), 0.0)
+    )
+    graph_variability_raw_score = _clamp01(
+        _safe_float(
+            graph_variability_state.get("raw_score", graph_variability_score), 0.0
+        )
+    )
+    graph_variability_peak_score = _clamp01(
+        _safe_float(
+            graph_variability_state.get("peak_score", graph_variability_score), 0.0
+        )
+    )
+    graph_variability_mean_displacement = max(
+        0.0,
+        _safe_float(graph_variability_state.get("mean_displacement", 0.0), 0.0),
+    )
+    graph_variability_p90_displacement = max(
+        0.0,
+        _safe_float(graph_variability_state.get("p90_displacement", 0.0), 0.0),
+    )
+    graph_variability_active_share = _clamp01(
+        _safe_float(graph_variability_state.get("active_share", 0.0), 0.0)
+    )
+    graph_variability_shared_nodes = max(
+        0,
+        int(_safe_float(graph_variability_state.get("shared_nodes", 0), 0.0)),
+    )
+    graph_variability_sampled_nodes = max(
+        0,
+        int(_safe_float(graph_variability_state.get("sampled_nodes", 0), 0.0)),
+    )
+    graph_noise_gain = max(
+        1.0,
+        min(
+            2.2,
+            1.0 + (graph_variability_score * _CDB_GRAPH_VARIABILITY_NOISE_GAIN),
+        ),
+    )
+    graph_route_damp = max(
+        0.55,
+        min(
+            1.0,
+            1.0 - (graph_variability_score * _CDB_GRAPH_VARIABILITY_ROUTE_DAMP),
+        ),
+    )
+    anti_clump_tangent_scale = max(
+        0.8,
+        min(2.4, anti_clump_tangent_scale_base * graph_noise_gain),
     )
 
     presence_resource_signatures = _build_presence_resource_signatures(
@@ -4847,16 +5360,30 @@ def build_double_buffer_field_particles(
         vel_x = _safe_float(vx_arr[index], 0.0)
         vel_y = _safe_float(vy_arr[index], 0.0)
 
-        anchor_gain = 1.16 if is_nexus else (1.48 if is_chaos else 1.42)
+        anchor_gain = (
+            1.16 if is_nexus else (1.48 if is_chaos else 1.42)
+        ) * anti_clump_anchor_scale
         anchor_focus_x = _clamp01(0.5 + ((anchor_x - 0.5) * anchor_gain))
         anchor_focus_y = _clamp01(0.5 + ((anchor_y - 0.5) * anchor_gain))
 
-        spread = 0.22 if is_nexus else (0.44 if is_chaos else 0.34)
+        spread = (0.22 if is_nexus else (0.44 if is_chaos else 0.34)) * max(
+            0.85, min(1.5, 1.0 + (max(0.0, anti_clump_prev_drive) * 0.45))
+        )
         cluster_x = anchor_focus_x + ((raw_x - 0.5) * spread)
         cluster_y = anchor_focus_y + ((raw_y - 0.5) * spread)
 
-        free_float_blend = 0.2 if is_nexus else (0.42 if is_chaos else 0.36)
-        velocity_influence = 0.07 if is_nexus else (0.2 if is_chaos else 0.16)
+        free_float_blend = max(
+            0.08,
+            min(
+                0.76,
+                (0.2 if is_nexus else (0.42 if is_chaos else 0.36))
+                + ((anti_clump_tangent_scale - 1.0) * 0.08),
+            ),
+        )
+        velocity_influence = (0.07 if is_nexus else (0.2 if is_chaos else 0.16)) * max(
+            0.8,
+            min(1.35, anti_clump_edge_scale),
+        )
         phase = (
             (float(frame_id % 8192) * 0.009)
             + (float(index) * 0.131)
@@ -5112,14 +5639,19 @@ def build_double_buffer_field_particles(
                     route_y = _clamp01(_safe_float(route_row[1], y_norm))
                     route_dx = route_x - x_norm
                     route_dy = route_y - y_norm
-                    route_mix = _clamp01(
-                        (route_probability * 0.24)
-                        + (_clamp01((drift_score + 1.0) * 0.5) * 0.12)
+                    route_mix = (
+                        _clamp01(
+                            (route_probability * 0.24)
+                            + (_clamp01((drift_score + 1.0) * 0.5) * 0.12)
+                        )
+                        * anti_clump_semantic_scale
+                        * graph_route_damp
                     )
                     escape_gain = _clamp01(1.0 - route_probability)
                     roam_radius = (0.0016 if is_nexus else 0.003) + (
                         escape_gain * (0.006 if is_nexus else 0.009)
                     )
+                    roam_radius *= anti_clump_tangent_scale
                     swirl_phase = (
                         phase * 1.9
                         + (route_probability * 3.1)
@@ -5135,9 +5667,10 @@ def build_double_buffer_field_particles(
                         + (route_y * route_mix)
                         + (math.sin(swirl_phase * 1.07) * roam_radius)
                     )
-                    route_motion_gain = (0.22 if is_nexus else 0.32) + (
-                        route_probability * (0.16 if is_nexus else 0.2)
-                    )
+                    route_motion_gain = (
+                        (0.22 if is_nexus else 0.32)
+                        + (route_probability * (0.16 if is_nexus else 0.2))
+                    ) * anti_clump_edge_scale
                     motion_vx = vel_x + (route_dx * route_motion_gain)
                     motion_vy = vel_y + (route_dy * route_motion_gain)
 
@@ -5225,7 +5758,9 @@ def build_double_buffer_field_particles(
             ^ ((index + 1) * 2654435761)
             ^ ((owner_id + 1) * 2246822519)
         ) & 0xFFFFFFFF
-        simplex_amp = 0.0009 if is_nexus else (0.0026 if is_chaos else 0.0018)
+        simplex_amp = (
+            0.0009 if is_nexus else (0.0026 if is_chaos else 0.0018)
+        ) * anti_clump_tangent_scale
         simplex_dx, simplex_dy = _simplex_motion_delta(
             x=x_norm,
             y=y_norm,
@@ -5266,6 +5801,17 @@ def build_double_buffer_field_particles(
             "deflect": round(deflect_value, 6),
             "diffuse": round(_clamp01(1.0 - deflect_value), 6),
         }
+
+        if (not is_nexus) and anti_clump_spawn_scale < 0.999:
+            keep_seed = (
+                ((index + 1) * 1103515245)
+                ^ ((int(frame_id) + 1) * 12345)
+                ^ ((owner_id + 1) * 2654435761)
+            ) & 0xFFFFFFFF
+            keep_ratio = keep_seed / 4294967295.0
+            if keep_ratio > anti_clump_spawn_scale:
+                continue
+
         if action_probabilities["deflect"] >= action_probabilities["diffuse"]:
             deflect_count += 1
         else:
@@ -5388,80 +5934,247 @@ def build_double_buffer_field_particles(
             }
         )
 
+    collision_count = 0
+    anti_clump_particles = {
+        str(row.get("id", f"cdb:{index}")): row
+        for index, row in enumerate(rows)
+        if isinstance(row, dict)
+    }
+    anti_clump_prev_collisions = int(
+        _safe_float(getattr(engine, "_anti_clump_last_collisions", 0), 0.0)
+    )
+    anti_clump_runtime = _anti_clump_controller_update(
+        anti_clump_runtime,
+        particles=anti_clump_particles,
+        previous_collision_count=anti_clump_prev_collisions,
+    )
+    setattr(engine, "_anti_clump_runtime", dict(anti_clump_runtime))
+    setattr(engine, "_anti_clump_last_collisions", int(collision_count))
+
+    anti_clump_drive = max(
+        -1.0,
+        min(1.0, _safe_float(anti_clump_runtime.get("drive", 0.0), 0.0)),
+    )
+    anti_clump_scale_snapshot = _anti_clump_scales(anti_clump_drive)
+    anti_clump_summary = {
+        "target": round(_clamp01(_safe_float(DAIMOI_ANTI_CLUMP_TARGET, 0.38)), 6),
+        "clump_score": round(
+            _clamp01(
+                _safe_float(
+                    anti_clump_runtime.get(
+                        "score_ema",
+                        anti_clump_runtime.get("clump_score", 0.0),
+                    ),
+                    0.0,
+                )
+            ),
+            6,
+        ),
+        "raw_clump_score": round(
+            _clamp01(_safe_float(anti_clump_runtime.get("clump_score", 0.0), 0.0)),
+            6,
+        ),
+        "drive": round(anti_clump_drive, 6),
+        "error": round(_safe_float(anti_clump_runtime.get("error", 0.0), 0.0), 6),
+        "integral": round(
+            _safe_float(anti_clump_runtime.get("integral", 0.0), 0.0),
+            6,
+        ),
+        "updated": bool(anti_clump_runtime.get("updated", False)),
+        "tick": max(0, int(_safe_float(anti_clump_runtime.get("tick", 0), 0.0))),
+        "particle_count": max(
+            0,
+            int(_safe_float(anti_clump_runtime.get("particle_count", 0), 0.0)),
+        ),
+        "metrics": {
+            "nn_term": round(
+                _clamp01(_safe_float(anti_clump_runtime.get("nn_term", 0.0), 0.0)),
+                6,
+            ),
+            "entropy_norm": round(
+                _clamp01(_safe_float(anti_clump_runtime.get("entropy_norm", 1.0), 1.0)),
+                6,
+            ),
+            "hotspot_term": round(
+                _clamp01(_safe_float(anti_clump_runtime.get("hotspot_term", 0.0), 0.0)),
+                6,
+            ),
+            "collision_term": round(
+                _clamp01(
+                    _safe_float(anti_clump_runtime.get("collision_term", 0.0), 0.0)
+                ),
+                6,
+            ),
+            "collision_rate": round(
+                max(
+                    0.0,
+                    _safe_float(anti_clump_runtime.get("collision_rate", 0.0), 0.0),
+                ),
+                6,
+            ),
+            "median_distance": round(
+                max(
+                    0.0,
+                    _safe_float(anti_clump_runtime.get("median_distance", 0.0), 0.0),
+                ),
+                6,
+            ),
+            "target_distance": round(
+                max(
+                    0.0,
+                    _safe_float(anti_clump_runtime.get("target_distance", 0.0), 0.0),
+                ),
+                6,
+            ),
+            "top_share": round(
+                _clamp01(_safe_float(anti_clump_runtime.get("top_share", 0.0), 0.0)),
+                6,
+            ),
+        },
+        "scales": {
+            "semantic": round(
+                _safe_float(anti_clump_scale_snapshot.get("semantic", 1.0), 1.0),
+                6,
+            ),
+            "edge": round(
+                _safe_float(anti_clump_scale_snapshot.get("edge", 1.0), 1.0),
+                6,
+            ),
+            "anchor": round(
+                _safe_float(anti_clump_scale_snapshot.get("anchor", 1.0), 1.0),
+                6,
+            ),
+            "spawn": round(
+                _safe_float(anti_clump_scale_snapshot.get("spawn", 1.0), 1.0),
+                6,
+            ),
+            "tangent": round(
+                _safe_float(anti_clump_scale_snapshot.get("tangent", 1.0), 1.0),
+                6,
+            ),
+            "tangent_base": round(_safe_float(anti_clump_tangent_scale_base, 1.0), 6),
+            "tangent_effective": round(_safe_float(anti_clump_tangent_scale, 1.0), 6),
+            "noise_gain": round(_safe_float(graph_noise_gain, 1.0), 6),
+            "route_damp": round(_safe_float(graph_route_damp, 1.0), 6),
+        },
+        "graph_variability": {
+            "score": round(_safe_float(graph_variability_score, 0.0), 6),
+            "raw_score": round(_safe_float(graph_variability_raw_score, 0.0), 6),
+            "peak_score": round(_safe_float(graph_variability_peak_score, 0.0), 6),
+            "mean_displacement": round(
+                _safe_float(graph_variability_mean_displacement, 0.0),
+                6,
+            ),
+            "p90_displacement": round(
+                _safe_float(graph_variability_p90_displacement, 0.0),
+                6,
+            ),
+            "active_share": round(
+                _clamp01(_safe_float(graph_variability_active_share, 0.0)),
+                6,
+            ),
+            "shared_nodes": int(max(0, graph_variability_shared_nodes)),
+            "sampled_nodes": int(max(0, graph_variability_sampled_nodes)),
+        },
+    }
+
+    active_count = len(rows)
     summary = {
         "record": "eta-mu.daimoi-probabilistic.cdb.v1",
         "schema_version": "daimoi.probabilistic.cdb.v1",
-        "active": int(count),
+        "active": int(active_count),
         "spawned": 0,
-        "collisions": 0,
+        "collisions": int(collision_count),
         "deflects": int(deflect_count),
         "diffuses": int(diffuse_count),
         "handoffs": 0,
         "deliveries": 0,
         "job_triggers": {},
         "mean_package_entropy": round(
-            (entropy_total / count) if count > 0 else 0.0,
+            (entropy_total / active_count) if active_count > 0 else 0.0,
             6,
         ),
         "mean_message_probability": round(
-            (message_total / count) if count > 0 else 0.0,
+            (message_total / active_count) if active_count > 0 else 0.0,
             6,
         ),
         "mean_drift_score": round(
-            (drift_score_total / count) if count > 0 else 0.0,
+            (drift_score_total / active_count) if active_count > 0 else 0.0,
             6,
         ),
         "mean_route_probability": round(
-            (route_probability_total / count) if count > 0 else 0.0,
+            (route_probability_total / active_count) if active_count > 0 else 0.0,
             6,
         ),
         "mean_drift_gravity_term": round(
-            (drift_gravity_term_total / count) if count > 0 else 0.0,
+            (drift_gravity_term_total / active_count) if active_count > 0 else 0.0,
             6,
         ),
         "mean_drift_cost_term": round(
-            (drift_cost_term_total / count) if count > 0 else 0.0,
+            (drift_cost_term_total / active_count) if active_count > 0 else 0.0,
             6,
         ),
         "mean_drift_cost_upkeep_term": round(
-            (drift_cost_upkeep_term_total / count) if count > 0 else 0.0,
+            (drift_cost_upkeep_term_total / active_count) if active_count > 0 else 0.0,
             6,
         ),
         "mean_selected_edge_health": round(
-            (edge_health_total / count) if count > 0 else 0.0,
+            (edge_health_total / active_count) if active_count > 0 else 0.0,
             6,
         ),
         "mean_selected_edge_affinity": round(
-            (edge_affinity_total / count) if count > 0 else 0.0,
+            (edge_affinity_total / active_count) if active_count > 0 else 0.0,
             6,
         ),
         "mean_selected_edge_saturation": round(
-            (edge_saturation_total / count) if count > 0 else 0.0,
+            (edge_saturation_total / active_count) if active_count > 0 else 0.0,
             6,
         ),
         "mean_valve_score_proxy": round(
-            (valve_score_proxy_total / count) if count > 0 else 0.0,
+            (valve_score_proxy_total / active_count) if active_count > 0 else 0.0,
             6,
         ),
         "mean_route_resource_focus_weight": round(
-            (route_resource_focus_weight_total / count) if count > 0 else 0.0,
+            (route_resource_focus_weight_total / active_count)
+            if active_count > 0
+            else 0.0,
             6,
         ),
         "mean_route_resource_focus_contribution": round(
-            (route_resource_focus_contribution_total / count) if count > 0 else 0.0,
+            (route_resource_focus_contribution_total / active_count)
+            if active_count > 0
+            else 0.0,
             6,
         ),
+        "graph_node_variability_score": round(
+            _safe_float(graph_variability_score, 0.0),
+            6,
+        ),
+        "graph_node_variability_raw_score": round(
+            _safe_float(graph_variability_raw_score, 0.0),
+            6,
+        ),
+        "graph_node_variability_mean_displacement": round(
+            _safe_float(graph_variability_mean_displacement, 0.0),
+            6,
+        ),
+        "graph_node_variability_shared_nodes": int(
+            max(0, graph_variability_shared_nodes)
+        ),
+        "graph_node_variability_sampled_nodes": int(
+            max(0, graph_variability_sampled_nodes)
+        ),
         "mean_influence_power": round(
-            (influence_power_total / count) if count > 0 else 0.0,
+            (influence_power_total / active_count) if active_count > 0 else 0.0,
             6,
         ),
         "route_switch_ratio": round(
-            (route_switch_count / count) if count > 0 else 0.0,
+            (route_switch_count / active_count) if active_count > 0 else 0.0,
             6,
         ),
         "resource_routing_mode": route_resource_routing_mode,
         "resource_route_ratio": round(
-            (resource_route_count / count) if count > 0 else 0.0,
+            (resource_route_count / active_count) if active_count > 0 else 0.0,
             6,
         ),
         "nexus_stride": int(max(1, nexus_stride)),
@@ -5477,6 +6190,9 @@ def build_double_buffer_field_particles(
         "cpu_daimoi_stop_percent": round(cpu_daimoi_stop_percent, 2),
         "matrix_mean": {"ss": 0.0, "sc": 0.0, "cs": 0.0, "cc": 0.0},
         "behavior_defaults": ["deflect", "diffuse"],
+        "clump_score": anti_clump_summary["clump_score"],
+        "anti_clump_drive": anti_clump_summary["drive"],
+        "anti_clump": anti_clump_summary,
         "backend": "c-double-buffer",
         "embedding_runtime_source": str(embedding_runtime_source or "unknown"),
         "embedding_runtime_error": str(embedding_runtime_error or ""),

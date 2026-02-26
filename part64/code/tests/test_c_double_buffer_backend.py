@@ -5,6 +5,13 @@ from typing import Any
 from code.world_web import c_double_buffer_backend
 
 
+def _array_len(value: Any) -> int:
+    try:
+        return len(value)
+    except Exception:
+        return -1
+
+
 class _FakeEngine:
     def __init__(self) -> None:
         self.calls: list[tuple[int, int]] = []
@@ -107,6 +114,203 @@ def test_c_double_buffer_builder_maps_numeric_ids_to_rows(monkeypatch: Any) -> N
     assert fake_engine.calls
 
 
+def test_c_double_buffer_builder_emits_anti_clump_summary(monkeypatch: Any) -> None:
+    fake_engine = _FakeEngine()
+
+    def fake_get_engine(*, count: int, seed: int) -> _FakeEngine:
+        fake_engine.calls.append((count, seed))
+        return fake_engine
+
+    monkeypatch.setattr(c_double_buffer_backend, "_get_engine", fake_get_engine)
+
+    rows, summary = c_double_buffer_backend.build_double_buffer_field_particles(
+        file_graph={"file_nodes": [{"id": "file:1"}]},
+        presence_impacts=[
+            {"id": "witness_thread"},
+            {"id": "anchor_registry"},
+        ],
+        resource_heartbeat={"devices": {"cpu": {"utilization": 43.0}}},
+        compute_jobs=[],
+        queue_ratio=0.2,
+        now=1_700_900_125.0,
+    )
+
+    assert rows
+    assert 0.0 <= float(summary.get("clump_score", 0.0)) <= 1.0
+    assert -1.0 <= float(summary.get("anti_clump_drive", 0.0)) <= 1.0
+    anti_clump = summary.get("anti_clump", {})
+    assert isinstance(anti_clump, dict)
+    assert 0.0 <= float(anti_clump.get("target", 0.0)) <= 1.0
+    assert 0.0 <= float(anti_clump.get("clump_score", 0.0)) <= 1.0
+    assert -1.0 <= float(anti_clump.get("drive", 0.0)) <= 1.0
+    metrics = anti_clump.get("metrics", {})
+    scales = anti_clump.get("scales", {})
+    assert isinstance(metrics, dict)
+    assert isinstance(scales, dict)
+    assert "nn_term" in metrics
+    assert "spawn" in scales
+
+
+def test_c_double_buffer_builder_tracks_graph_node_variability(
+    monkeypatch: Any,
+) -> None:
+    fake_engine = _FakeEngine()
+
+    def fake_get_engine(*, count: int, seed: int) -> _FakeEngine:
+        fake_engine.calls.append((count, seed))
+        return fake_engine
+
+    graph_call = {"count": 0}
+
+    def fake_graph_runtime(**_: Any) -> dict[str, Any]:
+        graph_call["count"] += 1
+        shift = 0.0 if graph_call["count"] == 1 else 0.18
+        return {
+            "record": "eta-mu.graph-runtime.cdb.v1",
+            "schema_version": "graph.runtime.cdb.v1",
+            "node_ids": ["node:a", "node:b"],
+            "node_positions": [
+                (0.2 + shift, 0.2),
+                (0.8 - shift, 0.8),
+            ],
+            "source_node_index_by_presence": {
+                "witness_thread": 0,
+                "anchor_registry": 1,
+            },
+            "min_distance": [0.1, 0.2],
+            "gravity": [1.0, 0.5],
+            "node_price": [2.0, 1.5],
+            "node_saturation": [0.3, 0.4],
+            "edge_src_index": [0, 1],
+            "edge_dst_index": [1, 0],
+            "edge_cost": [1.0, 1.0],
+            "edge_health": [0.9, 0.9],
+            "edge_affinity": [0.5, 0.5],
+            "edge_saturation": [0.2, 0.2],
+            "edge_latency_component": [1.0, 1.0],
+            "edge_congestion_component": [0.4, 0.4],
+            "edge_semantic_component": [0.5, 0.5],
+            "edge_upkeep_penalty": [0.0, 0.0],
+            "resource_types": ["cpu"],
+            "resource_gravity_maps": {"cpu": [0.2, 0.1]},
+            "resource_gravity_peaks": {"cpu": 0.2},
+            "active_resource_types": ["cpu"],
+            "node_count": 2,
+            "edge_count": 2,
+            "source_count": 2,
+            "source_profiles": [],
+            "presence_source_count": 0,
+            "presence_model": {"mask": "nearest-k.v1"},
+            "global_saturation": 0.2,
+            "valve_weights": {"pressure": 0.44},
+            "radius_cost": 6.0,
+            "cost_weights": {"latency": 1.0, "congestion": 2.0, "semantic": 1.0},
+            "edge_cost_mean": 1.0,
+            "edge_cost_max": 1.0,
+            "edge_health_mean": 0.9,
+            "edge_health_max": 0.9,
+            "edge_health_min": 0.9,
+            "edge_saturation_mean": 0.2,
+            "edge_saturation_max": 0.2,
+            "edge_affinity_mean": 0.5,
+            "edge_upkeep_penalty_mean": 0.0,
+            "gravity_mean": 0.75,
+            "gravity_max": 1.0,
+            "price_mean": 1.75,
+            "price_max": 2.0,
+            "resource_gravity_peak_max": 0.2,
+            "top_nodes": [{"node_id": "node:a", "gravity": 1.0, "local_price": 2.0}],
+        }
+
+    def fake_graph_route_step(**kwargs: Any) -> dict[str, Any]:
+        source_nodes = kwargs.get("particle_source_nodes", [])
+        count = len(source_nodes) if isinstance(source_nodes, list) else 0
+        return {
+            "next_node_index": [0 for _ in range(count)],
+            "drift_score": [0.0 for _ in range(count)],
+            "route_probability": [0.5 for _ in range(count)],
+            "drift_gravity_term": [0.0 for _ in range(count)],
+            "drift_cost_term": [0.0 for _ in range(count)],
+            "drift_gravity_delta": [0.0 for _ in range(count)],
+            "drift_gravity_delta_scalar": [0.0 for _ in range(count)],
+            "selected_edge_cost": [0.0 for _ in range(count)],
+            "selected_edge_health": [1.0 for _ in range(count)],
+            "drift_cost_latency_term": [0.0 for _ in range(count)],
+            "drift_cost_congestion_term": [0.0 for _ in range(count)],
+            "drift_cost_semantic_term": [0.0 for _ in range(count)],
+            "drift_cost_upkeep_term": [0.0 for _ in range(count)],
+            "selected_edge_affinity": [0.5 for _ in range(count)],
+            "selected_edge_saturation": [0.0 for _ in range(count)],
+            "selected_edge_upkeep_penalty": [0.0 for _ in range(count)],
+            "valve_pressure_term": [0.0 for _ in range(count)],
+            "valve_gravity_term": [0.0 for _ in range(count)],
+            "valve_affinity_term": [0.0 for _ in range(count)],
+            "valve_saturation_term": [0.0 for _ in range(count)],
+            "valve_health_term": [0.0 for _ in range(count)],
+            "valve_score_proxy": [0.0 for _ in range(count)],
+            "route_resource_focus": ["" for _ in range(count)],
+            "route_resource_focus_weight": [0.0 for _ in range(count)],
+            "route_resource_focus_delta": [0.0 for _ in range(count)],
+            "route_resource_focus_contribution": [0.0 for _ in range(count)],
+            "route_gravity_mode": ["scalar-gravity" for _ in range(count)],
+            "resource_routing_mode": "scalar-gravity",
+        }
+
+    monkeypatch.setattr(c_double_buffer_backend, "_get_engine", fake_get_engine)
+    monkeypatch.setattr(
+        c_double_buffer_backend,
+        "compute_graph_runtime_maps_native",
+        fake_graph_runtime,
+    )
+    monkeypatch.setattr(
+        c_double_buffer_backend,
+        "compute_graph_route_step_native",
+        fake_graph_route_step,
+    )
+
+    _, first_summary = c_double_buffer_backend.build_double_buffer_field_particles(
+        file_graph={"file_nodes": [{"id": "file:1"}]},
+        presence_impacts=[
+            {"id": "witness_thread"},
+            {"id": "anchor_registry"},
+        ],
+        resource_heartbeat={"devices": {"cpu": {"utilization": 43.0}}},
+        compute_jobs=[],
+        queue_ratio=0.2,
+        now=1_700_900_126.0,
+    )
+    _, second_summary = c_double_buffer_backend.build_double_buffer_field_particles(
+        file_graph={"file_nodes": [{"id": "file:1"}]},
+        presence_impacts=[
+            {"id": "witness_thread"},
+            {"id": "anchor_registry"},
+        ],
+        resource_heartbeat={"devices": {"cpu": {"utilization": 43.0}}},
+        compute_jobs=[],
+        queue_ratio=0.2,
+        now=1_700_900_127.0,
+    )
+
+    first_variability = (first_summary.get("anti_clump", {}) or {}).get(
+        "graph_variability", {}
+    ) or {}
+    second_anti = second_summary.get("anti_clump", {}) or {}
+    second_variability = second_anti.get("graph_variability", {}) or {}
+    second_scales = second_anti.get("scales", {}) or {}
+
+    assert float(first_variability.get("score", 0.0)) <= float(
+        second_variability.get("score", 0.0)
+    )
+    assert float(second_variability.get("score", 0.0)) > 0.0
+    assert float(second_variability.get("raw_score", 0.0)) > 0.0
+    assert int(second_variability.get("shared_nodes", 0)) >= 2
+    assert float(second_scales.get("noise_gain", 1.0)) > 1.0
+    assert float(second_scales.get("route_damp", 1.0)) < 1.0
+    assert float(second_scales.get("tangent_effective", 1.0)) >= float(
+        second_scales.get("tangent_base", 1.0)
+    )
+
+
 def test_c_double_buffer_builder_uses_default_presence_ids(monkeypatch: Any) -> None:
     monkeypatch.setattr(
         c_double_buffer_backend,
@@ -199,6 +403,36 @@ def test_c_double_buffer_builder_disables_cpu_core_emitter_when_cpu_hot(
     assert summary.get("cpu_daimoi_stop_percent") == 75.0
 
 
+def test_c_double_buffer_builder_prioritizes_core_emitters_when_cpu_cool(
+    monkeypatch: Any,
+) -> None:
+    fake_engine = _FakeEngine()
+
+    def fake_get_engine(*, count: int, seed: int) -> _FakeEngine:
+        fake_engine.calls.append((count, seed))
+        return fake_engine
+
+    monkeypatch.setattr(c_double_buffer_backend, "_get_engine", fake_get_engine)
+    monkeypatch.setenv("SIMULATION_CPU_DAIMOI_STOP_PERCENT", "75")
+
+    rows, summary = c_double_buffer_backend.build_double_buffer_field_particles(
+        file_graph={"file_nodes": []},
+        presence_impacts=[
+            {"id": "witness_thread"},
+            {"id": "presence.core.cpu"},
+            {"id": "health_sentinel_cpu"},
+        ],
+        resource_heartbeat={"devices": {"cpu": {"utilization": 18.0}}},
+        compute_jobs=[],
+        queue_ratio=0.0,
+        now=1_700_900_275.0,
+    )
+
+    assert rows
+    assert summary.get("cpu_core_emitter_enabled") is True
+    assert any(str(row.get("presence_id", "")) == "presence.core.cpu" for row in rows)
+
+
 def test_resolve_semantic_collisions_native_updates_overlapping_pairs() -> None:
     resolved = c_double_buffer_backend.resolve_semantic_collisions_native(
         x=[0.5, 0.506],
@@ -235,6 +469,108 @@ def test_resolve_semantic_collisions_native_rejects_mismatched_lengths() -> None
         mass=[1.0, 1.0],
     )
     assert resolved is None
+
+
+def test_resolve_semantic_collisions_native_inplace_updates_inputs() -> None:
+    x = [0.5, 0.506]
+    y = [0.5, 0.5]
+    vx = [0.02, -0.02]
+    vy = [0.0, 0.0]
+    radius = [0.02, 0.02]
+    mass = [1.0, 1.0]
+    collisions: list[int] = []
+
+    ok = c_double_buffer_backend.resolve_semantic_collisions_native_inplace(
+        x=x,
+        y=y,
+        vx=vx,
+        vy=vy,
+        radius=radius,
+        mass=mass,
+        collisions_out=collisions,
+        worker_count=2,
+    )
+
+    assert ok is True
+    assert len(collisions) == 2
+    assert collisions[0] > 0
+    assert collisions[1] > 0
+    assert abs(x[1] - x[0]) >= 0.0001
+    assert 0.0 <= x[0] <= 1.0
+    assert 0.0 <= x[1] <= 1.0
+
+
+def test_resolve_semantic_collisions_native_inplace_rejects_mismatched_lengths() -> (
+    None
+):
+    ok = c_double_buffer_backend.resolve_semantic_collisions_native_inplace(
+        x=[0.5, 0.6],
+        y=[0.5],
+        vx=[0.0, 0.0],
+        vy=[0.0, 0.0],
+        radius=[0.01, 0.01],
+        mass=[1.0, 1.0],
+    )
+    assert ok is False
+
+
+def test_collision_ctype_scratch_shrinks_after_sustained_low_watermark(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(c_double_buffer_backend, "_COLLISION_SCRATCH_SHRINK_FACTOR", 4)
+    monkeypatch.setattr(c_double_buffer_backend, "_COLLISION_SCRATCH_SHRINK_RUNS", 3)
+    monkeypatch.setattr(
+        c_double_buffer_backend, "_COLLISION_SCRATCH_SHRINK_MIN_CAPACITY", 16
+    )
+    releases: list[tuple[int, int]] = []
+
+    def fake_release(
+        *, prior_capacity: int, next_capacity: int, state: dict[str, Any]
+    ) -> None:
+        releases.append((prior_capacity, next_capacity))
+        state["last_native_release_at"] = 123.0
+
+    monkeypatch.setattr(
+        c_double_buffer_backend,
+        "_collision_release_native_thread_scratch_if_needed",
+        fake_release,
+    )
+
+    seeded = c_double_buffer_backend._collision_ctype_state(128)
+    seeded["shrink_candidate_runs"] = 2
+    c_double_buffer_backend._COLLISION_CTYPE_SCRATCH.state = seeded
+
+    shrunk = c_double_buffer_backend._collision_ctype_scratch(16)
+
+    assert int(shrunk.get("capacity", 0)) == 16
+    assert int(shrunk.get("shrink_candidate_runs", -1)) == 0
+    assert _array_len(shrunk.get("x")) == 16
+    assert _array_len(shrunk.get("collision")) == 16
+    assert releases == [(128, 16)]
+
+
+def test_collision_ctype_scratch_low_water_counter_resets_on_rebound(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(c_double_buffer_backend, "_COLLISION_SCRATCH_SHRINK_FACTOR", 4)
+    monkeypatch.setattr(c_double_buffer_backend, "_COLLISION_SCRATCH_SHRINK_RUNS", 3)
+    monkeypatch.setattr(
+        c_double_buffer_backend, "_COLLISION_SCRATCH_SHRINK_MIN_CAPACITY", 16
+    )
+
+    seeded = c_double_buffer_backend._collision_ctype_state(128)
+    c_double_buffer_backend._COLLISION_CTYPE_SCRATCH.state = seeded
+
+    c_double_buffer_backend._collision_ctype_scratch(16)
+    c_double_buffer_backend._collision_ctype_scratch(16)
+    state_mid = c_double_buffer_backend._COLLISION_CTYPE_SCRATCH.state
+    assert int(state_mid.get("capacity", 0)) == 128
+    assert int(state_mid.get("shrink_candidate_runs", 0)) == 2
+
+    c_double_buffer_backend._collision_ctype_scratch(96)
+    state_rebound = c_double_buffer_backend._COLLISION_CTYPE_SCRATCH.state
+    assert int(state_rebound.get("capacity", 0)) == 128
+    assert int(state_rebound.get("shrink_candidate_runs", -1)) == 0
 
 
 def test_mask_nodes_for_anchor_prefers_nearest_nodes() -> None:

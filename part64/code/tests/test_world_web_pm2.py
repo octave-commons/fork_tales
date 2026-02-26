@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import code.world_web as world_web_module
+import code.world_web.server as world_web_server
 
 from code.world_pm2 import parse_args as parse_pm2_args
 from code.world_web import (
@@ -103,6 +104,193 @@ def test_world_payload_and_artifact_resolution() -> None:
 
         blocked = resolve_artifact_path(part_root, "/artifacts/../manifest.json")
         assert blocked is None
+
+
+def test_simulation_ws_payload_missing_daimoi_summary_guard() -> None:
+    assert world_web_server._simulation_ws_payload_missing_daimoi_summary({}) is True
+    assert (
+        world_web_server._simulation_ws_payload_missing_daimoi_summary(
+            {"presence_dynamics": {"daimoi_probabilistic": {}}}
+        )
+        is False
+    )
+    assert (
+        world_web_server._simulation_ws_payload_missing_daimoi_summary(
+            {
+                "presence_dynamics": {
+                    "daimoi_probabilistic": {
+                        "clump_score": 0.42,
+                        "anti_clump_drive": -0.08,
+                        "anti_clump": {"target": 0.38},
+                    }
+                }
+            }
+        )
+        is False
+    )
+
+
+def test_simulation_ws_ensure_daimoi_summary_backfills_legacy_payload() -> None:
+    payload: dict[str, Any] = {
+        "presence_dynamics": {
+            "daimoi_probabilistic": {
+                "active": 128,
+                "collisions": 7,
+            }
+        }
+    }
+
+    world_web_server._simulation_ws_ensure_daimoi_summary(payload)
+
+    summary = payload["presence_dynamics"]["daimoi_probabilistic"]
+    anti = summary.get("anti_clump")
+    assert isinstance(anti, dict)
+    assert isinstance(anti.get("metrics"), dict)
+    assert isinstance(anti.get("scales"), dict)
+    assert "clump_score" in summary
+    assert "anti_clump_drive" in summary
+    assert anti.get("target") is not None
+
+
+def test_simulation_ws_ensure_daimoi_summary_tracks_live_clump_and_graph_variability() -> (
+    None
+):
+    with world_web_server._SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_LOCK:
+        world_web_server._SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_STATE.clear()
+        world_web_server._SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_STATE.update(
+            {
+                "positions": {},
+                "score": 0.0,
+                "raw_score": 0.0,
+                "peak_score": 0.0,
+                "mean_displacement": 0.0,
+                "p90_displacement": 0.0,
+                "active_share": 0.0,
+                "shared_nodes": 0,
+                "sampled_nodes": 0,
+            }
+        )
+
+    payload: dict[str, Any] = {
+        "presence_dynamics": {
+            "field_particles": [
+                {"id": "p:1", "x": 0.20, "y": 0.20},
+                {"id": "p:2", "x": 0.205, "y": 0.205},
+                {"id": "p:3", "x": 0.21, "y": 0.21},
+                {"id": "p:4", "x": 0.8, "y": 0.8},
+            ],
+            "graph_node_positions": {
+                "node:a": {"x": 0.2, "y": 0.2},
+                "node:b": {"x": 0.8, "y": 0.8},
+            },
+            "daimoi_probabilistic": {},
+        }
+    }
+
+    world_web_server._simulation_ws_ensure_daimoi_summary(payload)
+    summary_one = payload["presence_dynamics"]["daimoi_probabilistic"]
+    anti_one = summary_one.get("anti_clump", {})
+    assert float(summary_one.get("clump_score", 0.0)) > 0.0
+    assert isinstance(anti_one.get("metrics"), dict)
+    assert isinstance(anti_one.get("scales"), dict)
+    assert anti_one.get("graph_variability", {}).get("shared_nodes") == 0
+
+    payload["presence_dynamics"]["graph_node_positions"] = {
+        "node:a": {"x": 0.35, "y": 0.22},
+        "node:b": {"x": 0.66, "y": 0.77},
+    }
+    world_web_server._simulation_ws_ensure_daimoi_summary(payload)
+    summary_two = payload["presence_dynamics"]["daimoi_probabilistic"]
+    anti_two = summary_two.get("anti_clump", {})
+    graph_two = anti_two.get("graph_variability", {})
+    scales_two = anti_two.get("scales", {})
+
+    assert float(graph_two.get("score", 0.0)) > 0.0
+    assert int(graph_two.get("shared_nodes", 0)) >= 2
+    assert float(scales_two.get("noise_gain", 1.0)) >= 1.0
+    assert float(scales_two.get("route_damp", 1.0)) <= 1.0
+
+
+def test_simulation_ws_ensure_daimoi_summary_can_skip_live_refresh_work(
+    monkeypatch: Any,
+) -> None:
+    def fail_live_metrics(*_: Any, **__: Any) -> dict[str, Any]:
+        raise AssertionError("live metrics should not be recomputed")
+
+    def fail_graph_variability(*_: Any, **__: Any) -> dict[str, Any]:
+        raise AssertionError("graph variability should not be recomputed")
+
+    monkeypatch.setattr(
+        world_web_server,
+        "_simulation_ws_daimoi_live_metrics",
+        fail_live_metrics,
+    )
+    monkeypatch.setattr(
+        world_web_server,
+        "_simulation_ws_graph_variability_update",
+        fail_graph_variability,
+    )
+
+    payload: dict[str, Any] = {
+        "presence_dynamics": {
+            "field_particles": [
+                {"id": "p:1", "x": 0.2, "y": 0.2},
+                {"id": "p:2", "x": 0.8, "y": 0.8},
+            ],
+            "graph_node_positions": {
+                "node:a": {"x": 0.2, "y": 0.2},
+                "node:b": {"x": 0.8, "y": 0.8},
+            },
+            "daimoi_probabilistic": {
+                "clump_score": 0.41,
+                "anti_clump_drive": -0.09,
+                "anti_clump": {
+                    "target": 0.38,
+                    "metrics": {"nn_term": 0.12},
+                    "scales": {"spawn": 0.98, "semantic": 0.92},
+                    "graph_variability": {
+                        "score": 0.22,
+                        "raw_score": 0.24,
+                        "peak_score": 0.29,
+                        "mean_displacement": 0.011,
+                        "p90_displacement": 0.019,
+                        "active_share": 0.5,
+                        "shared_nodes": 2,
+                        "sampled_nodes": 2,
+                    },
+                },
+            },
+        }
+    }
+
+    world_web_server._simulation_ws_ensure_daimoi_summary(
+        payload,
+        include_live_metrics=False,
+        include_graph_variability=False,
+    )
+
+    summary = payload["presence_dynamics"]["daimoi_probabilistic"]
+    anti = summary.get("anti_clump", {})
+    graph = anti.get("graph_variability", {})
+
+    assert float(summary.get("clump_score", 0.0)) == 0.41
+    assert float(summary.get("anti_clump_drive", 0.0)) == -0.09
+    assert float(graph.get("score", 0.0)) == 0.22
+    assert int(graph.get("shared_nodes", 0)) == 2
+
+
+def test_simulation_ws_lite_field_particles_respects_max_rows() -> None:
+    rows = [
+        {"id": "dm:1", "presence_id": "witness_thread", "x": 0.2, "y": 0.3},
+        {"id": "dm:2", "presence_id": "anchor_registry", "x": 0.4, "y": 0.5},
+        {"id": "dm:3", "presence_id": "gates_of_truth", "x": 0.6, "y": 0.7},
+    ]
+
+    compact = world_web_server._simulation_ws_lite_field_particles(rows, max_rows=2)
+
+    assert len(compact) == 2
+    assert compact[0].get("id") == "dm:1"
+    assert compact[1].get("id") == "dm:2"
 
 
 def test_library_resolution_uses_eta_mu_substrate_root() -> None:
@@ -3626,6 +3814,96 @@ def test_simulation_ws_chunk_messages_round_trip() -> None:
     assert json.loads(merged_text) == payload
 
 
+def test_simulation_ws_chunk_plan_reuses_small_payload_text() -> None:
+    from code.world_web import server as server_module
+
+    payload: dict[str, Any] = {
+        "type": "simulation_delta",
+        "delta": {"timestamp": "2026-02-23T00:00:00Z", "changed_keys": ["x"]},
+    }
+
+    rows, payload_text = server_module._simulation_ws_chunk_plan(
+        payload,
+        chunk_chars=4096,
+        message_seq=5,
+    )
+
+    assert rows == []
+    assert isinstance(payload_text, str)
+    assert json.loads(payload_text) == payload
+
+
+def test_simulation_ws_chunk_plan_emits_chunks_for_large_payload() -> None:
+    from code.world_web import server as server_module
+
+    payload: dict[str, Any] = {
+        "type": "simulation",
+        "simulation": {
+            "timestamp": "2026-02-23T00:00:00Z",
+            "points": [
+                {
+                    "id": f"pt:{index}",
+                    "x": round(index / 300.0, 6),
+                    "y": round((300 - index) / 300.0, 6),
+                }
+                for index in range(320)
+            ],
+        },
+    }
+
+    rows, payload_text = server_module._simulation_ws_chunk_plan(
+        payload,
+        chunk_chars=320,
+        message_seq=12,
+    )
+
+    assert len(rows) > 1
+    assert payload_text is None
+    merged_text = "".join(
+        str(row.get("payload", ""))
+        for row in sorted(rows, key=lambda row: int(row.get("chunk_index", -1)))
+    )
+    assert json.loads(merged_text) == payload
+
+
+def test_simulation_ws_chunk_plan_keeps_medium_delta_payload_unchunked(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    monkeypatch.setattr(server_module, "_SIMULATION_WS_CHUNK_DELTA_MIN_CHARS", 50000)
+    payload: dict[str, Any] = {
+        "type": "simulation_delta",
+        "delta": {
+            "timestamp": "2026-02-23T00:00:00Z",
+            "patch": {
+                "presence_dynamics": {
+                    "field_particles": [
+                        {
+                            "id": f"dm:{index}",
+                            "presence_id": "witness_thread",
+                            "x": round(index / 240.0, 6),
+                            "y": round((240 - index) / 240.0, 6),
+                        }
+                        for index in range(240)
+                    ]
+                }
+            },
+        },
+    }
+
+    rows, payload_text = server_module._simulation_ws_chunk_plan(
+        payload,
+        chunk_chars=4096,
+        message_seq=33,
+    )
+
+    assert rows == []
+    assert isinstance(payload_text, str)
+    assert len(payload_text) > 4096
+    assert len(payload_text) < 50000
+
+
 def test_simulation_ws_compact_graph_payload_keeps_node_labels() -> None:
     from code.world_web import server as server_module
 
@@ -3707,6 +3985,27 @@ def test_simulation_ws_compact_graph_payload_keeps_node_labels() -> None:
     assert crawler_graph.get("nodes", [])[0].get("label") == "example.org"
 
 
+def test_simulation_ws_compact_graph_payload_assume_trimmed_reuses_graph_refs() -> None:
+    from code.world_web import server as server_module
+
+    file_graph = {"record": "ημ.file-graph.v1", "nodes": [{"id": "file:1"}]}
+    crawler_graph = {
+        "record": "ημ.crawler-graph.v1",
+        "nodes": [{"id": "crawler:1"}],
+    }
+    simulation_payload = {
+        "file_graph": file_graph,
+        "crawler_graph": crawler_graph,
+    }
+
+    compact = server_module._simulation_ws_compact_graph_payload(
+        simulation_payload,
+        assume_trimmed=True,
+    )
+    assert compact.get("file_graph") is file_graph
+    assert compact.get("crawler_graph") is crawler_graph
+
+
 def test_simulation_ws_load_cached_payload_trimmed_includes_compact_graphs() -> None:
     from code.world_web import server as server_module
 
@@ -3786,9 +4085,13 @@ def test_simulation_ws_load_cached_payload_trimmed_includes_compact_graphs() -> 
         part_root = Path(td)
         monkeypatch_payload = json.dumps(cached_payload).encode("utf-8")
 
+        original_compact_cached_body = (
+            server_module._simulation_http_compact_cached_body
+        )
         original_cached_body = server_module._simulation_http_cached_body
         original_disk_cache_load = server_module._simulation_http_disk_cache_load
         try:
+            server_module._simulation_http_compact_cached_body = lambda **kwargs: None  # type: ignore[assignment]
             server_module._simulation_http_cached_body = lambda **kwargs: (
                 monkeypatch_payload
             )  # type: ignore[assignment]
@@ -3801,6 +4104,9 @@ def test_simulation_ws_load_cached_payload_trimmed_includes_compact_graphs() -> 
                 payload_mode="trimmed",
             )
         finally:
+            server_module._simulation_http_compact_cached_body = (
+                original_compact_cached_body  # type: ignore[assignment]
+            )
             server_module._simulation_http_cached_body = original_cached_body  # type: ignore[assignment]
             server_module._simulation_http_disk_cache_load = original_disk_cache_load  # type: ignore[assignment]
 
@@ -3815,6 +4121,66 @@ def test_simulation_ws_load_cached_payload_trimmed_includes_compact_graphs() -> 
         simulation_payload.get("crawler_graph", {}).get("nodes", [])[0].get("label")
         == "example.org"
     )
+
+
+def test_simulation_ws_load_cached_payload_trimmed_prefers_compact_cache() -> None:
+    from code.world_web import server as server_module
+
+    compact_payload = {
+        "timestamp": "2026-02-23T00:00:00Z",
+        "total": 1,
+        "points": [{"id": "pt:1"}],
+        "presence_dynamics": {
+            "field_particles": [{"id": "dm:1", "presence_id": "witness_thread"}],
+        },
+        "file_graph": {"record": "ημ.file-graph.v1", "nodes": [{"id": "file:abc"}]},
+        "crawler_graph": {
+            "record": "ημ.crawler-graph.v1",
+            "nodes": [{"id": "crawler:def"}],
+        },
+        "projection": {"perspective": "hybrid"},
+    }
+
+    with tempfile.TemporaryDirectory() as td:
+        part_root = Path(td)
+        compact_body = json.dumps(compact_payload).encode("utf-8")
+        fallback_calls = {"full_cache": 0}
+
+        original_compact_cached_body = (
+            server_module._simulation_http_compact_cached_body
+        )
+        original_cached_body = server_module._simulation_http_cached_body
+        original_disk_cache_load = server_module._simulation_http_disk_cache_load
+        try:
+            server_module._simulation_http_compact_cached_body = lambda **kwargs: (
+                compact_body
+            )  # type: ignore[assignment]
+
+            def _full_cache_miss(**kwargs: Any) -> None:
+                fallback_calls["full_cache"] += 1
+                return None
+
+            server_module._simulation_http_cached_body = _full_cache_miss  # type: ignore[assignment]
+            server_module._simulation_http_disk_cache_load = lambda *args, **kwargs: (
+                None
+            )  # type: ignore[assignment]
+            loaded = server_module._simulation_ws_load_cached_payload(
+                part_root=part_root,
+                perspective="hybrid",
+                payload_mode="trimmed",
+            )
+        finally:
+            server_module._simulation_http_compact_cached_body = (
+                original_compact_cached_body  # type: ignore[assignment]
+            )
+            server_module._simulation_http_cached_body = original_cached_body  # type: ignore[assignment]
+            server_module._simulation_http_disk_cache_load = original_disk_cache_load  # type: ignore[assignment]
+
+    assert fallback_calls["full_cache"] == 0
+    assert loaded is not None
+    simulation_payload, projection = loaded
+    assert projection.get("perspective") == "hybrid"
+    assert simulation_payload.get("file_graph", {}).get("record") == "ημ.file-graph.v1"
 
 
 def test_catalog_stream_iter_rows_chunks_lists_and_reports_done() -> None:
@@ -4836,6 +5202,52 @@ def test_simulation_ws_split_delta_by_worker_splits_presence_dynamics() -> None:
     assert by_worker["sim-daimoi"]["patch"].get("timestamp") == "2026-02-21T17:55:00Z"
 
 
+def test_simulation_ws_split_delta_by_worker_routes_tick_telemetry_to_core() -> None:
+    from code.world_web import server as server_module
+
+    delta = {
+        "patch": {
+            "timestamp": "2026-02-21T18:20:00Z",
+            "tick_elapsed_ms": 4.2,
+            "slack_ms": 7.8,
+            "ingestion_pressure": 0.63,
+            "ws_particle_max": 640,
+            "particle_payload_mode": "lite",
+            "graph_node_positions_truncated": True,
+            "graph_node_positions_total": 2048,
+            "presence_anchor_positions_truncated": True,
+            "presence_anchor_positions_total": 1024,
+        },
+        "changed_keys": [
+            "timestamp",
+            "tick_elapsed_ms",
+            "slack_ms",
+            "ingestion_pressure",
+            "ws_particle_max",
+            "particle_payload_mode",
+            "graph_node_positions_truncated",
+            "graph_node_positions_total",
+            "presence_anchor_positions_truncated",
+            "presence_anchor_positions_total",
+        ],
+    }
+
+    rows = server_module._simulation_ws_split_delta_by_worker(delta)
+    by_worker = {
+        str(row.get("worker_id", "")): row
+        for row in rows
+        if isinstance(row, dict) and row.get("worker_id")
+    }
+
+    assert "sim-core" in by_worker
+    assert "sim-misc" not in by_worker
+    core_patch = by_worker["sim-core"].get("patch", {})
+    assert core_patch.get("tick_elapsed_ms") == 4.2
+    assert core_patch.get("particle_payload_mode") == "lite"
+    assert core_patch.get("graph_node_positions_total") == 2048
+    assert core_patch.get("presence_anchor_positions_total") == 1024
+
+
 class _MockWebSocketTransport:
     def __init__(self, payload: bytes) -> None:
         self._buffer = payload
@@ -4893,8 +5305,10 @@ def test_compact_simulation_payload_keeps_presence_particles_and_drops_heavy_gra
         "nexus_graph": {"nodes": [1]},
         "logical_graph": {"nodes": [1]},
         "pain_field": {"nodes": [1]},
+        "heat_values": {"regions": [1]},
         "file_graph": {"file_nodes": [1]},
         "crawler_graph": {"crawler_nodes": [1]},
+        "field_registry": {"fields": {"demand": {"samples": [1]}}},
     }
 
     compact = server_module._simulation_http_compact_simulation_payload(payload)
@@ -4902,17 +5316,252 @@ def test_compact_simulation_payload_keeps_presence_particles_and_drops_heavy_gra
     assert "nexus_graph" not in compact
     assert "logical_graph" not in compact
     assert "pain_field" not in compact
+    assert "heat_values" not in compact
     assert "file_graph" not in compact
     assert "crawler_graph" not in compact
+    assert "field_registry" not in compact
     assert "field_particles" not in compact
     assert compact.get("presence_dynamics", {}).get("field_particles", []) == [
         {"id": "dyn-dm-1", "presence_id": "witness_thread"}
     ]
 
 
+def test_compact_simulation_payload_caps_points_and_field_particles(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    monkeypatch.setattr(server_module, "_SIMULATION_HTTP_COMPACT_MAX_POINTS", 5)
+    monkeypatch.setattr(
+        server_module,
+        "_SIMULATION_HTTP_COMPACT_MAX_FIELD_PARTICLES",
+        3,
+    )
+    payload = {
+        "points": [{"id": f"pt:{index}"} for index in range(12)],
+        "presence_dynamics": {
+            "field_particles": [{"id": f"dm:{index}"} for index in range(8)],
+        },
+        "field_particles": [{"id": "legacy:root"}],
+    }
+
+    compact = server_module._simulation_http_compact_simulation_payload(payload)
+
+    assert len(compact.get("points", [])) == 5
+    assert int(compact.get("points_total", 0)) == 12
+    assert bool(compact.get("points_compacted", False)) is True
+
+    dynamics = compact.get("presence_dynamics", {})
+    assert len(dynamics.get("field_particles", [])) == 3
+    assert int(dynamics.get("field_particles_total", 0)) == 8
+    assert bool(dynamics.get("field_particles_compacted", False)) is True
+    assert "field_particles" not in compact
+
+
+def test_simulation_http_compact_cache_round_trip_and_invalidate() -> None:
+    from code.world_web import server as server_module
+
+    cache_key = "hybrid|demo-cache-key|compact"
+    payload = b'{"ok":true,"record":"eta-mu.simulation.v1"}'
+
+    server_module._simulation_http_compact_cache_store(cache_key, payload)
+    cached = server_module._simulation_http_compact_cached_body(
+        cache_key=cache_key,
+        max_age_seconds=30.0,
+    )
+    assert cached == payload
+
+    server_module._simulation_http_cache_invalidate()
+    cached_after_invalidate = server_module._simulation_http_compact_cached_body(
+        cache_key=cache_key,
+        max_age_seconds=30.0,
+    )
+    assert cached_after_invalidate is None
+
+
+def test_simulation_http_compact_cache_lookup_by_perspective() -> None:
+    from code.world_web import server as server_module
+
+    cache_key = "hybrid|demo-cache-key|compact"
+    payload = b'{"ok":true,"record":"eta-mu.simulation.v1"}'
+
+    server_module._simulation_http_compact_cache_store(cache_key, payload)
+    by_perspective = server_module._simulation_http_compact_cached_body(
+        perspective="hybrid",
+        max_age_seconds=30.0,
+    )
+    assert by_perspective == payload
+
+    wrong_perspective = server_module._simulation_http_compact_cached_body(
+        perspective="narrative",
+        max_age_seconds=30.0,
+    )
+    assert wrong_perspective is None
+
+    server_module._simulation_http_cache_invalidate()
+
+
+def test_runtime_catalog_http_cache_round_trip_and_invalidate() -> None:
+    from code.world_web import server as server_module
+
+    payload = b'{"ok":true,"record":"eta-mu.catalog.v1"}'
+    server_module._runtime_catalog_http_cache_store(
+        perspective="hybrid",
+        body=payload,
+    )
+
+    cached = server_module._runtime_catalog_http_cached_body(
+        perspective="hybrid",
+        max_age_seconds=10.0,
+    )
+    assert cached == payload
+
+    server_module._simulation_http_cache_invalidate()
+    cached_after_invalidate = server_module._runtime_catalog_http_cached_body(
+        perspective="hybrid",
+        max_age_seconds=10.0,
+    )
+    assert cached_after_invalidate is None
+
+
+def test_runtime_catalog_http_cache_is_perspective_scoped() -> None:
+    from code.world_web import server as server_module
+
+    payload_hybrid = b'{"ok":true,"record":"eta-mu.catalog.hybrid.v1"}'
+    payload_file = b'{"ok":true,"record":"eta-mu.catalog.file.v1"}'
+    server_module._runtime_catalog_http_cache_store(
+        perspective="hybrid",
+        body=payload_hybrid,
+    )
+    server_module._runtime_catalog_http_cache_store(
+        perspective="file_focus",
+        body=payload_file,
+    )
+
+    assert (
+        server_module._runtime_catalog_http_cached_body(
+            perspective="hybrid",
+            max_age_seconds=10.0,
+        )
+        == payload_hybrid
+    )
+    assert (
+        server_module._runtime_catalog_http_cached_body(
+            perspective="file_focus",
+            max_age_seconds=10.0,
+        )
+        == payload_file
+    )
+
+    server_module._runtime_catalog_http_cache_invalidate()
+
+
+def test_simulation_http_compact_stale_fallback_prefers_memory_cache(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    calls: dict[str, int] = {"disk": 0}
+
+    monkeypatch.setattr(
+        server_module,
+        "_simulation_http_cached_body",
+        lambda **kwargs: b'{"ok":true,"source":"memory"}',
+    )
+
+    def _disk_loader(*args: Any, **kwargs: Any) -> None:
+        calls["disk"] += 1
+        return None
+
+    monkeypatch.setattr(server_module, "_simulation_http_disk_cache_load", _disk_loader)
+
+    body, source = server_module._simulation_http_compact_stale_fallback_body(
+        part_root=Path("."),
+        perspective="hybrid",
+        max_age_seconds=5.0,
+    )
+
+    assert body == b'{"ok":true,"source":"memory"}'
+    assert source == "stale-cache"
+    assert calls["disk"] == 0
+
+
+def test_simulation_http_compact_stale_fallback_uses_disk_when_memory_miss(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    stored_rows: list[tuple[str, bytes]] = []
+
+    monkeypatch.setattr(
+        server_module, "_simulation_http_cached_body", lambda **kwargs: None
+    )
+    monkeypatch.setattr(
+        server_module,
+        "_simulation_http_disk_cache_load",
+        lambda *args, **kwargs: b'{"ok":true,"source":"disk"}',
+    )
+    monkeypatch.setattr(
+        server_module,
+        "_simulation_http_cache_store",
+        lambda cache_key, body: stored_rows.append((str(cache_key), bytes(body))),
+    )
+
+    body, source = server_module._simulation_http_compact_stale_fallback_body(
+        part_root=Path("."),
+        perspective="hybrid",
+        max_age_seconds=5.0,
+    )
+
+    assert body == b'{"ok":true,"source":"disk"}'
+    assert source == "disk-cache"
+    assert stored_rows == [
+        ("hybrid|disk-compact-fallback|simulation", b'{"ok":true,"source":"disk"}')
+    ]
+
+
 def test_simulation_state_includes_world_summary_slot() -> None:
     simulation = build_simulation_state({"items": [], "counts": {}})
     assert isinstance(simulation.get("world"), dict)
+
+
+def test_simulation_state_can_skip_unified_graph_payload_for_compact_http_mode() -> (
+    None
+):
+    simulation = build_simulation_state(
+        {"items": [], "counts": {}},
+        include_unified_graph=False,
+    )
+    assert simulation.get("nexus_graph") == {}
+    assert simulation.get("field_registry") == {}
+
+
+def test_simulation_ws_trim_payload_drops_field_registry_and_heat_values() -> None:
+    from code.world_web import server as server_module
+
+    payload = {
+        "presence_dynamics": {"field_particles": [{"id": "p:1"}]},
+        "field_particles": [{"id": "legacy:root"}],
+        "nexus_graph": {"nodes": [1]},
+        "logical_graph": {"nodes": [1]},
+        "pain_field": {"node_heat": [1]},
+        "heat_values": {"regions": [1]},
+        "file_graph": {"file_nodes": [1]},
+        "crawler_graph": {"crawler_nodes": [1]},
+        "field_registry": {"fields": {"demand": {}}},
+        "truth_state": {"gate": {"blocked": True}},
+    }
+
+    trimmed = server_module._simulation_ws_trim_simulation_payload(payload)
+    assert "field_particles" not in trimmed
+    assert "nexus_graph" not in trimmed
+    assert "logical_graph" not in trimmed
+    assert "pain_field" not in trimmed
+    assert "heat_values" not in trimmed
+    assert "file_graph" not in trimmed
+    assert "crawler_graph" not in trimmed
+    assert "field_registry" not in trimmed
+    assert trimmed.get("truth_state", {}).get("gate", {}).get("blocked") is True
 
 
 def test_eta_mu_inbox_is_ingested_and_graphed() -> None:

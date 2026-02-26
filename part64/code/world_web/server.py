@@ -1,3 +1,20 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# This file is part of Fork Tales.
+# Copyright (C) 2024-2025 Fork Tales Contributors
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 from __future__ import annotations
 
 import argparse
@@ -11,7 +28,6 @@ import os
 import queue
 import shutil
 import socket
-import struct
 import subprocess
 import select
 import sys
@@ -81,7 +97,6 @@ from .constants import (
     WEAVER_AUTOSTART,
     WEAVER_HOST_ENV,
     WEAVER_PORT,
-    WS_MAGIC,
 )
 from .db import (
     _embedding_db_delete,
@@ -117,6 +132,7 @@ from .meta_ops import (
     list_meta_runs,
 )
 from .muse_runtime import get_muse_runtime_manager
+from .governor import LaneType, Packet, get_governor
 from .paths import _ensure_receipts_log_path
 from .projection import (
     attach_ui_projection,
@@ -131,10 +147,17 @@ from .simulation import (
     build_named_field_overlays,
     build_simulation_state,
 )
+from .ws import (
+    WS_CLIENT_FRAME_MAX_BYTES,
+    consume_ws_client_frame as _consume_ws_client_frame,
+    websocket_accept_value,
+    websocket_frame_text,
+)
 
 
 _RUNTIME_CATALOG_CACHE_LOCK = threading.Lock()
 _RUNTIME_CATALOG_REFRESH_LOCK = threading.Lock()
+_RUNTIME_CATALOG_COLLECT_LOCK = threading.Lock()
 _RUNTIME_CATALOG_CACHE: dict[str, Any] = {
     "catalog": None,
     "refreshed_monotonic": 0.0,
@@ -147,10 +170,19 @@ _RUNTIME_CATALOG_CACHE_SECONDS = max(
     CATALOG_REFRESH_SECONDS,
     float(os.getenv("RUNTIME_CATALOG_CACHE_SECONDS", "10.0") or "10.0"),
 )
+_RUNTIME_CATALOG_HTTP_CACHE_SECONDS = max(
+    0.0,
+    float(os.getenv("RUNTIME_CATALOG_HTTP_CACHE_SECONDS", "0.75") or "0.75"),
+)
+_RUNTIME_CATALOG_HTTP_CACHE_LOCK = threading.Lock()
+_RUNTIME_CATALOG_HTTP_CACHE: dict[str, dict[str, Any]] = {}
 _RUNTIME_ETA_MU_SYNC_SECONDS = max(
     0.5,
     float(os.getenv("RUNTIME_ETA_MU_SYNC_SECONDS", "6.0") or "6.0"),
 )
+_RUNTIME_ETA_MU_SYNC_ENABLED = str(
+    os.getenv("RUNTIME_ETA_MU_SYNC_ENABLED", "1") or "1"
+).strip().lower() not in {"0", "false", "no", "off"}
 _RUNTIME_INBOX_SYNC_LOCK = threading.Lock()
 _RUNTIME_CATALOG_SUBPROCESS_TIMEOUT_SECONDS = max(
     8.0,
@@ -167,13 +199,27 @@ _SIMULATION_HTTP_STALE_FALLBACK_SECONDS = max(
     _SIMULATION_HTTP_CACHE_SECONDS,
     float(os.getenv("SIMULATION_HTTP_STALE_FALLBACK_SECONDS", "12.0") or "12.0"),
 )
+_SIMULATION_HTTP_COMPACT_STALE_FALLBACK_SECONDS = max(
+    0.0,
+    float(os.getenv("SIMULATION_HTTP_COMPACT_STALE_FALLBACK_SECONDS", "4.0") or "4.0"),
+)
 _SIMULATION_HTTP_BUILD_WAIT_SECONDS = max(
     0.0,
     float(os.getenv("SIMULATION_HTTP_BUILD_WAIT_SECONDS", "12.0") or "12.0"),
 )
+_SIMULATION_HTTP_COMPACT_BUILD_WAIT_SECONDS = max(
+    0.0,
+    float(os.getenv("SIMULATION_HTTP_COMPACT_BUILD_WAIT_SECONDS", "1.5") or "1.5"),
+)
 _SIMULATION_HTTP_WARMUP_ENABLED = str(
     os.getenv("SIMULATION_HTTP_WARMUP_ENABLED", "0") or "0"
 ).strip().lower() not in {"0", "false", "no", "off"}
+_SIMULATION_HTTP_CACHE_IGNORE_INFLUENCE = str(
+    os.getenv("SIMULATION_HTTP_CACHE_IGNORE_INFLUENCE", "0") or "0"
+).strip().lower() in {"1", "true", "yes", "on"}
+_SIMULATION_HTTP_CACHE_IGNORE_QUEUE = str(
+    os.getenv("SIMULATION_HTTP_CACHE_IGNORE_QUEUE", "0") or "0"
+).strip().lower() in {"1", "true", "yes", "on"}
 _SIMULATION_HTTP_WARMUP_DELAY_SECONDS = max(
     0.0,
     float(os.getenv("SIMULATION_HTTP_WARMUP_DELAY_SECONDS", "2.0") or "2.0"),
@@ -370,9 +416,25 @@ _SIMULATION_HTTP_MAX_EMBEDDING_LINKS = max(
     0,
     int(float(os.getenv("SIMULATION_HTTP_MAX_EMBEDDING_LINKS", "28") or "28")),
 )
+_SIMULATION_HTTP_COMPACT_MAX_POINTS = max(
+    256,
+    int(float(os.getenv("SIMULATION_HTTP_COMPACT_MAX_POINTS", "2400") or "2400")),
+)
+_SIMULATION_HTTP_COMPACT_MAX_FIELD_PARTICLES = max(
+    64,
+    int(
+        float(os.getenv("SIMULATION_HTTP_COMPACT_MAX_FIELD_PARTICLES", "900") or "900")
+    ),
+)
 _SIMULATION_HTTP_CACHE_LOCK = threading.Lock()
 _SIMULATION_HTTP_BUILD_LOCK = threading.Lock()
 _SIMULATION_HTTP_CACHE: dict[str, Any] = {
+    "key": "",
+    "prepared_monotonic": 0.0,
+    "body": b"",
+}
+_SIMULATION_HTTP_COMPACT_CACHE_LOCK = threading.Lock()
+_SIMULATION_HTTP_COMPACT_CACHE: dict[str, Any] = {
     "key": "",
     "prepared_monotonic": 0.0,
     "body": b"",
@@ -415,6 +477,10 @@ _SIMULATION_BOOTSTRAP_MAX_EXCLUDED_FILES = max(
 
 _RUNTIME_WS_CLIENT_LOCK = threading.Lock()
 _RUNTIME_WS_CLIENT_COUNT = 0
+_RUNTIME_HTTP_MAX_THREADS = max(
+    16,
+    int(float(os.getenv("RUNTIME_HTTP_MAX_THREADS", "192") or "192")),
+)
 _RUNTIME_WS_MAX_CLIENTS = max(
     2,
     int(float(os.getenv("RUNTIME_WS_MAX_CLIENTS", "12") or "12")),
@@ -482,6 +548,9 @@ _SIMULATION_WS_CACHE_MAX_AGE_SECONDS = max(
 _SIMULATION_WS_SKIP_CATALOG_BOOTSTRAP = str(
     os.getenv("SIMULATION_WS_SKIP_CATALOG_BOOTSTRAP", "0") or "0"
 ).strip().lower() in {"1", "true", "yes", "on"}
+_SIMULATION_WS_BOOTSTRAP_REQUIRE_LIVE_REBUILD = str(
+    os.getenv("SIMULATION_WS_BOOTSTRAP_REQUIRE_LIVE_REBUILD", "1") or "1"
+).strip().lower() in {"1", "true", "yes", "on"}
 _SIMULATION_WS_MUSE_POLL_SECONDS = max(
     0.05,
     float(os.getenv("SIMULATION_WS_MUSE_POLL_SECONDS", "0.5") or "0.5"),
@@ -490,12 +559,56 @@ _SIMULATION_WS_STREAM_PARTICLE_MAX = max(
     48,
     int(float(os.getenv("SIMULATION_WS_STREAM_PARTICLE_MAX", "180") or "180")),
 )
+_SIMULATION_WS_TICK_GOVERNOR_ENABLED = str(
+    os.getenv("SIMULATION_WS_TICK_GOVERNOR_ENABLED", "1") or "1"
+).strip().lower() in {"1", "true", "yes", "on"}
+_SIMULATION_WS_TICK_GOVERNOR_RESOURCE_REFRESH_SECONDS = max(
+    0.2,
+    float(
+        os.getenv(
+            "SIMULATION_WS_TICK_GOVERNOR_RESOURCE_REFRESH_SECONDS",
+            "1.0",
+        )
+        or "1.0"
+    ),
+)
+_SIMULATION_WS_GOVERNOR_MIN_PARTICLE_CAP = max(
+    24,
+    int(float(os.getenv("SIMULATION_WS_GOVERNOR_MIN_PARTICLE_CAP", "72") or "72")),
+)
+_SIMULATION_WS_GOVERNOR_DEGRADE_GRAPH_HEARTBEAT_SCALE = max(
+    1.0,
+    float(
+        os.getenv(
+            "SIMULATION_WS_GOVERNOR_DEGRADE_GRAPH_HEARTBEAT_SCALE",
+            "1.8",
+        )
+        or "1.8"
+    ),
+)
+_SIMULATION_WS_GOVERNOR_INCREASE_GRAPH_HEARTBEAT_SCALE = max(
+    0.1,
+    min(
+        1.0,
+        float(
+            os.getenv(
+                "SIMULATION_WS_GOVERNOR_INCREASE_GRAPH_HEARTBEAT_SCALE",
+                "0.9",
+            )
+            or "0.9"
+        ),
+    ),
+)
 _SIMULATION_WS_CHUNK_ENABLED = str(
     os.getenv("SIMULATION_WS_CHUNK_ENABLED", "1") or "1"
 ).strip().lower() in {"1", "true", "yes", "on"}
 _SIMULATION_WS_CHUNK_CHARS = max(
     4096,
     int(float(os.getenv("SIMULATION_WS_CHUNK_CHARS", "48000") or "48000")),
+)
+_SIMULATION_WS_CHUNK_DELTA_MIN_CHARS = max(
+    _SIMULATION_WS_CHUNK_CHARS,
+    int(float(os.getenv("SIMULATION_WS_CHUNK_DELTA_MIN_CHARS", "96000") or "96000")),
 )
 _SIMULATION_WS_CHUNK_MAX_CHUNKS = max(
     8,
@@ -561,6 +674,89 @@ _SIMULATION_WS_PARTICLE_LITE_KEYS: tuple[str, ...] = (
     "route_probability",
     "influence_power",
     "route_resource_focus",
+)
+_SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_LOCK = threading.Lock()
+_SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_STATE: dict[str, Any] = {
+    "positions": {},
+    "score": 0.0,
+    "raw_score": 0.0,
+    "peak_score": 0.0,
+    "mean_displacement": 0.0,
+    "p90_displacement": 0.0,
+    "active_share": 0.0,
+    "shared_nodes": 0,
+    "sampled_nodes": 0,
+}
+_SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_NODE_LIMIT = max(
+    64,
+    int(
+        float(
+            os.getenv("SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_NODE_LIMIT", "2048")
+            or "2048"
+        )
+    ),
+)
+_SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_DISTANCE_REF = max(
+    0.001,
+    float(
+        os.getenv("SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_DISTANCE_REF", "0.02")
+        or "0.02"
+    ),
+)
+_SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_EMA_ALPHA = max(
+    0.01,
+    min(
+        1.0,
+        float(
+            os.getenv("SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_EMA_ALPHA", "0.2")
+            or "0.2"
+        ),
+    ),
+)
+_SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_NOISE_GAIN = max(
+    0.0,
+    min(
+        2.0,
+        float(
+            os.getenv("SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_NOISE_GAIN", "0.8")
+            or "0.8"
+        ),
+    ),
+)
+_SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_ROUTE_DAMP = max(
+    0.0,
+    min(
+        0.8,
+        float(
+            os.getenv("SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_ROUTE_DAMP", "0.3")
+            or "0.3"
+        ),
+    ),
+)
+_SIMULATION_WS_DAIMOI_LIVE_METRICS_MIN_INTERVAL_SECONDS = max(
+    0.0,
+    _safe_float(
+        os.getenv("SIMULATION_WS_DAIMOI_LIVE_METRICS_MIN_INTERVAL_SECONDS", "0.45")
+        or "0.45",
+        0.45,
+    ),
+)
+_SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_MIN_INTERVAL_SECONDS = max(
+    0.0,
+    _safe_float(
+        os.getenv(
+            "SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_MIN_INTERVAL_SECONDS",
+            "0.55",
+        )
+        or "0.55",
+        0.55,
+    ),
+)
+_SIMULATION_WS_DAIMOI_METRICS_MIN_SLACK_MS = max(
+    0.0,
+    _safe_float(
+        os.getenv("SIMULATION_WS_DAIMOI_METRICS_MIN_SLACK_MS", "3.5") or "3.5", 3.5
+    ),
 )
 
 
@@ -1325,30 +1521,35 @@ def _simulation_http_cache_key(
         )
         fingerprint = f"ts:{file_graph_generated_at}:{crawler_generated_at}"
 
-    queue_pending = int(_safe_float(queue_snapshot.get("pending_count", 0), 0.0))
-    queue_events = int(_safe_float(queue_snapshot.get("event_count", 0), 0.0))
-    clicks_recent = int(_safe_float(influence_snapshot.get("clicks_45s", 0), 0.0))
-    user_inputs_recent = int(
-        _safe_float(influence_snapshot.get("user_inputs_120s", 0), 0.0)
-    )
-    user_rows = (
-        influence_snapshot.get("recent_user_inputs", [])
-        if isinstance(influence_snapshot, dict)
-        else []
-    )
-    if isinstance(user_rows, list) and user_rows:
-        newest = user_rows[0] if isinstance(user_rows[0], dict) else {}
-        user_signal = "|".join(
-            [
-                str(newest.get("kind", "")),
-                str(newest.get("target", "")),
-                str(newest.get("message", ""))[:48],
-                str(newest.get("x_ratio", "")),
-                str(newest.get("y_ratio", "")),
-            ]
+    queue_pending = 0
+    queue_events = 0
+    if not _SIMULATION_HTTP_CACHE_IGNORE_QUEUE:
+        queue_pending = int(_safe_float(queue_snapshot.get("pending_count", 0), 0.0))
+        queue_events = int(_safe_float(queue_snapshot.get("event_count", 0), 0.0))
+    clicks_recent = 0
+    user_inputs_recent = 0
+    user_signal = ""
+    if not _SIMULATION_HTTP_CACHE_IGNORE_INFLUENCE:
+        clicks_recent = int(_safe_float(influence_snapshot.get("clicks_45s", 0), 0.0))
+        user_inputs_recent = int(
+            _safe_float(influence_snapshot.get("user_inputs_120s", 0), 0.0)
         )
-    else:
-        user_signal = ""
+        user_rows = (
+            influence_snapshot.get("recent_user_inputs", [])
+            if isinstance(influence_snapshot, dict)
+            else []
+        )
+        if isinstance(user_rows, list) and user_rows:
+            newest = user_rows[0] if isinstance(user_rows[0], dict) else {}
+            user_signal = "|".join(
+                [
+                    str(newest.get("kind", "")),
+                    str(newest.get("target", "")),
+                    str(newest.get("message", ""))[:48],
+                    str(newest.get("x_ratio", "")),
+                    str(newest.get("y_ratio", "")),
+                ]
+            )
     user_signal_hash = hashlib.sha1(user_signal.encode("utf-8")).hexdigest()[:10]
     config_version = max(0, _config_runtime_version_snapshot())
     return (
@@ -1373,11 +1574,151 @@ def _simulation_http_cache_store(cache_key: str, body: bytes) -> None:
         _SIMULATION_HTTP_CACHE["body"] = body_bytes
 
 
+def _runtime_catalog_http_cache_store(*, perspective: str, body: bytes) -> None:
+    perspective_key = str(perspective or "").strip().lower()
+    if not perspective_key:
+        return
+    if not isinstance(body, (bytes, bytearray)):
+        return
+    body_bytes = bytes(body)
+    if not body_bytes:
+        return
+    with _RUNTIME_CATALOG_HTTP_CACHE_LOCK:
+        _RUNTIME_CATALOG_HTTP_CACHE[perspective_key] = {
+            "prepared_monotonic": time.monotonic(),
+            "body": body_bytes,
+        }
+
+
+def _runtime_catalog_http_cached_body(
+    *,
+    perspective: str,
+    max_age_seconds: float,
+) -> bytes | None:
+    if max_age_seconds <= 0.0:
+        return None
+    perspective_key = str(perspective or "").strip().lower()
+    if not perspective_key:
+        return None
+
+    with _RUNTIME_CATALOG_HTTP_CACHE_LOCK:
+        cache_row = _RUNTIME_CATALOG_HTTP_CACHE.get(perspective_key)
+        row = dict(cache_row) if isinstance(cache_row, dict) else None
+
+    if not isinstance(row, dict):
+        return None
+    cached_body = row.get("body", b"")
+    if not isinstance(cached_body, (bytes, bytearray)) or not cached_body:
+        return None
+    cached_age = time.monotonic() - _safe_float(row.get("prepared_monotonic", 0.0), 0.0)
+    if cached_age < 0.0 or cached_age > max_age_seconds:
+        return None
+    return bytes(cached_body)
+
+
+def _runtime_catalog_http_cache_invalidate() -> None:
+    with _RUNTIME_CATALOG_HTTP_CACHE_LOCK:
+        _RUNTIME_CATALOG_HTTP_CACHE.clear()
+
+
+def _simulation_http_compact_stale_fallback_body(
+    *,
+    part_root: Path,
+    perspective: str,
+    max_age_seconds: float,
+) -> tuple[bytes | None, str]:
+    stale_max_age = max(0.0, _safe_float(max_age_seconds, 0.0))
+    if stale_max_age <= 0.0:
+        return None, ""
+
+    perspective_key = str(perspective or "").strip().lower()
+    stale_body = _simulation_http_cached_body(
+        perspective=perspective_key,
+        max_age_seconds=stale_max_age,
+    )
+    if stale_body is not None:
+        return stale_body, "stale-cache"
+
+    disk_body = _simulation_http_disk_cache_load(
+        part_root,
+        perspective=perspective_key,
+        max_age_seconds=stale_max_age,
+    )
+    if disk_body is None:
+        return None, ""
+
+    _simulation_http_cache_store(
+        f"{perspective_key}|disk-compact-fallback|simulation",
+        disk_body,
+    )
+    return disk_body, "disk-cache"
+
+
+def _simulation_http_compact_cache_store(cache_key: str, body: bytes) -> None:
+    if not cache_key:
+        return
+    if not isinstance(body, (bytes, bytearray)):
+        return
+    body_bytes = bytes(body)
+    if not body_bytes:
+        return
+    with _SIMULATION_HTTP_COMPACT_CACHE_LOCK:
+        _SIMULATION_HTTP_COMPACT_CACHE["key"] = cache_key
+        _SIMULATION_HTTP_COMPACT_CACHE["prepared_monotonic"] = time.monotonic()
+        _SIMULATION_HTTP_COMPACT_CACHE["body"] = body_bytes
+
+
+def _simulation_http_compact_cached_body(
+    *,
+    cache_key: str = "",
+    perspective: str = "",
+    max_age_seconds: float,
+    require_exact_key: bool = False,
+) -> bytes | None:
+    if max_age_seconds <= 0.0:
+        return None
+
+    requested_key = str(cache_key or "").strip()
+    requested_perspective = str(perspective or "").strip()
+    with _SIMULATION_HTTP_COMPACT_CACHE_LOCK:
+        cached_key = str(_SIMULATION_HTTP_COMPACT_CACHE.get("key", "") or "").strip()
+        cached_body = _SIMULATION_HTTP_COMPACT_CACHE.get("body", b"")
+        cached_age = time.monotonic() - _safe_float(
+            _SIMULATION_HTTP_COMPACT_CACHE.get("prepared_monotonic", 0.0),
+            0.0,
+        )
+
+    if not cached_key:
+        return None
+    if cached_age < 0.0 or cached_age > max_age_seconds:
+        return None
+    if not isinstance(cached_body, (bytes, bytearray)) or not cached_body:
+        return None
+
+    if require_exact_key:
+        if not requested_key or requested_key != cached_key:
+            return None
+    elif requested_key:
+        if requested_key != cached_key:
+            return None
+    elif requested_perspective and not cached_key.startswith(
+        f"{requested_perspective}|"
+    ):
+        return None
+
+    return bytes(cached_body)
+
+
 def _simulation_http_cache_invalidate(*, part_root: Path | None = None) -> None:
+    _runtime_catalog_http_cache_invalidate()
     with _SIMULATION_HTTP_CACHE_LOCK:
         _SIMULATION_HTTP_CACHE["key"] = ""
         _SIMULATION_HTTP_CACHE["prepared_monotonic"] = 0.0
         _SIMULATION_HTTP_CACHE["body"] = b""
+    with _SIMULATION_HTTP_COMPACT_CACHE_LOCK:
+        _SIMULATION_HTTP_COMPACT_CACHE["key"] = ""
+        _SIMULATION_HTTP_COMPACT_CACHE["prepared_monotonic"] = 0.0
+        _SIMULATION_HTTP_COMPACT_CACHE["body"] = b""
 
     if part_root is None or not _SIMULATION_HTTP_DISK_CACHE_ENABLED:
         return
@@ -1751,8 +2092,10 @@ def _simulation_ws_trim_simulation_payload(
         "nexus_graph",
         "logical_graph",
         "pain_field",
+        "heat_values",
         "file_graph",
         "crawler_graph",
+        "field_registry",
     ):
         trimmed.pop(key, None)
     return trimmed
@@ -1760,9 +2103,21 @@ def _simulation_ws_trim_simulation_payload(
 
 def _simulation_ws_compact_graph_payload(
     simulation: dict[str, Any],
+    *,
+    assume_trimmed: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(simulation, dict):
         return {}
+
+    if assume_trimmed:
+        graph_payload: dict[str, Any] = {}
+        file_graph = simulation.get("file_graph")
+        crawler_graph = simulation.get("crawler_graph")
+        if isinstance(file_graph, dict):
+            graph_payload["file_graph"] = file_graph
+        if isinstance(crawler_graph, dict):
+            graph_payload["crawler_graph"] = crawler_graph
+        return graph_payload
 
     catalog_like: dict[str, Any] = {}
     file_graph = simulation.get("file_graph")
@@ -1858,28 +2213,30 @@ def _simulation_ws_collect_node_positions(
                 total += sum(len(str(item)) for item in value)
         return float(total)
 
-    def _collect_graph_nodes(graph_payload: Any) -> list[dict[str, Any]]:
-        if not isinstance(graph_payload, dict):
-            return []
-        rows: list[dict[str, Any]] = []
-        for key in ("nodes", "file_nodes", "crawler_nodes", "field_nodes", "tag_nodes"):
-            values = graph_payload.get(key, [])
-            if isinstance(values, list):
-                for row in values:
-                    if isinstance(row, dict):
-                        rows.append(row)
-        return rows
-
     for graph_key in ("file_graph", "crawler_graph", "nexus_graph"):
         graph_payload = simulation_payload.get(graph_key, {})
-        for row in _collect_graph_nodes(graph_payload):
-            node_id = str(row.get("id", "") or "").strip()
-            if not node_id or node_id in node_positions:
+        if not isinstance(graph_payload, dict):
+            continue
+        for section_key in (
+            "nodes",
+            "file_nodes",
+            "crawler_nodes",
+            "field_nodes",
+            "tag_nodes",
+        ):
+            rows = graph_payload.get(section_key, [])
+            if not isinstance(rows, list):
                 continue
-            x_value = max(0.0, min(1.0, _safe_float(row.get("x", 0.5), 0.5)))
-            y_value = max(0.0, min(1.0, _safe_float(row.get("y", 0.5), 0.5)))
-            node_positions[node_id] = (x_value, y_value)
-            node_text_chars[node_id] = _node_text_weight(row)
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                node_id = str(row.get("id", "") or "").strip()
+                if not node_id or node_id in node_positions:
+                    continue
+                x_value = max(0.0, min(1.0, _safe_float(row.get("x", 0.5), 0.5)))
+                y_value = max(0.0, min(1.0, _safe_float(row.get("y", 0.5), 0.5)))
+                node_positions[node_id] = (x_value, y_value)
+                node_text_chars[node_id] = _node_text_weight(row)
 
     return node_positions, node_text_chars
 
@@ -1895,7 +2252,9 @@ def _simulation_ws_compact_field_particles_with_nodes(
 
     compact_rows: list[dict[str, Any]] = []
     limit = max(1, _SIMULATION_WS_STREAM_PARTICLE_MAX)
-    for index, row in enumerate(rows[:limit]):
+    for index, row in enumerate(rows):
+        if index >= limit:
+            break
         if not isinstance(row, dict):
             continue
         particle_id = str(row.get("id", "") or "").strip() or f"ws:{index}"
@@ -2055,6 +2414,7 @@ def _simulation_ws_extract_stream_particles(
         node_text_chars=node_text_chars or {},
     )
     dynamics["field_particles"] = compact_rows
+    _simulation_ws_ensure_daimoi_summary(simulation_payload)
     simulation_payload["presence_dynamics"] = dynamics
     return compact_rows
 
@@ -2089,6 +2449,443 @@ def _simulation_ws_payload_is_sparse(payload: dict[str, Any]) -> bool:
             particle_count = len(rows)
 
     return total_count <= 0 and point_count <= 0 and particle_count <= 0
+
+
+def _ws_clamp01(value: float) -> float:
+    if value <= 0.0:
+        return 0.0
+    if value >= 1.0:
+        return 1.0
+    return value
+
+
+def _simulation_ws_graph_node_position_map(
+    node_positions: Any,
+) -> dict[str, tuple[float, float]]:
+    if not isinstance(node_positions, dict):
+        return {}
+
+    mapped: dict[str, tuple[float, float]] = {}
+    limit = max(1, int(_SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_NODE_LIMIT))
+    for node_id, row in node_positions.items():
+        if len(mapped) >= limit:
+            break
+        node_key = str(node_id or "").strip()
+        if not node_key or not isinstance(row, dict):
+            continue
+        mapped[node_key] = (
+            _ws_clamp01(_safe_float(row.get("x", 0.5), 0.5)),
+            _ws_clamp01(_safe_float(row.get("y", 0.5), 0.5)),
+        )
+    return mapped
+
+
+def _simulation_ws_graph_variability_update(node_positions: Any) -> dict[str, Any]:
+    current_positions = _simulation_ws_graph_node_position_map(node_positions)
+
+    with _SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_LOCK:
+        previous_state = dict(_SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_STATE)
+        previous_positions_raw = previous_state.get("positions", {})
+        previous_positions = (
+            dict(previous_positions_raw)
+            if isinstance(previous_positions_raw, dict)
+            else {}
+        )
+
+        displacements: list[float] = []
+        moved_count = 0
+        moved_threshold = max(
+            0.0005,
+            _SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_DISTANCE_REF * 0.35,
+        )
+        for node_id, (cx, cy) in current_positions.items():
+            prior = previous_positions.get(node_id)
+            if not isinstance(prior, tuple) or len(prior) < 2:
+                continue
+            px = _ws_clamp01(_safe_float(prior[0], cx))
+            py = _ws_clamp01(_safe_float(prior[1], cy))
+            displacement = math.hypot(cx - px, cy - py)
+            displacements.append(displacement)
+            if displacement >= moved_threshold:
+                moved_count += 1
+
+        shared_nodes = len(displacements)
+        mean_displacement = (
+            (sum(displacements) / float(shared_nodes)) if shared_nodes > 0 else 0.0
+        )
+        if len(displacements) >= 2:
+            ordered = sorted(displacements)
+            p90_index = max(
+                0, min(len(ordered) - 1, int(round((len(ordered) - 1) * 0.9)))
+            )
+            p90_displacement = ordered[p90_index]
+        else:
+            p90_displacement = mean_displacement
+        active_share = (
+            (float(moved_count) / float(shared_nodes)) if shared_nodes > 0 else 0.0
+        )
+
+        mean_term = _ws_clamp01(
+            mean_displacement
+            / max(1e-6, _SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_DISTANCE_REF)
+        )
+        p90_term = _ws_clamp01(
+            p90_displacement
+            / max(1e-6, _SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_DISTANCE_REF * 1.8)
+        )
+        active_term = _ws_clamp01(active_share / 0.45)
+        raw_score = _ws_clamp01(
+            (mean_term * 0.55) + (p90_term * 0.25) + (active_term * 0.2)
+        )
+
+        alpha = _ws_clamp01(
+            _safe_float(_SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_EMA_ALPHA, 0.2)
+        )
+        previous_score = _ws_clamp01(
+            _safe_float(previous_state.get("score", raw_score), raw_score)
+        )
+        score = _ws_clamp01((previous_score * (1.0 - alpha)) + (raw_score * alpha))
+        peak_score = max(
+            score,
+            _ws_clamp01(
+                _safe_float(previous_state.get("peak_score", score), score) * 0.92
+            ),
+        )
+
+        _SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_STATE.clear()
+        _SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_STATE.update(
+            {
+                "positions": dict(current_positions),
+                "score": score,
+                "raw_score": raw_score,
+                "peak_score": peak_score,
+                "mean_displacement": mean_displacement,
+                "p90_displacement": p90_displacement,
+                "active_share": active_share,
+                "shared_nodes": shared_nodes,
+                "sampled_nodes": len(current_positions),
+            }
+        )
+
+        return {
+            "score": score,
+            "raw_score": raw_score,
+            "peak_score": peak_score,
+            "mean_displacement": mean_displacement,
+            "p90_displacement": p90_displacement,
+            "active_share": active_share,
+            "shared_nodes": shared_nodes,
+            "sampled_nodes": len(current_positions),
+        }
+
+
+def _simulation_ws_daimoi_live_metrics(
+    rows: Any,
+    *,
+    default_target: float,
+) -> dict[str, Any]:
+    if not isinstance(rows, list) or not rows:
+        return {}
+
+    positions_fn = getattr(
+        daimoi_probabilistic_module,
+        "_anti_clump_positions_from_particles",
+        None,
+    )
+    metrics_fn = getattr(daimoi_probabilistic_module, "_anti_clump_metrics", None)
+    if not callable(positions_fn) or not callable(metrics_fn):
+        return {}
+
+    try:
+        positions = positions_fn(rows)
+        metrics = metrics_fn(positions, previous_collision_count=0)
+    except Exception:
+        return {}
+
+    if not isinstance(metrics, dict):
+        return {}
+
+    clump_score = _ws_clamp01(_safe_float(metrics.get("clump_score", 0.0), 0.0))
+    target = _ws_clamp01(_safe_float(default_target, 0.38))
+    drive_estimate = max(-1.0, min(1.0, (clump_score - target) * 2.2))
+
+    return {
+        "clump_score": clump_score,
+        "drive_estimate": drive_estimate,
+        "metrics": {
+            "nn_term": _ws_clamp01(_safe_float(metrics.get("nn_term", 0.0), 0.0)),
+            "entropy_norm": _ws_clamp01(
+                _safe_float(metrics.get("entropy_norm", 1.0), 1.0)
+            ),
+            "hotspot_term": _ws_clamp01(
+                _safe_float(metrics.get("hotspot_term", 0.0), 0.0)
+            ),
+            "collision_term": _ws_clamp01(
+                _safe_float(metrics.get("collision_term", 0.0), 0.0)
+            ),
+            "collision_rate": max(
+                0.0,
+                _safe_float(metrics.get("collision_rate", 0.0), 0.0),
+            ),
+            "median_distance": max(
+                0.0,
+                _safe_float(metrics.get("median_distance", 0.0), 0.0),
+            ),
+            "target_distance": max(
+                0.0,
+                _safe_float(metrics.get("target_distance", 0.0), 0.0),
+            ),
+            "top_share": _ws_clamp01(_safe_float(metrics.get("top_share", 0.0), 0.0)),
+        },
+    }
+
+
+def _simulation_ws_ensure_daimoi_summary(
+    payload: dict[str, Any],
+    *,
+    include_live_metrics: bool = True,
+    include_graph_variability: bool = True,
+) -> None:
+    if not isinstance(payload, dict):
+        return
+    dynamics = payload.get("presence_dynamics", {})
+    if not isinstance(dynamics, dict):
+        return
+
+    summary_raw = dynamics.get("daimoi_probabilistic", {})
+    summary = dict(summary_raw) if isinstance(summary_raw, dict) else {}
+
+    anti_raw = summary.get("anti_clump", {})
+    anti = dict(anti_raw) if isinstance(anti_raw, dict) else {}
+
+    metrics_raw = anti.get("metrics", {})
+    metrics = dict(metrics_raw) if isinstance(metrics_raw, dict) else {}
+    scales_raw = anti.get("scales", {})
+    scales = dict(scales_raw) if isinstance(scales_raw, dict) else {}
+
+    default_target = _safe_float(
+        getattr(daimoi_probabilistic_module, "DAIMOI_ANTI_CLUMP_TARGET", 0.33),
+        0.33,
+    )
+    anti_target = _ws_clamp01(
+        _safe_float(anti.get("target", default_target), default_target)
+    )
+
+    rows = dynamics.get("field_particles", [])
+    live_metrics: dict[str, Any] = {}
+    if include_live_metrics:
+        live_metrics = _simulation_ws_daimoi_live_metrics(
+            rows,
+            default_target=anti_target,
+        )
+
+    clump_score = _ws_clamp01(_safe_float(summary.get("clump_score", 0.0), 0.0))
+    if isinstance(live_metrics, dict) and live_metrics:
+        clump_score = _ws_clamp01(
+            _safe_float(live_metrics.get("clump_score", clump_score), clump_score)
+        )
+
+    drive_default = max(-1.0, min(1.0, (clump_score - anti_target) * 2.2))
+    anti_drive = drive_default
+    if not (isinstance(live_metrics, dict) and live_metrics):
+        anti_drive = max(
+            -1.0,
+            min(
+                1.0,
+                _safe_float(
+                    summary.get("anti_clump_drive", anti.get("drive", drive_default)),
+                    drive_default,
+                ),
+            ),
+        )
+
+    graph_variability_raw = anti.get("graph_variability", {})
+    graph_variability: dict[str, Any] = (
+        dict(graph_variability_raw) if isinstance(graph_variability_raw, dict) else {}
+    )
+    if include_graph_variability:
+        graph_variability = _simulation_ws_graph_variability_update(
+            dynamics.get("graph_node_positions", {})
+        )
+    graph_score = _ws_clamp01(
+        _safe_float(
+            graph_variability.get("score", 0.0)
+            if isinstance(graph_variability, dict)
+            else 0.0,
+            0.0,
+        )
+    )
+    noise_gain = max(
+        1.0,
+        min(
+            2.2,
+            1.0 + (graph_score * _SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_NOISE_GAIN),
+        ),
+    )
+    route_damp = max(
+        0.55,
+        min(
+            1.0,
+            1.0 - (graph_score * _SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_ROUTE_DAMP),
+        ),
+    )
+
+    anti["target"] = round(anti_target, 6)
+    anti["drive"] = round(anti_drive, 6)
+    anti["clump_score"] = round(clump_score, 6)
+    live_metrics_map = (
+        dict(live_metrics.get("metrics", {}))
+        if isinstance(live_metrics, dict)
+        and isinstance(live_metrics.get("metrics", {}), dict)
+        else {}
+    )
+    anti["metrics"] = {
+        "nn_term": max(
+            0.0,
+            _safe_float(
+                live_metrics_map.get("nn_term", metrics.get("nn_term", 0.0)),
+                0.0,
+            ),
+        ),
+        "entropy_norm": max(
+            0.0,
+            _safe_float(
+                live_metrics_map.get(
+                    "entropy_norm",
+                    metrics.get("entropy_norm", 1.0),
+                ),
+                1.0,
+            ),
+        ),
+        "hotspot_term": max(
+            0.0,
+            _safe_float(
+                live_metrics_map.get("hotspot_term", metrics.get("hotspot_term", 0.0)),
+                0.0,
+            ),
+        ),
+        "collision_term": max(
+            0.0,
+            _safe_float(
+                live_metrics_map.get(
+                    "collision_term",
+                    metrics.get("collision_term", 0.0),
+                ),
+                0.0,
+            ),
+        ),
+        "collision_rate": max(
+            0.0,
+            _safe_float(
+                live_metrics_map.get(
+                    "collision_rate",
+                    metrics.get("collision_rate", 0.0),
+                ),
+                0.0,
+            ),
+        ),
+        "median_distance": max(
+            0.0,
+            _safe_float(
+                live_metrics_map.get(
+                    "median_distance",
+                    metrics.get("median_distance", 0.0),
+                ),
+                0.0,
+            ),
+        ),
+        "target_distance": max(
+            0.0,
+            _safe_float(
+                live_metrics_map.get(
+                    "target_distance",
+                    metrics.get("target_distance", 0.0),
+                ),
+                0.0,
+            ),
+        ),
+        "top_share": _ws_clamp01(
+            _safe_float(
+                live_metrics_map.get("top_share", metrics.get("top_share", 0.0)),
+                0.0,
+            )
+        ),
+    }
+    anti["scales"] = {
+        "spawn": max(0.0, _safe_float(scales.get("spawn", 1.0), 1.0)),
+        "anchor": max(0.0, _safe_float(scales.get("anchor", 1.0), 1.0)),
+        "semantic": max(0.0, _safe_float(scales.get("semantic", 1.0), 1.0)),
+        "edge": max(0.0, _safe_float(scales.get("edge", 1.0), 1.0)),
+        "tangent": max(0.0, _safe_float(scales.get("tangent", 1.0), 1.0)),
+        "noise_gain": round(noise_gain, 6),
+        "route_damp": round(route_damp, 6),
+    }
+    if isinstance(graph_variability, dict):
+        anti["graph_variability"] = {
+            "score": round(
+                _ws_clamp01(_safe_float(graph_variability.get("score", 0.0), 0.0)), 6
+            ),
+            "raw_score": round(
+                _ws_clamp01(_safe_float(graph_variability.get("raw_score", 0.0), 0.0)),
+                6,
+            ),
+            "peak_score": round(
+                _ws_clamp01(_safe_float(graph_variability.get("peak_score", 0.0), 0.0)),
+                6,
+            ),
+            "mean_displacement": round(
+                max(
+                    0.0,
+                    _safe_float(graph_variability.get("mean_displacement", 0.0), 0.0),
+                ),
+                6,
+            ),
+            "p90_displacement": round(
+                max(
+                    0.0,
+                    _safe_float(graph_variability.get("p90_displacement", 0.0), 0.0),
+                ),
+                6,
+            ),
+            "active_share": round(
+                _ws_clamp01(
+                    _safe_float(graph_variability.get("active_share", 0.0), 0.0)
+                ),
+                6,
+            ),
+            "shared_nodes": int(
+                max(0, _safe_float(graph_variability.get("shared_nodes", 0), 0.0))
+            ),
+            "sampled_nodes": int(
+                max(0, _safe_float(graph_variability.get("sampled_nodes", 0), 0.0))
+            ),
+        }
+
+    summary["clump_score"] = round(clump_score, 6)
+    summary["anti_clump_drive"] = round(anti_drive, 6)
+    summary["anti_clump"] = anti
+    dynamics["daimoi_probabilistic"] = summary
+    payload["presence_dynamics"] = dynamics
+
+
+def _simulation_ws_payload_missing_daimoi_summary(payload: dict[str, Any]) -> bool:
+    if not isinstance(payload, dict):
+        return True
+    if "presence_dynamics" not in payload:
+        return True
+    dynamics = payload.get("presence_dynamics", {})
+    if not isinstance(dynamics, dict) or not dynamics:
+        return True
+    _simulation_ws_ensure_daimoi_summary(payload)
+    dynamics = payload.get("presence_dynamics", {})
+    if not isinstance(dynamics, dict):
+        return True
+    summary = dynamics.get("daimoi_probabilistic", {})
+    if not isinstance(summary, dict) or not summary:
+        return True
+    if "clump_score" not in summary and "anti_clump" not in summary:
+        return True
+    return False
 
 
 def _simulation_bootstrap_store_report(report: dict[str, Any]) -> None:
@@ -2785,6 +3582,7 @@ def _simulation_ws_load_cached_payload(
     payload_mode: str = "trimmed",
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
     payload_mode_key = _simulation_ws_normalize_payload_mode(payload_mode)
+    loaded_from_compact_cache = False
 
     def _load_stale_disk_payload() -> dict[str, Any] | None:
         stale_cache_path = _simulation_http_disk_cache_path(part_root, perspective)
@@ -2796,18 +3594,28 @@ def _simulation_ws_load_cached_payload(
             return None
         return None
 
-    cached_body = _simulation_http_cached_body(
-        perspective=perspective,
-        max_age_seconds=_SIMULATION_WS_CACHE_MAX_AGE_SECONDS,
-    )
-    if cached_body is None:
-        cached_body = _simulation_http_disk_cache_load(
-            part_root,
+    payload: dict[str, Any] | None = None
+    if payload_mode_key != "full":
+        compact_cached_body = _simulation_http_compact_cached_body(
             perspective=perspective,
             max_age_seconds=_SIMULATION_WS_CACHE_MAX_AGE_SECONDS,
         )
+        payload = _simulation_ws_decode_cached_payload(compact_cached_body)
+        loaded_from_compact_cache = isinstance(payload, dict)
 
-    payload = _simulation_ws_decode_cached_payload(cached_body)
+    if payload is None:
+        cached_body = _simulation_http_cached_body(
+            perspective=perspective,
+            max_age_seconds=_SIMULATION_WS_CACHE_MAX_AGE_SECONDS,
+        )
+        if cached_body is None:
+            cached_body = _simulation_http_disk_cache_load(
+                part_root,
+                perspective=perspective,
+                max_age_seconds=_SIMULATION_WS_CACHE_MAX_AGE_SECONDS,
+            )
+
+        payload = _simulation_ws_decode_cached_payload(cached_body)
     if payload_mode_key == "full":
         stale_payload = _load_stale_disk_payload()
         if payload is None:
@@ -2833,7 +3641,12 @@ def _simulation_ws_load_cached_payload(
     node_positions, node_text_chars = _simulation_ws_collect_node_positions(payload)
     simulation_payload = _simulation_ws_trim_simulation_payload(payload)
     simulation_payload.pop("projection", None)
-    simulation_payload.update(_simulation_ws_compact_graph_payload(payload))
+    simulation_payload.update(
+        _simulation_ws_compact_graph_payload(
+            payload,
+            assume_trimmed=loaded_from_compact_cache,
+        )
+    )
     _simulation_ws_extract_stream_particles(
         simulation_payload,
         node_positions=node_positions,
@@ -2841,14 +3654,17 @@ def _simulation_ws_load_cached_payload(
     )
     dynamics = simulation_payload.get("presence_dynamics", {})
     if isinstance(dynamics, dict) and node_positions:
-        dynamics["graph_node_positions"] = {
-            node_id: {
+        graph_node_positions: dict[str, dict[str, float]] = {}
+        for node_id, coords in node_positions.items():
+            if len(graph_node_positions) >= 2200:
+                break
+            if not (isinstance(coords, tuple) and len(coords) >= 2):
+                continue
+            graph_node_positions[node_id] = {
                 "x": round(max(0.0, min(1.0, _safe_float(coords[0], 0.5))), 5),
                 "y": round(max(0.0, min(1.0, _safe_float(coords[1], 0.5))), 5),
             }
-            for node_id, coords in list(node_positions.items())[:2200]
-            if isinstance(coords, tuple) and len(coords) >= 2
-        }
+        dynamics["graph_node_positions"] = graph_node_positions
         simulation_payload["presence_dynamics"] = dynamics
     return simulation_payload, projection
 
@@ -2885,11 +3701,20 @@ def _simulation_ws_normalize_particle_payload_mode(mode: str) -> str:
     return "lite"
 
 
-def _simulation_ws_lite_field_particles(rows: Any) -> list[dict[str, Any]]:
+def _simulation_ws_lite_field_particles(
+    rows: Any,
+    *,
+    max_rows: int | None = None,
+) -> list[dict[str, Any]]:
     if not isinstance(rows, list):
+        return []
+    row_limit = len(rows) if max_rows is None else max(0, int(max_rows))
+    if row_limit <= 0:
         return []
     compact_rows: list[dict[str, Any]] = []
     for index, row in enumerate(rows):
+        if index >= row_limit:
+            break
         if not isinstance(row, dict):
             continue
         compact: dict[str, Any] = {}
@@ -2900,6 +3725,121 @@ def _simulation_ws_lite_field_particles(rows: Any) -> list[dict[str, Any]]:
             compact["id"] = str(row.get("id", "") or f"ws:{index}")
         compact_rows.append(compact)
     return compact_rows
+
+
+def _simulation_ws_governor_estimate_work(simulation_payload: dict[str, Any]) -> float:
+    if not isinstance(simulation_payload, dict):
+        return 1.0
+
+    dynamics = simulation_payload.get("presence_dynamics", {})
+    field_particles = (
+        dynamics.get("field_particles", []) if isinstance(dynamics, dict) else []
+    )
+    particle_count = len(field_particles) if isinstance(field_particles, list) else 0
+
+    points = simulation_payload.get("points", [])
+    point_count = len(points) if isinstance(points, list) else 0
+    total_count = max(0.0, _safe_float(simulation_payload.get("total", 0.0), 0.0))
+
+    estimated = (particle_count * 1.2) + (point_count * 0.08) + (total_count * 0.05)
+    return max(1.0, estimated)
+
+
+def _simulation_ws_governor_ingestion_signal(
+    catalog: dict[str, Any],
+) -> tuple[int, int, int, int]:
+    if not isinstance(catalog, dict):
+        return (0, 0, 0, 0)
+
+    inbox_state = catalog.get("eta_mu_inbox", {})
+    if not isinstance(inbox_state, dict):
+        inbox_state = {}
+
+    pending_count = max(0, int(_safe_float(inbox_state.get("pending_count", 0), 0.0)))
+    deferred_count = max(0, int(_safe_float(inbox_state.get("deferred_count", 0), 0.0)))
+
+    file_graph_stats = (
+        catalog.get("file_graph", {}).get("stats", {})
+        if isinstance(catalog.get("file_graph", {}), dict)
+        else {}
+    )
+    if not isinstance(file_graph_stats, dict):
+        file_graph_stats = {}
+
+    compressed_total = max(
+        0.0,
+        _safe_float(file_graph_stats.get("compressed_bytes_total", 0.0), 0.0),
+    )
+    knowledge_entries = max(
+        0.0,
+        _safe_float(inbox_state.get("knowledge_entries", 0.0), 0.0),
+    )
+    avg_entry_bytes = (
+        compressed_total / knowledge_entries
+        if knowledge_entries > 0.0
+        else 64.0 * 1024.0
+    )
+    avg_entry_bytes = max(16.0 * 1024.0, min(6.0 * 1024.0 * 1024.0, avg_entry_bytes))
+    bytes_pending = int(max(0.0, pending_count * avg_entry_bytes))
+
+    embedding_backlog = pending_count + deferred_count
+    disk_queue_depth = deferred_count
+    return (pending_count, bytes_pending, embedding_backlog, disk_queue_depth)
+
+
+def _simulation_ws_governor_stock_pressure(part_root: Path) -> tuple[float, float]:
+    mem_pressure = 0.0
+    try:
+        resource_snapshot = _resource_monitor_snapshot(part_root)
+    except Exception:
+        resource_snapshot = {}
+
+    if isinstance(resource_snapshot, dict):
+        devices = resource_snapshot.get("devices", {})
+        if isinstance(devices, dict):
+            cpu = devices.get("cpu", {})
+            if isinstance(cpu, dict):
+                mem_pressure = _safe_float(cpu.get("memory_pressure", 0.0), 0.0)
+
+    disk_pressure = 0.0
+    try:
+        usage = shutil.disk_usage(part_root)
+    except OSError:
+        usage = None
+    if usage is not None and usage.total > 0:
+        disk_pressure = usage.used / float(usage.total)
+
+    return (
+        max(0.0, min(1.5, mem_pressure)),
+        max(0.0, min(1.5, disk_pressure)),
+    )
+
+
+def _simulation_ws_governor_particle_cap(
+    base_cap: int,
+    *,
+    fidelity_signal: str,
+    ingestion_pressure: float,
+) -> int:
+    min_cap = max(1, _SIMULATION_WS_GOVERNOR_MIN_PARTICLE_CAP)
+    max_cap = max(min_cap, int(base_cap))
+    pressure = max(0.0, min(1.0, _safe_float(ingestion_pressure, 0.0)))
+
+    if fidelity_signal == "decrease":
+        scaled = int(round(max_cap * (0.68 - (0.24 * pressure))))
+        return max(min_cap, min(max_cap, scaled))
+    if fidelity_signal == "increase":
+        scaled = int(round(max_cap * (1.0 + (0.12 * (1.0 - pressure)))))
+        return max(min_cap, min(max_cap, scaled))
+    return max(min_cap, max_cap)
+
+
+def _simulation_ws_governor_graph_heartbeat_scale(fidelity_signal: str) -> float:
+    if fidelity_signal == "decrease":
+        return _SIMULATION_WS_GOVERNOR_DEGRADE_GRAPH_HEARTBEAT_SCALE
+    if fidelity_signal == "increase":
+        return _SIMULATION_WS_GOVERNOR_INCREASE_GRAPH_HEARTBEAT_SCALE
+    return 1.0
 
 
 def _catalog_stream_chunk_rows(value: Any) -> int:
@@ -3006,29 +3946,33 @@ def _catalog_stream_iter_rows(
     }
 
 
-def _simulation_ws_chunk_messages(
+def _simulation_ws_chunk_plan(
     payload: dict[str, Any],
     *,
     chunk_chars: int,
     message_seq: int,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], str | None]:
     if not isinstance(payload, dict):
-        return []
+        return [], None
     payload_type = str(payload.get("type", "") or "").strip().lower()
     if not payload_type or payload_type == "ws_chunk":
-        return []
+        return [], None
     if payload_type not in _SIMULATION_WS_CHUNK_MESSAGE_TYPES:
-        return []
+        return [], None
 
     chunk_size = max(4096, int(_safe_float(chunk_chars, _SIMULATION_WS_CHUNK_CHARS)))
     payload_text = _json_compact(payload)
     payload_chars = len(payload_text)
+    if payload_type == "simulation_delta":
+        delta_min_chars = max(chunk_size, int(_SIMULATION_WS_CHUNK_DELTA_MIN_CHARS))
+        if payload_chars <= delta_min_chars:
+            return [], payload_text
     if payload_chars <= chunk_size:
-        return []
+        return [], payload_text
 
     chunk_total = int(math.ceil(payload_chars / float(chunk_size)))
     if chunk_total <= 1:
-        return []
+        return [], payload_text
     if chunk_total > _SIMULATION_WS_CHUNK_MAX_CHUNKS:
         chunk_total = _SIMULATION_WS_CHUNK_MAX_CHUNKS
         chunk_size = int(math.ceil(payload_chars / float(chunk_total)))
@@ -3054,6 +3998,20 @@ def _simulation_ws_chunk_messages(
                 "payload": chunk_payload,
             }
         )
+    return rows, None
+
+
+def _simulation_ws_chunk_messages(
+    payload: dict[str, Any],
+    *,
+    chunk_chars: int,
+    message_seq: int,
+) -> list[dict[str, Any]]:
+    rows, _ = _simulation_ws_chunk_plan(
+        payload,
+        chunk_chars=chunk_chars,
+        message_seq=message_seq,
+    )
     return rows
 
 
@@ -3070,6 +4028,15 @@ def _simulation_ws_worker_for_top_level_key(key: str) -> str:
         "perspective",
         "myth",
         "world",
+        "tick_elapsed_ms",
+        "slack_ms",
+        "ingestion_pressure",
+        "ws_particle_max",
+        "particle_payload_mode",
+        "graph_node_positions_truncated",
+        "graph_node_positions_total",
+        "presence_anchor_positions_truncated",
+        "presence_anchor_positions_total",
     }:
         return "sim-core"
     if clean in {"projection"}:
@@ -3246,13 +4213,38 @@ def _simulation_http_compact_simulation_payload(
         "nexus_graph",
         "logical_graph",
         "pain_field",
+        "heat_values",
         "file_graph",
         "crawler_graph",
+        "field_registry",
     ):
         compact.pop(key, None)
 
+    point_rows = compact.get("points")
+    if isinstance(point_rows, list):
+        point_total = len(point_rows)
+        if point_total > _SIMULATION_HTTP_COMPACT_MAX_POINTS:
+            compact["points"] = _simulation_http_slice_rows(
+                point_rows,
+                max_rows=_SIMULATION_HTTP_COMPACT_MAX_POINTS,
+            )
+            compact["points_total"] = point_total
+            compact["points_compacted"] = True
+
     dynamics = compact.get("presence_dynamics")
-    if isinstance(dynamics, dict) and isinstance(dynamics.get("field_particles"), list):
+    if isinstance(dynamics, dict):
+        compact_dynamics = dict(dynamics)
+        particle_rows = compact_dynamics.get("field_particles")
+        if isinstance(particle_rows, list):
+            particle_total = len(particle_rows)
+            if particle_total > _SIMULATION_HTTP_COMPACT_MAX_FIELD_PARTICLES:
+                compact_dynamics["field_particles"] = _simulation_http_slice_rows(
+                    particle_rows,
+                    max_rows=_SIMULATION_HTTP_COMPACT_MAX_FIELD_PARTICLES,
+                )
+                compact_dynamics["field_particles_total"] = particle_total
+                compact_dynamics["field_particles_compacted"] = True
+            compact["presence_dynamics"] = compact_dynamics
         compact.pop("field_particles", None)
     return compact
 
@@ -3814,113 +4806,7 @@ def resolve_artifact_path(part_root: Path, request_path: str) -> Path | None:
     return None
 
 
-def websocket_accept_value(client_key: str) -> str:
-    accept_seed = client_key + WS_MAGIC
-    digest = hashlib.sha1(accept_seed.encode("utf-8")).digest()
-    return base64.b64encode(digest).decode("utf-8")
-
-
-_WS_CLIENT_FRAME_MAX_BYTES = 1_048_576
-
-
-def websocket_frame(opcode: int, payload: bytes = b"") -> bytes:
-    data = bytes(payload)
-    length = len(data)
-    header = bytearray([0x80 | (opcode & 0x0F)])
-    if length <= 125:
-        header.append(length)
-    elif length < 65536:
-        header.append(126)
-        header.extend(struct.pack("!H", length))
-    else:
-        header.append(127)
-        header.extend(struct.pack("!Q", length))
-    return bytes(header) + data
-
-
-def websocket_frame_text(message: str) -> bytes:
-    return websocket_frame(0x1, message.encode("utf-8"))
-
-
-def _recv_ws_exact(connection: socket.socket, size: int) -> bytes | None:
-    if size <= 0:
-        return b""
-
-    data = bytearray()
-    while len(data) < size:
-        try:
-            chunk = connection.recv(size - len(data))
-        except socket.timeout:
-            if not data:
-                raise
-            continue
-        if not chunk:
-            return None
-        data.extend(chunk)
-    return bytes(data)
-
-
-def _read_ws_client_frame(connection: socket.socket) -> tuple[int, bytes] | None:
-    header = _recv_ws_exact(connection, 2)
-    if header is None:
-        return None
-
-    first, second = header
-    opcode = first & 0x0F
-    masked = bool(second & 0x80)
-    payload_len = second & 0x7F
-
-    if payload_len == 126:
-        extended = _recv_ws_exact(connection, 2)
-        if extended is None:
-            return None
-        payload_len = struct.unpack("!H", extended)[0]
-    elif payload_len == 127:
-        extended = _recv_ws_exact(connection, 8)
-        if extended is None:
-            return None
-        payload_len = struct.unpack("!Q", extended)[0]
-
-    if not masked or payload_len > _WS_CLIENT_FRAME_MAX_BYTES:
-        return None
-
-    mask_key = _recv_ws_exact(connection, 4)
-    if mask_key is None:
-        return None
-
-    payload = _recv_ws_exact(connection, payload_len)
-    if payload is None:
-        return None
-
-    if payload_len:
-        payload = bytes(
-            byte ^ mask_key[index % 4] for index, byte in enumerate(payload)
-        )
-
-    return opcode, payload
-
-
-def _consume_ws_client_frame(connection: socket.socket) -> bool:
-    frame = _read_ws_client_frame(connection)
-    if frame is None:
-        return False
-
-    opcode, payload = frame
-    if opcode == 0x8:
-        try:
-            connection.sendall(websocket_frame(0x8, payload[:125]))
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
-            pass
-        return False
-
-    if opcode == 0x9:
-        connection.sendall(websocket_frame(0xA, payload[:125]))
-        return True
-
-    if opcode in {0x0, 0x1, 0x2, 0xA}:
-        return True
-
-    return False
+_WS_CLIENT_FRAME_MAX_BYTES = WS_CLIENT_FRAME_MAX_BYTES
 
 
 def render_index(payload: dict[str, Any], catalog: dict[str, Any]) -> str:
@@ -4246,14 +5132,7 @@ class WorldHandler(BaseHTTPRequestHandler):
             if not self._send_ndjson_row(row):
                 return
 
-    def _send_ws_event(
-        self, payload: dict[str, Any], *, wire_mode: str = "json"
-    ) -> None:
-        if _normalize_ws_wire_mode(wire_mode) == "arr":
-            ws_payload: Any = _ws_pack_message(payload)
-        else:
-            ws_payload = payload
-        frame = websocket_frame_text(_json_compact(ws_payload))
+    def _send_ws_frame(self, frame: bytes) -> None:
         timeout_before = self.connection.gettimeout()
         timeout_overridden = False
         if timeout_before is not None:
@@ -4264,6 +5143,23 @@ class WorldHandler(BaseHTTPRequestHandler):
         finally:
             if timeout_overridden:
                 self.connection.settimeout(timeout_before)
+
+    def _send_ws_text(self, payload_text: str) -> None:
+        self._send_ws_frame(websocket_frame_text(payload_text))
+
+    def _send_ws_event(
+        self, payload: dict[str, Any], *, wire_mode: str = "json"
+    ) -> None:
+        wire_mode_key = (
+            wire_mode
+            if wire_mode in {"arr", "json"}
+            else _normalize_ws_wire_mode(wire_mode)
+        )
+        if wire_mode_key == "arr":
+            ws_payload: Any = _ws_pack_message(payload)
+        else:
+            ws_payload = payload
+        self._send_ws_text(_json_compact(ws_payload))
 
     def _read_json_body(self) -> dict[str, Any] | None:
         try:
@@ -4372,6 +5268,8 @@ class WorldHandler(BaseHTTPRequestHandler):
         )
 
     def _schedule_runtime_inbox_sync(self) -> None:
+        if not _RUNTIME_ETA_MU_SYNC_ENABLED:
+            return
         if not _RUNTIME_INBOX_SYNC_LOCK.acquire(blocking=False):
             return
 
@@ -4389,7 +5287,12 @@ class WorldHandler(BaseHTTPRequestHandler):
                         next_catalog["eta_mu_inbox"] = dict(snapshot)
                         _RUNTIME_CATALOG_CACHE["catalog"] = next_catalog
             except Exception as sync_exc:
+                now_monotonic = time.monotonic()
                 with _RUNTIME_CATALOG_CACHE_LOCK:
+                    _RUNTIME_CATALOG_CACHE["inbox_sync_monotonic"] = now_monotonic
+                    snapshot_value = _RUNTIME_CATALOG_CACHE.get("inbox_sync_snapshot")
+                    if not isinstance(snapshot_value, dict):
+                        _RUNTIME_CATALOG_CACHE["inbox_sync_snapshot"] = {}
                     _RUNTIME_CATALOG_CACHE["inbox_sync_error"] = (
                         f"inbox_sync_failed:{sync_exc.__class__.__name__}"
                     )
@@ -4412,7 +5315,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                     previous_sync_snapshot = _RUNTIME_CATALOG_CACHE.get(
                         "inbox_sync_snapshot"
                     )
-                should_sync = (
+                should_sync = _RUNTIME_ETA_MU_SYNC_ENABLED and (
                     now_monotonic - last_sync >= _RUNTIME_ETA_MU_SYNC_SECONDS
                     or previous_sync_snapshot is None
                 )
@@ -4452,35 +5355,49 @@ class WorldHandler(BaseHTTPRequestHandler):
             inbox_sync_snapshot = _RUNTIME_CATALOG_CACHE.get("inbox_sync_snapshot")
 
         if not isinstance(cached_catalog, dict):
-            fresh_catalog, isolated_error = _collect_runtime_catalog_isolated(
-                self.part_root,
-                self.vault_root,
-            )
-            try:
-                if fresh_catalog is None and allow_inline_collect:
-                    fresh_catalog = self._collect_catalog_fast()
-                if fresh_catalog is None and strict_collect:
-                    raise RuntimeError(isolated_error or "catalog_collect_unavailable")
-                if fresh_catalog is None:
-                    raise RuntimeError(isolated_error or "catalog_collect_unavailable")
-                cache_error = isolated_error
-                if cache_error == "catalog_subprocess_disabled":
-                    cache_error = ""
-                if isinstance(inbox_sync_snapshot, dict):
-                    fresh_catalog["eta_mu_inbox"] = dict(inbox_sync_snapshot)
+            with _RUNTIME_CATALOG_COLLECT_LOCK:
                 with _RUNTIME_CATALOG_CACHE_LOCK:
-                    _RUNTIME_CATALOG_CACHE["catalog"] = fresh_catalog
-                    _RUNTIME_CATALOG_CACHE["refreshed_monotonic"] = time.monotonic()
-                    _RUNTIME_CATALOG_CACHE["last_error"] = cache_error
-                self._schedule_runtime_inbox_sync()
-                return dict(fresh_catalog)
-            except Exception as exc:
-                with _RUNTIME_CATALOG_CACHE_LOCK:
-                    _RUNTIME_CATALOG_CACHE["last_error"] = (
-                        f"catalog_inline_failed:{exc.__class__.__name__}"
+                    recached_catalog = _RUNTIME_CATALOG_CACHE.get("catalog")
+                    if isinstance(recached_catalog, dict):
+                        return dict(recached_catalog)
+                    inbox_sync_snapshot = _RUNTIME_CATALOG_CACHE.get(
+                        "inbox_sync_snapshot"
                     )
-                if strict_collect:
-                    raise
+
+                fresh_catalog, isolated_error = _collect_runtime_catalog_isolated(
+                    self.part_root,
+                    self.vault_root,
+                )
+                try:
+                    if fresh_catalog is None and allow_inline_collect:
+                        fresh_catalog = self._collect_catalog_fast()
+                    if fresh_catalog is None and strict_collect:
+                        raise RuntimeError(
+                            isolated_error or "catalog_collect_unavailable"
+                        )
+                    if fresh_catalog is None:
+                        raise RuntimeError(
+                            isolated_error or "catalog_collect_unavailable"
+                        )
+                    cache_error = isolated_error
+                    if cache_error == "catalog_subprocess_disabled":
+                        cache_error = ""
+                    if isinstance(inbox_sync_snapshot, dict):
+                        fresh_catalog["eta_mu_inbox"] = dict(inbox_sync_snapshot)
+                    with _RUNTIME_CATALOG_CACHE_LOCK:
+                        _RUNTIME_CATALOG_CACHE["catalog"] = fresh_catalog
+                        _RUNTIME_CATALOG_CACHE["refreshed_monotonic"] = time.monotonic()
+                        _RUNTIME_CATALOG_CACHE["last_error"] = cache_error
+                    if _RUNTIME_ETA_MU_SYNC_ENABLED:
+                        self._schedule_runtime_inbox_sync()
+                    return dict(fresh_catalog)
+                except Exception as exc:
+                    with _RUNTIME_CATALOG_CACHE_LOCK:
+                        _RUNTIME_CATALOG_CACHE["last_error"] = (
+                            f"catalog_inline_failed:{exc.__class__.__name__}"
+                        )
+                    if strict_collect:
+                        raise
 
         cache_age = now_monotonic - refreshed_monotonic
         if cache_age >= _RUNTIME_CATALOG_CACHE_SECONDS:
@@ -4491,6 +5408,9 @@ class WorldHandler(BaseHTTPRequestHandler):
         fallback_catalog = _runtime_catalog_fallback(self.part_root, self.vault_root)
         if isinstance(inbox_sync_snapshot, dict):
             fallback_catalog["eta_mu_inbox"] = dict(inbox_sync_snapshot)
+        with _RUNTIME_CATALOG_CACHE_LOCK:
+            _RUNTIME_CATALOG_CACHE["catalog"] = dict(fallback_catalog)
+            _RUNTIME_CATALOG_CACHE["refreshed_monotonic"] = time.monotonic()
         return fallback_catalog
 
     def _runtime_catalog(
@@ -4551,6 +5471,7 @@ class WorldHandler(BaseHTTPRequestHandler):
         influence_snapshot: dict[str, Any],
         *,
         perspective: str = PROJECTION_DEFAULT_PERSPECTIVE,
+        include_unified_graph: bool = True,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         simulation_catalog = _simulation_http_trim_catalog(catalog)
         try:
@@ -4574,6 +5495,7 @@ class WorldHandler(BaseHTTPRequestHandler):
             influence_snapshot=influence_snapshot,
             queue_snapshot=queue_snapshot,
             docker_snapshot=docker_snapshot,
+            include_unified_graph=include_unified_graph,
         )
         projection = build_ui_projection(
             simulation_catalog,
@@ -5019,21 +5941,51 @@ class WorldHandler(BaseHTTPRequestHandler):
         ws_chunk_enabled = bool(chunk_stream_enabled)
         ws_chunk_chars = _SIMULATION_WS_CHUNK_CHARS
         ws_chunk_message_seq = 0
+        ws_full_snapshot_min_slack_ms = max(
+            0.0,
+            _safe_float(
+                os.getenv("SIM_WS_FULL_SNAPSHOT_MIN_SLACK_MS", "12") or "12",
+                12.0,
+            ),
+        )
+        ws_graph_pos_max_default = max(
+            64,
+            int(
+                _safe_float(
+                    os.getenv("SIM_WS_GRAPH_POS_MAX", "4096") or "4096",
+                    4096.0,
+                )
+            ),
+        )
 
         def send_ws(payload: dict[str, Any]) -> None:
             nonlocal ws_chunk_message_seq
 
             if ws_chunk_enabled:
                 ws_chunk_message_seq += 1
-                chunk_rows = _simulation_ws_chunk_messages(
-                    payload,
-                    chunk_chars=ws_chunk_chars,
-                    message_seq=ws_chunk_message_seq,
-                )
-                if chunk_rows:
-                    for chunk_row in chunk_rows:
-                        self._send_ws_event(chunk_row, wire_mode=ws_wire_mode)
-                    return
+                if ws_wire_mode == "json":
+                    chunk_rows, payload_text = _simulation_ws_chunk_plan(
+                        payload,
+                        chunk_chars=ws_chunk_chars,
+                        message_seq=ws_chunk_message_seq,
+                    )
+                    if chunk_rows:
+                        for chunk_row in chunk_rows:
+                            self._send_ws_event(chunk_row, wire_mode=ws_wire_mode)
+                        return
+                    if isinstance(payload_text, str):
+                        self._send_ws_text(payload_text)
+                        return
+                else:
+                    chunk_rows = _simulation_ws_chunk_messages(
+                        payload,
+                        chunk_chars=ws_chunk_chars,
+                        message_seq=ws_chunk_message_seq,
+                    )
+                    if chunk_rows:
+                        for chunk_row in chunk_rows:
+                            self._send_ws_event(chunk_row, wire_mode=ws_wire_mode)
+                        return
 
             self._send_ws_event(payload, wire_mode=ws_wire_mode)
 
@@ -5050,9 +6002,19 @@ class WorldHandler(BaseHTTPRequestHandler):
         last_projection_delta_broadcast = 0.0
         last_graph_position_broadcast = 0.0
         last_cached_simulation_timestamp = ""
+        last_daimoi_live_metrics_refresh = 0.0
+        last_daimoi_graph_variability_refresh = 0.0
+        last_ws_stream_cache_store = 0.0
         stream_particles: list[dict[str, Any]] = []
         last_muse_poll = 0.0
         last_config_runtime_version = _config_runtime_version_snapshot()
+        tick_governor = get_governor() if _SIMULATION_WS_TICK_GOVERNOR_ENABLED else None
+        last_governor_resource_refresh = 0.0
+        governor_particle_cap = max(
+            _SIMULATION_WS_GOVERNOR_MIN_PARTICLE_CAP,
+            _SIMULATION_WS_STREAM_PARTICLE_MAX,
+        )
+        governor_graph_heartbeat_scale = 1.0
 
         def _build_ws_snapshot_payload(simulation: dict[str, Any]) -> dict[str, Any]:
             if payload_mode_key == "full":
@@ -5062,7 +6024,12 @@ class WorldHandler(BaseHTTPRequestHandler):
 
             snapshot_payload = _simulation_ws_trim_simulation_payload(simulation)
             snapshot_payload.pop("projection", None)
-            snapshot_payload.update(_simulation_ws_compact_graph_payload(simulation))
+            snapshot_payload.update(
+                _simulation_ws_compact_graph_payload(
+                    simulation,
+                    assume_trimmed=True,
+                )
+            )
             _simulation_ws_extract_stream_particles(snapshot_payload)
             return snapshot_payload
 
@@ -5086,6 +6053,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                 queue_snapshot,
                 influence_snapshot,
                 perspective=perspective_key,
+                include_unified_graph=payload_mode_key == "full",
             )
             snapshot_payload = _build_ws_snapshot_payload(simulation)
             delta_payload = _build_ws_delta_payload(simulation)
@@ -5186,7 +6154,16 @@ class WorldHandler(BaseHTTPRequestHandler):
                 stream_particles = _simulation_ws_extract_stream_particles(
                     simulation_delta_payload
                 )
-                if not stream_particles and payload_mode_key != "full":
+                needs_live_bootstrap = False
+                if _SIMULATION_WS_BOOTSTRAP_REQUIRE_LIVE_REBUILD:
+                    needs_live_bootstrap = bool(
+                        cached_payload is None
+                        or (not stream_particles)
+                        or _simulation_ws_payload_missing_daimoi_summary(
+                            simulation_delta_payload
+                        )
+                    )
+                if payload_mode_key != "full" and needs_live_bootstrap:
                     simulation_payload, simulation_delta_payload, projection = (
                         rebuild_live_simulation_payload()
                     )
@@ -5199,6 +6176,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                     queue_snapshot,
                     influence_snapshot,
                     perspective=perspective_key,
+                    include_unified_graph=payload_mode_key == "full",
                 )
                 simulation_payload = _build_ws_snapshot_payload(simulation)
                 simulation_delta_payload = _build_ws_delta_payload(simulation)
@@ -5300,6 +6278,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                             perspective=perspective_key,
                             body=_json_compact(ws_cache_payload).encode("utf-8"),
                         )
+                        last_ws_stream_cache_store = now_monotonic
                         last_simulation_full_broadcast = now_monotonic
                         last_projection_delta_broadcast = now_monotonic
                         last_graph_position_broadcast = now_monotonic
@@ -5373,6 +6352,23 @@ class WorldHandler(BaseHTTPRequestHandler):
                     last_catalog_broadcast = now_monotonic
 
                 if now_monotonic - last_sim_tick >= sim_tick_interval:
+                    sim_tick_cycle_started = time.perf_counter()
+                    tick_frame_start = time.monotonic()
+                    tick_budget_ms = float(sim_tick_interval) * 1000.0
+
+                    def tick_elapsed_ms() -> float:
+                        return (time.monotonic() - tick_frame_start) * 1000.0
+
+                    def tick_slack_ms() -> float:
+                        return tick_budget_ms - tick_elapsed_ms()
+
+                    governor_graph_heartbeat_scale = 1.0
+                    ingestion_pressure = 0.0
+                    ws_particle_max = max(
+                        24,
+                        min(_SIMULATION_WS_STREAM_PARTICLE_MAX, governor_particle_cap),
+                    )
+                    effective_particle_payload_key = particle_payload_key
                     if use_cached_snapshots:
                         cache_refresh_due = (
                             _SIMULATION_WS_CACHE_REFRESH_SECONDS <= 0.0
@@ -5400,8 +6396,26 @@ class WorldHandler(BaseHTTPRequestHandler):
                                         simulation_delta_payload
                                     )
                                 )
-                            if payload_mode_key != "full" and (
-                                cached_payload is None or not stream_particles
+                            if (
+                                payload_mode_key != "full"
+                                and _SIMULATION_WS_BOOTSTRAP_REQUIRE_LIVE_REBUILD
+                                and (
+                                    (
+                                        cached_payload is None
+                                        and _simulation_ws_payload_missing_daimoi_summary(
+                                            simulation_delta_payload
+                                        )
+                                    )
+                                    or (
+                                        cached_payload is not None
+                                        and (
+                                            (not stream_particles)
+                                            or _simulation_ws_payload_missing_daimoi_summary(
+                                                simulation_delta_payload
+                                            )
+                                        )
+                                    )
+                                )
                             ):
                                 (
                                     simulation_payload,
@@ -5428,27 +6442,510 @@ class WorldHandler(BaseHTTPRequestHandler):
                                 and cached_timestamp
                                 and cached_timestamp != last_cached_simulation_timestamp
                             ):
-                                send_ws(
-                                    {
-                                        "type": "simulation",
-                                        "simulation": simulation_payload,
-                                        "projection": projection,
-                                    }
+                                full_snapshot_budget_ok = (
+                                    tick_slack_ms() >= ws_full_snapshot_min_slack_ms
                                 )
-                                last_simulation_full_broadcast = now_monotonic
-                                last_projection_delta_broadcast = now_monotonic
-                                last_simulation_for_delta = simulation_delta_payload
-                                last_cached_simulation_timestamp = cached_timestamp
+                                inbox_active = bool(_RUNTIME_INBOX_SYNC_LOCK.locked())
+                                if full_snapshot_budget_ok and not inbox_active:
+                                    dynamics_state = simulation_payload.get(
+                                        "presence_dynamics",
+                                        {},
+                                    )
+                                    if isinstance(dynamics_state, dict):
+                                        rows_state = dynamics_state.get(
+                                            "field_particles",
+                                            [],
+                                        )
+                                        if isinstance(rows_state, list):
+                                            dynamics_state["field_particles"] = list(
+                                                rows_state[
+                                                    :_SIMULATION_WS_STREAM_PARTICLE_MAX
+                                                ]
+                                            )
+
+                                        graph_state = dynamics_state.get(
+                                            "graph_node_positions"
+                                        )
+                                        if (
+                                            isinstance(graph_state, dict)
+                                            and len(graph_state)
+                                            > ws_graph_pos_max_default
+                                        ):
+                                            capped_graph: dict[str, Any] = {}
+                                            for key, value in graph_state.items():
+                                                capped_graph[key] = value
+                                                if (
+                                                    len(capped_graph)
+                                                    >= ws_graph_pos_max_default
+                                                ):
+                                                    break
+                                            dynamics_state["graph_node_positions"] = (
+                                                capped_graph
+                                            )
+                                            simulation_payload[
+                                                "graph_node_positions_truncated"
+                                            ] = True
+                                            simulation_payload[
+                                                "graph_node_positions_total"
+                                            ] = len(graph_state)
+
+                                        if tick_slack_ms() < (
+                                            ws_full_snapshot_min_slack_ms + 4.0
+                                        ):
+                                            dynamics_state.pop("nooi_field", None)
+
+                                        simulation_payload["presence_dynamics"] = (
+                                            dynamics_state
+                                        )
+
+                                    send_ws(
+                                        {
+                                            "type": "simulation",
+                                            "simulation": simulation_payload,
+                                            "projection": projection,
+                                        }
+                                    )
+                                    last_simulation_full_broadcast = now_monotonic
+                                    last_projection_delta_broadcast = now_monotonic
+                                    last_simulation_for_delta = simulation_delta_payload
+                                    last_cached_simulation_timestamp = cached_timestamp
                             last_simulation_cache_refresh = now_monotonic
 
-                        tick_timestamp = datetime.now(timezone.utc).isoformat()
-                        advance_simulation_field_particles(
-                            simulation_payload,
-                            dt_seconds=sim_tick_interval,
-                            now_seconds=now_monotonic,
+                        inbox_active = bool(_RUNTIME_INBOX_SYNC_LOCK.locked())
+                        inbox_state = (
+                            catalog.get("eta_mu_inbox", {})
+                            if isinstance(catalog, dict)
+                            else {}
                         )
+                        if not isinstance(inbox_state, dict):
+                            inbox_state = {}
+                        inbox_pending = max(
+                            0,
+                            int(_safe_float(inbox_state.get("pending_count", 0), 0.0)),
+                        )
+                        inbox_pending_soft = max(
+                            1.0,
+                            _safe_float(
+                                os.getenv("ETA_MU_INBOX_PENDING_SOFT", "64") or "64",
+                                64.0,
+                            ),
+                        )
+                        inbox_pending_pressure = max(
+                            0.0,
+                            min(1.0, inbox_pending / inbox_pending_soft),
+                        )
+
+                        dynamics_snapshot = simulation_payload.get(
+                            "presence_dynamics", {}
+                        )
+                        if not isinstance(dynamics_snapshot, dict):
+                            dynamics_snapshot = {}
+                        resource_heartbeat_snapshot = dynamics_snapshot.get(
+                            "resource_heartbeat",
+                            {},
+                        )
+                        if not isinstance(resource_heartbeat_snapshot, dict):
+                            resource_heartbeat_snapshot = {}
+                        resource_devices_snapshot = resource_heartbeat_snapshot.get(
+                            "devices",
+                            {},
+                        )
+                        if not isinstance(resource_devices_snapshot, dict):
+                            resource_devices_snapshot = {}
+                        gpu1_state = resource_devices_snapshot.get("gpu1", {})
+                        if not isinstance(gpu1_state, dict):
+                            gpu1_state = {}
+                        gpu2_state = resource_devices_snapshot.get("gpu2", {})
+                        if not isinstance(gpu2_state, dict):
+                            gpu2_state = {}
+                        npu0_state = resource_devices_snapshot.get("npu0", {})
+                        if not isinstance(npu0_state, dict):
+                            npu0_state = {}
+
+                        gpu_utilization_pressure = (
+                            max(
+                                _safe_float(gpu1_state.get("utilization", 0.0), 0.0),
+                                _safe_float(gpu2_state.get("utilization", 0.0), 0.0),
+                            )
+                            / 100.0
+                        )
+                        npu_utilization_pressure = (
+                            _safe_float(npu0_state.get("utilization", 0.0), 0.0) / 100.0
+                        )
+
+                        ingestion_pressure = max(
+                            0.0,
+                            min(
+                                1.0,
+                                max(
+                                    1.0 if inbox_active else 0.0,
+                                    inbox_pending_pressure,
+                                    gpu_utilization_pressure,
+                                    npu_utilization_pressure,
+                                ),
+                            ),
+                        )
+
+                        slack_ms_before_sim = tick_slack_ms()
+                        ws_particle_max = max(
+                            24,
+                            min(
+                                _SIMULATION_WS_STREAM_PARTICLE_MAX,
+                                governor_particle_cap,
+                            ),
+                        )
+                        if ingestion_pressure >= 0.7:
+                            ws_particle_max = min(ws_particle_max, 96)
+                        if slack_ms_before_sim <= 4.0:
+                            ws_particle_max = min(ws_particle_max, 64)
+                        elif slack_ms_before_sim <= 10.0:
+                            ws_particle_max = min(ws_particle_max, 96)
+
+                        effective_particle_payload_key = particle_payload_key
+                        if ingestion_pressure >= 0.7 or slack_ms_before_sim <= 4.0:
+                            effective_particle_payload_key = "lite"
+
+                        tick_policy = {
+                            "tick_budget_ms": tick_budget_ms,
+                            "slack_ms": slack_ms_before_sim,
+                            "ingestion_pressure": ingestion_pressure,
+                            "ws_particle_max": ws_particle_max,
+                            "guard_mode": guard_mode,
+                        }
+
+                        tick_timestamp = datetime.now(timezone.utc).isoformat()
+                        if tick_governor is not None:
+                            (
+                                pending_count,
+                                bytes_pending,
+                                embedding_backlog,
+                                disk_queue_depth,
+                            ) = _simulation_ws_governor_ingestion_signal(catalog)
+                            tick_governor.update_ingestion_status(
+                                pending_count,
+                                bytes_pending,
+                                embedding_backlog=embedding_backlog,
+                                disk_queue_depth=disk_queue_depth,
+                            )
+
+                            if (
+                                now_monotonic - last_governor_resource_refresh
+                                >= _SIMULATION_WS_TICK_GOVERNOR_RESOURCE_REFRESH_SECONDS
+                            ):
+                                mem_pressure, disk_pressure = (
+                                    _simulation_ws_governor_stock_pressure(
+                                        self.part_root
+                                    )
+                                )
+                                tick_governor.update_stock_pressure(
+                                    mem_pressure=mem_pressure,
+                                    disk_pressure=disk_pressure,
+                                )
+                                last_governor_resource_refresh = now_monotonic
+
+                            def _run_sim_tick() -> None:
+                                advance_simulation_field_particles(
+                                    simulation_payload,
+                                    dt_seconds=sim_tick_interval,
+                                    now_seconds=now_monotonic,
+                                    policy=tick_policy,
+                                )
+
+                            def _run_sim_tick_degraded() -> None:
+                                dynamics = simulation_payload.get(
+                                    "presence_dynamics", {}
+                                )
+                                rows = (
+                                    dynamics.get("field_particles", [])
+                                    if isinstance(dynamics, dict)
+                                    else []
+                                )
+                                if (
+                                    not isinstance(dynamics, dict)
+                                    or not isinstance(rows, list)
+                                    or len(rows) < 2
+                                ):
+                                    _run_sim_tick()
+                                    return
+
+                                total_rows = len(rows)
+                                pressure = max(
+                                    0.0,
+                                    min(
+                                        1.0,
+                                        _safe_float(
+                                            tick_governor.ingestion.get(
+                                                "pressure",
+                                                0.0,
+                                            ),
+                                            0.0,
+                                        ),
+                                    ),
+                                )
+                                update_ratio = max(
+                                    0.34,
+                                    min(0.8, 0.62 - (0.25 * pressure)),
+                                )
+                                target_updates = min(
+                                    total_rows,
+                                    max(32, int(round(total_rows * update_ratio))),
+                                )
+                                if target_updates >= total_rows:
+                                    _run_sim_tick()
+                                    return
+
+                                stride = max(
+                                    1,
+                                    int(
+                                        math.ceil(
+                                            total_rows / float(max(1, target_updates))
+                                        )
+                                    ),
+                                )
+                                phase = int(now_monotonic * 1000.0) % stride
+                                selected_indexes = list(
+                                    range(phase, total_rows, stride)
+                                )
+                                selected_index_set = set(selected_indexes)
+                                if len(selected_indexes) < target_updates:
+                                    for index in range(total_rows):
+                                        if len(selected_indexes) >= target_updates:
+                                            break
+                                        if index in selected_index_set:
+                                            continue
+                                        selected_indexes.append(index)
+                                        selected_index_set.add(index)
+                                selected_indexes = sorted(
+                                    selected_indexes[:target_updates]
+                                )
+
+                                subset_rows = [
+                                    dict(rows[index])
+                                    if isinstance(rows[index], dict)
+                                    else {}
+                                    for index in selected_indexes
+                                ]
+                                degraded_simulation = dict(simulation_payload)
+                                degraded_dynamics = dict(dynamics)
+                                degraded_dynamics["field_particles"] = subset_rows
+                                degraded_simulation["presence_dynamics"] = (
+                                    degraded_dynamics
+                                )
+
+                                advance_simulation_field_particles(
+                                    degraded_simulation,
+                                    dt_seconds=sim_tick_interval,
+                                    now_seconds=now_monotonic,
+                                    policy=tick_policy,
+                                )
+
+                                updated_subset = degraded_dynamics.get(
+                                    "field_particles", []
+                                )
+                                if isinstance(updated_subset, list):
+                                    for offset, index in enumerate(selected_indexes):
+                                        if offset >= len(updated_subset):
+                                            break
+                                        updated_row = updated_subset[offset]
+                                        if isinstance(updated_row, dict):
+                                            rows[index] = updated_row
+
+                                dynamics["field_particles"] = rows
+                                dynamics["governor_tick_mode"] = "degraded"
+                                dynamics["governor_tick_update_ratio"] = round(
+                                    target_updates / float(max(1, total_rows)),
+                                    4,
+                                )
+                                simulation_payload["presence_dynamics"] = dynamics
+
+                            def _run_tick_filler() -> None:
+                                dynamics = simulation_payload.get(
+                                    "presence_dynamics", {}
+                                )
+                                rows = (
+                                    dynamics.get("field_particles", [])
+                                    if isinstance(dynamics, dict)
+                                    else []
+                                )
+                                if isinstance(rows, list) and rows:
+                                    _simulation_ws_lite_field_particles(
+                                        rows,
+                                        max_rows=max(
+                                            24,
+                                            min(governor_particle_cap, len(rows)),
+                                        ),
+                                    )
+
+                            dynamics_for_cost = simulation_payload.get(
+                                "presence_dynamics",
+                                {},
+                            )
+                            field_rows_for_cost = (
+                                dynamics_for_cost.get("field_particles", [])
+                                if isinstance(dynamics_for_cost, dict)
+                                else []
+                            )
+                            field_count_for_cost = (
+                                len(field_rows_for_cost)
+                                if isinstance(field_rows_for_cost, list)
+                                else 0
+                            )
+                            mem_cost = max(
+                                0.02,
+                                min(0.72, 0.03 + (field_count_for_cost / 1900.0)),
+                            )
+                            overhead_ms = (
+                                time.perf_counter() - sim_tick_cycle_started
+                            ) * 1000.0
+
+                            sim_work_estimate = _simulation_ws_governor_estimate_work(
+                                simulation_payload
+                            )
+
+                            sim_packet = Packet(
+                                id=f"sim.tick:{int(now_monotonic * 1000.0)}",
+                                work=sim_work_estimate,
+                                value=1000.0,
+                                deadline="tick",
+                                executable=_run_sim_tick,
+                                lane_efficiency={
+                                    LaneType.CPU: 1.0,
+                                    LaneType.RTX: 0.22,
+                                    LaneType.ARC: 0.2,
+                                    LaneType.NPU: 0.12,
+                                },
+                                cost_vector={
+                                    "mem": mem_cost,
+                                    "disk": 0.03,
+                                },
+                                tags=["simulation", "tick"],
+                                family="simulation",
+                                allow_degrade=True,
+                                degraded_executable=_run_sim_tick_degraded,
+                                degrade_work_factor=0.55,
+                                degrade_value_factor=0.9,
+                            )
+
+                            filler_packet = Packet(
+                                id=f"sim.filler.prefetch:{int(now_monotonic * 1000.0)}",
+                                work=max(1.0, sim_work_estimate * 0.28),
+                                value=4.5,
+                                deadline="best-effort",
+                                executable=_run_tick_filler,
+                                lane_efficiency={
+                                    LaneType.CPU: 1.0,
+                                    LaneType.RTX: 0.12,
+                                    LaneType.ARC: 0.1,
+                                    LaneType.NPU: 0.06,
+                                },
+                                cost_vector={
+                                    "mem": min(0.3, mem_cost * 0.45),
+                                    "disk": 0.01,
+                                },
+                                tags=["simulation", "filler", "cache-warm"],
+                                family="filler",
+                            )
+
+                            governor_result = tick_governor.tick(
+                                [sim_packet, filler_packet],
+                                dt_ms=(sim_tick_interval * 1000.0),
+                                overhead_ms=overhead_ms,
+                            )
+
+                            packet_ran = any(
+                                str(row.get("packet_id", "")) == sim_packet.id
+                                and str(row.get("status", "")) == "ok"
+                                for row in governor_result.receipts
+                                if isinstance(row, dict)
+                            )
+                            if not packet_ran:
+                                dynamics_state = simulation_payload.get(
+                                    "presence_dynamics",
+                                    {},
+                                )
+                                if isinstance(dynamics_state, dict):
+                                    dynamics_state["governor_tick_mode"] = "deferred"
+                                    dynamics_state["governor_tick_update_ratio"] = 0.0
+                                    simulation_payload["presence_dynamics"] = (
+                                        dynamics_state
+                                    )
+                            elif governor_result.required_downgraded <= 0:
+                                dynamics_state = simulation_payload.get(
+                                    "presence_dynamics",
+                                    {},
+                                )
+                                if isinstance(dynamics_state, dict):
+                                    dynamics_state["governor_tick_mode"] = "full"
+                                    dynamics_state["governor_tick_update_ratio"] = 1.0
+                                    simulation_payload["presence_dynamics"] = (
+                                        dynamics_state
+                                    )
+
+                            governor_particle_cap = _simulation_ws_governor_particle_cap(
+                                _SIMULATION_WS_STREAM_PARTICLE_MAX,
+                                fidelity_signal=governor_result.fidelity_signal,
+                                ingestion_pressure=governor_result.ingestion_pressure,
+                            )
+                            governor_graph_heartbeat_scale = (
+                                _simulation_ws_governor_graph_heartbeat_scale(
+                                    governor_result.fidelity_signal
+                                )
+                            )
+                        else:
+                            advance_simulation_field_particles(
+                                simulation_payload,
+                                dt_seconds=sim_tick_interval,
+                                now_seconds=now_monotonic,
+                                policy=tick_policy,
+                            )
                         simulation_payload["timestamp"] = tick_timestamp
                         simulation_payload["generated_at"] = tick_timestamp
+                        dynamics_state = simulation_payload.get("presence_dynamics", {})
+                        summary_state = (
+                            dynamics_state.get("daimoi_probabilistic", {})
+                            if isinstance(dynamics_state, dict)
+                            else {}
+                        )
+                        summary_ready = isinstance(summary_state, dict) and bool(
+                            summary_state
+                        )
+                        daimoi_slack_ms = tick_slack_ms()
+                        allow_daimoi_refresh = (
+                            daimoi_slack_ms
+                            >= _SIMULATION_WS_DAIMOI_METRICS_MIN_SLACK_MS
+                            and ingestion_pressure < 0.85
+                        )
+                        live_metrics_due = (
+                            _SIMULATION_WS_DAIMOI_LIVE_METRICS_MIN_INTERVAL_SECONDS
+                            <= 0.0
+                            or (
+                                now_monotonic - last_daimoi_live_metrics_refresh
+                                >= _SIMULATION_WS_DAIMOI_LIVE_METRICS_MIN_INTERVAL_SECONDS
+                            )
+                        )
+                        graph_variability_due = (
+                            _SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_MIN_INTERVAL_SECONDS
+                            <= 0.0
+                            or (
+                                now_monotonic - last_daimoi_graph_variability_refresh
+                                >= _SIMULATION_WS_DAIMOI_GRAPH_VARIABILITY_MIN_INTERVAL_SECONDS
+                            )
+                        )
+                        include_live_metrics = (not summary_ready) or (
+                            allow_daimoi_refresh and live_metrics_due
+                        )
+                        include_graph_variability = (not summary_ready) or (
+                            allow_daimoi_refresh and graph_variability_due
+                        )
+                        _simulation_ws_ensure_daimoi_summary(
+                            simulation_payload,
+                            include_live_metrics=include_live_metrics,
+                            include_graph_variability=include_graph_variability,
+                        )
+                        if include_live_metrics:
+                            last_daimoi_live_metrics_refresh = now_monotonic
+                        if include_graph_variability:
+                            last_daimoi_graph_variability_refresh = now_monotonic
                         dynamics = simulation_payload.get("presence_dynamics", {})
                         if isinstance(dynamics, dict):
                             dynamics["generated_at"] = tick_timestamp
@@ -5474,11 +6971,21 @@ class WorldHandler(BaseHTTPRequestHandler):
                             0,
                             int(_safe_float(simulation_payload.get("total", 0), 0.0)),
                         )
-                        if cache_stream_particles or cache_total > 0:
+                        cache_store_due = (
+                            _SIMULATION_WS_CACHE_REFRESH_SECONDS <= 0.0
+                            or (
+                                now_monotonic - last_ws_stream_cache_store
+                                >= max(0.25, _SIMULATION_WS_CACHE_REFRESH_SECONDS)
+                            )
+                        )
+                        if (
+                            cache_stream_particles or cache_total > 0
+                        ) and cache_store_due:
                             _simulation_http_cache_store(
                                 f"{perspective_key}|ws-stream|simulation",
                                 _json_compact(ws_cache_payload).encode("utf-8"),
                             )
+                            last_ws_stream_cache_store = now_monotonic
 
                         dynamics = simulation_payload.get("presence_dynamics", {})
                         stream_particles = []
@@ -5496,40 +7003,121 @@ class WorldHandler(BaseHTTPRequestHandler):
                             if isinstance(dynamics, dict)
                             else {}
                         )
+                        tick_elapsed_ms_value = tick_elapsed_ms()
+                        slack_ms_value = tick_slack_ms()
                         tick_patch: dict[str, Any] = {
                             "timestamp": tick_timestamp,
+                            "tick_elapsed_ms": round(tick_elapsed_ms_value, 4),
+                            "slack_ms": round(slack_ms_value, 4),
+                            "ingestion_pressure": round(ingestion_pressure, 4),
+                            "ws_particle_max": int(ws_particle_max),
+                            "particle_payload_mode": effective_particle_payload_key,
                         }
-                        tick_changed_keys = ["timestamp"]
+                        tick_changed_keys = [
+                            "timestamp",
+                            "tick_elapsed_ms",
+                            "slack_ms",
+                            "ingestion_pressure",
+                            "ws_particle_max",
+                            "particle_payload_mode",
+                        ]
                         dynamics_patch: dict[str, Any] = {}
                         if stream_particles:
                             tick_particles = (
-                                _simulation_ws_lite_field_particles(stream_particles)
-                                if particle_payload_key == "lite"
-                                else [
-                                    dict(row)
-                                    for row in stream_particles
-                                    if isinstance(row, dict)
-                                ]
+                                _simulation_ws_lite_field_particles(
+                                    stream_particles,
+                                    max_rows=ws_particle_max,
+                                )
+                                if effective_particle_payload_key == "lite"
+                                else []
                             )
+                            if effective_particle_payload_key != "lite":
+                                for row in stream_particles:
+                                    if len(tick_particles) >= ws_particle_max:
+                                        break
+                                    if isinstance(row, dict):
+                                        tick_particles.append(dict(row))
                             dynamics_patch["field_particles"] = tick_particles
                             tick_changed_keys.append(
                                 "presence_dynamics.field_particles"
+                            )
+                        daimoi_summary = (
+                            dynamics.get("daimoi_probabilistic", {})
+                            if isinstance(dynamics, dict)
+                            else {}
+                        )
+                        if isinstance(daimoi_summary, dict) and daimoi_summary:
+                            anti_payload = (
+                                daimoi_summary.get("anti_clump", {})
+                                if isinstance(
+                                    daimoi_summary.get("anti_clump", {}), dict
+                                )
+                                else {}
+                            )
+                            dynamics_patch["daimoi_probabilistic"] = {
+                                "clump_score": _ws_clamp01(
+                                    _safe_float(
+                                        daimoi_summary.get("clump_score", 0.0), 0.0
+                                    )
+                                ),
+                                "anti_clump_drive": max(
+                                    -1.0,
+                                    min(
+                                        1.0,
+                                        _safe_float(
+                                            daimoi_summary.get("anti_clump_drive", 0.0),
+                                            0.0,
+                                        ),
+                                    ),
+                                ),
+                                "anti_clump": anti_payload,
+                            }
+                            tick_changed_keys.append(
+                                "presence_dynamics.daimoi_probabilistic"
                             )
                         graph_position_heartbeat_due = (
                             _SIMULATION_WS_GRAPH_POSITION_HEARTBEAT_SECONDS <= 0.0
                             or (
                                 now_monotonic - last_graph_position_broadcast
-                                >= _SIMULATION_WS_GRAPH_POSITION_HEARTBEAT_SECONDS
+                                >= (
+                                    _SIMULATION_WS_GRAPH_POSITION_HEARTBEAT_SECONDS
+                                    * max(0.1, governor_graph_heartbeat_scale)
+                                )
                             )
-                        )
+                        ) and tick_slack_ms() > 2.0
+                        graph_pos_cap = int(ws_graph_pos_max_default)
+                        if ingestion_pressure >= 0.7:
+                            graph_pos_cap = min(graph_pos_cap, 512)
+                        if slack_ms_value <= 4.0:
+                            graph_pos_cap = min(graph_pos_cap, 512)
+                        elif slack_ms_value <= 10.0:
+                            graph_pos_cap = min(graph_pos_cap, 1024)
                         if (
                             isinstance(graph_node_positions, dict)
                             and graph_node_positions
                             and graph_position_heartbeat_due
                         ):
-                            dynamics_patch["graph_node_positions"] = (
-                                graph_node_positions
-                            )
+                            if len(graph_node_positions) > graph_pos_cap:
+                                capped_graph_positions: dict[str, Any] = {}
+                                for key, value in graph_node_positions.items():
+                                    capped_graph_positions[key] = value
+                                    if len(capped_graph_positions) >= graph_pos_cap:
+                                        break
+                                dynamics_patch["graph_node_positions"] = (
+                                    capped_graph_positions
+                                )
+                                tick_patch["graph_node_positions_truncated"] = True
+                                tick_patch["graph_node_positions_total"] = len(
+                                    graph_node_positions
+                                )
+                                tick_changed_keys.append(
+                                    "graph_node_positions_truncated"
+                                )
+                                tick_changed_keys.append("graph_node_positions_total")
+                            else:
+                                dynamics_patch["graph_node_positions"] = (
+                                    graph_node_positions
+                                )
                             tick_changed_keys.append(
                                 "presence_dynamics.graph_node_positions"
                             )
@@ -5538,9 +7126,30 @@ class WorldHandler(BaseHTTPRequestHandler):
                             and presence_anchor_positions
                             and graph_position_heartbeat_due
                         ):
-                            dynamics_patch["presence_anchor_positions"] = (
-                                presence_anchor_positions
-                            )
+                            anchor_pos_cap = max(64, min(graph_pos_cap, 2048))
+                            if len(presence_anchor_positions) > anchor_pos_cap:
+                                capped_anchor_positions: dict[str, Any] = {}
+                                for key, value in presence_anchor_positions.items():
+                                    capped_anchor_positions[key] = value
+                                    if len(capped_anchor_positions) >= anchor_pos_cap:
+                                        break
+                                dynamics_patch["presence_anchor_positions"] = (
+                                    capped_anchor_positions
+                                )
+                                tick_patch["presence_anchor_positions_truncated"] = True
+                                tick_patch["presence_anchor_positions_total"] = len(
+                                    presence_anchor_positions
+                                )
+                                tick_changed_keys.append(
+                                    "presence_anchor_positions_truncated"
+                                )
+                                tick_changed_keys.append(
+                                    "presence_anchor_positions_total"
+                                )
+                            else:
+                                dynamics_patch["presence_anchor_positions"] = (
+                                    presence_anchor_positions
+                                )
                             tick_changed_keys.append(
                                 "presence_dynamics.presence_anchor_positions"
                             )
@@ -5597,7 +7206,8 @@ class WorldHandler(BaseHTTPRequestHandler):
                                 }
                             )
 
-                        maybe_send_muse_events(now_monotonic)
+                        if tick_slack_ms() > 1.0:
+                            maybe_send_muse_events(now_monotonic)
                         last_sim_tick = now_monotonic
                         continue
 
@@ -5618,6 +7228,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                             queue_snapshot,
                             influence_snapshot,
                             perspective=perspective_key,
+                            include_unified_graph=payload_mode_key == "full",
                         )
                         simulation_snapshot_payload = _build_ws_snapshot_payload(
                             simulation
@@ -5649,7 +7260,10 @@ class WorldHandler(BaseHTTPRequestHandler):
                                 >= _SIMULATION_WS_FULL_SNAPSHOT_HEARTBEAT_SECONDS
                             )
                         )
-                        if full_snapshot_due:
+                        full_snapshot_budget_ok = (
+                            tick_slack_ms() >= ws_full_snapshot_min_slack_ms
+                        )
+                        if full_snapshot_due and full_snapshot_budget_ok:
                             send_ws(
                                 {
                                     "type": "simulation",
@@ -5748,7 +7362,8 @@ class WorldHandler(BaseHTTPRequestHandler):
                             last_projection_delta_broadcast = now_monotonic
                         last_simulation_for_delta = simulation_delta_payload
 
-                    maybe_send_muse_events(now_monotonic)
+                    if tick_slack_ms() > 1.0:
+                        maybe_send_muse_events(now_monotonic)
                     last_sim_tick = now_monotonic
 
                 if (
@@ -6152,8 +7767,25 @@ class WorldHandler(BaseHTTPRequestHandler):
                     or PROJECTION_DEFAULT_PERSPECTIVE
                 )
             )
+            cached_body = _runtime_catalog_http_cached_body(
+                perspective=perspective,
+                max_age_seconds=_RUNTIME_CATALOG_HTTP_CACHE_SECONDS,
+            )
+            if cached_body is not None:
+                self._send_bytes(
+                    cached_body,
+                    "application/json; charset=utf-8",
+                    extra_headers={"X-Eta-Mu-Catalog-Fallback": "http-cache"},
+                )
+                return
+
             catalog, _, _, _, _ = self._runtime_catalog(perspective=perspective)
-            self._send_json(_simulation_http_trim_catalog(catalog))
+            body = _json_compact(_simulation_http_trim_catalog(catalog)).encode("utf-8")
+            _runtime_catalog_http_cache_store(
+                perspective=perspective,
+                body=body,
+            )
+            self._send_bytes(body, "application/json; charset=utf-8")
             return
 
         if parsed.path == "/api/catalog/stream":
@@ -6640,22 +8272,81 @@ class WorldHandler(BaseHTTPRequestHandler):
                 str(params.get("compact", ["false"])[0] or "false"),
                 False,
             )
+            payload_mode = _simulation_ws_normalize_payload_mode(
+                str(params.get("payload", ["full"])[0] or "full")
+            )
+            compact_response_mode = bool(compact_response or payload_mode == "trimmed")
 
             def _send_simulation_response(
                 body: bytes,
                 *,
+                cache_key_for_compact: str = "",
                 extra_headers: dict[str, str] | None = None,
             ) -> None:
-                response_body = (
-                    _simulation_http_compact_response_body(body)
-                    if compact_response
-                    else body
-                )
+                response_body = body
+                if compact_response_mode:
+                    compact_cache_key = (
+                        f"{str(cache_key_for_compact).strip()}|compact"
+                        if str(cache_key_for_compact).strip()
+                        else ""
+                    )
+                    if compact_cache_key:
+                        cached_compact = _simulation_http_compact_cached_body(
+                            cache_key=compact_cache_key,
+                            max_age_seconds=_SIMULATION_HTTP_CACHE_SECONDS,
+                        )
+                        if cached_compact is not None:
+                            response_body = cached_compact
+                        else:
+                            response_body = _simulation_http_compact_response_body(body)
+                            _simulation_http_compact_cache_store(
+                                compact_cache_key,
+                                response_body,
+                            )
+                    else:
+                        response_body = _simulation_http_compact_response_body(body)
                 self._send_bytes(
                     response_body,
                     "application/json; charset=utf-8",
                     extra_headers=extra_headers,
                 )
+
+            if compact_response_mode:
+                cached_compact_by_perspective = _simulation_http_compact_cached_body(
+                    perspective=perspective,
+                    max_age_seconds=_SIMULATION_HTTP_CACHE_SECONDS,
+                )
+                if cached_compact_by_perspective is not None:
+                    self._send_bytes(
+                        cached_compact_by_perspective,
+                        "application/json; charset=utf-8",
+                        extra_headers={
+                            "X-Eta-Mu-Simulation-Fallback": "compact-cache",
+                        },
+                    )
+                    return
+                stale_compact_body, stale_compact_source = (
+                    _simulation_http_compact_stale_fallback_body(
+                        part_root=self.part_root,
+                        perspective=perspective,
+                        max_age_seconds=_SIMULATION_HTTP_COMPACT_STALE_FALLBACK_SECONDS,
+                    )
+                )
+                if stale_compact_body is not None:
+                    fallback_source = (
+                        str(stale_compact_source or "stale-cache").strip().lower()
+                        or "stale-cache"
+                    )
+                    _send_simulation_response(
+                        stale_compact_body,
+                        cache_key_for_compact=(
+                            f"{perspective}|{fallback_source}|compact-fallback|simulation"
+                        ),
+                        extra_headers={
+                            "X-Eta-Mu-Simulation-Fallback": f"{fallback_source}-compact",
+                        },
+                    )
+                    return
 
             cache_key = ""
             try:
@@ -6672,6 +8363,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                         )
                         _send_simulation_response(
                             cold_disk_body,
+                            cache_key_for_compact=f"{perspective}|disk-cold-start|simulation",
                             extra_headers={
                                 "X-Eta-Mu-Simulation-Fallback": "disk-cache-cold-start",
                             },
@@ -6702,6 +8394,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                 if cached_body is not None:
                     _send_simulation_response(
                         cached_body,
+                        cache_key_for_compact=cache_key,
                     )
                     return
 
@@ -6718,6 +8411,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                         _simulation_http_cache_store(cache_key, disk_cached_body)
                         _send_simulation_response(
                             disk_cached_body,
+                            cache_key_for_compact=cache_key,
                             extra_headers={
                                 "X-Eta-Mu-Simulation-Fallback": "disk-cache",
                             },
@@ -6746,6 +8440,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                     if stale_body is not None:
                         _send_simulation_response(
                             stale_body,
+                            cache_key_for_compact=cache_key,
                             extra_headers={
                                 "X-Eta-Mu-Simulation-Fallback": "failure-backoff",
                                 "X-Eta-Mu-Simulation-Error": backoff_error
@@ -6762,14 +8457,20 @@ class WorldHandler(BaseHTTPRequestHandler):
 
                 lock_acquired = _SIMULATION_HTTP_BUILD_LOCK.acquire(blocking=False)
                 if not lock_acquired:
+                    wait_seconds = (
+                        _SIMULATION_HTTP_COMPACT_BUILD_WAIT_SECONDS
+                        if compact_response_mode
+                        else _SIMULATION_HTTP_BUILD_WAIT_SECONDS
+                    )
                     inflight_body = _simulation_http_wait_for_exact_cache(
                         cache_key=cache_key,
                         perspective=perspective,
-                        max_wait_seconds=_SIMULATION_HTTP_BUILD_WAIT_SECONDS,
+                        max_wait_seconds=wait_seconds,
                     )
                     if inflight_body is not None:
                         _send_simulation_response(
                             inflight_body,
+                            cache_key_for_compact=cache_key,
                             extra_headers={
                                 "X-Eta-Mu-Simulation-Fallback": "inflight-cache",
                             },
@@ -6783,6 +8484,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                     if stale_body is not None:
                         _send_simulation_response(
                             stale_body,
+                            cache_key_for_compact=cache_key,
                             extra_headers={
                                 "X-Eta-Mu-Simulation-Fallback": "stale-cache",
                                 "X-Eta-Mu-Simulation-Error": "build_inflight",
@@ -6803,6 +8505,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                     if cached_body is not None:
                         _send_simulation_response(
                             cached_body,
+                            cache_key_for_compact=cache_key,
                             extra_headers={
                                 "X-Eta-Mu-Simulation-Fallback": "inflight-cache",
                             },
@@ -6814,10 +8517,20 @@ class WorldHandler(BaseHTTPRequestHandler):
                         queue_snapshot,
                         influence_snapshot,
                         perspective=perspective,
+                        include_unified_graph=not compact_response_mode,
                     )
                     simulation["projection"] = projection
                     response_body = _json_compact(simulation).encode("utf-8")
                     _simulation_http_cache_store(cache_key, response_body)
+                    if compact_response_mode:
+                        compact_cache_key = f"{cache_key}|compact"
+                        compact_payload = _simulation_http_compact_simulation_payload(
+                            simulation
+                        )
+                        _simulation_http_compact_cache_store(
+                            compact_cache_key,
+                            _json_compact(compact_payload).encode("utf-8"),
+                        )
                     _simulation_http_disk_cache_store(
                         self.part_root,
                         perspective=perspective,
@@ -6826,6 +8539,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                     _simulation_http_failure_clear()
                     _send_simulation_response(
                         response_body,
+                        cache_key_for_compact=cache_key,
                     )
                 finally:
                     if lock_acquired:
@@ -6839,6 +8553,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                 if stale_body is not None:
                     _send_simulation_response(
                         stale_body,
+                        cache_key_for_compact=cache_key,
                         extra_headers={
                             "X-Eta-Mu-Simulation-Fallback": "stale-cache",
                             "X-Eta-Mu-Simulation-Error": exc.__class__.__name__,
@@ -6858,6 +8573,7 @@ class WorldHandler(BaseHTTPRequestHandler):
                     _simulation_http_cache_store(cache_key, disk_stale_body)
                     _send_simulation_response(
                         disk_stale_body,
+                        cache_key_for_compact=cache_key,
                         extra_headers={
                             "X-Eta-Mu-Simulation-Fallback": "disk-cache",
                             "X-Eta-Mu-Simulation-Error": exc.__class__.__name__,
@@ -8999,6 +10715,45 @@ def make_handler(
     return BoundWorldHandler
 
 
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        request_handler_class,
+        *,
+        max_threads: int,
+    ):
+        self._max_threads = max(1, int(max_threads))
+        self._thread_slots = threading.BoundedSemaphore(self._max_threads)
+        super().__init__(server_address, request_handler_class)
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        if not self._thread_slots.acquire(blocking=False):
+            try:
+                request.sendall(
+                    b"HTTP/1.1 503 Service Unavailable\r\n"
+                    b"Connection: close\r\n"
+                    b"Content-Length: 0\r\n\r\n"
+                )
+            except Exception:
+                pass
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._thread_slots.release()
+            raise
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._thread_slots.release()
+
+
 def serve(
     part_root: Path,
     vault_root: Path,
@@ -9007,7 +10762,11 @@ def serve(
 ):
     _ensure_weaver_service(part_root, host)
     handler_class = make_handler(part_root, vault_root, host, port)
-    server = ThreadingHTTPServer((host, port), handler_class)
+    server = BoundedThreadingHTTPServer(
+        (host, port),
+        handler_class,
+        max_threads=_RUNTIME_HTTP_MAX_THREADS,
+    )
     print(f"Starting server on {host}:{port}")
     _schedule_simulation_http_warmup(host=host, port=port)
     server.serve_forever()
