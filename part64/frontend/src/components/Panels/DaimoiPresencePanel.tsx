@@ -253,6 +253,9 @@ export function DaimoiPresencePanel({ catalog, simulation, onFocusAnchor, onEmit
   const clumpScore = clamp01(Number(globalSummary?.clump_score ?? antiClumpSummary?.clump_score ?? 0));
   const antiClumpTarget = clamp01(Number(antiClumpSummary?.target ?? 0));
   const antiClumpDrive = clampRange(Number(globalSummary?.anti_clump_drive ?? antiClumpSummary?.drive ?? 0), -1, 1);
+  const snrValue = Math.max(0, Number(globalSummary?.snr ?? antiClumpSummary?.snr ?? antiClumpMetrics?.snr ?? 0));
+  const snrBandMin = Math.max(0, Number(antiClumpSummary?.snr_band?.min ?? antiClumpMetrics?.snr_min ?? 0));
+  const snrBandMax = Math.max(snrBandMin, Number(antiClumpSummary?.snr_band?.max ?? antiClumpMetrics?.snr_max ?? snrBandMin));
   const clumpStatus = antiClumpStatus(clumpScore, antiClumpTarget);
 
   const topJobTriggers = useMemo(() => {
@@ -379,7 +382,7 @@ export function DaimoiPresencePanel({ catalog, simulation, onFocusAnchor, onEmit
           </span>
         </div>
         <p className="mt-1 text-[10px] text-[#9ec7dd]">
-          target {antiClumpTarget.toFixed(3)} | score {clumpScore.toFixed(3)} | drive {formatSigned(antiClumpDrive)} ({antiClumpDrive >= 0 ? "spread" : "relax"})
+          target {antiClumpTarget.toFixed(3)} | score {clumpScore.toFixed(3)} | drive {formatSigned(antiClumpDrive)} ({antiClumpDrive >= 0 ? "spread" : "relax"}) | snr {snrValue.toFixed(3)} [{snrBandMin.toFixed(2)}, {snrBandMax.toFixed(2)}]
         </p>
         <div className="relative mt-2 h-2 rounded-full bg-[rgba(26,44,58,0.62)]">
           <div
@@ -398,7 +401,7 @@ export function DaimoiPresencePanel({ catalog, simulation, onFocusAnchor, onEmit
           />
         </div>
         <p className="mt-1 text-[10px] text-[#9ec7dd]">
-          nn {Number(antiClumpMetrics?.nn_term ?? 0).toFixed(3)} | entropy {Number(antiClumpMetrics?.entropy_norm ?? 0).toFixed(3)} | hotspot {Number(antiClumpMetrics?.hotspot_term ?? 0).toFixed(3)} | collision {Number(antiClumpMetrics?.collision_term ?? 0).toFixed(3)}
+          nn {Number(antiClumpMetrics?.nn_term ?? 0).toFixed(3)} | fano {Number(antiClumpMetrics?.fano_factor ?? 0).toFixed(3)} | off-field {Number(antiClumpMetrics?.motion_noise ?? 0).toFixed(4)} | sem {Number(antiClumpMetrics?.semantic_noise ?? 0).toFixed(3)}
         </p>
         <div className="mt-2 grid gap-2 md:grid-cols-2">
           {[

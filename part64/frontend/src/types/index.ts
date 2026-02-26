@@ -518,6 +518,8 @@ export interface BackendFieldParticle {
   resource_action_blocked?: boolean;
   vx?: number;
   vy?: number;
+  field_fx?: number;
+  field_fy?: number;
   last_collision_matrix?: {
     ss?: number;
     sc?: number;
@@ -1412,6 +1414,7 @@ export interface DaimoiProbabilisticSummary {
   mean_message_probability: number;
   clump_score?: number;
   anti_clump_drive?: number;
+  snr?: number;
   mean_drift_score?: number;
   mean_route_probability?: number;
   mean_drift_gravity_term?: number;
@@ -1484,6 +1487,15 @@ export interface DaimoiProbabilisticSummary {
     clump_score?: number;
     raw_clump_score?: number;
     drive?: number;
+    snr?: number;
+    snr_valid?: boolean;
+    snr_band?: {
+      min?: number;
+      max?: number;
+      low_gap?: number;
+      high_gap?: number;
+      in_band?: boolean;
+    };
     error?: number;
     integral?: number;
     updated?: boolean;
@@ -1498,6 +1510,23 @@ export interface DaimoiProbabilisticSummary {
       median_distance?: number;
       target_distance?: number;
       top_share?: number;
+      mean_spacing?: number;
+      fano_factor?: number;
+      fano_excess?: number;
+      spatial_noise?: number;
+      motion_signal?: number;
+      motion_noise?: number;
+      motion_samples?: number;
+      semantic_noise?: number;
+      snr_signal?: number;
+      snr_noise?: number;
+      snr?: number;
+      snr_valid?: boolean;
+      snr_low_gap?: number;
+      snr_high_gap?: number;
+      snr_min?: number;
+      snr_max?: number;
+      snr_in_band?: boolean;
     };
     scales?: {
       semantic?: number;

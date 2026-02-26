@@ -143,11 +143,14 @@ def test_c_double_buffer_builder_emits_anti_clump_summary(monkeypatch: Any) -> N
     assert 0.0 <= float(anti_clump.get("target", 0.0)) <= 1.0
     assert 0.0 <= float(anti_clump.get("clump_score", 0.0)) <= 1.0
     assert -1.0 <= float(anti_clump.get("drive", 0.0)) <= 1.0
+    assert float(anti_clump.get("snr", 0.0)) >= 0.0
     metrics = anti_clump.get("metrics", {})
     scales = anti_clump.get("scales", {})
     assert isinstance(metrics, dict)
     assert isinstance(scales, dict)
     assert "nn_term" in metrics
+    assert "fano_factor" in metrics
+    assert "snr" in metrics
     assert "spawn" in scales
 
 

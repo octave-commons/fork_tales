@@ -145,6 +145,8 @@ def test_probabilistic_builder_emits_anti_clump_summary() -> None:
     assert 0.0 <= float(anti_clump.get("target", 0.0)) <= 1.0
     assert 0.0 <= float(anti_clump.get("clump_score", 0.0)) <= 1.0
     assert -1.0 <= float(anti_clump.get("drive", 0.0)) <= 1.0
+    assert float(anti_clump.get("snr", 0.0)) >= 0.0
+    assert isinstance(anti_clump.get("snr_band", {}), dict)
 
     metrics = anti_clump.get("metrics", {})
     assert isinstance(metrics, dict)
@@ -152,6 +154,13 @@ def test_probabilistic_builder_emits_anti_clump_summary() -> None:
     assert 0.0 <= float(metrics.get("entropy_norm", 0.0)) <= 1.0
     assert 0.0 <= float(metrics.get("hotspot_term", 0.0)) <= 1.0
     assert 0.0 <= float(metrics.get("collision_term", 0.0)) <= 1.0
+    assert float(metrics.get("mean_spacing", 0.0)) >= 0.0
+    assert float(metrics.get("fano_factor", 0.0)) >= 0.0
+    assert float(metrics.get("spatial_noise", 0.0)) >= 0.0
+    assert float(metrics.get("motion_signal", 0.0)) >= 0.0
+    assert float(metrics.get("motion_noise", 0.0)) >= 0.0
+    assert float(metrics.get("semantic_noise", 0.0)) >= 0.0
+    assert float(metrics.get("snr", 0.0)) >= 0.0
 
     scales = anti_clump.get("scales", {})
     assert isinstance(scales, dict)
@@ -191,6 +200,77 @@ def test_anti_clump_metrics_score_cluster_higher_than_spread() -> None:
     assert float(clustered_metrics.get("clump_score", 0.0)) > float(
         spread_metrics.get("clump_score", 0.0)
     )
+    assert float(clustered_metrics.get("fano_factor", 0.0)) > float(
+        spread_metrics.get("fano_factor", 0.0)
+    )
+    assert float(clustered_metrics.get("spatial_noise", 0.0)) >= float(
+        spread_metrics.get("spatial_noise", 0.0)
+    )
+
+
+def _snr_test_particles(*, aligned: bool) -> dict[str, dict[str, float | str]]:
+    rows: dict[str, dict[str, float | str]] = {}
+    index = 0
+    for row in range(6):
+        for col in range(6):
+            particle_id = f"p:{index}"
+            rows[particle_id] = {
+                "id": particle_id,
+                "x": 0.1 + (col * 0.13),
+                "y": 0.1 + (row * 0.13),
+                "vx": 0.0022 if aligned else 0.0,
+                "vy": 0.0 if aligned else 0.0022,
+                "field_fx": 0.0034,
+                "field_fy": 0.0,
+            }
+            index += 1
+    return rows
+
+
+def test_anti_clump_metrics_snr_tracks_field_alignment() -> None:
+    aligned_particles = _snr_test_particles(aligned=True)
+    off_field_particles = _snr_test_particles(aligned=False)
+
+    aligned_metrics = daimoi_module._anti_clump_metrics(
+        daimoi_module._anti_clump_positions_from_particles(aligned_particles),
+        previous_collision_count=0,
+        particles=aligned_particles,
+    )
+    off_field_metrics = daimoi_module._anti_clump_metrics(
+        daimoi_module._anti_clump_positions_from_particles(off_field_particles),
+        previous_collision_count=0,
+        particles=off_field_particles,
+    )
+
+    assert float(aligned_metrics.get("snr_valid", 0.0)) > 0.5
+    assert float(off_field_metrics.get("snr_valid", 0.0)) > 0.5
+    assert float(aligned_metrics.get("snr", 0.0)) > float(
+        off_field_metrics.get("snr", 0.0)
+    )
+    assert float(off_field_metrics.get("motion_noise", 0.0)) > float(
+        aligned_metrics.get("motion_noise", 0.0)
+    )
+
+
+def test_anti_clump_controller_uses_snr_band_gaps_for_drive() -> None:
+    high_snr_particles = _snr_test_particles(aligned=True)
+    low_snr_particles = _snr_test_particles(aligned=False)
+
+    high_state = daimoi_module._anti_clump_controller_update(
+        {},
+        particles=high_snr_particles,
+        previous_collision_count=0,
+    )
+    low_state = daimoi_module._anti_clump_controller_update(
+        {},
+        particles=low_snr_particles,
+        previous_collision_count=0,
+    )
+
+    assert float(high_state.get("snr_high_gap", 0.0)) > 0.0
+    assert float(low_state.get("snr_low_gap", 0.0)) > 0.0
+    assert float(high_state.get("drive", 0.0)) > 0.0
+    assert float(low_state.get("drive", 0.0)) > 0.0
 
 
 def test_absorb_sampler_emits_component_logits_and_gumbel_scores() -> None:

@@ -149,6 +149,7 @@ def test_simulation_ws_ensure_daimoi_summary_backfills_legacy_payload() -> None:
     assert isinstance(anti.get("scales"), dict)
     assert "clump_score" in summary
     assert "anti_clump_drive" in summary
+    assert "snr" in summary
     assert anti.get("target") is not None
 
 
@@ -193,6 +194,7 @@ def test_simulation_ws_ensure_daimoi_summary_tracks_live_clump_and_graph_variabi
     assert float(summary_one.get("clump_score", 0.0)) > 0.0
     assert isinstance(anti_one.get("metrics"), dict)
     assert isinstance(anti_one.get("scales"), dict)
+    assert float((anti_one.get("metrics", {}) or {}).get("fano_factor", 0.0)) >= 0.0
     assert anti_one.get("graph_variability", {}).get("shared_nodes") == 0
 
     payload["presence_dynamics"]["graph_node_positions"] = {

@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import daimoi_observer as daimoi_observer_module
 from .daimoi_probabilistic import (
     DAIMOI_ANTI_CLUMP_TARGET,
     _anti_clump_controller_update,
@@ -5956,126 +5957,52 @@ def build_double_buffer_field_particles(
         min(1.0, _safe_float(anti_clump_runtime.get("drive", 0.0), 0.0)),
     )
     anti_clump_scale_snapshot = _anti_clump_scales(anti_clump_drive)
-    anti_clump_summary = {
-        "target": round(_clamp01(_safe_float(DAIMOI_ANTI_CLUMP_TARGET, 0.38)), 6),
-        "clump_score": round(
-            _clamp01(
-                _safe_float(
-                    anti_clump_runtime.get(
-                        "score_ema",
-                        anti_clump_runtime.get("clump_score", 0.0),
-                    ),
-                    0.0,
-                )
-            ),
+    anti_clump_scale_summary = {
+        "semantic": anti_clump_scale_snapshot.get("semantic", 1.0),
+        "edge": anti_clump_scale_snapshot.get("edge", 1.0),
+        "anchor": anti_clump_scale_snapshot.get("anchor", 1.0),
+        "spawn": anti_clump_scale_snapshot.get("spawn", 1.0),
+        "tangent": anti_clump_scale_snapshot.get("tangent", 1.0),
+        "tangent_base": anti_clump_tangent_scale_base,
+        "tangent_effective": anti_clump_tangent_scale,
+        "noise_gain": graph_noise_gain,
+        "route_damp": graph_route_damp,
+    }
+    anti_clump_summary = daimoi_observer_module.anti_clump_summary_from_snapshot(
+        anti_clump_runtime,
+        target=DAIMOI_ANTI_CLUMP_TARGET,
+        drive=anti_clump_drive,
+        scales=anti_clump_scale_summary,
+        scale_order=(
+            "semantic",
+            "edge",
+            "anchor",
+            "spawn",
+            "tangent",
+            "tangent_base",
+            "tangent_effective",
+            "noise_gain",
+            "route_damp",
+        ),
+    )
+    anti_clump_summary["graph_variability"] = {
+        "score": round(_safe_float(graph_variability_score, 0.0), 6),
+        "raw_score": round(_safe_float(graph_variability_raw_score, 0.0), 6),
+        "peak_score": round(_safe_float(graph_variability_peak_score, 0.0), 6),
+        "mean_displacement": round(
+            _safe_float(graph_variability_mean_displacement, 0.0),
             6,
         ),
-        "raw_clump_score": round(
-            _clamp01(_safe_float(anti_clump_runtime.get("clump_score", 0.0), 0.0)),
+        "p90_displacement": round(
+            _safe_float(graph_variability_p90_displacement, 0.0),
             6,
         ),
-        "drive": round(anti_clump_drive, 6),
-        "error": round(_safe_float(anti_clump_runtime.get("error", 0.0), 0.0), 6),
-        "integral": round(
-            _safe_float(anti_clump_runtime.get("integral", 0.0), 0.0),
+        "active_share": round(
+            _clamp01(_safe_float(graph_variability_active_share, 0.0)),
             6,
         ),
-        "updated": bool(anti_clump_runtime.get("updated", False)),
-        "tick": max(0, int(_safe_float(anti_clump_runtime.get("tick", 0), 0.0))),
-        "particle_count": max(
-            0,
-            int(_safe_float(anti_clump_runtime.get("particle_count", 0), 0.0)),
-        ),
-        "metrics": {
-            "nn_term": round(
-                _clamp01(_safe_float(anti_clump_runtime.get("nn_term", 0.0), 0.0)),
-                6,
-            ),
-            "entropy_norm": round(
-                _clamp01(_safe_float(anti_clump_runtime.get("entropy_norm", 1.0), 1.0)),
-                6,
-            ),
-            "hotspot_term": round(
-                _clamp01(_safe_float(anti_clump_runtime.get("hotspot_term", 0.0), 0.0)),
-                6,
-            ),
-            "collision_term": round(
-                _clamp01(
-                    _safe_float(anti_clump_runtime.get("collision_term", 0.0), 0.0)
-                ),
-                6,
-            ),
-            "collision_rate": round(
-                max(
-                    0.0,
-                    _safe_float(anti_clump_runtime.get("collision_rate", 0.0), 0.0),
-                ),
-                6,
-            ),
-            "median_distance": round(
-                max(
-                    0.0,
-                    _safe_float(anti_clump_runtime.get("median_distance", 0.0), 0.0),
-                ),
-                6,
-            ),
-            "target_distance": round(
-                max(
-                    0.0,
-                    _safe_float(anti_clump_runtime.get("target_distance", 0.0), 0.0),
-                ),
-                6,
-            ),
-            "top_share": round(
-                _clamp01(_safe_float(anti_clump_runtime.get("top_share", 0.0), 0.0)),
-                6,
-            ),
-        },
-        "scales": {
-            "semantic": round(
-                _safe_float(anti_clump_scale_snapshot.get("semantic", 1.0), 1.0),
-                6,
-            ),
-            "edge": round(
-                _safe_float(anti_clump_scale_snapshot.get("edge", 1.0), 1.0),
-                6,
-            ),
-            "anchor": round(
-                _safe_float(anti_clump_scale_snapshot.get("anchor", 1.0), 1.0),
-                6,
-            ),
-            "spawn": round(
-                _safe_float(anti_clump_scale_snapshot.get("spawn", 1.0), 1.0),
-                6,
-            ),
-            "tangent": round(
-                _safe_float(anti_clump_scale_snapshot.get("tangent", 1.0), 1.0),
-                6,
-            ),
-            "tangent_base": round(_safe_float(anti_clump_tangent_scale_base, 1.0), 6),
-            "tangent_effective": round(_safe_float(anti_clump_tangent_scale, 1.0), 6),
-            "noise_gain": round(_safe_float(graph_noise_gain, 1.0), 6),
-            "route_damp": round(_safe_float(graph_route_damp, 1.0), 6),
-        },
-        "graph_variability": {
-            "score": round(_safe_float(graph_variability_score, 0.0), 6),
-            "raw_score": round(_safe_float(graph_variability_raw_score, 0.0), 6),
-            "peak_score": round(_safe_float(graph_variability_peak_score, 0.0), 6),
-            "mean_displacement": round(
-                _safe_float(graph_variability_mean_displacement, 0.0),
-                6,
-            ),
-            "p90_displacement": round(
-                _safe_float(graph_variability_p90_displacement, 0.0),
-                6,
-            ),
-            "active_share": round(
-                _clamp01(_safe_float(graph_variability_active_share, 0.0)),
-                6,
-            ),
-            "shared_nodes": int(max(0, graph_variability_shared_nodes)),
-            "sampled_nodes": int(max(0, graph_variability_sampled_nodes)),
-        },
+        "shared_nodes": int(max(0, graph_variability_shared_nodes)),
+        "sampled_nodes": int(max(0, graph_variability_sampled_nodes)),
     }
 
     active_count = len(rows)
@@ -6192,6 +6119,7 @@ def build_double_buffer_field_particles(
         "behavior_defaults": ["deflect", "diffuse"],
         "clump_score": anti_clump_summary["clump_score"],
         "anti_clump_drive": anti_clump_summary["drive"],
+        "snr": anti_clump_summary["snr"],
         "anti_clump": anti_clump_summary,
         "backend": "c-double-buffer",
         "embedding_runtime_source": str(embedding_runtime_source or "unknown"),

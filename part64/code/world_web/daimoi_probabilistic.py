@@ -12,6 +12,13 @@ from urllib.parse import urlparse
 from functools import lru_cache
 from typing import Any
 
+from . import daimoi_absorb_sampler as daimoi_absorb_sampler_module
+from . import daimoi_collision_semantics as daimoi_collision_semantics_module
+from . import daimoi_components as daimoi_components_module
+from . import daimoi_observer as daimoi_observer_module
+from . import daimoi_packets as daimoi_packets_module
+from . import daimoi_quadtree as daimoi_quadtree_module
+from . import daimoi_resources as daimoi_resources_module
 from .constants import (
     ENTITY_MANIFEST,
     FIELD_TO_PRESENCE,
@@ -115,6 +122,33 @@ DAIMOI_ANTI_CLUMP_GRID_SIZE = 16
 DAIMOI_ANTI_CLUMP_SAMPLE_LIMIT = 96
 DAIMOI_ANTI_CLUMP_COLLISION_RATE_REF = 2.2
 DAIMOI_ANTI_CLUMP_MIN_PARTICLES = 24
+DAIMOI_OBSERVER_SNR_MIN = max(
+    0.05,
+    _safe_float(os.getenv("DAIMOI_OBSERVER_SNR_MIN", "0.85") or "0.85", 0.85),
+)
+DAIMOI_OBSERVER_SNR_MAX = max(
+    DAIMOI_OBSERVER_SNR_MIN + 0.05,
+    _safe_float(os.getenv("DAIMOI_OBSERVER_SNR_MAX", "1.65") or "1.65", 1.65),
+)
+DAIMOI_OBSERVER_SNR_ALPHA = max(
+    0.0,
+    _safe_float(os.getenv("DAIMOI_OBSERVER_SNR_ALPHA", "0.4") or "0.4", 0.4),
+)
+DAIMOI_OBSERVER_SNR_BETA = max(
+    0.0,
+    _safe_float(os.getenv("DAIMOI_OBSERVER_SNR_BETA", "0.2") or "0.2", 0.2),
+)
+DAIMOI_OBSERVER_SNR_EPS = max(
+    1e-9,
+    _safe_float(os.getenv("DAIMOI_OBSERVER_SNR_EPS", "1e-6") or "1e-6", 1e-6),
+)
+DAIMOI_OBSERVER_HIGH_SNR_PERTURB_GAIN = max(
+    0.0,
+    _safe_float(
+        os.getenv("DAIMOI_OBSERVER_HIGH_SNR_PERTURB_GAIN", "0.28") or "0.28",
+        0.28,
+    ),
+)
 
 DAIMOI_PACKET_COMPONENT_RECORD = "eta-mu.daimoi-packet-components.v1"
 DAIMOI_PACKET_COMPONENT_SCHEMA = "daimoi.packet-components.v1"
@@ -128,124 +162,6 @@ _SEMANTIC_EMBED_FAIL_STREAK = 0
 _SEMANTIC_EMBED_OLLAMA_PROBE_UNTIL = 0.0
 _SEMANTIC_EMBED_OLLAMA_PROBE_OK = False
 
-_DAIMOI_RESOURCE_ALIASES: dict[str, str] = {
-    "cpu": "cpu",
-    "gpu": "gpu",
-    "gpu0": "gpu",
-    "gpu1": "gpu",
-    "gpu2": "gpu",
-    "npu": "npu",
-    "npu0": "npu",
-    "ram": "ram",
-    "mem": "ram",
-    "memory": "ram",
-    "disk": "disk",
-    "storage": "disk",
-    "network": "network",
-    "net": "network",
-}
-_DAIMOI_WALLET_FLOOR: dict[str, float] = {
-    "cpu": 6.0,
-    "gpu": 5.0,
-    "npu": 4.0,
-    "ram": 8.0,
-    "disk": 7.0,
-    "network": 7.0,
-}
-_DAIMOI_COMPONENT_RESOURCE_REQ: dict[str, dict[str, float]] = {
-    "deliver_message": {
-        "cpu": 0.22,
-        "gpu": 0.05,
-        "npu": 0.02,
-        "ram": 0.28,
-        "disk": 0.16,
-        "network": 0.86,
-    },
-    "invoke_receipt_audit": {
-        "cpu": 0.48,
-        "gpu": 0.08,
-        "npu": 0.04,
-        "ram": 0.41,
-        "disk": 0.58,
-        "network": 0.22,
-    },
-    "invoke_truth_gate": {
-        "cpu": 0.55,
-        "gpu": 0.09,
-        "npu": 0.08,
-        "ram": 0.46,
-        "disk": 0.28,
-        "network": 0.3,
-    },
-    "invoke_anchor_register": {
-        "cpu": 0.44,
-        "gpu": 0.06,
-        "npu": 0.03,
-        "ram": 0.36,
-        "disk": 0.3,
-        "network": 0.52,
-    },
-    "invoke_file_organize": {
-        "cpu": 0.37,
-        "gpu": 0.06,
-        "npu": 0.03,
-        "ram": 0.34,
-        "disk": 0.83,
-        "network": 0.2,
-    },
-    "invoke_graph_crawl": {
-        "cpu": 0.5,
-        "gpu": 0.07,
-        "npu": 0.04,
-        "ram": 0.4,
-        "disk": 0.33,
-        "network": 0.64,
-    },
-    "invoke_resource_probe": {
-        "cpu": 0.54,
-        "gpu": 0.26,
-        "npu": 0.22,
-        "ram": 0.38,
-        "disk": 0.3,
-        "network": 0.24,
-    },
-    "invoke_diffuse_field": {
-        "cpu": 0.31,
-        "gpu": 0.18,
-        "npu": 0.15,
-        "ram": 0.26,
-        "disk": 0.2,
-        "network": 0.34,
-    },
-    "emit_resource_packet": {
-        "cpu": 0.66,
-        "gpu": 0.38,
-        "npu": 0.34,
-        "ram": 0.46,
-        "disk": 0.4,
-        "network": 0.44,
-    },
-    "absorb_resource": {
-        "cpu": 0.42,
-        "gpu": 0.31,
-        "npu": 0.27,
-        "ram": 0.54,
-        "disk": 0.43,
-        "network": 0.39,
-    },
-}
-_DAIMOI_COMPONENT_COST: dict[str, float] = {
-    "deliver_message": 0.18,
-    "invoke_receipt_audit": 0.52,
-    "invoke_truth_gate": 0.58,
-    "invoke_anchor_register": 0.34,
-    "invoke_file_organize": 0.47,
-    "invoke_graph_crawl": 0.44,
-    "invoke_resource_probe": 0.42,
-    "invoke_diffuse_field": 0.26,
-    "emit_resource_packet": 0.36,
-    "absorb_resource": 0.31,
-}
 _ABSORB_BETA_WEIGHTS = (0.62, 0.42, 0.36, 0.28, 0.22, 0.18)
 _ABSORB_TEMP_WEIGHTS = (0.44, 0.34, 0.24, 0.48, 0.29, -0.2)
 _ABSORB_BETA_MAX = 2.7
@@ -433,12 +349,7 @@ def _rect_intersects_circle(
     y: float,
     radius: float,
 ) -> bool:
-    x0, y0, x1, y1 = bounds
-    nearest_x = min(max(x, x0), x1)
-    nearest_y = min(max(y, y0), y1)
-    dx = x - nearest_x
-    dy = y - nearest_y
-    return (dx * dx) + (dy * dy) <= (radius * radius)
+    return daimoi_quadtree_module.rect_intersects_circle(bounds, x, y, radius)
 
 
 def _quadtree_build(
@@ -449,170 +360,41 @@ def _quadtree_build(
     max_items: int = 24,
     max_depth: int = 7,
 ) -> dict[str, Any]:
-    node: dict[str, Any] = {
-        "bounds": bounds,
-        "items": list(items),
-        "children": None,
-    }
-    if depth >= max_depth or len(items) <= max_items:
-        return node
-
-    x0, y0, x1, y1 = bounds
-    mx = (x0 + x1) * 0.5
-    my = (y0 + y1) * 0.5
-    quadrants = [
-        (x0, y0, mx, my),
-        (mx, y0, x1, my),
-        (x0, my, mx, y1),
-        (mx, my, x1, y1),
-    ]
-    buckets: list[list[dict[str, Any]]] = [[], [], [], []]
-    spill: list[dict[str, Any]] = []
-
-    for item in items:
-        ix = _clamp01(_safe_float(item.get("x", 0.5), 0.5))
-        iy = _clamp01(_safe_float(item.get("y", 0.5), 0.5))
-        assigned = False
-        for index, (qx0, qy0, qx1, qy1) in enumerate(quadrants):
-            if qx0 <= ix < qx1 and qy0 <= iy < qy1:
-                buckets[index].append(item)
-                assigned = True
-                break
-        if not assigned:
-            spill.append(item)
-
-    child_nodes: list[dict[str, Any]] = []
-    for bucket, qbounds in zip(buckets, quadrants):
-        if bucket:
-            child_nodes.append(
-                _quadtree_build(
-                    bucket,
-                    bounds=qbounds,
-                    depth=depth + 1,
-                    max_items=max_items,
-                    max_depth=max_depth,
-                )
-            )
-
-    if not child_nodes:
-        return node
-
-    node["items"] = spill
-    node["children"] = child_nodes
-    return node
+    return daimoi_quadtree_module.quadtree_build(
+        items,
+        bounds=bounds,
+        depth=depth,
+        max_items=max_items,
+        max_depth=max_depth,
+        clamp01=_clamp01,
+        safe_float=_safe_float,
+    )
 
 
 def _quadtree_query_radius(
     node: dict[str, Any], x: float, y: float, radius: float, out: list[dict[str, Any]]
 ) -> None:
-    if not node:
-        return
-    bounds = node.get("bounds", (0.0, 0.0, 1.0, 1.0))
-    if not isinstance(bounds, tuple) or len(bounds) != 4:
-        return
-    if not _rect_intersects_circle(bounds, x, y, radius):
-        return
-
-    items = node.get("items", [])
-    if isinstance(items, list) and items:
-        out.extend(item for item in items if isinstance(item, dict))
-
-    children = node.get("children")
-    if isinstance(children, list):
-        for child in children:
-            if isinstance(child, dict):
-                _quadtree_query_radius(child, x, y, radius, out)
+    return daimoi_quadtree_module.quadtree_query_radius(
+        node,
+        x,
+        y,
+        radius,
+        out,
+        rect_intersects_circle_fn=_rect_intersects_circle,
+    )
 
 
 def _quadtree_semantic_aggregate(
     node: dict[str, Any], *, vector_dims: int = DAIMOI_EMBED_DIMS
 ) -> dict[str, Any]:
-    if not isinstance(node, dict):
-        return {
-            "weight": 0.0,
-            "count": 0,
-            "cx": 0.5,
-            "cy": 0.5,
-            "vector_sum": [0.0] * max(1, int(vector_dims)),
-            "single_id": "",
-        }
-
-    dims = max(1, int(vector_dims))
-    weight_sum = 0.0
-    count_sum = 0
-    weighted_x = 0.0
-    weighted_y = 0.0
-    vector_sum = [0.0] * dims
-    single_id = ""
-
-    items = node.get("items", [])
-    if isinstance(items, list):
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            source_weight = max(0.0, _safe_float(item.get("weight", 1.0), 1.0))
-            if source_weight <= 1e-8:
-                continue
-            sx = _clamp01(_safe_float(item.get("x", 0.5), 0.5))
-            sy = _clamp01(_safe_float(item.get("y", 0.5), 0.5))
-            source_vector_raw = item.get("vector", [])
-            source_vector = (
-                source_vector_raw if isinstance(source_vector_raw, list) else []
-            )
-            source_id = str(item.get("id", "")).strip()
-            weighted_x += sx * source_weight
-            weighted_y += sy * source_weight
-            for index in range(min(dims, len(source_vector))):
-                vector_sum[index] += (
-                    _finite_float(source_vector[index], 0.0) * source_weight
-                )
-            weight_sum += source_weight
-            count_sum += 1
-            single_id = source_id if count_sum == 1 else ""
-
-    children = node.get("children")
-    if isinstance(children, list):
-        for child in children:
-            if not isinstance(child, dict):
-                continue
-            child_agg = _quadtree_semantic_aggregate(child, vector_dims=dims)
-            child_weight = max(0.0, _safe_float(child_agg.get("weight", 0.0), 0.0))
-            if child_weight <= 1e-8:
-                continue
-            child_count = max(0, _safe_int(child_agg.get("count", 0), 0))
-            child_cx = _clamp01(_safe_float(child_agg.get("cx", 0.5), 0.5))
-            child_cy = _clamp01(_safe_float(child_agg.get("cy", 0.5), 0.5))
-            child_vector_sum_raw = child_agg.get("vector_sum", [])
-            child_vector_sum = (
-                child_vector_sum_raw if isinstance(child_vector_sum_raw, list) else []
-            )
-            weighted_x += child_cx * child_weight
-            weighted_y += child_cy * child_weight
-            for index in range(min(dims, len(child_vector_sum))):
-                vector_sum[index] += _finite_float(child_vector_sum[index], 0.0)
-            previous_count = count_sum
-            count_sum += child_count
-            if previous_count == 0 and child_count == 1:
-                single_id = str(child_agg.get("single_id", "")).strip()
-            elif count_sum > 1:
-                single_id = ""
-            weight_sum += child_weight
-
-    center_x = 0.5
-    center_y = 0.5
-    if weight_sum > 1e-8:
-        center_x = _clamp01(weighted_x / weight_sum)
-        center_y = _clamp01(weighted_y / weight_sum)
-    aggregate = {
-        "weight": weight_sum,
-        "count": count_sum,
-        "cx": center_x,
-        "cy": center_y,
-        "vector_sum": vector_sum,
-        "single_id": single_id if count_sum == 1 else "",
-    }
-    node["semantic_agg"] = aggregate
-    return aggregate
+    return daimoi_quadtree_module.quadtree_semantic_aggregate(
+        node,
+        vector_dims=vector_dims,
+        clamp01=_clamp01,
+        safe_float=_safe_float,
+        safe_int=_safe_int,
+        finite_float=_finite_float,
+    )
 
 
 def _semantic_pair_force(
@@ -1259,170 +1041,54 @@ def _clamp_range(value: Any, lower: float, upper: float) -> float:
     return max(lo, min(hi, _finite_float(value, lo)))
 
 
-def _median(values: list[float]) -> float:
-    if not values:
-        return 0.0
-    ordered = sorted(_finite_float(value, 0.0) for value in values)
-    length = len(ordered)
-    mid = length // 2
-    if length % 2 == 1:
-        return ordered[mid]
-    return (ordered[mid - 1] + ordered[mid]) * 0.5
-
-
 def _anti_clump_positions_from_particles(particles: Any) -> list[tuple[float, float]]:
-    if isinstance(particles, dict):
-        rows = list(particles.values())
-    elif isinstance(particles, list):
-        rows = particles
-    else:
-        rows = []
+    return daimoi_observer_module.anti_clump_positions_from_particles(particles)
 
-    positions: list[tuple[float, float]] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        if bool(row.get("is_nexus", False)):
-            continue
-        x = _clamp01(_safe_float(row.get("x", 0.5), 0.5))
-        y = _clamp01(_safe_float(row.get("y", 0.5), 0.5))
-        positions.append((x, y))
-    return positions
+
+def _anti_clump_observer_config() -> dict[str, Any]:
+    return daimoi_observer_module.anti_clump_observer_config(
+        sample_limit=DAIMOI_ANTI_CLUMP_SAMPLE_LIMIT,
+        grid_cap=DAIMOI_ANTI_CLUMP_GRID_SIZE,
+        collision_rate_ref=DAIMOI_ANTI_CLUMP_COLLISION_RATE_REF,
+        snr_min=DAIMOI_OBSERVER_SNR_MIN,
+        snr_max=DAIMOI_OBSERVER_SNR_MAX,
+        snr_alpha=DAIMOI_OBSERVER_SNR_ALPHA,
+        snr_beta=DAIMOI_OBSERVER_SNR_BETA,
+        snr_eps=DAIMOI_OBSERVER_SNR_EPS,
+    )
+
+
+def _anti_clump_controller_config() -> dict[str, Any]:
+    return daimoi_observer_module.anti_clump_controller_config(
+        observer_config=_anti_clump_observer_config(),
+        drive_limit=DAIMOI_ANTI_CLUMP_DRIVE_LIMIT,
+        integral_limit=DAIMOI_ANTI_CLUMP_INTEGRAL_LIMIT,
+        target=DAIMOI_ANTI_CLUMP_TARGET,
+        kp=DAIMOI_ANTI_CLUMP_KP,
+        ki=DAIMOI_ANTI_CLUMP_KI,
+        smoothing=DAIMOI_ANTI_CLUMP_SMOOTHING,
+        update_stride=DAIMOI_ANTI_CLUMP_UPDATE_STRIDE,
+        min_particles=DAIMOI_ANTI_CLUMP_MIN_PARTICLES,
+        high_snr_perturb_gain=DAIMOI_OBSERVER_HIGH_SNR_PERTURB_GAIN,
+    )
 
 
 def _anti_clump_metrics(
     positions: list[tuple[float, float]],
     *,
     previous_collision_count: int,
-) -> dict[str, float]:
-    count = len(positions)
-    if count <= 1:
-        return {
-            "count": float(count),
-            "clump_score": 0.0,
-            "nn_term": 0.0,
-            "entropy_norm": 1.0,
-            "hotspot_term": 0.0,
-            "collision_term": 0.0,
-            "collision_rate": 0.0,
-            "median_distance": 0.0,
-            "target_distance": 0.0,
-            "top_share": 0.0,
-        }
-
-    grid = max(4, _safe_int(DAIMOI_ANTI_CLUMP_GRID_SIZE, 16))
-    sample_limit = max(8, _safe_int(DAIMOI_ANTI_CLUMP_SAMPLE_LIMIT, 96))
-    cell_counts = [0 for _ in range(grid * grid)]
-    indices_by_cell: dict[int, list[int]] = {}
-    coords: list[tuple[int, int]] = []
-
-    for index, (x_raw, y_raw) in enumerate(positions):
-        x = _clamp01(_finite_float(x_raw, 0.5))
-        y = _clamp01(_finite_float(y_raw, 0.5))
-        cx = min(grid - 1, max(0, int(math.floor(x * grid))))
-        cy = min(grid - 1, max(0, int(math.floor(y * grid))))
-        cell_id = (cy * grid) + cx
-        cell_counts[cell_id] += 1
-        bucket = indices_by_cell.get(cell_id)
-        if bucket is None:
-            indices_by_cell[cell_id] = [index]
-        else:
-            bucket.append(index)
-        coords.append((cx, cy))
-
-    non_zero_counts = [value for value in cell_counts if value > 0]
-    entropy = 0.0
-    for value in non_zero_counts:
-        ratio = _finite_float(value / float(count), 0.0)
-        if ratio > 1e-12:
-            entropy -= ratio * math.log(ratio)
-    max_entropy = math.log(max(1, min(len(non_zero_counts), count)))
-    entropy_norm = _clamp01(entropy / max_entropy) if max_entropy > 1e-12 else 1.0
-
-    top_share = 0.0
-    hotspot_term = 0.0
-    if non_zero_counts:
-        ordered_counts = sorted(non_zero_counts, reverse=True)
-        top_k = max(1, int(math.ceil(len(ordered_counts) * 0.1)))
-        top_share = sum(ordered_counts[:top_k]) / float(max(1, count))
-        uniform_share = top_k / float(max(1, len(ordered_counts)))
-        hotspot_term = _clamp01(
-            (top_share - uniform_share) / max(1e-6, 1.0 - uniform_share)
-        )
-
-    sample_step = max(1, int(math.floor(count / float(sample_limit))))
-    sample_indices = list(range(0, count, sample_step))[:sample_limit]
-    if not sample_indices:
-        sample_indices = [0]
-    neighbor_distances: list[float] = []
-
-    for index in sample_indices:
-        x = _clamp01(_finite_float(positions[index][0], 0.5))
-        y = _clamp01(_finite_float(positions[index][1], 0.5))
-        cx, cy = coords[index]
-        nearest_sq = float("inf")
-        for ny in range(max(0, cy - 1), min(grid - 1, cy + 1) + 1):
-            for nx in range(max(0, cx - 1), min(grid - 1, cx + 1) + 1):
-                neighbor_cell_id = (ny * grid) + nx
-                candidates = indices_by_cell.get(neighbor_cell_id, [])
-                for other_index in candidates:
-                    if other_index == index:
-                        continue
-                    ox = _clamp01(_finite_float(positions[other_index][0], 0.5))
-                    oy = _clamp01(_finite_float(positions[other_index][1], 0.5))
-                    dx = ox - x
-                    dy = oy - y
-                    dist_sq = (dx * dx) + (dy * dy)
-                    if dist_sq < nearest_sq:
-                        nearest_sq = dist_sq
-        if math.isfinite(nearest_sq):
-            neighbor_distances.append(math.sqrt(max(0.0, nearest_sq)))
-        else:
-            neighbor_distances.append(math.sqrt(2.0) / float(grid))
-
-    median_distance = _median(neighbor_distances)
-    target_distance = max(0.015, min(0.095, 0.82 / math.sqrt(float(count))))
-    nn_term = _clamp01((target_distance - median_distance) / max(1e-6, target_distance))
-
-    collision_rate = max(
-        0.0,
-        _safe_float(previous_collision_count, 0.0) / float(max(1, count)),
+    particles: Any | None = None,
+) -> dict[str, Any]:
+    return daimoi_observer_module.anti_clump_metrics(
+        positions,
+        previous_collision_count=previous_collision_count,
+        particles=particles,
+        config=_anti_clump_observer_config(),
     )
-    collision_term = _clamp01(
-        collision_rate
-        / max(0.25, _safe_float(DAIMOI_ANTI_CLUMP_COLLISION_RATE_REF, 2.2))
-    )
-
-    clump_score = _clamp01(
-        (nn_term * 0.35)
-        + ((1.0 - entropy_norm) * 0.30)
-        + (hotspot_term * 0.20)
-        + (collision_term * 0.15)
-    )
-
-    return {
-        "count": float(count),
-        "clump_score": clump_score,
-        "nn_term": nn_term,
-        "entropy_norm": entropy_norm,
-        "hotspot_term": hotspot_term,
-        "collision_term": collision_term,
-        "collision_rate": collision_rate,
-        "median_distance": median_distance,
-        "target_distance": target_distance,
-        "top_share": _clamp01(top_share),
-    }
 
 
 def _anti_clump_scales(drive: float) -> dict[str, float]:
-    limited_drive = _clamp_range(drive, -1.0, 1.0)
-    return {
-        "semantic": _clamp_range(math.exp(-0.8 * limited_drive), 0.35, 1.2),
-        "edge": _clamp_range(math.exp(-0.6 * limited_drive), 0.4, 1.1),
-        "anchor": _clamp_range(math.exp(-0.7 * limited_drive), 0.45, 1.1),
-        "spawn": _clamp_range(math.exp(-0.5 * limited_drive), 0.5, 1.05),
-        "tangent": _clamp_range(math.exp(0.5 * limited_drive), 0.8, 1.8),
-    }
+    return daimoi_observer_module.anti_clump_scales(drive)
 
 
 def _anti_clump_controller_update(
@@ -1431,111 +1097,19 @@ def _anti_clump_controller_update(
     particles: dict[str, Any],
     previous_collision_count: int,
 ) -> dict[str, Any]:
-    state = dict(controller_state) if isinstance(controller_state, dict) else {}
-    tick = max(0, _safe_int(state.get("tick", 0), 0)) + 1
-
-    drive_limit = max(0.25, _safe_float(DAIMOI_ANTI_CLUMP_DRIVE_LIMIT, 1.0))
-    integral_limit = max(0.25, _safe_float(DAIMOI_ANTI_CLUMP_INTEGRAL_LIMIT, 1.5))
-    target = _clamp01(_safe_float(DAIMOI_ANTI_CLUMP_TARGET, 0.38))
-    kp = max(0.0, _safe_float(DAIMOI_ANTI_CLUMP_KP, 0.22))
-    ki = max(0.0, _safe_float(DAIMOI_ANTI_CLUMP_KI, 0.04))
-    smoothing = _clamp01(_safe_float(DAIMOI_ANTI_CLUMP_SMOOTHING, 0.15))
-    update_stride = max(1, _safe_int(DAIMOI_ANTI_CLUMP_UPDATE_STRIDE, 10))
-    min_particles = max(8, _safe_int(DAIMOI_ANTI_CLUMP_MIN_PARTICLES, 24))
-
-    previous_drive = _clamp_range(
-        _safe_float(state.get("drive", 0.0), 0.0), -drive_limit, drive_limit
+    return daimoi_observer_module.anti_clump_controller_update(
+        controller_state,
+        particles=particles,
+        previous_collision_count=previous_collision_count,
+        config=_anti_clump_controller_config(),
     )
-    integral = _clamp_range(
-        _safe_float(state.get("integral", 0.0), 0.0),
-        -integral_limit,
-        integral_limit,
-    )
-    score_ema = _clamp01(_safe_float(state.get("score_ema", target), target))
-
-    should_update = (tick % update_stride == 0) or ("clump_score" not in state)
-    if should_update:
-        positions = _anti_clump_positions_from_particles(particles)
-        metrics = _anti_clump_metrics(
-            positions,
-            previous_collision_count=previous_collision_count,
-        )
-        particle_count = max(0, _safe_int(metrics.get("count", 0.0), 0))
-        score_raw = _clamp01(
-            _safe_float(metrics.get("clump_score", score_ema), score_ema)
-        )
-        score_ema = _clamp01((score_ema * 0.82) + (score_raw * 0.18))
-
-        if particle_count < min_particles:
-            error = score_ema - target
-            integral = _clamp_range(integral * 0.82, -integral_limit, integral_limit)
-            raw_drive = 0.0
-        else:
-            error = score_ema - target
-            integral = _clamp_range(
-                integral + error,
-                -integral_limit,
-                integral_limit,
-            )
-            raw_drive = (kp * error) + (ki * integral)
-
-        drive = _clamp_range(
-            ((previous_drive * (1.0 - smoothing)) + (raw_drive * smoothing)),
-            -drive_limit,
-            drive_limit,
-        )
-        state.update(
-            {
-                "tick": tick,
-                "updated": True,
-                "drive": drive,
-                "integral": integral,
-                "error": error,
-                "score_ema": score_ema,
-                "particle_count": particle_count,
-                "clump_score": score_raw,
-                "nn_term": _clamp01(_safe_float(metrics.get("nn_term", 0.0), 0.0)),
-                "entropy_norm": _clamp01(
-                    _safe_float(metrics.get("entropy_norm", 1.0), 1.0)
-                ),
-                "hotspot_term": _clamp01(
-                    _safe_float(metrics.get("hotspot_term", 0.0), 0.0)
-                ),
-                "collision_term": _clamp01(
-                    _safe_float(metrics.get("collision_term", 0.0), 0.0)
-                ),
-                "collision_rate": max(
-                    0.0, _safe_float(metrics.get("collision_rate", 0.0), 0.0)
-                ),
-                "median_distance": max(
-                    0.0, _safe_float(metrics.get("median_distance", 0.0), 0.0)
-                ),
-                "target_distance": max(
-                    0.0, _safe_float(metrics.get("target_distance", 0.0), 0.0)
-                ),
-                "top_share": _clamp01(_safe_float(metrics.get("top_share", 0.0), 0.0)),
-            }
-        )
-        return state
-
-    state["tick"] = tick
-    state["updated"] = False
-    return state
 
 
 def _resource_wallet_by_type(wallet: dict[str, Any] | None) -> dict[str, float]:
-    values = {resource: 0.0 for resource in DAIMOI_RESOURCE_KEYS}
-    if not isinstance(wallet, dict):
-        return values
-    for key, raw in wallet.items():
-        token = str(key or "").strip().lower()
-        if not token:
-            continue
-        resource = _DAIMOI_RESOURCE_ALIASES.get(token)
-        if not resource:
-            continue
-        values[resource] = values[resource] + max(0.0, _finite_float(raw, 0.0))
-    return values
+    return daimoi_resources_module.resource_wallet_by_type(
+        wallet,
+        resource_keys=DAIMOI_RESOURCE_KEYS,
+    )
 
 
 def _presence_need_by_resource(
@@ -1543,31 +1117,11 @@ def _presence_need_by_resource(
     *,
     queue_ratio: float,
 ) -> dict[str, float]:
-    impact_row = impact if isinstance(impact, dict) else {}
-    affected_by = impact_row.get("affected_by", {})
-    if not isinstance(affected_by, dict):
-        affected_by = {}
-    resource_signal = _clamp01_finite(affected_by.get("resource", 0.0), 0.0)
-    queue_signal = _clamp01_finite(queue_ratio, 0.0)
-    wallet = _resource_wallet_by_type(impact_row.get("resource_wallet", {}))
-
-    needs: dict[str, float] = {}
-    for resource in DAIMOI_RESOURCE_KEYS:
-        floor = max(
-            0.1,
-            _finite_float(
-                _DAIMOI_WALLET_FLOOR.get(resource, 6.0),
-                6.0,
-            ),
-        )
-        balance = max(0.0, _finite_float(wallet.get(resource, 0.0), 0.0))
-        deficit = _clamp01_finite(1.0 - (balance / floor), 0.0)
-        queue_push = queue_signal * (0.18 if resource in {"network", "disk"} else 0.08)
-        needs[resource] = _clamp01_finite(
-            (deficit * 0.64) + (resource_signal * 0.26) + queue_push,
-            0.0,
-        )
-    return needs
+    return daimoi_resources_module.presence_need_by_resource(
+        impact,
+        queue_ratio=queue_ratio,
+        resource_keys=DAIMOI_RESOURCE_KEYS,
+    )
 
 
 @lru_cache(maxsize=256)
@@ -1580,79 +1134,35 @@ def _component_embedding(job_key: str) -> list[float]:
 
 
 def _component_resource_req(job_key: str) -> dict[str, float]:
-    token = str(job_key or "").strip()
-    base = _DAIMOI_COMPONENT_RESOURCE_REQ.get(token, {})
-    req = {
-        resource: _clamp01_finite(base.get(resource, 0.0), 0.0)
-        for resource in DAIMOI_RESOURCE_KEYS
-    }
-    lowered = token.lower()
-    for resource in DAIMOI_RESOURCE_KEYS:
-        if resource in lowered:
-            req[resource] = max(req[resource], 0.58)
-    return req
+    return daimoi_components_module.component_resource_req(
+        job_key,
+        resource_keys=DAIMOI_RESOURCE_KEYS,
+    )
 
 
 def _component_cost(job_key: str) -> float:
-    return max(
-        0.0, _finite_float(_DAIMOI_COMPONENT_COST.get(str(job_key or ""), 0.3), 0.3)
+    return daimoi_components_module.component_cost(
+        job_key,
+        default_cost=0.3,
     )
 
 
 def _packet_components_from_job_probabilities(
     probabilities: dict[str, float],
 ) -> list[dict[str, Any]]:
-    if not isinstance(probabilities, dict):
-        return []
-    sanitized: dict[str, float] = {}
-    total = 0.0
-    for key, raw in probabilities.items():
-        token = str(key or "").strip()
-        if not token:
-            continue
-        value = max(0.0, _finite_float(raw, 0.0))
-        if value <= 1e-12:
-            continue
-        sanitized[token] = value
-        total += value
-    if total <= 1e-12:
-        return []
-
-    components: list[dict[str, Any]] = []
-    for component_id in sorted(sanitized.keys()):
-        p_i = max(1e-12, sanitized[component_id] / total)
-        req = _component_resource_req(component_id)
-        components.append(
-            {
-                "component_id": component_id,
-                "p_i": p_i,
-                "req": req,
-                "cost_i": _component_cost(component_id),
-                "embedding": _component_embedding(component_id),
-            }
-        )
-    components.sort(
-        key=lambda row: (
-            -_finite_float(row.get("p_i", 0.0), 0.0),
-            str(row.get("component_id", "")),
-        )
+    return daimoi_packets_module.packet_components_from_job_probabilities(
+        probabilities,
+        component_resource_req=_component_resource_req,
+        component_cost=_component_cost,
+        component_embedding=_component_embedding,
     )
-    return components
 
 
 def _packet_resource_signature(components: list[dict[str, Any]]) -> dict[str, float]:
-    rho = {resource: 0.0 for resource in DAIMOI_RESOURCE_KEYS}
-    for row in components:
-        if not isinstance(row, dict):
-            continue
-        p_i = _clamp01_finite(row.get("p_i", 0.0), 0.0)
-        req = row.get("req", {})
-        req_map = req if isinstance(req, dict) else {}
-        for resource in DAIMOI_RESOURCE_KEYS:
-            rho[resource] = rho[resource] + (
-                p_i * _clamp01_finite(req_map.get(resource, 0.0), 0.0)
-            )
-    return {resource: _clamp01_finite(value, 0.0) for resource, value in rho.items()}
+    return daimoi_packets_module.packet_resource_signature(
+        components,
+        resource_keys=DAIMOI_RESOURCE_KEYS,
+    )
 
 
 def _packet_component_contract_for_state(
@@ -1662,50 +1172,20 @@ def _packet_component_contract_for_state(
 ) -> dict[str, Any]:
     job_probs = _job_probabilities(state)
     components = _packet_components_from_job_probabilities(job_probs)
-    resource_signature = _packet_resource_signature(components)
-    if top_k > 0:
-        visible_rows = components[: int(top_k)]
-    else:
-        visible_rows = components
-    visible = [
-        {
-            "component_id": str(row.get("component_id", "")),
-            "p_i": round(_clamp01_finite(row.get("p_i", 0.0), 0.0), 6),
-            "req": {
-                resource: round(_clamp01_finite(req_value, 0.0), 6)
-                for resource, req_value in (
-                    row.get("req", {}) if isinstance(row.get("req", {}), dict) else {}
-                ).items()
-                if str(resource).strip()
-            },
-            "cost_i": round(max(0.0, _finite_float(row.get("cost_i", 0.0), 0.0)), 6),
-        }
-        for row in visible_rows
-        if isinstance(row, dict)
-    ]
-    return {
-        "record": DAIMOI_PACKET_COMPONENT_RECORD,
-        "schema_version": DAIMOI_PACKET_COMPONENT_SCHEMA,
-        "component_count": int(len(components)),
-        "components": visible,
-        "resource_signature": {
-            resource: round(_clamp01_finite(value, 0.0), 6)
-            for resource, value in resource_signature.items()
-        },
-    }
+    return daimoi_packets_module.packet_component_contract(
+        components,
+        resource_keys=DAIMOI_RESOURCE_KEYS,
+        record=DAIMOI_PACKET_COMPONENT_RECORD,
+        schema_version=DAIMOI_PACKET_COMPONENT_SCHEMA,
+        top_k=top_k,
+    )
 
 
 def _softmax_probabilities(values: list[float]) -> list[float]:
-    if not values:
-        return []
-    finite_values = [_finite_float(value, 0.0) for value in values]
-    max_value = max(finite_values)
-    exps = [math.exp(value - max_value) for value in finite_values]
-    total = sum(exps)
-    if total <= 1e-12:
-        uniform = 1.0 / float(len(values))
-        return [uniform for _ in values]
-    return [value / total for value in exps]
+    return daimoi_absorb_sampler_module.softmax_probabilities(
+        values,
+        finite_float=_finite_float,
+    )
 
 
 def _sample_absorb_component(
@@ -1716,162 +1196,33 @@ def _sample_absorb_component(
     context: dict[str, Any],
     seed: str,
 ) -> dict[str, Any]:
-    feature_vector = [
-        _clamp01_finite(context.get("pressure", 0.0), 0.0),
-        _clamp01_finite(context.get("congestion", 0.0), 0.0),
-        _clamp01_finite(context.get("wallet_pressure", 0.0), 0.0),
-        _clamp01_finite(context.get("message_entropy", 0.0), 0.0),
-        _clamp01_finite(context.get("queue", 0.0), 0.0),
-        _clamp01_finite(context.get("contact", 0.0), 0.0),
-    ]
-    beta_raw = sum(
-        weight * feature
-        for weight, feature in zip(_ABSORB_BETA_WEIGHTS, feature_vector)
+    return daimoi_absorb_sampler_module.sample_absorb_component(
+        components=components,
+        lens_embedding=lens_embedding,
+        need_by_resource=need_by_resource,
+        context=context,
+        seed=seed,
+        resource_keys=DAIMOI_RESOURCE_KEYS,
+        component_embedding=_component_embedding,
+        component_cost=_component_cost,
+        clamp01_finite=_clamp01_finite,
+        finite_float=_finite_float,
+        coerce_vector=_coerce_vector,
+        normalize_vector=_normalize_vector,
+        safe_cosine_unit=_safe_cosine_unit,
+        stable_ratio=_stable_ratio,
+        softplus=_softplus,
+        beta_weights=_ABSORB_BETA_WEIGHTS,
+        temp_weights=_ABSORB_TEMP_WEIGHTS,
+        beta_max=_ABSORB_BETA_MAX,
+        temp_min=_ABSORB_TEMP_MIN,
+        temp_max=_ABSORB_TEMP_MAX,
+        zeta=_ABSORB_ZETA,
+        lambda_cost=_ABSORB_LAMBDA_COST,
+        record=DAIMOI_ABSORB_SAMPLER_RECORD,
+        schema_version=DAIMOI_ABSORB_SAMPLER_SCHEMA,
+        method=DAIMOI_ABSORB_SAMPLER_METHOD,
     )
-    temp_raw = sum(
-        weight * feature
-        for weight, feature in zip(_ABSORB_TEMP_WEIGHTS, feature_vector)
-    )
-    beta = min(_ABSORB_BETA_MAX, max(0.0, _softplus(beta_raw)))
-    temperature = min(
-        _ABSORB_TEMP_MAX,
-        max(_ABSORB_TEMP_MIN, _ABSORB_TEMP_MIN + _softplus(temp_raw)),
-    )
-
-    need = {
-        resource: _clamp01_finite(
-            (need_by_resource if isinstance(need_by_resource, dict) else {}).get(
-                resource,
-                0.0,
-            ),
-            0.0,
-        )
-        for resource in DAIMOI_RESOURCE_KEYS
-    }
-    lens_unit = _normalize_vector(_coerce_vector(lens_embedding))
-
-    scored_rows: list[dict[str, Any]] = []
-    scaled_logits: list[float] = []
-    for index, row in enumerate(components):
-        if not isinstance(row, dict):
-            continue
-        component_id = str(row.get("component_id", "")).strip()
-        if not component_id:
-            continue
-        p_i = max(1e-12, _finite_float(row.get("p_i", 0.0), 0.0))
-        req_raw = row.get("req", {})
-        req_map = req_raw if isinstance(req_raw, dict) else {}
-        req = {
-            resource: _clamp01_finite(req_map.get(resource, 0.0), 0.0)
-            for resource in DAIMOI_RESOURCE_KEYS
-        }
-        embedding = _coerce_vector(
-            row.get("embedding", _component_embedding(component_id))
-        )
-        s_i = _safe_cosine_unit(lens_unit, _normalize_vector(embedding))
-        q_i = sum(need[resource] * req[resource] for resource in DAIMOI_RESOURCE_KEYS)
-        cost_i = max(
-            0.0, _finite_float(row.get("cost_i", _component_cost(component_id)), 0.0)
-        )
-        logit = (
-            math.log(p_i)
-            + (beta * s_i)
-            + (_ABSORB_ZETA * q_i)
-            - (_ABSORB_LAMBDA_COST * cost_i)
-        )
-        scaled_logit = logit / max(_ABSORB_TEMP_MIN, temperature)
-        scaled_logits.append(scaled_logit)
-        scored_rows.append(
-            {
-                "index": int(index),
-                "component_id": component_id,
-                "p_i": p_i,
-                "req": req,
-                "s_i": s_i,
-                "q_i": q_i,
-                "cost_i": cost_i,
-                "logit": logit,
-                "scaled_logit": scaled_logit,
-            }
-        )
-
-    if not scored_rows:
-        return {
-            "record": DAIMOI_ABSORB_SAMPLER_RECORD,
-            "schema_version": DAIMOI_ABSORB_SAMPLER_SCHEMA,
-            "method": DAIMOI_ABSORB_SAMPLER_METHOD,
-            "beta": round(beta, 6),
-            "temperature": round(temperature, 6),
-            "zeta": _ABSORB_ZETA,
-            "lambda_cost": _ABSORB_LAMBDA_COST,
-            "feature_vector": [round(value, 6) for value in feature_vector],
-            "selected_component_id": "",
-            "selected_probability": 0.0,
-            "components": [],
-        }
-
-    probs = _softmax_probabilities(scaled_logits)
-    selected: dict[str, Any] | None = None
-    for index, row in enumerate(scored_rows):
-        prob = probs[index] if index < len(probs) else 0.0
-        row["probability"] = prob
-        uniform = _stable_ratio(
-            f"{seed}|absorb|{row['component_id']}|{index}",
-            index + 11,
-        )
-        uniform = min(1.0 - 1e-9, max(1e-9, _finite_float(uniform, 0.5)))
-        gumbel = -math.log(-math.log(uniform))
-        row["gumbel"] = gumbel
-        row["gumbel_score"] = _finite_float(row.get("scaled_logit", 0.0), 0.0) + gumbel
-        if selected is None or (
-            _finite_float(row.get("gumbel_score", 0.0), 0.0)
-            > _finite_float(selected.get("gumbel_score", 0.0), 0.0)
-        ):
-            selected = row
-
-    selected_row = selected if isinstance(selected, dict) else scored_rows[0]
-    selected_probability = _clamp01_finite(selected_row.get("probability", 0.0), 0.0)
-    return {
-        "record": DAIMOI_ABSORB_SAMPLER_RECORD,
-        "schema_version": DAIMOI_ABSORB_SAMPLER_SCHEMA,
-        "method": DAIMOI_ABSORB_SAMPLER_METHOD,
-        "beta": round(beta, 6),
-        "temperature": round(temperature, 6),
-        "zeta": _ABSORB_ZETA,
-        "lambda_cost": _ABSORB_LAMBDA_COST,
-        "feature_vector": [round(value, 6) for value in feature_vector],
-        "selected_component_id": str(selected_row.get("component_id", "")),
-        "selected_probability": round(selected_probability, 6),
-        "components": [
-            {
-                "component_id": str(row.get("component_id", "")),
-                "p_i": round(_clamp01_finite(row.get("p_i", 0.0), 0.0), 6),
-                "req": {
-                    resource: round(_clamp01_finite(value, 0.0), 6)
-                    for resource, value in (
-                        row.get("req", {})
-                        if isinstance(row.get("req", {}), dict)
-                        else {}
-                    ).items()
-                },
-                "s_i": round(_finite_float(row.get("s_i", 0.0), 0.0), 6),
-                "q_i": round(_clamp01_finite(row.get("q_i", 0.0), 0.0), 6),
-                "cost_i": round(
-                    max(0.0, _finite_float(row.get("cost_i", 0.0), 0.0)), 6
-                ),
-                "logit": round(_finite_float(row.get("logit", 0.0), 0.0), 6),
-                "probability": round(
-                    _clamp01_finite(row.get("probability", 0.0), 0.0), 6
-                ),
-                "gumbel": round(_finite_float(row.get("gumbel", 0.0), 0.0), 6),
-                "gumbel_score": round(
-                    _finite_float(row.get("gumbel_score", 0.0), 0.0),
-                    6,
-                ),
-            }
-            for row in scored_rows
-        ],
-    }
 
 
 def _dirichlet_transfer(
@@ -1909,326 +1260,43 @@ def _dirichlet_transfer(
 
 
 def _seed_curr_matrix(left: dict[str, Any], right: dict[str, Any]) -> dict[str, float]:
-    left_seed = _state_unit_vector(left, "e_seed")
-    left_curr = _state_unit_vector(left, "e_curr")
-    right_seed = _state_unit_vector(right, "e_seed")
-    right_curr = _state_unit_vector(right, "e_curr")
-    return {
-        "ss": _safe_cosine_unit(left_seed, right_seed),
-        "sc": _safe_cosine_unit(left_seed, right_curr),
-        "cs": _safe_cosine_unit(left_curr, right_seed),
-        "cc": _safe_cosine_unit(left_curr, right_curr),
-        "self_left": _safe_cosine_unit(left_seed, left_curr),
-        "self_right": _safe_cosine_unit(right_seed, right_curr),
-    }
+    return daimoi_collision_semantics_module.seed_curr_matrix(
+        left,
+        right,
+        state_unit_vector=_state_unit_vector,
+        safe_cosine_unit=_safe_cosine_unit,
+    )
 
 
 def _collision_semantic_update(
     left: dict[str, Any], right: dict[str, Any], *, impulse: float
 ) -> dict[str, Any]:
-    matrix = _seed_curr_matrix(left, right)
-    semantic_affinity = (
-        (matrix["cc"] * 0.5)
-        + (((matrix["sc"] + matrix["cs"]) * 0.5) * 0.3)
-        + (matrix["ss"] * 0.2)
+    return daimoi_collision_semantics_module.collision_semantic_update(
+        left,
+        right,
+        impulse=impulse,
+        seed_curr_matrix_fn=_seed_curr_matrix,
+        finite_float=_finite_float,
+        clamp01=_clamp01,
+        clamp01_finite=_clamp01_finite,
+        sigmoid=_sigmoid,
+        safe_float=_safe_float,
+        state_unit_vector=_state_unit_vector,
+        blend_vectors=_blend_vectors,
+        normalize_vector=_normalize_vector,
+        dirichlet_transfer_fn=_dirichlet_transfer,
+        job_keys_set=DAIMOI_JOB_KEYS_SET,
+        job_keys_sorted=DAIMOI_JOB_KEYS_SORTED,
+        job_keys=DAIMOI_JOB_KEYS,
+        alpha_baseline=DAIMOI_ALPHA_BASELINE,
+        alpha_max=DAIMOI_ALPHA_MAX,
+        transfer_lambda=DAIMOI_TRANSFER_LAMBDA,
+        repulsion_mu=DAIMOI_REPULSION_MU,
+        impulse_reference=DAIMOI_IMPULSE_REFERENCE,
+        size_bias_beta=DAIMOI_SIZE_BIAS_BETA,
+        collision_repulsion_boost=DAIMOI_COLLISION_REPULSION_BOOST,
+        collision_coupling_gain=DAIMOI_COLLISION_COUPLING_GAIN,
     )
-    semantic_affinity = _finite_float(semantic_affinity, 0.0)
-    transfer_t = _clamp01_finite((semantic_affinity + 1.0) * 0.5, 0.5)
-    # Base repulsion increases as semantic affinity decreases
-    repulsion_u = _clamp01_finite(((-semantic_affinity) + 1.0) * 0.5, 0.5)
-    # Enhanced repulsion for strongly unrelated concepts (affinity < -0.5)
-    if semantic_affinity < -0.5:
-        repulsion_u = min(
-            1.0,
-            repulsion_u * _safe_float(DAIMOI_COLLISION_REPULSION_BOOST, 1.9),
-        )
-    intensity = _clamp01_finite(
-        _finite_float(impulse, 0.0) / DAIMOI_IMPULSE_REFERENCE, 0.0
-    )
-
-    left_size = max(1e-8, _finite_float(left.get("size", 1.0), 1.0))
-    right_size = max(1e-8, _finite_float(right.get("size", 1.0), 1.0))
-    bias_left = _sigmoid(DAIMOI_SIZE_BIAS_BETA * math.log(right_size / left_size))
-    bias_right = _sigmoid(DAIMOI_SIZE_BIAS_BETA * math.log(left_size / right_size))
-    coupling_gain = _safe_float(DAIMOI_COLLISION_COUPLING_GAIN, 0.62)
-    coupling_left = _clamp01(intensity * bias_left * coupling_gain)
-    coupling_right = _clamp01(intensity * bias_right * coupling_gain)
-    coupling_left_01 = _clamp01_finite(coupling_left, 0.0)
-    coupling_right_01 = _clamp01_finite(coupling_right, 0.0)
-    transfer_t_01 = _clamp01_finite(transfer_t, 0.0)
-    repulsion_u_01 = _clamp01_finite(repulsion_u, 0.0)
-    left_delta = DAIMOI_TRANSFER_LAMBDA * coupling_left_01 * transfer_t_01
-    left_rho = DAIMOI_REPULSION_MU * coupling_left_01 * repulsion_u_01
-    right_delta = DAIMOI_TRANSFER_LAMBDA * coupling_right_01 * transfer_t_01
-    right_rho = DAIMOI_REPULSION_MU * coupling_right_01 * repulsion_u_01
-
-    left_seed = _state_unit_vector(left, "e_seed")
-    left_curr = _state_unit_vector(left, "e_curr")
-    right_seed = _state_unit_vector(right, "e_seed")
-    right_curr = _state_unit_vector(right, "e_curr")
-
-    trust_left = _clamp01((matrix["self_left"] + 1.0) * 0.5)
-    trust_right = _clamp01((matrix["self_right"] + 1.0) * 0.5)
-    left_export = _blend_vectors(left_seed, left_curr, trust_left)
-    right_export = _blend_vectors(right_seed, right_curr, trust_right)
-
-    next_left_curr = _normalize_vector(
-        [
-            (left_curr[idx] * (1.0 - coupling_left))
-            + (right_export[idx] * coupling_left)
-            for idx in range(min(len(left_curr), len(right_export)))
-        ]
-    )
-    next_right_curr = _normalize_vector(
-        [
-            (right_curr[idx] * (1.0 - coupling_right))
-            + (left_export[idx] * coupling_right)
-            for idx in range(min(len(right_curr), len(left_export)))
-        ]
-    )
-
-    left_alpha_pkg_raw = left.get("alpha_pkg", {})
-    right_alpha_pkg_raw = right.get("alpha_pkg", {})
-
-    resource_transfer = {}
-
-    # Simple check: emit_resource_packet vs absorb_resource
-    # We use the raw alpha values as a proxy for "intent strength"
-    left_emit = _finite_float(left_alpha_pkg_raw.get("emit_resource_packet", 0.0))
-    left_absorb = _finite_float(left_alpha_pkg_raw.get("absorb_resource", 0.0))
-    right_emit = _finite_float(right_alpha_pkg_raw.get("emit_resource_packet", 0.0))
-    right_absorb = _finite_float(right_alpha_pkg_raw.get("absorb_resource", 0.0))
-
-    # Threshold for action (arbitrary for prototype, scaled by intensity?)
-    action_threshold = DAIMOI_ALPHA_BASELINE * 1.5
-
-    # Left emits to Right
-    if left_emit > action_threshold and right_absorb > action_threshold:
-        # Determine resource type from owner ID (hacky but effective)
-        owner_id = str(left.get("owner", ""))
-        if "presence.core." in owner_id:
-            res_type = owner_id.replace("presence.core.", "")
-            # Transfer amount depends on intensity and emitter strength
-            amount = max(0.1, intensity * 5.0)
-            resource_transfer["left_to_right"] = {res_type: amount}
-
-    # Right emits to Left
-    if right_emit > action_threshold and left_absorb > action_threshold:
-        owner_id = str(right.get("owner", ""))
-        if "presence.core." in owner_id:
-            res_type = owner_id.replace("presence.core.", "")
-            amount = max(0.1, intensity * 5.0)
-            resource_transfer["right_to_left"] = {res_type: amount}
-
-    left_alpha_pkg = left_alpha_pkg_raw if isinstance(left_alpha_pkg_raw, dict) else {}
-    right_alpha_pkg = (
-        right_alpha_pkg_raw if isinstance(right_alpha_pkg_raw, dict) else {}
-    )
-
-    if (
-        left_alpha_pkg.keys() <= DAIMOI_JOB_KEYS_SET
-        and right_alpha_pkg.keys() <= DAIMOI_JOB_KEYS_SET
-    ):
-        left_alpha_pkg_next: dict[str, float] = {}
-        right_alpha_pkg_next: dict[str, float] = {}
-        for key in DAIMOI_JOB_KEYS_SORTED:
-            src = max(
-                1e-8,
-                _finite_float(
-                    left_alpha_pkg.get(key, DAIMOI_ALPHA_BASELINE),
-                    DAIMOI_ALPHA_BASELINE,
-                ),
-            )
-            tgt = max(
-                1e-8,
-                _finite_float(
-                    right_alpha_pkg.get(key, DAIMOI_ALPHA_BASELINE),
-                    DAIMOI_ALPHA_BASELINE,
-                ),
-            )
-            left_shifted = ((1.0 - left_rho) * (src + (left_delta * tgt))) + (
-                left_rho * DAIMOI_ALPHA_BASELINE
-            )
-            right_shifted = ((1.0 - right_rho) * (tgt + (right_delta * src))) + (
-                right_rho * DAIMOI_ALPHA_BASELINE
-            )
-            left_alpha_pkg_next[key] = min(
-                DAIMOI_ALPHA_MAX,
-                max(1e-8, _finite_float(left_shifted, DAIMOI_ALPHA_BASELINE)),
-            )
-            right_alpha_pkg_next[key] = min(
-                DAIMOI_ALPHA_MAX,
-                max(1e-8, _finite_float(right_shifted, DAIMOI_ALPHA_BASELINE)),
-            )
-    else:
-        left_alpha_pkg_safe = {
-            str(key): max(1e-8, _finite_float(value, DAIMOI_ALPHA_BASELINE))
-            for key, value in dict(left_alpha_pkg).items()
-        }
-        right_alpha_pkg_safe = {
-            str(key): max(1e-8, _finite_float(value, DAIMOI_ALPHA_BASELINE))
-            for key, value in dict(right_alpha_pkg).items()
-        }
-        package_keys = tuple(
-            sorted(
-                set(
-                    [
-                        *left_alpha_pkg_safe.keys(),
-                        *right_alpha_pkg_safe.keys(),
-                        *DAIMOI_JOB_KEYS,
-                    ]
-                )
-            )
-        )
-        left_alpha_pkg_next = _dirichlet_transfer(
-            left_alpha_pkg_safe,
-            right_alpha_pkg_safe,
-            coupling=coupling_left,
-            transfer_t=transfer_t,
-            repulsion_u=repulsion_u,
-            keys=package_keys,
-        )
-        right_alpha_pkg_next = _dirichlet_transfer(
-            right_alpha_pkg_safe,
-            left_alpha_pkg_safe,
-            coupling=coupling_right,
-            transfer_t=transfer_t,
-            repulsion_u=repulsion_u,
-            keys=package_keys,
-        )
-
-    left_alpha_msg_raw = dict(left.get("alpha_msg", {}))
-    right_alpha_msg_raw = dict(right.get("alpha_msg", {}))
-    left_alpha_msg = {
-        "deliver": max(
-            1e-8,
-            _finite_float(
-                left_alpha_msg_raw.get("deliver", DAIMOI_ALPHA_BASELINE),
-                DAIMOI_ALPHA_BASELINE,
-            ),
-        ),
-        "hold": max(
-            1e-8,
-            _finite_float(
-                left_alpha_msg_raw.get("hold", DAIMOI_ALPHA_BASELINE),
-                DAIMOI_ALPHA_BASELINE,
-            ),
-        ),
-    }
-    right_alpha_msg = {
-        "deliver": max(
-            1e-8,
-            _finite_float(
-                right_alpha_msg_raw.get("deliver", DAIMOI_ALPHA_BASELINE),
-                DAIMOI_ALPHA_BASELINE,
-            ),
-        ),
-        "hold": max(
-            1e-8,
-            _finite_float(
-                right_alpha_msg_raw.get("hold", DAIMOI_ALPHA_BASELINE),
-                DAIMOI_ALPHA_BASELINE,
-            ),
-        ),
-    }
-    left_alpha_msg_next = {
-        "deliver": min(
-            DAIMOI_ALPHA_MAX,
-            max(
-                1e-8,
-                _finite_float(
-                    (
-                        (1.0 - left_rho)
-                        * (
-                            left_alpha_msg["deliver"]
-                            + (left_delta * right_alpha_msg["deliver"])
-                        )
-                    )
-                    + (left_rho * DAIMOI_ALPHA_BASELINE),
-                    DAIMOI_ALPHA_BASELINE,
-                ),
-            ),
-        ),
-        "hold": min(
-            DAIMOI_ALPHA_MAX,
-            max(
-                1e-8,
-                _finite_float(
-                    (
-                        (1.0 - left_rho)
-                        * (
-                            left_alpha_msg["hold"]
-                            + (left_delta * right_alpha_msg["hold"])
-                        )
-                    )
-                    + (left_rho * DAIMOI_ALPHA_BASELINE),
-                    DAIMOI_ALPHA_BASELINE,
-                ),
-            ),
-        ),
-    }
-    right_alpha_msg_next = {
-        "deliver": min(
-            DAIMOI_ALPHA_MAX,
-            max(
-                1e-8,
-                _finite_float(
-                    (
-                        (1.0 - right_rho)
-                        * (
-                            right_alpha_msg["deliver"]
-                            + (right_delta * left_alpha_msg["deliver"])
-                        )
-                    )
-                    + (right_rho * DAIMOI_ALPHA_BASELINE),
-                    DAIMOI_ALPHA_BASELINE,
-                ),
-            ),
-        ),
-        "hold": min(
-            DAIMOI_ALPHA_MAX,
-            max(
-                1e-8,
-                _finite_float(
-                    (
-                        (1.0 - right_rho)
-                        * (
-                            right_alpha_msg["hold"]
-                            + (right_delta * left_alpha_msg["hold"])
-                        )
-                    )
-                    + (right_rho * DAIMOI_ALPHA_BASELINE),
-                    DAIMOI_ALPHA_BASELINE,
-                ),
-            ),
-        ),
-    }
-
-    left["e_curr"] = next_left_curr
-    right["e_curr"] = next_right_curr
-    left["alpha_pkg"] = left_alpha_pkg_next
-    right["alpha_pkg"] = right_alpha_pkg_next
-    left["alpha_msg"] = left_alpha_msg_next
-    right["alpha_msg"] = right_alpha_msg_next
-    left["last_collision_matrix"] = {
-        "ss": round(matrix["ss"], 6),
-        "sc": round(matrix["sc"], 6),
-        "cs": round(matrix["cs"], 6),
-        "cc": round(matrix["cc"], 6),
-    }
-    right["last_collision_matrix"] = dict(left["last_collision_matrix"])
-
-    return {
-        "ss": matrix["ss"],
-        "sc": matrix["sc"],
-        "cs": matrix["cs"],
-        "cc": matrix["cc"],
-        "semantic_affinity": semantic_affinity,
-        "transfer": transfer_t,
-        "repulsion": repulsion_u,
-        "intensity": intensity,
-        "resource_transfer": resource_transfer,  # Return the side effect
-    }
 
 
 def _job_probabilities(state: dict[str, Any]) -> dict[str, float]:
@@ -4384,6 +3452,10 @@ def build_probabilistic_daimoi_particles(
                 pressure=DAIMOI_WORLD_EDGE_PRESSURE * anti_clump_edge_scale,
             )
 
+            if not is_nexus:
+                state["field_fx"] = fx
+                state["field_fy"] = fy
+
             vx = (pvx * damping) + fx
             vy = (pvy * damping) + fy
             speed = math.sqrt((vx * vx) + (vy * vy))
@@ -5527,6 +4599,8 @@ def build_probabilistic_daimoi_particles(
                 ),
                 "vx": round(_safe_float(state.get("vx", 0.0), 0.0), 6),
                 "vy": round(_safe_float(state.get("vy", 0.0), 0.0), 6),
+                "field_fx": round(_safe_float(state.get("field_fx", 0.0), 0.0), 6),
+                "field_fy": round(_safe_float(state.get("field_fy", 0.0), 0.0), 6),
                 "r": round(_clamp01(r_raw), 5),
                 "g": round(_clamp01(g_raw), 5),
                 "b": round(_clamp01(b_raw), 5),
@@ -5615,114 +4689,14 @@ def build_probabilistic_daimoi_particles(
     )
     anti_clump_drive = _safe_float(anti_clump_snapshot.get("drive", 0.0), 0.0)
     anti_clump_scale_snapshot = _anti_clump_scales(anti_clump_drive)
-    anti_clump_summary = {
-        "target": round(_clamp01(_safe_float(DAIMOI_ANTI_CLUMP_TARGET, 0.38)), 6),
-        "clump_score": round(
-            _clamp01(
-                _safe_float(
-                    anti_clump_snapshot.get(
-                        "score_ema",
-                        anti_clump_snapshot.get("clump_score", 0.0),
-                    ),
-                    0.0,
-                )
-            ),
-            6,
-        ),
-        "raw_clump_score": round(
-            _clamp01(_safe_float(anti_clump_snapshot.get("clump_score", 0.0), 0.0)),
-            6,
-        ),
-        "drive": round(_clamp_range(anti_clump_drive, -1.0, 1.0), 6),
-        "error": round(_safe_float(anti_clump_snapshot.get("error", 0.0), 0.0), 6),
-        "integral": round(
-            _safe_float(anti_clump_snapshot.get("integral", 0.0), 0.0),
-            6,
-        ),
-        "updated": bool(anti_clump_snapshot.get("updated", False)),
-        "tick": max(0, _safe_int(anti_clump_snapshot.get("tick", 0), 0)),
-        "particle_count": max(
-            0,
-            _safe_int(anti_clump_snapshot.get("particle_count", 0), 0),
-        ),
-        "metrics": {
-            "nn_term": round(
-                _clamp01(_safe_float(anti_clump_snapshot.get("nn_term", 0.0), 0.0)),
-                6,
-            ),
-            "entropy_norm": round(
-                _clamp01(
-                    _safe_float(anti_clump_snapshot.get("entropy_norm", 1.0), 1.0)
-                ),
-                6,
-            ),
-            "hotspot_term": round(
-                _clamp01(
-                    _safe_float(anti_clump_snapshot.get("hotspot_term", 0.0), 0.0)
-                ),
-                6,
-            ),
-            "collision_term": round(
-                _clamp01(
-                    _safe_float(anti_clump_snapshot.get("collision_term", 0.0), 0.0)
-                ),
-                6,
-            ),
-            "collision_rate": round(
-                max(
-                    0.0,
-                    _safe_float(anti_clump_snapshot.get("collision_rate", 0.0), 0.0),
-                ),
-                6,
-            ),
-            "median_distance": round(
-                max(
-                    0.0,
-                    _safe_float(
-                        anti_clump_snapshot.get("median_distance", 0.0),
-                        0.0,
-                    ),
-                ),
-                6,
-            ),
-            "target_distance": round(
-                max(
-                    0.0,
-                    _safe_float(
-                        anti_clump_snapshot.get("target_distance", 0.0),
-                        0.0,
-                    ),
-                ),
-                6,
-            ),
-            "top_share": round(
-                _clamp01(_safe_float(anti_clump_snapshot.get("top_share", 0.0), 0.0)),
-                6,
-            ),
-        },
-        "scales": {
-            "semantic": round(
-                _safe_float(anti_clump_scale_snapshot.get("semantic", 1.0), 1.0),
-                6,
-            ),
-            "edge": round(
-                _safe_float(anti_clump_scale_snapshot.get("edge", 1.0), 1.0),
-                6,
-            ),
-            "anchor": round(
-                _safe_float(anti_clump_scale_snapshot.get("anchor", 1.0), 1.0),
-                6,
-            ),
-            "spawn": round(
-                _safe_float(anti_clump_scale_snapshot.get("spawn", 1.0), 1.0),
-                6,
-            ),
-            "tangent": round(
-                _safe_float(anti_clump_scale_snapshot.get("tangent", 1.0), 1.0),
-                6,
-            ),
-        },
-    }
+    anti_clump_summary = daimoi_observer_module.anti_clump_summary_from_snapshot(
+        anti_clump_snapshot,
+        target=DAIMOI_ANTI_CLUMP_TARGET,
+        drive=anti_clump_drive,
+        scales=anti_clump_scale_snapshot,
+        snr_default_min=DAIMOI_OBSERVER_SNR_MIN,
+        snr_default_max=DAIMOI_OBSERVER_SNR_MAX,
+    )
 
     summary = {
         "record": DAIMOI_PROBABILISTIC_RECORD,
@@ -5762,6 +4736,7 @@ def build_probabilistic_daimoi_particles(
         "decompression_hint": bool(decompression_hint),
         "clump_score": anti_clump_summary["clump_score"],
         "anti_clump_drive": anti_clump_summary["drive"],
+        "snr": anti_clump_summary["snr"],
         "anti_clump": anti_clump_summary,
     }
     return output_rows, summary

@@ -2598,7 +2598,14 @@ def _simulation_ws_daimoi_live_metrics(
 
     try:
         positions = positions_fn(rows)
-        metrics = metrics_fn(positions, previous_collision_count=0)
+        try:
+            metrics = metrics_fn(
+                positions,
+                previous_collision_count=0,
+                particles=rows,
+            )
+        except TypeError:
+            metrics = metrics_fn(positions, previous_collision_count=0)
     except Exception:
         return {}
 
@@ -2607,7 +2614,13 @@ def _simulation_ws_daimoi_live_metrics(
 
     clump_score = _ws_clamp01(_safe_float(metrics.get("clump_score", 0.0), 0.0))
     target = _ws_clamp01(_safe_float(default_target, 0.38))
-    drive_estimate = max(-1.0, min(1.0, (clump_score - target) * 2.2))
+    snr_valid = _safe_float(metrics.get("snr_valid", 0.0), 0.0) > 0.5
+    snr_low_gap = max(0.0, _safe_float(metrics.get("snr_low_gap", 0.0), 0.0))
+    snr_high_gap = max(0.0, _safe_float(metrics.get("snr_high_gap", 0.0), 0.0))
+    if snr_valid:
+        drive_estimate = max(-1.0, min(1.0, snr_low_gap + (snr_high_gap * 0.35)))
+    else:
+        drive_estimate = max(-1.0, min(1.0, (clump_score - target) * 2.2))
 
     return {
         "clump_score": clump_score,
@@ -2636,6 +2649,61 @@ def _simulation_ws_daimoi_live_metrics(
                 _safe_float(metrics.get("target_distance", 0.0), 0.0),
             ),
             "top_share": _ws_clamp01(_safe_float(metrics.get("top_share", 0.0), 0.0)),
+            "mean_spacing": max(
+                0.0,
+                _safe_float(metrics.get("mean_spacing", 0.0), 0.0),
+            ),
+            "fano_factor": max(
+                0.0,
+                _safe_float(metrics.get("fano_factor", 0.0), 0.0),
+            ),
+            "fano_excess": max(
+                0.0,
+                _safe_float(metrics.get("fano_excess", 0.0), 0.0),
+            ),
+            "spatial_noise": max(
+                0.0,
+                _safe_float(metrics.get("spatial_noise", 0.0), 0.0),
+            ),
+            "motion_signal": max(
+                0.0,
+                _safe_float(metrics.get("motion_signal", 0.0), 0.0),
+            ),
+            "motion_noise": max(
+                0.0,
+                _safe_float(metrics.get("motion_noise", 0.0), 0.0),
+            ),
+            "motion_samples": max(
+                0,
+                int(_safe_float(metrics.get("motion_samples", 0), 0.0)),
+            ),
+            "semantic_noise": max(
+                0.0,
+                _safe_float(metrics.get("semantic_noise", 0.0), 0.0),
+            ),
+            "snr_signal": max(
+                0.0,
+                _safe_float(metrics.get("snr_signal", 0.0), 0.0),
+            ),
+            "snr_noise": max(
+                0.0,
+                _safe_float(metrics.get("snr_noise", 0.0), 0.0),
+            ),
+            "snr": max(0.0, _safe_float(metrics.get("snr", 0.0), 0.0)),
+            "snr_valid": bool(snr_valid),
+            "snr_low_gap": snr_low_gap,
+            "snr_high_gap": snr_high_gap,
+            "snr_min": max(
+                0.05,
+                _safe_float(metrics.get("snr_min", 0.85), 0.85),
+            ),
+            "snr_max": max(
+                0.1,
+                _safe_float(metrics.get("snr_max", 1.65), 1.65),
+            ),
+            "snr_in_band": bool(
+                _safe_float(metrics.get("snr_in_band", 0.0), 0.0) > 0.5
+            ),
         },
     }
 
@@ -2687,7 +2755,17 @@ def _simulation_ws_ensure_daimoi_summary(
 
     drive_default = max(-1.0, min(1.0, (clump_score - anti_target) * 2.2))
     anti_drive = drive_default
-    if not (isinstance(live_metrics, dict) and live_metrics):
+    if isinstance(live_metrics, dict) and live_metrics:
+        anti_drive = max(
+            -1.0,
+            min(
+                1.0,
+                _safe_float(
+                    live_metrics.get("drive_estimate", drive_default), drive_default
+                ),
+            ),
+        )
+    else:
         anti_drive = max(
             -1.0,
             min(
@@ -2810,6 +2888,159 @@ def _simulation_ws_ensure_daimoi_summary(
                 0.0,
             )
         ),
+        "mean_spacing": max(
+            0.0,
+            _safe_float(
+                live_metrics_map.get("mean_spacing", metrics.get("mean_spacing", 0.0)),
+                0.0,
+            ),
+        ),
+        "fano_factor": max(
+            0.0,
+            _safe_float(
+                live_metrics_map.get("fano_factor", metrics.get("fano_factor", 0.0)),
+                0.0,
+            ),
+        ),
+        "fano_excess": max(
+            0.0,
+            _safe_float(
+                live_metrics_map.get("fano_excess", metrics.get("fano_excess", 0.0)),
+                0.0,
+            ),
+        ),
+        "spatial_noise": max(
+            0.0,
+            _safe_float(
+                live_metrics_map.get(
+                    "spatial_noise",
+                    metrics.get("spatial_noise", 0.0),
+                ),
+                0.0,
+            ),
+        ),
+        "motion_signal": max(
+            0.0,
+            _safe_float(
+                live_metrics_map.get(
+                    "motion_signal",
+                    metrics.get("motion_signal", 0.0),
+                ),
+                0.0,
+            ),
+        ),
+        "motion_noise": max(
+            0.0,
+            _safe_float(
+                live_metrics_map.get("motion_noise", metrics.get("motion_noise", 0.0)),
+                0.0,
+            ),
+        ),
+        "motion_samples": max(
+            0,
+            int(
+                _safe_float(
+                    live_metrics_map.get(
+                        "motion_samples",
+                        metrics.get("motion_samples", 0),
+                    ),
+                    0.0,
+                )
+            ),
+        ),
+        "semantic_noise": max(
+            0.0,
+            _safe_float(
+                live_metrics_map.get(
+                    "semantic_noise",
+                    metrics.get("semantic_noise", 0.0),
+                ),
+                0.0,
+            ),
+        ),
+        "snr_signal": max(
+            0.0,
+            _safe_float(
+                live_metrics_map.get("snr_signal", metrics.get("snr_signal", 0.0)),
+                0.0,
+            ),
+        ),
+        "snr_noise": max(
+            0.0,
+            _safe_float(
+                live_metrics_map.get("snr_noise", metrics.get("snr_noise", 0.0)),
+                0.0,
+            ),
+        ),
+        "snr": max(
+            0.0,
+            _safe_float(live_metrics_map.get("snr", metrics.get("snr", 0.0)), 0.0),
+        ),
+        "snr_valid": bool(
+            _safe_float(
+                live_metrics_map.get("snr_valid", metrics.get("snr_valid", 0.0)),
+                0.0,
+            )
+            > 0.5
+        ),
+        "snr_low_gap": max(
+            0.0,
+            _safe_float(
+                live_metrics_map.get("snr_low_gap", metrics.get("snr_low_gap", 0.0)),
+                0.0,
+            ),
+        ),
+        "snr_high_gap": max(
+            0.0,
+            _safe_float(
+                live_metrics_map.get("snr_high_gap", metrics.get("snr_high_gap", 0.0)),
+                0.0,
+            ),
+        ),
+        "snr_min": max(
+            0.05,
+            _safe_float(
+                live_metrics_map.get("snr_min", metrics.get("snr_min", 0.85)),
+                0.85,
+            ),
+        ),
+        "snr_max": max(
+            0.1,
+            _safe_float(
+                live_metrics_map.get("snr_max", metrics.get("snr_max", 1.65)),
+                1.65,
+            ),
+        ),
+        "snr_in_band": bool(
+            _safe_float(
+                live_metrics_map.get("snr_in_band", metrics.get("snr_in_band", 0.0)),
+                0.0,
+            )
+            > 0.5
+        ),
+    }
+    anti["snr"] = round(
+        max(0.0, _safe_float(anti["metrics"].get("snr", 0.0), 0.0)),
+        6,
+    )
+    anti["snr_valid"] = bool(anti["metrics"].get("snr_valid", False))
+    snr_band_min = max(0.05, _safe_float(anti["metrics"].get("snr_min", 0.85), 0.85))
+    snr_band_max = max(
+        snr_band_min + 0.05,
+        _safe_float(anti["metrics"].get("snr_max", 1.65), 1.65),
+    )
+    anti["snr_band"] = {
+        "min": round(snr_band_min, 6),
+        "max": round(snr_band_max, 6),
+        "low_gap": round(
+            max(0.0, _safe_float(anti["metrics"].get("snr_low_gap", 0.0), 0.0)),
+            6,
+        ),
+        "high_gap": round(
+            max(0.0, _safe_float(anti["metrics"].get("snr_high_gap", 0.0), 0.0)),
+            6,
+        ),
+        "in_band": bool(anti["metrics"].get("snr_in_band", False)),
     }
     anti["scales"] = {
         "spawn": max(0.0, _safe_float(scales.get("spawn", 1.0), 1.0)),
@@ -2863,6 +3094,7 @@ def _simulation_ws_ensure_daimoi_summary(
 
     summary["clump_score"] = round(clump_score, 6)
     summary["anti_clump_drive"] = round(anti_drive, 6)
+    summary["snr"] = round(max(0.0, _safe_float(anti.get("snr", 0.0), 0.0)), 6)
     summary["anti_clump"] = anti
     dynamics["daimoi_probabilistic"] = summary
     payload["presence_dynamics"] = dynamics
