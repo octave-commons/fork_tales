@@ -45,6 +45,19 @@ function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
+function clampRange(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+  if (value < min) {
+    return min;
+  }
+  if (value > max) {
+    return max;
+  }
+  return value;
+}
+
 function normalizeRows(simulation: SimulationState | null): BackendFieldParticle[] {
   const directRows = simulation?.presence_dynamics?.field_particles ?? simulation?.field_particles;
   return Array.isArray(directRows) ? directRows : [];
@@ -52,6 +65,47 @@ function normalizeRows(simulation: SimulationState | null): BackendFieldParticle
 
 function formatPercent(value: number): string {
   return `${Math.round(clamp01(value) * 100)}%`;
+}
+
+function formatSigned(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "0.000";
+  }
+  return `${value >= 0 ? "+" : ""}${value.toFixed(3)}`;
+}
+
+function antiClumpStatus(score: number, target: number): {
+  label: string;
+  accent: string;
+  background: string;
+} {
+  const delta = score - target;
+  if (delta >= 0.2) {
+    return {
+      label: "clumped",
+      accent: "rgba(255,135,122,0.86)",
+      background: "linear-gradient(90deg, rgba(76,23,19,0.62), rgba(88,33,26,0.56))",
+    };
+  }
+  if (delta >= 0.08) {
+    return {
+      label: "forming clusters",
+      accent: "rgba(255,187,103,0.88)",
+      background: "linear-gradient(90deg, rgba(66,43,15,0.62), rgba(80,52,20,0.56))",
+    };
+  }
+  if (delta <= -0.05) {
+    return {
+      label: "dispersed",
+      accent: "rgba(128,236,255,0.88)",
+      background: "linear-gradient(90deg, rgba(13,43,57,0.62), rgba(13,60,72,0.56))",
+    };
+  }
+  return {
+    label: "on target",
+    accent: "rgba(129,233,171,0.9)",
+    background: "linear-gradient(90deg, rgba(15,50,30,0.62), rgba(19,70,39,0.56))",
+  };
 }
 
 function barColor(hue: number): string {
@@ -193,6 +247,13 @@ export function DaimoiPresencePanel({ catalog, simulation, onFocusAnchor, onEmit
   }, [fieldRows, presenceMeta]);
 
   const globalSummary = simulation?.presence_dynamics?.daimoi_probabilistic;
+  const antiClumpSummary = globalSummary?.anti_clump;
+  const antiClumpMetrics = antiClumpSummary?.metrics;
+  const antiClumpScales = antiClumpSummary?.scales;
+  const clumpScore = clamp01(Number(globalSummary?.clump_score ?? antiClumpSummary?.clump_score ?? 0));
+  const antiClumpTarget = clamp01(Number(antiClumpSummary?.target ?? 0));
+  const antiClumpDrive = clampRange(Number(globalSummary?.anti_clump_drive ?? antiClumpSummary?.drive ?? 0), -1, 1);
+  const clumpStatus = antiClumpStatus(clumpScore, antiClumpTarget);
 
   const topJobTriggers = useMemo(() => {
     const rows = Object.entries(globalSummary?.job_triggers ?? {})
@@ -277,7 +338,7 @@ export function DaimoiPresencePanel({ catalog, simulation, onFocusAnchor, onEmit
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-6">
         <div className="rounded-lg border border-[rgba(118,184,222,0.36)] bg-[rgba(9,20,30,0.62)] px-2 py-1.5">
           <p className="text-[10px] uppercase tracking-[0.1em] text-[#8eb6cf]">active daimoi</p>
           <p className="text-sm font-semibold text-[#e4f4ff]">{Number(globalSummary?.active ?? fieldRows.length)}</p>
@@ -294,7 +355,80 @@ export function DaimoiPresencePanel({ catalog, simulation, onFocusAnchor, onEmit
           <p className="text-[10px] uppercase tracking-[0.1em] text-[#8eb6cf]">mean entropy</p>
           <p className="text-sm font-semibold text-[#e4f4ff]">{Number(globalSummary?.mean_package_entropy ?? 0).toFixed(3)}</p>
         </div>
+        <div className="rounded-lg border border-[rgba(118,184,222,0.36)] bg-[rgba(9,20,30,0.62)] px-2 py-1.5">
+          <p className="text-[10px] uppercase tracking-[0.1em] text-[#8eb6cf]">clump score</p>
+          <p className="text-sm font-semibold text-[#e4f4ff]">{clumpScore.toFixed(3)}</p>
+        </div>
+        <div className="rounded-lg border border-[rgba(118,184,222,0.36)] bg-[rgba(9,20,30,0.62)] px-2 py-1.5">
+          <p className="text-[10px] uppercase tracking-[0.1em] text-[#8eb6cf]">anti-clump drive</p>
+          <p className="text-sm font-semibold text-[#e4f4ff]">{formatSigned(antiClumpDrive)}</p>
+        </div>
       </div>
+
+      <section
+        className="rounded-lg border p-3"
+        style={{
+          borderColor: clumpStatus.accent,
+          background: clumpStatus.background,
+        }}
+      >
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-[11px] uppercase tracking-[0.12em] text-[#d5ecfb]">Anti-clump controller</p>
+          <span className="rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-[0.08em]" style={{ borderColor: clumpStatus.accent, color: clumpStatus.accent }}>
+            {clumpStatus.label}
+          </span>
+        </div>
+        <p className="mt-1 text-[10px] text-[#9ec7dd]">
+          target {antiClumpTarget.toFixed(3)} | score {clumpScore.toFixed(3)} | drive {formatSigned(antiClumpDrive)} ({antiClumpDrive >= 0 ? "spread" : "relax"})
+        </p>
+        <div className="relative mt-2 h-2 rounded-full bg-[rgba(26,44,58,0.62)]">
+          <div
+            className="h-full rounded-full"
+            style={{
+              width: `${clumpScore * 100}%`,
+              background: clumpStatus.accent,
+            }}
+          />
+          <div
+            className="absolute top-[-3px] h-[8px] w-[2px] rounded"
+            style={{
+              left: `calc(${antiClumpTarget * 100}% - 1px)`,
+              background: "rgba(231,248,255,0.92)",
+            }}
+          />
+        </div>
+        <p className="mt-1 text-[10px] text-[#9ec7dd]">
+          nn {Number(antiClumpMetrics?.nn_term ?? 0).toFixed(3)} | entropy {Number(antiClumpMetrics?.entropy_norm ?? 0).toFixed(3)} | hotspot {Number(antiClumpMetrics?.hotspot_term ?? 0).toFixed(3)} | collision {Number(antiClumpMetrics?.collision_term ?? 0).toFixed(3)}
+        </p>
+        <div className="mt-2 grid gap-2 md:grid-cols-2">
+          {[
+            { key: "spawn", value: Number(antiClumpScales?.spawn ?? 1), hue: 28 },
+            { key: "anchor", value: Number(antiClumpScales?.anchor ?? 1), hue: 184 },
+            { key: "semantic", value: Number(antiClumpScales?.semantic ?? 1), hue: 206 },
+            { key: "edge", value: Number(antiClumpScales?.edge ?? 1), hue: 142 },
+            { key: "tangent", value: Number(antiClumpScales?.tangent ?? 1), hue: 320 },
+          ].map((row) => {
+            const bar = clamp01(row.value / 1.6);
+            return (
+              <div key={row.key}>
+                <div className="flex items-center justify-between text-[11px] text-[#cfe6f7]">
+                  <span>{row.key}</span>
+                  <span className="font-mono">{row.value.toFixed(3)}</span>
+                </div>
+                <div className="mt-1 h-1.5 rounded-full bg-[rgba(44,72,94,0.46)]">
+                  <div
+                    className="h-full rounded-full"
+                    style={{
+                      width: `${bar * 100}%`,
+                      background: barColor(row.hue),
+                    }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
 
       {lastFocusLabel ? (
         <div className="rounded-lg border border-[rgba(139,209,244,0.4)] bg-[linear-gradient(90deg,rgba(10,25,36,0.82),rgba(8,30,39,0.74))] px-3 py-1.5 text-xs text-[#d8eeff]">

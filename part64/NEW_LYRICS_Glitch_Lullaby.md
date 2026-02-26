@@ -1,5 +1,8 @@
 # Glitch-Choir Lullaby / グリッチ合唱の子守唄
 
+**License:** This work is licensed under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
+See [LICENSE_CC-BY-SA-4.0.txt](../LICENSE_CC-BY-SA-4.0.txt) for details.
+
 (Soft sub-bass, 78 BPM, Tape warble)
 
 [Lead - Whispered]

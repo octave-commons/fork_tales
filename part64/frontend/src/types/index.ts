@@ -1410,6 +1410,8 @@ export interface DaimoiProbabilisticSummary {
   job_triggers: Record<string, number>;
   mean_package_entropy: number;
   mean_message_probability: number;
+  clump_score?: number;
+  anti_clump_drive?: number;
   mean_drift_score?: number;
   mean_route_probability?: number;
   mean_drift_gravity_term?: number;
@@ -1477,6 +1479,34 @@ export interface DaimoiProbabilisticSummary {
     cc: number;
   };
   behavior_defaults?: string[];
+  anti_clump?: {
+    target?: number;
+    clump_score?: number;
+    raw_clump_score?: number;
+    drive?: number;
+    error?: number;
+    integral?: number;
+    updated?: boolean;
+    tick?: number;
+    particle_count?: number;
+    metrics?: {
+      nn_term?: number;
+      entropy_norm?: number;
+      hotspot_term?: number;
+      collision_term?: number;
+      collision_rate?: number;
+      median_distance?: number;
+      target_distance?: number;
+      top_share?: number;
+    };
+    scales?: {
+      semantic?: number;
+      edge?: number;
+      anchor?: number;
+      spawn?: number;
+      tangent?: number;
+    };
+  };
   resource_daimoi?: ResourceDaimoiSummary;
   resource_consumption?: ResourceConsumptionSummary;
 }

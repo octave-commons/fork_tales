@@ -1,5 +1,8 @@
 # Fork Tax Canticle / フォーク税の聖歌
 
+**License:** This work is licensed under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
+See [LICENSE_CC-BY-SA-4.0.txt](../LICENSE_CC-BY-SA-4.0.txt) for details.
+
 **Style:** Mythic glitch epic • 84 BPM • spoken-sung cadence • cathedral reverb  
 **Stutter markers:** “η” (12s), “μ” (24s), “anchor” (36s), “fork” (48s)
 

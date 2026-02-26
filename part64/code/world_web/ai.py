@@ -16,7 +16,6 @@ import mimetypes
 import unicodedata
 import importlib
 import shutil
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -55,6 +54,7 @@ from .metrics import (
     _resource_auto_embedding_order,
     _resource_auto_text_order,
 )
+from .symbols import world_web_symbol as _world_web_symbol
 
 CHAT_TOOLS_BY_TYPE = {
     "flow": ["sing_line", "pulse_tag"],
@@ -73,13 +73,6 @@ URL_RE = re.compile(r"https?://[^\s)\]}>\"']+", re.IGNORECASE)
 FILE_RE = re.compile(r"\b[./~]?[-\w]+(?:/[-\w.]+)+\.[a-z0-9]{1,8}\b", re.IGNORECASE)
 PR_RE = re.compile(r"\b(?:PR|pr)\s*#\d+\b")
 OVERLAY_TAGS = ("[[PULSE]]", "[[GLITCH]]", "[[SING]]")
-
-
-def _world_web_symbol(name: str, default: Any) -> Any:
-    module = sys.modules.get("code.world_web")
-    if module is None:
-        return default
-    return getattr(module, name, default)
 
 
 def _c_embed_text_24(

@@ -35,7 +35,7 @@ WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 # Simulation and Catalog Parameters
 MAX_SIM_POINTS = max(256, int(os.getenv("MAX_SIM_POINTS", "2048") or "2048"))
-SIM_TICK_SECONDS = float(os.getenv("SIM_TICK_SECONDS", "0.2") or "0.2")
+SIM_TICK_SECONDS = max(0.001, float(os.getenv("SIM_TICK_SECONDS", "0.2") or "0.2"))
 CATALOG_REFRESH_SECONDS = float(os.getenv("CATALOG_REFRESH_SECONDS", "1.5") or "1.5")
 CATALOG_BROADCAST_HEARTBEAT_SECONDS = float(
     os.getenv("CATALOG_BROADCAST_HEARTBEAT_SECONDS", "6.0") or "6.0"
@@ -44,6 +44,11 @@ MYCELIAL_ECHO_CACHE_SECONDS = max(
     0.2,
     float(os.getenv("MYCELIAL_ECHO_CACHE_SECONDS", "2.5") or "2.5"),
 )
+
+
+def simulation_tick_seconds() -> float:
+    return max(0.001, float(SIM_TICK_SECONDS))
+
 
 # Daimoi Dynamics
 DAIMO_FORCE_KAPPA = max(
@@ -63,14 +68,6 @@ DAIMO_MAX_TRACKED_ENTITIES = max(
     int(os.getenv("DAIMO_MAX_TRACKED_ENTITIES", "280") or "280"),
 )
 DAIMO_PROFILE_DEFS: tuple[dict[str, Any], ...] = (
-    {
-        "id": "daimo:core",
-        "name": "Core Daimoi",
-        "ctx": "主",
-        "base_budget": 9.0,
-        "w": 1.0,
-        "temperature": 0.34,
-    },
     {
         "id": "daimo:core",
         "name": "Core Daimoi",

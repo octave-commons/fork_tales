@@ -1,4 +1,8 @@
 # The Core / 核心
+
+**License:** This work is licensed under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
+See [LICENSE_CC-BY-SA-4.0.txt](../LICENSE_CC-BY-SA-4.0.txt) for details.
+
 (92 BPM, Shifting pulse, High-fidelity VL harmonics)
 
 [Intro - Distortion]

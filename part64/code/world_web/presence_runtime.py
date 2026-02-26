@@ -850,6 +850,8 @@ class PresenceRuntimeManager:
             )
             if impact and "resource_wallet" in impact:
                 vars_patch["resource_wallet"] = impact["resource_wallet"]
+            if impact and "resource_wallet_denoms" in impact:
+                vars_patch["resource_wallet_denoms"] = impact["resource_wallet_denoms"]
 
             expected_ver = self._storage.get_presence_ver(presence_id)
             update_event = {

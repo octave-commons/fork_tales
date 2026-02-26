@@ -1,4 +1,8 @@
 # The Trembling Hinge / 震える蝶
+
+**License:** This work is licensed under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
+See [LICENSE_CC-BY-SA-4.0.txt](../LICENSE_CC-BY-SA-4.0.txt) for details.
+
 (105 BPM, Fractured beats, Reversed choirs, Radio static)
 
 [Intro - Glitch Static]

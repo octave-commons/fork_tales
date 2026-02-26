@@ -1,3 +1,20 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# This file is part of Fork Tales.
+# Copyright (C) 2024-2025 Fork Tales Contributors
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 from __future__ import annotations
 import subprocess
 import os
@@ -48,7 +65,6 @@ from .constants import (
     ETA_MU_INGEST_VECSTORE_COLLECTION,
     DOCKER_AUTORESTART_INCLUDE_GLOBS,
     DOCKER_AUTORESTART_EXCLUDE_GLOBS,
-    DOCKER_AUTORESTART_REQUIRE_COUNCIL,
     DOCKER_AUTORESTART_SERVICES,
     DOCKER_AUTORESTART_TIMEOUT_SECONDS,
 )
@@ -172,6 +188,12 @@ from .muse_runtime import (
     MuseRuntimeManager,
     get_muse_runtime_manager,
     reset_muse_runtime_state_for_tests,
+)
+from .governor import (
+    TickGovernor,
+    Packet,
+    LaneType,
+    get_governor,
 )
 from .server import (
     main,

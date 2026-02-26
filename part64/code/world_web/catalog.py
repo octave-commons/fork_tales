@@ -10,7 +10,6 @@ import unicodedata
 import random
 import re
 import shutil
-import sys
 import zipfile
 import threading
 from datetime import datetime, timezone
@@ -184,13 +183,7 @@ from .projection import (
     _semantic_xy_from_embedding,
     projection_perspective_options,
 )
-
-
-def _world_web_symbol(name: str, default: Any) -> Any:
-    module = sys.modules.get("code.world_web")
-    if module is None:
-        return default
-    return getattr(module, name, default)
+from .symbols import world_web_symbol as _world_web_symbol
 
 
 def load_manifest(part_root: Path) -> dict[str, Any]:

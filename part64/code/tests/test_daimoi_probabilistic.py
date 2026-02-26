@@ -110,6 +110,89 @@ def test_probabilistic_builder_emits_job_distribution_and_actions() -> None:
     assert model_summary.get("decompression_hint") is True
 
 
+def test_probabilistic_builder_emits_anti_clump_summary() -> None:
+    _, model_summary = build_probabilistic_daimoi_particles(
+        file_graph={"file_nodes": []},
+        presence_impacts=[
+            {
+                "id": "witness_thread",
+                "affected_by": {"files": 0.5, "clicks": 0.3, "resource": 0.2},
+                "affects": {"world": 0.7, "ledger": 0.6},
+            },
+            {
+                "id": "anchor_registry",
+                "affected_by": {"files": 0.4, "clicks": 0.4, "resource": 0.3},
+                "affects": {"world": 0.6, "ledger": 0.5},
+            },
+        ],
+        resource_heartbeat={
+            "devices": {
+                "cpu": {"utilization": 18.0},
+                "gpu1": {"utilization": 12.0},
+                "gpu2": {"utilization": 11.0},
+                "npu0": {"utilization": 9.0},
+            }
+        },
+        compute_jobs=[],
+        queue_ratio=0.1,
+        now=1_700_000_150.0,
+    )
+
+    anti_clump = model_summary.get("anti_clump", {})
+    assert isinstance(anti_clump, dict)
+    assert 0.0 <= float(model_summary.get("clump_score", 0.0)) <= 1.0
+    assert -1.0 <= float(model_summary.get("anti_clump_drive", 0.0)) <= 1.0
+    assert 0.0 <= float(anti_clump.get("target", 0.0)) <= 1.0
+    assert 0.0 <= float(anti_clump.get("clump_score", 0.0)) <= 1.0
+    assert -1.0 <= float(anti_clump.get("drive", 0.0)) <= 1.0
+
+    metrics = anti_clump.get("metrics", {})
+    assert isinstance(metrics, dict)
+    assert 0.0 <= float(metrics.get("nn_term", 0.0)) <= 1.0
+    assert 0.0 <= float(metrics.get("entropy_norm", 0.0)) <= 1.0
+    assert 0.0 <= float(metrics.get("hotspot_term", 0.0)) <= 1.0
+    assert 0.0 <= float(metrics.get("collision_term", 0.0)) <= 1.0
+
+    scales = anti_clump.get("scales", {})
+    assert isinstance(scales, dict)
+    assert 0.34 <= float(scales.get("semantic", 0.0)) <= 1.21
+    assert 0.39 <= float(scales.get("edge", 0.0)) <= 1.11
+    assert 0.44 <= float(scales.get("anchor", 0.0)) <= 1.11
+    assert 0.49 <= float(scales.get("spawn", 0.0)) <= 1.06
+    assert 0.79 <= float(scales.get("tangent", 0.0)) <= 1.81
+
+
+def test_anti_clump_metrics_score_cluster_higher_than_spread() -> None:
+    clustered: list[tuple[float, float]] = []
+    for index in range(64):
+        angle = (float(index) / 64.0) * math.tau
+        radius = 0.01 + ((index % 5) * 0.0015)
+        clustered.append(
+            (
+                0.5 + (math.cos(angle) * radius),
+                0.5 + (math.sin(angle) * radius),
+            )
+        )
+
+    spread: list[tuple[float, float]] = []
+    for row in range(8):
+        for col in range(8):
+            spread.append((0.08 + (col * 0.11), 0.08 + (row * 0.11)))
+
+    clustered_metrics = daimoi_module._anti_clump_metrics(
+        clustered,
+        previous_collision_count=0,
+    )
+    spread_metrics = daimoi_module._anti_clump_metrics(
+        spread,
+        previous_collision_count=0,
+    )
+
+    assert float(clustered_metrics.get("clump_score", 0.0)) > float(
+        spread_metrics.get("clump_score", 0.0)
+    )
+
+
 def test_absorb_sampler_emits_component_logits_and_gumbel_scores() -> None:
     components = daimoi_module._packet_components_from_job_probabilities(
         {
@@ -672,7 +755,7 @@ def test_simulation_resource_cores_emit_resource_daimoi_to_subsim_wallets(
     )
 
 
-def test_simulation_only_cpu_core_emits_without_cpu_wallet(
+def test_simulation_core_emitters_use_coupled_wallets(
     monkeypatch: Any,
 ) -> None:
     monkeypatch.setenv("SIM_PARTICLE_BACKEND", "python")
@@ -742,12 +825,8 @@ def test_simulation_only_cpu_core_emits_without_cpu_wallet(
         if str(row.get("presence_id", "")).strip() == "presence.core.ram"
     ]
     assert ram_rows
-    assert all(not bool(row.get("resource_daimoi", False)) for row in ram_rows)
-    assert any(
-        str(row.get("resource_block_reason", "")).strip()
-        == "cpu_wallet_required_for_emit"
-        for row in ram_rows
-    )
+    assert any(bool(row.get("resource_daimoi", False)) for row in ram_rows)
+    assert any(str(row.get("resource_type", "")).strip() == "ram" for row in ram_rows)
 
     non_core_rows = [
         row
@@ -1054,6 +1133,7 @@ def test_simulation_cpu_sentinel_burns_wallet_above_threshold(
 def test_simulation_cpu_sentinel_forces_cpu_resource_targets_when_hot(
     monkeypatch: Any,
 ) -> None:
+    monkeypatch.setenv("SIMULATION_CPU_DAIMOI_STOP_PERCENT", "99")
     monkeypatch.setattr(
         simulation_module,
         "_RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_START_PERCENT",
@@ -1068,8 +1148,8 @@ def test_simulation_cpu_sentinel_forces_cpu_resource_targets_when_hot(
 
     field_particles = [
         {
-            "id": "particle:witness:01",
-            "presence_id": "witness_thread",
+            "id": "particle:core-cpu:01",
+            "presence_id": "presence.core.cpu",
             "is_nexus": False,
             "x": 0.45,
             "y": 0.48,
@@ -1083,12 +1163,12 @@ def test_simulation_cpu_sentinel_forces_cpu_resource_targets_when_hot(
     ]
     presence_impacts = [
         {
-            "id": "witness_thread",
-            "presence_type": "presence",
+            "id": "presence.core.cpu",
+            "presence_type": "core",
             "x": 0.45,
             "y": 0.48,
             "affected_by": {"resource": 0.6},
-            "resource_wallet": {"cpu": 0.9},
+            "resource_wallet": {"cpu": 1.0},
         },
         {
             "id": "health_sentinel_cpu",
@@ -1121,6 +1201,416 @@ def test_simulation_cpu_sentinel_forces_cpu_resource_targets_when_hot(
         str(field_particles[0].get("resource_forced_target", "")).strip()
         == "cpu_sentinel_attractor"
     )
+
+
+def test_simulation_global_cpu_cutoff_disables_all_core_emitters() -> None:
+    field_particles = [
+        {
+            "id": "particle:core-cpu:cutoff",
+            "presence_id": "presence.core.cpu",
+            "is_nexus": False,
+            "x": 0.41,
+            "y": 0.47,
+            "influence_power": 0.7,
+            "message_probability": 0.66,
+            "route_probability": 0.53,
+            "drift_score": 0.08,
+            "gravity_potential": 0.2,
+        },
+        {
+            "id": "particle:core-ram:cutoff",
+            "presence_id": "presence.core.ram",
+            "is_nexus": False,
+            "x": 0.58,
+            "y": 0.52,
+            "influence_power": 0.69,
+            "message_probability": 0.61,
+            "route_probability": 0.49,
+            "drift_score": 0.07,
+            "gravity_potential": 0.21,
+        },
+    ]
+    presence_impacts = [
+        {
+            "id": "presence.core.cpu",
+            "presence_type": "core",
+            "resource_wallet": {"cpu": 2.0},
+        },
+        {
+            "id": "presence.core.ram",
+            "presence_type": "core",
+            "resource_wallet": {"ram": 2.0, "cpu": 1.0},
+        },
+        {
+            "id": "health_sentinel_cpu",
+            "presence_type": "presence",
+            "resource_wallet": {"cpu": 0.0},
+        },
+    ]
+
+    summary = simulation_module._apply_resource_daimoi_emissions(
+        field_particles=field_particles,
+        presence_impacts=presence_impacts,
+        resource_heartbeat={"devices": {"cpu": {"utilization": 96.0}}},
+        queue_ratio=0.0,
+    )
+
+    assert summary.get("cpu_emitter_cutoff_active") is True
+    assert int(float(summary.get("delivered_packets", 0) or 0.0)) == 0
+    assert (
+        str(field_particles[0].get("resource_emit_disabled_reason", "")).strip()
+        == "global_cpu_cutoff"
+    )
+    assert (
+        str(field_particles[1].get("resource_emit_disabled_reason", "")).strip()
+        == "global_cpu_cutoff"
+    )
+
+
+def test_resource_emission_credits_wallet_denoms() -> None:
+    field_particles = [
+        {
+            "id": "particle:core-cpu:wallet-credit",
+            "presence_id": "presence.core.cpu",
+            "is_nexus": False,
+            "x": 0.42,
+            "y": 0.46,
+            "influence_power": 0.71,
+            "message_probability": 0.63,
+            "route_probability": 0.57,
+            "drift_score": 0.09,
+            "gravity_potential": 0.2,
+        }
+    ]
+    presence_impacts = [
+        {
+            "id": "presence.core.cpu",
+            "presence_type": "core",
+            "x": 0.42,
+            "y": 0.46,
+            "resource_wallet": {"cpu": 3.0},
+        },
+        {
+            "id": "health_sentinel_cpu",
+            "presence_type": "presence",
+            "x": 0.5,
+            "y": 0.5,
+            "resource_wallet": {"cpu": 0.0},
+            "resource_wallet_denoms": [],
+        },
+    ]
+
+    summary = simulation_module._apply_resource_daimoi_emissions(
+        field_particles=field_particles,
+        presence_impacts=presence_impacts,
+        resource_heartbeat={"devices": {"cpu": {"utilization": 22.0}}},
+        queue_ratio=0.0,
+    )
+
+    assert int(float(summary.get("delivered_packets", 0) or 0.0)) > 0
+    target = next(
+        (
+            row
+            for row in presence_impacts
+            if str(row.get("id", "")).strip() == "health_sentinel_cpu"
+        ),
+        {},
+    )
+    wallet = target.get("resource_wallet", {})
+    assert isinstance(wallet, dict)
+    assert any(float(value or 0.0) > 0.0 for value in wallet.values())
+    denoms = target.get("resource_wallet_denoms", [])
+    assert isinstance(denoms, list)
+    assert denoms
+    assert bool(field_particles[0].get("resource_emit_wallet_credit", False)) is True
+
+
+def test_resource_action_consumption_supports_coupled_wallet_affordability() -> None:
+    field_particles = [
+        {
+            "id": "particle:witness:coupled",
+            "presence_id": "witness_thread",
+            "is_nexus": False,
+            "message_probability": 0.62,
+            "route_probability": 0.48,
+            "influence_power": 0.57,
+            "drift_score": 0.12,
+        }
+    ]
+    presence_impacts = [
+        {
+            "id": "witness_thread",
+            "presence_type": "presence",
+            "resource_wallet": {
+                "cpu": 0.0,
+                "ram": 0.4,
+            },
+        }
+    ]
+    summary = simulation_module._apply_resource_daimoi_action_consumption(
+        field_particles=field_particles,
+        presence_impacts=presence_impacts,
+        resource_heartbeat={"devices": {"cpu": {"utilization": 42.0}}},
+        queue_ratio=0.0,
+    )
+
+    row = field_particles[0]
+    assert bool(row.get("resource_action_blocked", True)) is False
+    payment = row.get("resource_payment_vector", {})
+    assert isinstance(payment, dict)
+    assert float(payment.get("ram", 0.0) or 0.0) > 0.0
+    by_resource = summary.get("by_resource", {})
+    assert isinstance(by_resource, dict)
+    assert float(by_resource.get("ram", 0.0) or 0.0) > 0.0
+
+
+def test_resource_action_consumption_uses_wallet_denoms_greedy_subset() -> None:
+    vector_small = {
+        "cpu": 0.00002,
+        "ram": 0.000012,
+        "disk": 0.000008,
+        "network": 0.000008,
+        "gpu": 0.00001,
+        "npu": 0.00001,
+    }
+    vector_large = {
+        "cpu": 0.03,
+        "ram": 0.02,
+        "disk": 0.015,
+        "network": 0.015,
+        "gpu": 0.018,
+        "npu": 0.018,
+    }
+    field_particles = [
+        {
+            "id": "particle:witness:denom-knapsack",
+            "presence_id": "witness_thread",
+            "is_nexus": False,
+            "message_probability": 0.0,
+            "route_probability": 0.0,
+            "influence_power": 0.0,
+            "drift_score": 0.0,
+        }
+    ]
+    presence_impacts = [
+        {
+            "id": "witness_thread",
+            "presence_type": "presence",
+            "resource_wallet": {
+                key: float(
+                    vector_small.get(key, 0.0) * 2.0 + vector_large.get(key, 0.0)
+                )
+                for key in ("cpu", "ram", "disk", "network", "gpu", "npu")
+            },
+            "resource_wallet_denoms": [
+                {"vector": dict(vector_small), "count": 2},
+                {"vector": dict(vector_large), "count": 1},
+            ],
+        }
+    ]
+
+    summary = simulation_module._apply_resource_daimoi_action_consumption(
+        field_particles=field_particles,
+        presence_impacts=presence_impacts,
+        resource_heartbeat={"devices": {"cpu": {"utilization": 28.0}}},
+        queue_ratio=0.0,
+    )
+
+    row = field_particles[0]
+    assert bool(row.get("resource_action_blocked", True)) is False
+    assert str(row.get("resource_burn_strategy", "")).strip() == "denom_knapsack"
+    payment = row.get("resource_payment_vector", {})
+    assert isinstance(payment, dict)
+    paid_total = sum(float(value or 0.0) for value in payment.values())
+    assert paid_total > 0.0
+    assert (
+        paid_total < 0.001
+    )  # should pick small bucket(s), not the large overpay packet
+
+    denoms_after = presence_impacts[0].get("resource_wallet_denoms", [])
+    assert isinstance(denoms_after, list)
+    small_bucket_after = next(
+        (
+            bucket
+            for bucket in denoms_after
+            if isinstance(bucket, dict)
+            and isinstance(bucket.get("vector"), dict)
+            and float((bucket.get("vector", {}) or {}).get("cpu", 0.0) or 0.0) < 0.001
+        ),
+        {},
+    )
+    assert int(float((small_bucket_after or {}).get("count", 0) or 0.0)) == 1
+    assert float(summary.get("consumed_total", 0.0) or 0.0) > 0.0
+
+
+def test_resource_action_consumption_blocks_without_partial_spend() -> None:
+    field_particles = [
+        {
+            "id": "particle:witness:starved",
+            "presence_id": "witness_thread",
+            "is_nexus": False,
+            "message_probability": 0.95,
+            "route_probability": 0.95,
+            "influence_power": 0.95,
+            "drift_score": 0.95,
+        }
+    ]
+    presence_impacts = [
+        {
+            "id": "witness_thread",
+            "presence_type": "presence",
+            "resource_wallet": {
+                "cpu": 0.000001,
+                "ram": 0.0,
+                "disk": 0.0,
+                "network": 0.0,
+                "gpu": 0.0,
+                "npu": 0.0,
+            },
+        }
+    ]
+
+    summary = simulation_module._apply_resource_daimoi_action_consumption(
+        field_particles=field_particles,
+        presence_impacts=presence_impacts,
+        resource_heartbeat={"devices": {"cpu": {"utilization": 32.0}}},
+        queue_ratio=0.0,
+    )
+
+    row = field_particles[0]
+    assert bool(row.get("resource_action_blocked", False)) is True
+    assert float(row.get("resource_consume_amount", 1.0) or 0.0) == pytest.approx(0.0)
+    payment = row.get("resource_payment_vector", {})
+    assert isinstance(payment, dict)
+    assert not payment
+    wallet = presence_impacts[0].get("resource_wallet", {})
+    assert isinstance(wallet, dict)
+    assert float(wallet.get("cpu", 0.0) or 0.0) == pytest.approx(0.000001)
+    assert float(summary.get("consumed_total", 1.0) or 0.0) == pytest.approx(0.0)
+
+
+def test_resource_action_consumption_control_budget_degrades_complexity(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setenv("SIMULATION_RESOURCE_CTL_BUDGET_RECHARGE", "0")
+    monkeypatch.setenv("SIMULATION_RESOURCE_CTL_BUDGET_CAP_CPU", "0.01")
+    monkeypatch.setenv("SIMULATION_RESOURCE_CTL_BUDGET_CAP_RAM", "0.01")
+    monkeypatch.setenv("SIMULATION_RESOURCE_CTL_BUDGET_CAP_DISK", "0.01")
+    monkeypatch.setenv("SIMULATION_RESOURCE_CTL_BUDGET_CAP_NETWORK", "0.01")
+    monkeypatch.setenv("SIMULATION_RESOURCE_CTL_BUDGET_CAP_GPU", "0.01")
+    monkeypatch.setenv("SIMULATION_RESOURCE_CTL_BUDGET_CAP_NPU", "0.01")
+    simulation_module.reset_simulation_bootstrap_state(
+        clear_layout_cache=False,
+        rearm_boot_reset=False,
+    )
+
+    field_particles = [
+        {
+            "id": f"particle:witness:budget:{index:02d}",
+            "presence_id": "witness_thread",
+            "is_nexus": False,
+            "message_probability": 0.2,
+            "route_probability": 0.1,
+            "influence_power": 0.2,
+            "drift_score": 0.05,
+        }
+        for index in range(48)
+    ]
+    presence_impacts = [
+        {
+            "id": "witness_thread",
+            "presence_type": "presence",
+            "resource_wallet": {
+                "cpu": 1.0,
+                "ram": 1.0,
+                "disk": 1.0,
+                "network": 1.0,
+                "gpu": 1.0,
+                "npu": 1.0,
+            },
+            "resource_wallet_denoms": [
+                {
+                    "vector": {
+                        "cpu": 0.00005,
+                        "ram": 0.00003,
+                        "disk": 0.00002,
+                        "network": 0.00002,
+                        "gpu": 0.00002,
+                        "npu": 0.00002,
+                    },
+                    "count": 100,
+                }
+            ],
+        }
+    ]
+
+    summary = simulation_module._apply_resource_daimoi_action_consumption(
+        field_particles=field_particles,
+        presence_impacts=presence_impacts,
+        resource_heartbeat={"devices": {"cpu": {"utilization": 32.0}}},
+        queue_ratio=1.0,
+    )
+
+    control = summary.get("control_budget", {})
+    assert isinstance(control, dict)
+    assert str(control.get("mode", "")).strip() in {"minimal", "reduced"}
+    assert bool(control.get("allow_denom", True)) is False
+    assert int(float(control.get("scheduled_rows", 0) or 0.0)) < int(
+        float(control.get("candidate_rows", 0) or 0.0)
+    )
+    strategies = [
+        str(row.get("resource_burn_strategy", "")).strip()
+        for row in field_particles
+        if "resource_burn_strategy" in row
+    ]
+    assert "aggregate_mix" in strategies
+
+
+def test_resource_sentinel_burn_prefers_focus_resource_under_pressure() -> None:
+    field_particles = [
+        {
+            "id": "particle:gpu-sentinel:burn",
+            "presence_id": "health_sentinel_gpu1",
+            "is_nexus": False,
+            "message_probability": 0.4,
+            "route_probability": 0.3,
+            "influence_power": 0.5,
+            "drift_score": 0.2,
+        }
+    ]
+    presence_impacts = [
+        {
+            "id": "health_sentinel_gpu1",
+            "presence_type": "presence",
+            "resource_wallet": {
+                "gpu": 2.0,
+                "cpu": 2.0,
+            },
+        }
+    ]
+
+    summary = simulation_module._apply_resource_daimoi_action_consumption(
+        field_particles=field_particles,
+        presence_impacts=presence_impacts,
+        resource_heartbeat={
+            "devices": {
+                "cpu": {"utilization": 31.0},
+                "gpu1": {"utilization": 95.0},
+                "gpu2": {"utilization": 96.0},
+            }
+        },
+        queue_ratio=0.0,
+    )
+
+    row = field_particles[0]
+    assert bool(row.get("resource_sentinel_idle", True)) is False
+    assert str(row.get("resource_consume_type", "")).strip() == "gpu"
+    payment = row.get("resource_payment_vector", {})
+    assert isinstance(payment, dict)
+    assert float(payment.get("gpu", 0.0) or 0.0) > 0.0
+    sentinel_active = summary.get("sentinel_burn_active", {})
+    assert isinstance(sentinel_active, dict)
+    assert sentinel_active.get("health_sentinel_gpu1") is True
 
 
 def test_config_payload_exposes_magic_number_constants_by_module() -> None:
@@ -1850,3 +2340,73 @@ def test_nooi_field_is_influenced_only_by_non_nexus_daimoi(
     )
     assert isinstance(nooi_daimoi, list)
     assert len(nooi_daimoi) > 0
+
+
+def test_advance_simulation_field_particles_applies_policy_tick_signals_and_cap() -> (
+    None
+):
+    simulation_module._reset_nooi_field_state()
+
+    simulation: dict[str, Any] = {
+        "presence_dynamics": {
+            "field_particles": [
+                {
+                    "id": "p-1",
+                    "presence_id": "presence.alpha",
+                    "x": 0.1,
+                    "y": 0.1,
+                    "vx": 0.0,
+                    "vy": 0.0,
+                    "route_node_id": "node.alpha",
+                    "graph_node_id": "node.alpha",
+                },
+                {
+                    "id": "p-2",
+                    "presence_id": "presence.beta",
+                    "x": 0.5,
+                    "y": 0.5,
+                    "vx": 0.0,
+                    "vy": 0.0,
+                    "route_node_id": "node.beta",
+                    "graph_node_id": "node.beta",
+                },
+                {
+                    "id": "p-3",
+                    "presence_id": "presence.gamma",
+                    "x": 0.9,
+                    "y": 0.9,
+                    "vx": 0.0,
+                    "vy": 0.0,
+                    "route_node_id": "node.gamma",
+                    "graph_node_id": "node.gamma",
+                },
+            ]
+        }
+    }
+
+    simulation_module.advance_simulation_field_particles(
+        simulation,
+        dt_seconds=0.08,
+        now_seconds=400.0,
+        policy={
+            "slack_ms": 6.5,
+            "tick_budget_ms": 8.0,
+            "ingestion_pressure": 0.72,
+            "ws_particle_max": 2,
+            "guard_mode": "degraded",
+        },
+    )
+
+    presence_dynamics = simulation.get("presence_dynamics", {})
+    assert isinstance(presence_dynamics, dict)
+    rows = presence_dynamics.get("field_particles", [])
+    assert isinstance(rows, list)
+    assert len(rows) == 2
+
+    tick_signals = presence_dynamics.get("tick_signals", {})
+    assert isinstance(tick_signals, dict)
+    assert tick_signals.get("slack_ms") == 6.5
+    assert tick_signals.get("tick_budget_ms") == 8.0
+    assert tick_signals.get("ingestion_pressure") == 0.72
+    assert tick_signals.get("ws_particle_max") == 2
+    assert tick_signals.get("guard_mode") == "degraded"

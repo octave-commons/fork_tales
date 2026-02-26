@@ -11,7 +11,6 @@ import socket
 import ssl
 import struct
 import subprocess
-import sys
 import threading
 import time
 from collections import defaultdict
@@ -152,6 +151,7 @@ from .paths import (
 )
 from .projection import _projection_presence_impacts, _semantic_xy_from_embedding
 from .simulation import _normalize_path_for_file_id
+from .symbols import world_web_symbol as _world_web_symbol
 from .db import (
     _cosine_similarity,
     _embedding_db_upsert_append_only,
@@ -224,13 +224,6 @@ _EMSC_STREAM_CACHE: dict[str, Any] = {
     "paused": False,
     "seen_ids": {},
 }
-
-
-def _world_web_symbol(name: str, default: Any) -> Any:
-    module = sys.modules.get("code.world_web")
-    if module is None:
-        return default
-    return getattr(module, name, default)
 
 
 def _cfg_bool(name: str, default: bool) -> bool:

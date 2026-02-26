@@ -1,3 +1,20 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// This file is part of Fork Tales.
+// Copyright (C) 2024-2025 Fork Tales Contributors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { runtimeApiUrl, runtimeWebSocketUrl } from '../runtime/endpoints';
 import type {
@@ -714,7 +731,7 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
         };
 
         const fetchSimulation = async () => {
-          const simulationRes = await fetch(runtimeApiUrl(`/api/simulation?${perspectiveQs}&compact=1`), {
+          const simulationRes = await fetch(runtimeApiUrl(`/api/simulation?${perspectiveQs}&payload=trimmed`), {
             signal: controller.signal,
           });
           if (!simulationRes.ok) {
@@ -790,7 +807,7 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
       simulationFallbackInFlightRef.current = true;
       try {
         const perspectiveQs = `perspective=${encodeURIComponent(perspective)}`;
-        const simulationRes = await fetch(runtimeApiUrl(`/api/simulation?${perspectiveQs}&compact=1`), {
+        const simulationRes = await fetch(runtimeApiUrl(`/api/simulation?${perspectiveQs}&payload=trimmed`), {
           signal: controller.signal,
         });
         if (!simulationRes.ok) {

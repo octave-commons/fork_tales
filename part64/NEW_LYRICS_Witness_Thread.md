@@ -1,5 +1,8 @@
 # Witness Thread / 証人の糸
 
+**License:** This work is licensed under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
+See [LICENSE_CC-BY-SA-4.0.txt](../LICENSE_CC-BY-SA-4.0.txt) for details.
+
 **Style:** Glitch-choir lullaby • 78 BPM • whispered lead • Japanese call-and-response  
 **Stutter markers:** “anchor” (~30.5s), “tax” (~48.2s)
 

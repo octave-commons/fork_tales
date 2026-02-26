@@ -1,3 +1,20 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# This file is part of Fork Tales.
+# Copyright (C) 2024-2025 Fork Tales Contributors
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 """
 ledger_sonify.py — deterministic "receipt audio" generator
 
@@ -24,8 +41,10 @@ from typing import Dict, List, Tuple
 
 SR = 44100
 
+
 def sha256_bytes(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
+
 
 def manifest_seed(manifest: Dict) -> int:
     """
@@ -35,8 +54,10 @@ def manifest_seed(manifest: Dict) -> int:
     h = hashlib.sha256(blob).digest()
     return int.from_bytes(h[:4], "big", signed=False)
 
+
 def write_wav(path: Path, stereo_f32, sr: int = SR) -> None:
     import numpy as np
+
     data = np.clip(stereo_f32, -1, 1)
     ints = (data * 32767).astype("int16")
     with wave.open(str(path), "wb") as wf:
@@ -44,6 +65,7 @@ def write_wav(path: Path, stereo_f32, sr: int = SR) -> None:
         wf.setsampwidth(2)
         wf.setframerate(sr)
         wf.writeframes(ints.tobytes())
+
 
 def sonify_manifest(manifest: Dict, seconds: float = 3.0):
     """
@@ -69,8 +91,9 @@ def sonify_manifest(manifest: Dict, seconds: float = 3.0):
     )
 
     # prime-ish pulse gates
-    gate = ((np.sin(2 * math.pi * 2.0 * t) > 0).astype(float) * 0.6 +
-            (np.sin(2 * math.pi * 3.0 * t) > 0).astype(float) * 0.4)
+    gate = (np.sin(2 * math.pi * 2.0 * t) > 0).astype(float) * 0.6 + (
+        np.sin(2 * math.pi * 3.0 * t) > 0
+    ).astype(float) * 0.4
     sig = np.tanh(tone * gate)
 
     # stereo: tiny delay
@@ -79,6 +102,7 @@ def sonify_manifest(manifest: Dict, seconds: float = 3.0):
     right = np.concatenate([np.zeros(d), sig[:-d]])
     stereo = np.stack([left, right], axis=1) * 0.9
     return stereo
+
 
 def main(argv: List[str]) -> int:
     if len(argv) < 3:
@@ -92,6 +116,8 @@ def main(argv: List[str]) -> int:
     print("seed:", manifest_seed(manifest))
     return 0
 
+
 if __name__ == "__main__":
     import sys
+
     raise SystemExit(main(sys.argv))

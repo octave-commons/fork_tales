@@ -104,6 +104,17 @@ NEXUS_GRAVITY_FLOW_GAIN = 0.0037
 NEXUS_DAMPING = 0.89
 NEXUS_SPEED_CAP_BASE = 0.0019
 NEXUS_SPEED_CAP_GRAVITY_GAIN = 0.001
+DAIMOI_ANTI_CLUMP_TARGET = 0.38
+DAIMOI_ANTI_CLUMP_KP = 0.22
+DAIMOI_ANTI_CLUMP_KI = 0.04
+DAIMOI_ANTI_CLUMP_SMOOTHING = 0.15
+DAIMOI_ANTI_CLUMP_UPDATE_STRIDE = 10
+DAIMOI_ANTI_CLUMP_INTEGRAL_LIMIT = 1.5
+DAIMOI_ANTI_CLUMP_DRIVE_LIMIT = 1.0
+DAIMOI_ANTI_CLUMP_GRID_SIZE = 16
+DAIMOI_ANTI_CLUMP_SAMPLE_LIMIT = 96
+DAIMOI_ANTI_CLUMP_COLLISION_RATE_REF = 2.2
+DAIMOI_ANTI_CLUMP_MIN_PARTICLES = 24
 
 DAIMOI_PACKET_COMPONENT_RECORD = "eta-mu.daimoi-packet-components.v1"
 DAIMOI_PACKET_COMPONENT_SCHEMA = "daimoi.packet-components.v1"
@@ -1238,6 +1249,278 @@ def _softplus(value: float) -> float:
     if clamped <= -20.0:
         return math.exp(clamped)
     return math.log1p(math.exp(clamped))
+
+
+def _clamp_range(value: Any, lower: float, upper: float) -> float:
+    lo = _finite_float(lower, 0.0)
+    hi = _finite_float(upper, 1.0)
+    if lo > hi:
+        lo, hi = hi, lo
+    return max(lo, min(hi, _finite_float(value, lo)))
+
+
+def _median(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(_finite_float(value, 0.0) for value in values)
+    length = len(ordered)
+    mid = length // 2
+    if length % 2 == 1:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) * 0.5
+
+
+def _anti_clump_positions_from_particles(particles: Any) -> list[tuple[float, float]]:
+    if isinstance(particles, dict):
+        rows = list(particles.values())
+    elif isinstance(particles, list):
+        rows = particles
+    else:
+        rows = []
+
+    positions: list[tuple[float, float]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if bool(row.get("is_nexus", False)):
+            continue
+        x = _clamp01(_safe_float(row.get("x", 0.5), 0.5))
+        y = _clamp01(_safe_float(row.get("y", 0.5), 0.5))
+        positions.append((x, y))
+    return positions
+
+
+def _anti_clump_metrics(
+    positions: list[tuple[float, float]],
+    *,
+    previous_collision_count: int,
+) -> dict[str, float]:
+    count = len(positions)
+    if count <= 1:
+        return {
+            "count": float(count),
+            "clump_score": 0.0,
+            "nn_term": 0.0,
+            "entropy_norm": 1.0,
+            "hotspot_term": 0.0,
+            "collision_term": 0.0,
+            "collision_rate": 0.0,
+            "median_distance": 0.0,
+            "target_distance": 0.0,
+            "top_share": 0.0,
+        }
+
+    grid = max(4, _safe_int(DAIMOI_ANTI_CLUMP_GRID_SIZE, 16))
+    sample_limit = max(8, _safe_int(DAIMOI_ANTI_CLUMP_SAMPLE_LIMIT, 96))
+    cell_counts = [0 for _ in range(grid * grid)]
+    indices_by_cell: dict[int, list[int]] = {}
+    coords: list[tuple[int, int]] = []
+
+    for index, (x_raw, y_raw) in enumerate(positions):
+        x = _clamp01(_finite_float(x_raw, 0.5))
+        y = _clamp01(_finite_float(y_raw, 0.5))
+        cx = min(grid - 1, max(0, int(math.floor(x * grid))))
+        cy = min(grid - 1, max(0, int(math.floor(y * grid))))
+        cell_id = (cy * grid) + cx
+        cell_counts[cell_id] += 1
+        bucket = indices_by_cell.get(cell_id)
+        if bucket is None:
+            indices_by_cell[cell_id] = [index]
+        else:
+            bucket.append(index)
+        coords.append((cx, cy))
+
+    non_zero_counts = [value for value in cell_counts if value > 0]
+    entropy = 0.0
+    for value in non_zero_counts:
+        ratio = _finite_float(value / float(count), 0.0)
+        if ratio > 1e-12:
+            entropy -= ratio * math.log(ratio)
+    max_entropy = math.log(max(1, min(len(non_zero_counts), count)))
+    entropy_norm = _clamp01(entropy / max_entropy) if max_entropy > 1e-12 else 1.0
+
+    top_share = 0.0
+    hotspot_term = 0.0
+    if non_zero_counts:
+        ordered_counts = sorted(non_zero_counts, reverse=True)
+        top_k = max(1, int(math.ceil(len(ordered_counts) * 0.1)))
+        top_share = sum(ordered_counts[:top_k]) / float(max(1, count))
+        uniform_share = top_k / float(max(1, len(ordered_counts)))
+        hotspot_term = _clamp01(
+            (top_share - uniform_share) / max(1e-6, 1.0 - uniform_share)
+        )
+
+    sample_step = max(1, int(math.floor(count / float(sample_limit))))
+    sample_indices = list(range(0, count, sample_step))[:sample_limit]
+    if not sample_indices:
+        sample_indices = [0]
+    neighbor_distances: list[float] = []
+
+    for index in sample_indices:
+        x = _clamp01(_finite_float(positions[index][0], 0.5))
+        y = _clamp01(_finite_float(positions[index][1], 0.5))
+        cx, cy = coords[index]
+        nearest_sq = float("inf")
+        for ny in range(max(0, cy - 1), min(grid - 1, cy + 1) + 1):
+            for nx in range(max(0, cx - 1), min(grid - 1, cx + 1) + 1):
+                neighbor_cell_id = (ny * grid) + nx
+                candidates = indices_by_cell.get(neighbor_cell_id, [])
+                for other_index in candidates:
+                    if other_index == index:
+                        continue
+                    ox = _clamp01(_finite_float(positions[other_index][0], 0.5))
+                    oy = _clamp01(_finite_float(positions[other_index][1], 0.5))
+                    dx = ox - x
+                    dy = oy - y
+                    dist_sq = (dx * dx) + (dy * dy)
+                    if dist_sq < nearest_sq:
+                        nearest_sq = dist_sq
+        if math.isfinite(nearest_sq):
+            neighbor_distances.append(math.sqrt(max(0.0, nearest_sq)))
+        else:
+            neighbor_distances.append(math.sqrt(2.0) / float(grid))
+
+    median_distance = _median(neighbor_distances)
+    target_distance = max(0.015, min(0.095, 0.82 / math.sqrt(float(count))))
+    nn_term = _clamp01((target_distance - median_distance) / max(1e-6, target_distance))
+
+    collision_rate = max(
+        0.0,
+        _safe_float(previous_collision_count, 0.0) / float(max(1, count)),
+    )
+    collision_term = _clamp01(
+        collision_rate
+        / max(0.25, _safe_float(DAIMOI_ANTI_CLUMP_COLLISION_RATE_REF, 2.2))
+    )
+
+    clump_score = _clamp01(
+        (nn_term * 0.35)
+        + ((1.0 - entropy_norm) * 0.30)
+        + (hotspot_term * 0.20)
+        + (collision_term * 0.15)
+    )
+
+    return {
+        "count": float(count),
+        "clump_score": clump_score,
+        "nn_term": nn_term,
+        "entropy_norm": entropy_norm,
+        "hotspot_term": hotspot_term,
+        "collision_term": collision_term,
+        "collision_rate": collision_rate,
+        "median_distance": median_distance,
+        "target_distance": target_distance,
+        "top_share": _clamp01(top_share),
+    }
+
+
+def _anti_clump_scales(drive: float) -> dict[str, float]:
+    limited_drive = _clamp_range(drive, -1.0, 1.0)
+    return {
+        "semantic": _clamp_range(math.exp(-0.8 * limited_drive), 0.35, 1.2),
+        "edge": _clamp_range(math.exp(-0.6 * limited_drive), 0.4, 1.1),
+        "anchor": _clamp_range(math.exp(-0.7 * limited_drive), 0.45, 1.1),
+        "spawn": _clamp_range(math.exp(-0.5 * limited_drive), 0.5, 1.05),
+        "tangent": _clamp_range(math.exp(0.5 * limited_drive), 0.8, 1.8),
+    }
+
+
+def _anti_clump_controller_update(
+    controller_state: dict[str, Any] | None,
+    *,
+    particles: dict[str, Any],
+    previous_collision_count: int,
+) -> dict[str, Any]:
+    state = dict(controller_state) if isinstance(controller_state, dict) else {}
+    tick = max(0, _safe_int(state.get("tick", 0), 0)) + 1
+
+    drive_limit = max(0.25, _safe_float(DAIMOI_ANTI_CLUMP_DRIVE_LIMIT, 1.0))
+    integral_limit = max(0.25, _safe_float(DAIMOI_ANTI_CLUMP_INTEGRAL_LIMIT, 1.5))
+    target = _clamp01(_safe_float(DAIMOI_ANTI_CLUMP_TARGET, 0.38))
+    kp = max(0.0, _safe_float(DAIMOI_ANTI_CLUMP_KP, 0.22))
+    ki = max(0.0, _safe_float(DAIMOI_ANTI_CLUMP_KI, 0.04))
+    smoothing = _clamp01(_safe_float(DAIMOI_ANTI_CLUMP_SMOOTHING, 0.15))
+    update_stride = max(1, _safe_int(DAIMOI_ANTI_CLUMP_UPDATE_STRIDE, 10))
+    min_particles = max(8, _safe_int(DAIMOI_ANTI_CLUMP_MIN_PARTICLES, 24))
+
+    previous_drive = _clamp_range(
+        _safe_float(state.get("drive", 0.0), 0.0), -drive_limit, drive_limit
+    )
+    integral = _clamp_range(
+        _safe_float(state.get("integral", 0.0), 0.0),
+        -integral_limit,
+        integral_limit,
+    )
+    score_ema = _clamp01(_safe_float(state.get("score_ema", target), target))
+
+    should_update = (tick % update_stride == 0) or ("clump_score" not in state)
+    if should_update:
+        positions = _anti_clump_positions_from_particles(particles)
+        metrics = _anti_clump_metrics(
+            positions,
+            previous_collision_count=previous_collision_count,
+        )
+        particle_count = max(0, _safe_int(metrics.get("count", 0.0), 0))
+        score_raw = _clamp01(
+            _safe_float(metrics.get("clump_score", score_ema), score_ema)
+        )
+        score_ema = _clamp01((score_ema * 0.82) + (score_raw * 0.18))
+
+        if particle_count < min_particles:
+            error = score_ema - target
+            integral = _clamp_range(integral * 0.82, -integral_limit, integral_limit)
+            raw_drive = 0.0
+        else:
+            error = score_ema - target
+            integral = _clamp_range(
+                integral + error,
+                -integral_limit,
+                integral_limit,
+            )
+            raw_drive = (kp * error) + (ki * integral)
+
+        drive = _clamp_range(
+            ((previous_drive * (1.0 - smoothing)) + (raw_drive * smoothing)),
+            -drive_limit,
+            drive_limit,
+        )
+        state.update(
+            {
+                "tick": tick,
+                "updated": True,
+                "drive": drive,
+                "integral": integral,
+                "error": error,
+                "score_ema": score_ema,
+                "particle_count": particle_count,
+                "clump_score": score_raw,
+                "nn_term": _clamp01(_safe_float(metrics.get("nn_term", 0.0), 0.0)),
+                "entropy_norm": _clamp01(
+                    _safe_float(metrics.get("entropy_norm", 1.0), 1.0)
+                ),
+                "hotspot_term": _clamp01(
+                    _safe_float(metrics.get("hotspot_term", 0.0), 0.0)
+                ),
+                "collision_term": _clamp01(
+                    _safe_float(metrics.get("collision_term", 0.0), 0.0)
+                ),
+                "collision_rate": max(
+                    0.0, _safe_float(metrics.get("collision_rate", 0.0), 0.0)
+                ),
+                "median_distance": max(
+                    0.0, _safe_float(metrics.get("median_distance", 0.0), 0.0)
+                ),
+                "target_distance": max(
+                    0.0, _safe_float(metrics.get("target_distance", 0.0), 0.0)
+                ),
+                "top_share": _clamp01(_safe_float(metrics.get("top_share", 0.0), 0.0)),
+            }
+        )
+        return state
+
+    state["tick"] = tick
+    state["updated"] = False
+    return state
 
 
 def _resource_wallet_by_type(wallet: dict[str, Any] | None) -> dict[str, float]:
@@ -3047,8 +3330,8 @@ def build_probabilistic_daimoi_particles(
         min(
             100.0,
             _safe_float(
-                os.getenv("SIMULATION_CPU_DAIMOI_STOP_PERCENT", "75") or "75",
-                75.0,
+                os.getenv("SIMULATION_CPU_DAIMOI_STOP_PERCENT", "50") or "50",
+                50.0,
             ),
         ),
     )
@@ -3071,6 +3354,7 @@ def build_probabilistic_daimoi_particles(
                 "surfaces": {},
                 "field_cells": {},
                 "spawn_seq": 0,
+                "core_spawn_residual": {},
             }
 
         particles = runtime.get("particles", {})
@@ -3082,6 +3366,9 @@ def build_probabilistic_daimoi_particles(
         field_cells = runtime.get("field_cells", {})
         if not isinstance(field_cells, dict):
             field_cells = {}
+        core_spawn_residual = runtime.get("core_spawn_residual", {})
+        if not isinstance(core_spawn_residual, dict):
+            core_spawn_residual = {}
 
         spawn_seq = _safe_int(runtime.get("spawn_seq", 0), 0)
         prior_tick_ms = _safe_float(
@@ -3099,25 +3386,20 @@ def build_probabilistic_daimoi_particles(
             load_scale = 0.88
         load_scale = max(0.46, min(1.72, load_scale * availability_scale))
 
-        per_presence_cap = 96
         nexus_cap = 180
-        chaos_target_count = 8
+        chaos_floor_count = 8
         if prior_tick_ms >= 130.0:
-            per_presence_cap = 34
             nexus_cap = 92
-            chaos_target_count = 4
+            chaos_floor_count = 4
         elif prior_tick_ms >= 100.0:
-            per_presence_cap = 44
             nexus_cap = 112
-            chaos_target_count = 5
+            chaos_floor_count = 5
         elif prior_tick_ms >= 78.0:
-            per_presence_cap = 58
             nexus_cap = 136
-            chaos_target_count = 6
+            chaos_floor_count = 6
         elif prior_tick_ms >= 60.0:
-            per_presence_cap = 74
             nexus_cap = 160
-            chaos_target_count = 7
+            chaos_floor_count = 7
         cap_scale = max(
             0.66,
             min(
@@ -3125,11 +3407,49 @@ def build_probabilistic_daimoi_particles(
                 availability_scale * (1.08 if decompression_hint else 0.96),
             ),
         )
-        per_presence_cap = max(24, min(168, int(round(per_presence_cap * cap_scale))))
         nexus_cap = max(72, min(320, int(round(nexus_cap * cap_scale))))
-        chaos_target_count = max(
+        chaos_floor_count = max(
             3,
-            min(16, int(round(float(chaos_target_count) * max(0.72, cap_scale)))),
+            min(16, int(round(float(chaos_floor_count) * max(0.72, cap_scale)))),
+        )
+
+        anti_clump_runtime = runtime.get("anti_clump", {})
+        if not isinstance(anti_clump_runtime, dict):
+            anti_clump_runtime = {}
+        anti_clump_runtime = _anti_clump_controller_update(
+            anti_clump_runtime,
+            particles=particles,
+            previous_collision_count=_safe_int(
+                runtime.get("last_collision_count", 0), 0
+            ),
+        )
+        anti_clump_drive = _safe_float(anti_clump_runtime.get("drive", 0.0), 0.0)
+        anti_clump_scale_map = _anti_clump_scales(anti_clump_drive)
+        anti_clump_spawn_scale = _safe_float(
+            anti_clump_scale_map.get("spawn", 1.0), 1.0
+        )
+        anti_clump_anchor_scale = _safe_float(
+            anti_clump_scale_map.get("anchor", 1.0), 1.0
+        )
+        anti_clump_semantic_scale = _safe_float(
+            anti_clump_scale_map.get("semantic", 1.0), 1.0
+        )
+        anti_clump_edge_scale = _safe_float(anti_clump_scale_map.get("edge", 1.0), 1.0)
+        anti_clump_tangent_scale = _safe_float(
+            anti_clump_scale_map.get("tangent", 1.0),
+            1.0,
+        )
+        anti_clump_density_drive = max(0.0, anti_clump_drive)
+        anti_clump_density_multiplier = max(
+            -0.5,
+            1.0 - (anti_clump_density_drive * 1.4),
+        )
+        min_presence_particles = max(
+            3,
+            min(
+                8,
+                int(round(8.0 * min(1.0, anti_clump_spawn_scale))),
+            ),
         )
 
         active_ids: set[str] = set()
@@ -3146,6 +3466,7 @@ def build_probabilistic_daimoi_particles(
             # Core presence logic: emission depends on resource availability
             role, _ = _presence_role_and_mode(presence_id)
             cpu_emitter_blocked = False
+            availability_factor = 0.0
             file_influence = 0.0
             click_influence = 0.0
             world_influence = 0.0
@@ -3189,11 +3510,12 @@ def build_probabilistic_daimoi_particles(
                         devices.get("npu0", {}).get("utilization", 100.0), 100.0
                     )
 
-                # Higher availability (lower usage) -> higher emission target
-                # Base target count logic, but modified for core
-                cpu_emitter_blocked = (
-                    resource_type == "cpu" and usage_percent >= cpu_daimoi_stop_percent
+                # Global CPU gate for compute emitters.
+                global_cpu_usage = _safe_float(
+                    devices.get("cpu", {}).get("utilization", usage_percent),
+                    usage_percent,
                 )
+                cpu_emitter_blocked = global_cpu_usage >= cpu_daimoi_stop_percent
                 if cpu_emitter_blocked:
                     target_count = 0
                 else:
@@ -3250,18 +3572,16 @@ def build_probabilistic_daimoi_particles(
                         + (world_influence * 18.0)
                         + (file_influence * 22.0)
                         + (click_influence * 8.0)
-                        + (local_density * 28.0)
+                        + (local_density * (28.0 * anti_clump_density_multiplier))
                         - (resource_pressure * 3.0)
                         - (queue_pressure * 1.5)
                         - (compute_pressure * 1.0)
                     )
                 )
 
-            target_count = int(round(target_count * load_scale))
-            if cpu_emitter_blocked:
-                target_count = 0
-            else:
-                target_count = max(8, min(per_presence_cap, target_count))
+            target_count = int(
+                round(target_count * load_scale * anti_clump_spawn_scale)
+            )
 
             owned_ids = sorted(
                 [
@@ -3274,11 +3594,44 @@ def build_probabilistic_daimoi_particles(
                 ]
             )
 
-            if len(owned_ids) > target_count:
-                trimmed_ids = owned_ids[target_count:]
-                for particle_id in trimmed_ids:
-                    particles.pop(particle_id, None)
-                owned_ids = owned_ids[:target_count]
+            if role == "resource-core":
+                if cpu_emitter_blocked:
+                    target_count = len(owned_ids)
+                else:
+                    global_cpu_usage = _safe_float(
+                        devices.get("cpu", {}).get("utilization", 100.0),
+                        100.0,
+                    )
+                    cpu_headroom = _clamp01(
+                        (cpu_daimoi_stop_percent - global_cpu_usage)
+                        / max(1.0, cpu_daimoi_stop_percent)
+                    )
+                    residual_key = presence_id
+                    residual_credit = max(
+                        0.0,
+                        _safe_float(core_spawn_residual.get(residual_key, 0.0), 0.0),
+                    )
+                    spawn_rate = max(
+                        0.01,
+                        min(
+                            0.45,
+                            0.03
+                            + (availability_factor * 0.22)
+                            + (cpu_headroom * 0.12)
+                            + (max(0.0, anti_clump_spawn_scale - 0.6) * 0.04),
+                        ),
+                    )
+                    residual_credit += spawn_rate
+                    spawn_budget = max(0, int(math.floor(residual_credit)))
+                    residual_credit = max(0.0, residual_credit - float(spawn_budget))
+                    if len(owned_ids) <= 0 and spawn_budget <= 0:
+                        spawn_budget = 1
+                    core_spawn_residual[residual_key] = residual_credit
+                    target_count = len(owned_ids) + max(0, spawn_budget)
+            elif cpu_emitter_blocked:
+                target_count = 0
+            else:
+                target_count = max(min_presence_particles, target_count)
 
             while len(owned_ids) < target_count:
                 spawn_seq += 1
@@ -3339,17 +3692,10 @@ def build_probabilistic_daimoi_particles(
             ]
         )
 
-        if len(chaos_owned_ids) > chaos_target_count:
-            # Trim excess chaos butterflies
-            trimmed_chaos = chaos_owned_ids[chaos_target_count:]
-            for particle_id in trimmed_chaos:
-                particles.pop(particle_id, None)
-            chaos_owned_ids = chaos_owned_ids[:chaos_target_count]
-
         # Get chaos butterfly anchor
         chaos_anchor = anchors.get("chaos_butterfly", {"x": 0.5, "y": 0.15})
 
-        while len(chaos_owned_ids) < chaos_target_count:
+        while len(chaos_owned_ids) < chaos_floor_count:
             spawn_seq += 1
             particle_id = f"chaos:butterfly:{spawn_seq:06d}"
             particles[particle_id] = _spawn_chaos_butterfly(
@@ -3468,6 +3814,7 @@ def build_probabilistic_daimoi_particles(
                 existing["node_saturation"] = _clamp01(
                     _safe_float(existing.get("node_saturation", 0.0), 0.0)
                 )
+                existing["is_active_nexus"] = True
                 existing["ts"] = now_monotonic
             else:
                 particles[particle_id] = _spawn_nexus_particle(
@@ -3475,6 +3822,7 @@ def build_probabilistic_daimoi_particles(
                     node=node,
                     owner_presence_id=owner_id,
                 )
+                particles[particle_id]["is_active_nexus"] = True
                 spawned_count += 1
             active_ids.add(particle_id)
 
@@ -3486,16 +3834,9 @@ def build_probabilistic_daimoi_particles(
                 bool(row.get("is_nexus", False))
                 and particle_id not in desired_nexus_ids
             ):
-                particles.pop(particle_id, None)
-
-        stale_before = now_monotonic - 150.0
-        for particle_id in list(particles.keys()):
-            state = particles.get(particle_id, {})
-            ts = _safe_float(
-                (state if isinstance(state, dict) else {}).get("ts", 0.0), 0.0
-            )
-            if particle_id not in active_ids and ts < stale_before:
-                particles.pop(particle_id, None)
+                row["is_active_nexus"] = False
+                if "stale_nexus_since" not in row:
+                    row["stale_nexus_since"] = now_monotonic
 
         states = [
             particles[particle_id]
@@ -3876,9 +4217,14 @@ def build_probabilistic_daimoi_particles(
                 damping = 0.88
                 speed_cap = 0.012
             else:
-                owner_pull = 0.010 + (
-                    _safe_float(local_density_map.get(owner_id, 0.0), 0.0) * 0.008
-                )
+                owner_pull = (
+                    0.010
+                    + (
+                        _safe_float(local_density_map.get(owner_id, 0.0), 0.0)
+                        * (0.008 * max(0.15, anti_clump_anchor_scale))
+                    )
+                ) * anti_clump_anchor_scale
+                owner_pull = max(0.0025, owner_pull)
                 fx = (owner_anchor_x - px) * owner_pull
                 fy = (owner_anchor_y - py) * owner_pull
                 if target_id != owner_id:
@@ -4002,7 +4348,10 @@ def build_probabilistic_daimoi_particles(
                             0.0,
                             _safe_float(local_source.get("weight", 1.0), 1.0),
                         ),
-                        strength_base=DAIMOI_SEMANTIC_PARTICLE_STRENGTH,
+                        strength_base=(
+                            DAIMOI_SEMANTIC_PARTICLE_STRENGTH
+                            * anti_clump_semantic_scale
+                        ),
                     )
                     semantic_fx += local_fx
                     semantic_fy += local_fy
@@ -4016,7 +4365,9 @@ def build_probabilistic_daimoi_particles(
                     target_unit=semantic_vector,
                     near_radius=near_radius,
                     theta=DAIMOI_SEMANTIC_BARNES_HUT_THETA,
-                    strength_base=DAIMOI_SEMANTIC_PARTICLE_STRENGTH,
+                    strength_base=(
+                        DAIMOI_SEMANTIC_PARTICLE_STRENGTH * anti_clump_semantic_scale
+                    ),
                     exclude_ids=excluded_ids,
                 )
                 fx += semantic_fx + far_fx
@@ -4025,12 +4376,12 @@ def build_probabilistic_daimoi_particles(
             fx += _world_edge_inward_pressure(
                 px,
                 edge_band=DAIMOI_WORLD_EDGE_BAND,
-                pressure=DAIMOI_WORLD_EDGE_PRESSURE,
+                pressure=DAIMOI_WORLD_EDGE_PRESSURE * anti_clump_edge_scale,
             )
             fy += _world_edge_inward_pressure(
                 py,
                 edge_band=DAIMOI_WORLD_EDGE_BAND,
-                pressure=DAIMOI_WORLD_EDGE_PRESSURE,
+                pressure=DAIMOI_WORLD_EDGE_PRESSURE * anti_clump_edge_scale,
             )
 
             vx = (pvx * damping) + fx
@@ -4428,6 +4779,9 @@ def build_probabilistic_daimoi_particles(
                     tangent_vx = (-ny) * NEXUS_ROUTE_TANGENT_KICK * tangent_sign
                     tangent_vy = nx * NEXUS_ROUTE_TANGENT_KICK * tangent_sign
 
+                    tangent_vx *= anti_clump_tangent_scale
+                    tangent_vy *= anti_clump_tangent_scale
+
                     left_vx = (left_vx * 0.22) + guide_vx + tangent_vx
                     left_vy = (left_vy * 0.22) + guide_vy + tangent_vy
                     guided_speed = math.sqrt((left_vx * left_vx) + (left_vy * left_vy))
@@ -4570,7 +4924,6 @@ def build_probabilistic_daimoi_particles(
             if collision_loop_stop:
                 break
 
-        remove_ids: set[str] = set()
         for state in states:
             particle_id = str(state.get("id", "")).strip()
             if not particle_id:
@@ -4715,20 +5068,6 @@ def build_probabilistic_daimoi_particles(
 
             if action == "diffuse":
                 diffuse_count += 1
-                remove_ids.add(particle_id)
-
-                # Semantic Absorption: Credit the target presence with resource
-                # "All other daimoi are basicly equal to 1 CPU daimoi + they have actual semantics"
-                target_impact = impact_by_id.get(best_presence)
-                if isinstance(target_impact, dict):
-                    target_wallet = target_impact.get("resource_wallet")
-                    if not isinstance(target_wallet, dict):
-                        target_wallet = {}
-                        target_impact["resource_wallet"] = target_wallet
-
-                    # Credit 0.05 CPU (approx 5 standard resource packets)
-                    current_cpu = _safe_float(target_wallet.get("cpu", 0.0), 0.0)
-                    target_wallet["cpu"] = round(current_cpu + 0.05, 6)
 
                 surface["diffuse_count"] = (
                     _safe_int(surface.get("diffuse_count", 0), 0) + 1
@@ -4849,9 +5188,6 @@ def build_probabilistic_daimoi_particles(
 
             surface["ts"] = now_monotonic
 
-        for particle_id in remove_ids:
-            particles.pop(particle_id, None)
-
         stale_cell_before = now_monotonic - 300.0
         for cell_key in list(field_cells.keys()):
             cell = field_cells.get(cell_key, {})
@@ -4865,6 +5201,9 @@ def build_probabilistic_daimoi_particles(
         runtime["surfaces"] = surfaces
         runtime["field_cells"] = field_cells
         runtime["spawn_seq"] = spawn_seq
+        runtime["core_spawn_residual"] = core_spawn_residual
+        runtime["last_collision_count"] = int(collision_count)
+        runtime["anti_clump"] = dict(anti_clump_runtime)
         tick_ms = round((time.monotonic() - now_monotonic) * 1000.0, 3)
         prev_ema = _safe_float(runtime.get("tick_ms_ema", tick_ms), tick_ms)
         runtime["tick_ms"] = tick_ms
@@ -4872,15 +5211,16 @@ def build_probabilistic_daimoi_particles(
         _DAIMO_DYNAMICS_CACHE["field_particles"] = runtime
 
         output_rows: list[dict[str, Any]] = []
-        active_states = [
-            state
-            for state in particles.values()
-            if isinstance(state, dict)
-            and str(state.get("owner", "")).strip() in anchors
-            and not bool(
-                state.get("is_chaos_butterfly", False)
-            )  # Exclude chaos - rendered separately
-        ]
+        active_states: list[Any] = []
+        for particle_id in sorted(active_ids):
+            state = particles.get(particle_id)
+            if not isinstance(state, dict):
+                continue
+            if str(state.get("owner", "")).strip() not in anchors:
+                continue
+            if bool(state.get("is_chaos_butterfly", False)):
+                continue
+            active_states.append(state)
         active_states.sort(
             key=lambda row: (
                 str(row.get("owner", "")),
@@ -4917,7 +5257,7 @@ def build_probabilistic_daimoi_particles(
             output_total_cap = 760
 
         if len(active_states) > output_total_cap:
-            limited_states: list[dict[str, Any]] = []
+            limited_states: list[Any] = []
             limited_state_ids: set[int] = set()
             owner_counts: dict[str, int] = {}
             nexus_count = 0
@@ -5270,6 +5610,120 @@ def build_probabilistic_daimoi_particles(
         else 0.0,
     }
 
+    anti_clump_snapshot = (
+        anti_clump_runtime if isinstance(anti_clump_runtime, dict) else {}
+    )
+    anti_clump_drive = _safe_float(anti_clump_snapshot.get("drive", 0.0), 0.0)
+    anti_clump_scale_snapshot = _anti_clump_scales(anti_clump_drive)
+    anti_clump_summary = {
+        "target": round(_clamp01(_safe_float(DAIMOI_ANTI_CLUMP_TARGET, 0.38)), 6),
+        "clump_score": round(
+            _clamp01(
+                _safe_float(
+                    anti_clump_snapshot.get(
+                        "score_ema",
+                        anti_clump_snapshot.get("clump_score", 0.0),
+                    ),
+                    0.0,
+                )
+            ),
+            6,
+        ),
+        "raw_clump_score": round(
+            _clamp01(_safe_float(anti_clump_snapshot.get("clump_score", 0.0), 0.0)),
+            6,
+        ),
+        "drive": round(_clamp_range(anti_clump_drive, -1.0, 1.0), 6),
+        "error": round(_safe_float(anti_clump_snapshot.get("error", 0.0), 0.0), 6),
+        "integral": round(
+            _safe_float(anti_clump_snapshot.get("integral", 0.0), 0.0),
+            6,
+        ),
+        "updated": bool(anti_clump_snapshot.get("updated", False)),
+        "tick": max(0, _safe_int(anti_clump_snapshot.get("tick", 0), 0)),
+        "particle_count": max(
+            0,
+            _safe_int(anti_clump_snapshot.get("particle_count", 0), 0),
+        ),
+        "metrics": {
+            "nn_term": round(
+                _clamp01(_safe_float(anti_clump_snapshot.get("nn_term", 0.0), 0.0)),
+                6,
+            ),
+            "entropy_norm": round(
+                _clamp01(
+                    _safe_float(anti_clump_snapshot.get("entropy_norm", 1.0), 1.0)
+                ),
+                6,
+            ),
+            "hotspot_term": round(
+                _clamp01(
+                    _safe_float(anti_clump_snapshot.get("hotspot_term", 0.0), 0.0)
+                ),
+                6,
+            ),
+            "collision_term": round(
+                _clamp01(
+                    _safe_float(anti_clump_snapshot.get("collision_term", 0.0), 0.0)
+                ),
+                6,
+            ),
+            "collision_rate": round(
+                max(
+                    0.0,
+                    _safe_float(anti_clump_snapshot.get("collision_rate", 0.0), 0.0),
+                ),
+                6,
+            ),
+            "median_distance": round(
+                max(
+                    0.0,
+                    _safe_float(
+                        anti_clump_snapshot.get("median_distance", 0.0),
+                        0.0,
+                    ),
+                ),
+                6,
+            ),
+            "target_distance": round(
+                max(
+                    0.0,
+                    _safe_float(
+                        anti_clump_snapshot.get("target_distance", 0.0),
+                        0.0,
+                    ),
+                ),
+                6,
+            ),
+            "top_share": round(
+                _clamp01(_safe_float(anti_clump_snapshot.get("top_share", 0.0), 0.0)),
+                6,
+            ),
+        },
+        "scales": {
+            "semantic": round(
+                _safe_float(anti_clump_scale_snapshot.get("semantic", 1.0), 1.0),
+                6,
+            ),
+            "edge": round(
+                _safe_float(anti_clump_scale_snapshot.get("edge", 1.0), 1.0),
+                6,
+            ),
+            "anchor": round(
+                _safe_float(anti_clump_scale_snapshot.get("anchor", 1.0), 1.0),
+                6,
+            ),
+            "spawn": round(
+                _safe_float(anti_clump_scale_snapshot.get("spawn", 1.0), 1.0),
+                6,
+            ),
+            "tangent": round(
+                _safe_float(anti_clump_scale_snapshot.get("tangent", 1.0), 1.0),
+                6,
+            ),
+        },
+    }
+
     summary = {
         "record": DAIMOI_PROBABILISTIC_RECORD,
         "schema_version": DAIMOI_PROBABILISTIC_SCHEMA,
@@ -5306,6 +5760,9 @@ def build_probabilistic_daimoi_particles(
         "compute_availability": round(compute_availability, 6),
         "availability_scale": round(availability_scale, 6),
         "decompression_hint": bool(decompression_hint),
+        "clump_score": anti_clump_summary["clump_score"],
+        "anti_clump_drive": anti_clump_summary["drive"],
+        "anti_clump": anti_clump_summary,
     }
     return output_rows, summary
 
@@ -5317,6 +5774,8 @@ def reset_probabilistic_daimoi_state_for_tests() -> None:
             "surfaces": {},
             "field_cells": {},
             "spawn_seq": 0,
+            "last_collision_count": 0,
+            "anti_clump": {},
         }
 
 
