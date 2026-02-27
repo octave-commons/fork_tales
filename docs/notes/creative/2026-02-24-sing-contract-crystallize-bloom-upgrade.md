@@ -1,3 +1,16 @@
+---
+title: "Sing Contract: Crystallize-Bloom Upgrade"
+summary: "Creative contract revision introducing stasis-to-bloom behavior and Suno-ready defaults."
+category: "creative"
+created_at: "2026-02-24T19:54:25"
+original_filename: "2026.02.24.19.54.25.md"
+original_relpath: "docs/notes/creative/2026.02.24.19.54.25.md"
+tags:
+  - creative
+  - music
+  - protocol
+---
+
 ## Signal
 
 Here’s an **intentional crystallize↔bloom upgrade** of your `sing` contract, with:

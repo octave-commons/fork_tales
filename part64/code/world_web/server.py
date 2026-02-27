@@ -133,6 +133,7 @@ from .meta_ops import (
 )
 from .muse_runtime import get_muse_runtime_manager
 from .governor import LaneType, Packet, get_governor
+from .graph_queries import build_facts_snapshot, run_named_graph_query
 from .paths import _ensure_receipts_log_path
 from .projection import (
     attach_ui_projection,
@@ -545,6 +546,15 @@ _SIMULATION_WS_CACHE_MAX_AGE_SECONDS = max(
     _SIMULATION_HTTP_CACHE_SECONDS,
     float(os.getenv("SIMULATION_WS_CACHE_MAX_AGE_SECONDS", "300.0") or "300.0"),
 )
+_SIMULATION_WS_CACHE_PARTICLE_CONTINUITY_BLEND = max(
+    0.0,
+    min(
+        1.0,
+        float(
+            os.getenv("SIMULATION_WS_CACHE_PARTICLE_CONTINUITY_BLEND", "0.96") or "0.96"
+        ),
+    ),
+)
 _SIMULATION_WS_SKIP_CATALOG_BOOTSTRAP = str(
     os.getenv("SIMULATION_WS_SKIP_CATALOG_BOOTSTRAP", "0") or "0"
 ).strip().lower() in {"1", "true", "yes", "on"}
@@ -636,6 +646,9 @@ _SIMULATION_WS_PARTICLE_PAYLOAD_MODE_DEFAULT = (
 )
 _WS_WIRE_ARRAY_SCHEMA = "eta-mu.ws.arr.v1"
 _WS_WIRE_MODE_DEFAULT = str(os.getenv("WS_WIRE_MODE", "json") or "json").strip().lower()
+_SIMULATION_WS_CACHE_FORCE_JSON_WIRE = str(
+    os.getenv("SIMULATION_WS_CACHE_FORCE_JSON_WIRE", "0") or "0"
+).strip().lower() in {"1", "true", "yes", "on"}
 _WS_PACK_TAG_OBJECT = -1
 _WS_PACK_TAG_ARRAY = -2
 _WS_PACK_TAG_STRING = -3
@@ -2419,6 +2432,97 @@ def _simulation_ws_extract_stream_particles(
     return compact_rows
 
 
+def _simulation_ws_capture_particle_motion_state(
+    simulation_payload: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    if not isinstance(simulation_payload, dict):
+        return {}
+    dynamics = simulation_payload.get("presence_dynamics", {})
+    if not isinstance(dynamics, dict):
+        return {}
+    rows = dynamics.get("field_particles", [])
+    if not isinstance(rows, list) or not rows:
+        return {}
+
+    captured: dict[str, dict[str, Any]] = {}
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        particle_id = str(row.get("id", "") or "").strip() or f"ws:{index}"
+        captured[particle_id] = {
+            "x": max(0.0, min(1.0, _safe_float(row.get("x", 0.5), 0.5))),
+            "y": max(0.0, min(1.0, _safe_float(row.get("y", 0.5), 0.5))),
+            "vx": _safe_float(row.get("vx", 0.0), 0.0),
+            "vy": _safe_float(row.get("vy", 0.0), 0.0),
+            "presence_id": str(row.get("presence_id", "") or "").strip(),
+            "is_nexus": bool(row.get("is_nexus", False)),
+        }
+    return captured
+
+
+def _simulation_ws_restore_particle_motion_state(
+    simulation_payload: dict[str, Any],
+    motion_state: dict[str, dict[str, Any]],
+) -> int:
+    if not isinstance(simulation_payload, dict):
+        return 0
+    if not isinstance(motion_state, dict) or not motion_state:
+        return 0
+
+    dynamics = simulation_payload.get("presence_dynamics", {})
+    if not isinstance(dynamics, dict):
+        return 0
+    rows = dynamics.get("field_particles", [])
+    if not isinstance(rows, list) or not rows:
+        return 0
+
+    blend = _SIMULATION_WS_CACHE_PARTICLE_CONTINUITY_BLEND
+    restored = 0
+
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        particle_id = str(row.get("id", "") or "").strip() or f"ws:{index}"
+        previous = motion_state.get(particle_id)
+        if not isinstance(previous, dict):
+            continue
+
+        current_presence_id = str(row.get("presence_id", "") or "").strip()
+        previous_presence_id = str(previous.get("presence_id", "") or "").strip()
+        if (
+            previous_presence_id
+            and current_presence_id
+            and previous_presence_id != current_presence_id
+        ):
+            continue
+        if bool(previous.get("is_nexus", False)) != bool(row.get("is_nexus", False)):
+            continue
+
+        previous_x = max(0.0, min(1.0, _safe_float(previous.get("x", 0.5), 0.5)))
+        previous_y = max(0.0, min(1.0, _safe_float(previous.get("y", 0.5), 0.5)))
+        current_x = max(
+            0.0, min(1.0, _safe_float(row.get("x", previous_x), previous_x))
+        )
+        current_y = max(
+            0.0, min(1.0, _safe_float(row.get("y", previous_y), previous_y))
+        )
+        previous_vx = _safe_float(previous.get("vx", 0.0), 0.0)
+        previous_vy = _safe_float(previous.get("vy", 0.0), 0.0)
+        current_vx = _safe_float(row.get("vx", previous_vx), previous_vx)
+        current_vy = _safe_float(row.get("vy", previous_vy), previous_vy)
+
+        row["x"] = round((previous_x * blend) + (current_x * (1.0 - blend)), 5)
+        row["y"] = round((previous_y * blend) + (current_y * (1.0 - blend)), 5)
+        row["vx"] = round((previous_vx * blend) + (current_vx * (1.0 - blend)), 6)
+        row["vy"] = round((previous_vy * blend) + (current_vy * (1.0 - blend)), 6)
+        restored += 1
+
+    if restored > 0:
+        dynamics["field_particles"] = rows
+        simulation_payload["presence_dynamics"] = dynamics
+    return restored
+
+
 def _simulation_ws_decode_cached_payload(cached_body: Any) -> dict[str, Any] | None:
     if not isinstance(cached_body, (bytes, bytearray)):
         return None
@@ -2449,6 +2553,32 @@ def _simulation_ws_payload_is_sparse(payload: dict[str, Any]) -> bool:
             particle_count = len(rows)
 
     return total_count <= 0 and point_count <= 0 and particle_count <= 0
+
+
+def _simulation_ws_payload_missing_graph_payload(payload: dict[str, Any]) -> bool:
+    if not isinstance(payload, dict):
+        return True
+
+    if isinstance(payload.get("file_graph"), dict) or isinstance(
+        payload.get("crawler_graph"), dict
+    ):
+        return False
+
+    total_count = max(0, int(_safe_float(payload.get("total", 0), 0.0)))
+    view_graph = payload.get("view_graph", {})
+    truth_graph = payload.get("truth_graph", {})
+    view_node_count = (
+        max(0, int(_safe_float(view_graph.get("node_count", 0), 0.0)))
+        if isinstance(view_graph, dict)
+        else 0
+    )
+    truth_node_count = (
+        max(0, int(_safe_float(truth_graph.get("node_count", 0), 0.0)))
+        if isinstance(truth_graph, dict)
+        else 0
+    )
+
+    return total_count > 0 or view_node_count > 0 or truth_node_count > 0
 
 
 def _ws_clamp01(value: float) -> float:
@@ -4452,6 +4582,10 @@ def _simulation_http_compact_simulation_payload(
     ):
         compact.pop(key, None)
 
+    compact.update(
+        _simulation_ws_compact_graph_payload(simulation, assume_trimmed=False)
+    )
+
     point_rows = compact.get("points")
     if isinstance(point_rows, list):
         point_total = len(point_rows)
@@ -5421,6 +5555,106 @@ class WorldHandler(BaseHTTPRequestHandler):
 
     def _muse_tool_callback(self, *, tool_name: str) -> dict[str, Any]:
         clean_tool = str(tool_name or "").strip().lower()
+        if clean_tool == "facts_snapshot":
+            simulation = build_simulation_state(self._collect_catalog_fast())
+            payload = build_facts_snapshot(simulation, part_root=self.part_root)
+            counts = payload.get("counts", {}) if isinstance(payload, dict) else {}
+            node_count = max(
+                0,
+                int(
+                    _safe_float(
+                        sum(
+                            int(_safe_float(value, 0.0))
+                            for value in (
+                                counts.get("nodes_by_role", {}).values()
+                                if isinstance(counts.get("nodes_by_role", {}), dict)
+                                else []
+                            )
+                        ),
+                        0.0,
+                    )
+                ),
+            )
+            edge_count = max(
+                0,
+                int(
+                    _safe_float(
+                        sum(
+                            int(_safe_float(value, 0.0))
+                            for value in (
+                                counts.get("edges_by_kind", {}).values()
+                                if isinstance(counts.get("edges_by_kind", {}), dict)
+                                else []
+                            )
+                        ),
+                        0.0,
+                    )
+                ),
+            )
+            return {
+                "ok": True,
+                "summary": "facts snapshot generated",
+                "record": str(payload.get("record", "")),
+                "snapshot_hash": str(payload.get("snapshot_hash", "")),
+                "snapshot_path": str(payload.get("snapshot_path", "")),
+                "node_count": node_count,
+                "edge_count": edge_count,
+            }
+        if clean_tool.startswith("graph:"):
+            graph_tail = str(
+                clean_tool.split(":", 1)[1] if ":" in clean_tool else ""
+            ).strip()
+            tail_parts = [piece for piece in graph_tail.split(" ") if piece]
+            query_name = str(tail_parts[0] if tail_parts else "").strip().lower()
+            query_arg = " ".join(tail_parts[1:]).strip()
+            if not query_name:
+                query_name = "overview"
+            query_args: dict[str, Any] = {}
+            if query_name in {"neighbors", "node_neighbors"} and query_arg:
+                query_args["node_id"] = query_arg
+            elif query_name == "search" and query_arg:
+                query_args["q"] = query_arg
+            elif query_name in {"url_status", "resource_for_url"} and query_arg:
+                query_args["target"] = query_arg
+            elif query_name == "recently_updated" and query_arg:
+                query_args["limit"] = max(1, int(_safe_float(query_arg, 24.0)))
+            elif query_name == "role_slice" and query_arg:
+                query_args["role"] = query_arg
+            simulation = build_simulation_state(self._collect_catalog_fast())
+            nexus_graph = (
+                simulation.get("nexus_graph", {})
+                if isinstance(simulation.get("nexus_graph", {}), dict)
+                else {}
+            )
+            payload = run_named_graph_query(nexus_graph, query_name, args=query_args)
+            result = payload.get("result", {})
+            if isinstance(result, dict) and result.get("error"):
+                return {
+                    "ok": False,
+                    "error": str(result.get("error", "unknown_query")),
+                    "query": query_name,
+                }
+            result_count = 0
+            if isinstance(result, dict):
+                for count_key in (
+                    "count",
+                    "neighbor_count",
+                    "node_count",
+                    "edge_count",
+                ):
+                    if count_key in result:
+                        result_count = max(
+                            result_count,
+                            int(_safe_float(result.get(count_key, 0), 0.0)),
+                        )
+            return {
+                "ok": True,
+                "summary": f"graph query {query_name} generated",
+                "query": query_name,
+                "snapshot_hash": str(payload.get("snapshot_hash", "")),
+                "result_count": int(result_count),
+                "result": result if isinstance(result, dict) else {},
+            }
         if clean_tool == "study_snapshot":
             payload = build_study_snapshot(
                 self.part_root,
@@ -6168,7 +6402,11 @@ class WorldHandler(BaseHTTPRequestHandler):
             skip_catalog_bootstrap and use_cached_snapshots
         )
         ws_wire_mode = _normalize_ws_wire_mode(wire_mode)
-        if use_cached_snapshots and ws_wire_mode == "arr":
+        if (
+            use_cached_snapshots
+            and ws_wire_mode == "arr"
+            and _SIMULATION_WS_CACHE_FORCE_JSON_WIRE
+        ):
             ws_wire_mode = "json"
         ws_chunk_enabled = bool(chunk_stream_enabled)
         ws_chunk_chars = _SIMULATION_WS_CHUNK_CHARS
@@ -6394,6 +6632,9 @@ class WorldHandler(BaseHTTPRequestHandler):
                         or _simulation_ws_payload_missing_daimoi_summary(
                             simulation_delta_payload
                         )
+                        or _simulation_ws_payload_missing_graph_payload(
+                            simulation_payload
+                        )
                     )
                 if payload_mode_key != "full" and needs_live_bootstrap:
                     simulation_payload, simulation_delta_payload, projection = (
@@ -6476,6 +6717,9 @@ class WorldHandler(BaseHTTPRequestHandler):
                 current_config_runtime_version = _config_runtime_version_snapshot()
                 if current_config_runtime_version != last_config_runtime_version:
                     last_config_runtime_version = current_config_runtime_version
+                    refresh_motion_state = _simulation_ws_capture_particle_motion_state(
+                        simulation_payload
+                    )
                     try:
                         (
                             simulation_payload,
@@ -6485,6 +6729,16 @@ class WorldHandler(BaseHTTPRequestHandler):
                     except Exception:
                         pass
                     else:
+                        if refresh_motion_state:
+                            _simulation_ws_restore_particle_motion_state(
+                                simulation_payload,
+                                refresh_motion_state,
+                            )
+                            if simulation_delta_payload is not simulation_payload:
+                                _simulation_ws_restore_particle_motion_state(
+                                    simulation_delta_payload,
+                                    refresh_motion_state,
+                                )
                         stream_particles = _simulation_ws_extract_stream_particles(
                             simulation_delta_payload
                         )
@@ -6499,7 +6753,12 @@ class WorldHandler(BaseHTTPRequestHandler):
                                 "projection": projection,
                             }
                         )
-                        ws_cache_payload = dict(simulation_delta_payload)
+                        cache_source_payload = (
+                            simulation_delta_payload
+                            if payload_mode_key == "full"
+                            else simulation_payload
+                        )
+                        ws_cache_payload = dict(cache_source_payload)
                         ws_cache_payload["projection"] = projection
                         _simulation_http_cache_store(
                             f"{perspective_key}|ws-stream|simulation",
@@ -6610,6 +6869,11 @@ class WorldHandler(BaseHTTPRequestHandler):
                             )
                         )
                         if cache_refresh_due:
+                            refresh_motion_state = (
+                                _simulation_ws_capture_particle_motion_state(
+                                    simulation_payload
+                                )
+                            )
                             cached_payload = _simulation_ws_load_cached_payload(
                                 part_root=self.part_root,
                                 perspective=perspective_key,
@@ -6617,6 +6881,11 @@ class WorldHandler(BaseHTTPRequestHandler):
                             )
                             if cached_payload is not None:
                                 simulation_payload, projection = cached_payload
+                                if refresh_motion_state:
+                                    _simulation_ws_restore_particle_motion_state(
+                                        simulation_payload,
+                                        refresh_motion_state,
+                                    )
                                 if payload_mode_key == "full":
                                     simulation_delta_payload = _build_ws_delta_payload(
                                         simulation_payload
@@ -6632,20 +6901,13 @@ class WorldHandler(BaseHTTPRequestHandler):
                                 payload_mode_key != "full"
                                 and _SIMULATION_WS_BOOTSTRAP_REQUIRE_LIVE_REBUILD
                                 and (
-                                    (
-                                        cached_payload is None
-                                        and _simulation_ws_payload_missing_daimoi_summary(
-                                            simulation_delta_payload
-                                        )
+                                    cached_payload is None
+                                    or (not stream_particles)
+                                    or _simulation_ws_payload_missing_daimoi_summary(
+                                        simulation_delta_payload
                                     )
-                                    or (
-                                        cached_payload is not None
-                                        and (
-                                            (not stream_particles)
-                                            or _simulation_ws_payload_missing_daimoi_summary(
-                                                simulation_delta_payload
-                                            )
-                                        )
+                                    or _simulation_ws_payload_missing_graph_payload(
+                                        simulation_payload
                                     )
                                 )
                             ):
@@ -6654,6 +6916,19 @@ class WorldHandler(BaseHTTPRequestHandler):
                                     simulation_delta_payload,
                                     projection,
                                 ) = rebuild_live_simulation_payload()
+                                if refresh_motion_state:
+                                    _simulation_ws_restore_particle_motion_state(
+                                        simulation_payload,
+                                        refresh_motion_state,
+                                    )
+                                    if (
+                                        simulation_delta_payload
+                                        is not simulation_payload
+                                    ):
+                                        _simulation_ws_restore_particle_motion_state(
+                                            simulation_delta_payload,
+                                            refresh_motion_state,
+                                        )
                                 stream_particles = (
                                     _simulation_ws_extract_stream_particles(
                                         simulation_delta_payload

@@ -1,3 +1,16 @@
+---
+title: "Suno Prompts for Manifest Oath Motifs"
+summary: "Paste-ready Suno constraints, style DNA, motif seeds, and structured lyrics for Manifest Oath."
+category: "creative"
+created_at: "2026-02-16T11:23:32"
+original_filename: "2026.02.16.11.23.32.md"
+original_relpath: "docs/notes/creative/2026.02.16.11.23.32.md"
+tags:
+  - creative
+  - suno
+  - prompts
+---
+
 # Suno Prompts — Manifest Oath (Motif Seeds + Background Dialog)
 
 **Created with the assistance of an AI.**

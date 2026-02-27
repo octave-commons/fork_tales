@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "useUnknownInCatchVariables": true
+  },
+  "include": [
+    "src/app/**/*.ts",
+    "src/app/**/*.tsx",
+    "src/runtime/**/*.ts",
+    "src/autopilot.ts"
+  ],
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/app/panelConfigBuilders.tsx",
+    "src/app/useAppPanelConfigs.tsx"
+  ]
+}

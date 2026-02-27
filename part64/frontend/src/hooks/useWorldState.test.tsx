@@ -178,7 +178,7 @@ describe('useWorldState websocket worker streams', () => {
 
     expect(ws).toBeDefined();
     expect(ws.url).toContain(
-      '/ws?perspective=hybrid&delta_stream=workers&wire=arr&simulation_payload=trimmed&particle_payload=lite&ws_chunk=1&catalog_events=0&skip_catalog_bootstrap=1',
+      '/ws?perspective=hybrid&delta_stream=workers&wire=arr&simulation_payload=trimmed&particle_payload=lite&ws_chunk=0&catalog_events=0&skip_catalog_bootstrap=1',
     );
 
     act(() => {

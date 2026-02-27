@@ -841,7 +841,18 @@ class MuseRuntimeManager:
             model_name = None
             reply_mode = "canonical"
             fallback_used = False
-            if callable(reply_builder):
+            grounded_row = self._grounded_reply_from_tool_rows_locked(tool_rows)
+            grounded_receipts: dict[str, Any] = {}
+            if isinstance(grounded_row, dict):
+                assistant_text = str(grounded_row.get("reply", "")).strip()
+                grounded_receipts = (
+                    dict(grounded_row.get("receipts", {}))
+                    if isinstance(grounded_row.get("receipts", {}), dict)
+                    else {}
+                )
+                model_name = "tool-grounded"
+                reply_mode = "grounded"
+            elif callable(reply_builder):
                 try:
                     built = reply_builder(
                         messages=model_messages,
@@ -901,6 +912,25 @@ class MuseRuntimeManager:
                     "assistant_node_id": str(assistant_node.get("id", "")),
                 },
             )
+            if grounded_receipts:
+                self._emit_event_locked(
+                    kind="muse_job_completed",
+                    status="ok",
+                    muse_id=clean_muse_id,
+                    turn_id=turn_id,
+                    payload={
+                        "snapshot_hash": str(
+                            grounded_receipts.get("snapshot_hash", "")
+                        ).strip(),
+                        "queries_used": list(
+                            grounded_receipts.get("queries_used", [])
+                            if isinstance(
+                                grounded_receipts.get("queries_used", []), list
+                            )
+                            else []
+                        )[:8],
+                    },
+                )
             self._emit_event_locked(
                 kind="muse.turn.completed",
                 status="ok",
@@ -954,6 +984,7 @@ class MuseRuntimeManager:
                 and media_action
                 and str(media_action.get("media_kind", "")).strip().lower() == "audio"
                 else [],
+                "grounded_receipts": grounded_receipts,
                 "messages": [message_node, assistant_node],
             }
             if clean_key:
@@ -1561,6 +1592,24 @@ class MuseRuntimeManager:
             return []
         rows: list[dict[str, Any]] = []
         for tool_name in requested[:3]:
+            is_grounding_tool = tool_name == "facts_snapshot" or tool_name.startswith(
+                "graph:"
+            )
+            if is_grounding_tool:
+                self._emit_event_locked(
+                    kind="muse_job_enqueued",
+                    status="ok",
+                    muse_id=muse_id,
+                    turn_id=turn_id,
+                    payload={"tool": tool_name},
+                )
+                self._emit_event_locked(
+                    kind="muse_job_started",
+                    status="ok",
+                    muse_id=muse_id,
+                    turn_id=turn_id,
+                    payload={"tool": tool_name},
+                )
             self._emit_event_locked(
                 kind="muse.tool.requested",
                 status="ok",
@@ -1594,6 +1643,20 @@ class MuseRuntimeManager:
                     "summary": summary[:180],
                 },
             )
+            if is_grounding_tool:
+                self._emit_event_locked(
+                    kind="muse_job_completed",
+                    status="ok" if bool(row["result"].get("ok", False)) else "blocked",
+                    muse_id=muse_id,
+                    turn_id=turn_id,
+                    payload={
+                        "tool": tool_name,
+                        "snapshot_hash": str(
+                            row["result"].get("snapshot_hash", "")
+                        ).strip(),
+                        "query": str(row["result"].get("query", "")).strip(),
+                    },
+                )
         return rows
 
     def _tool_requests(self, text: str) -> list[str]:
@@ -1601,6 +1664,11 @@ class MuseRuntimeManager:
         requested: list[str] = []
         if not normalized:
             return requested
+        if normalized.startswith("/facts") or " facts " in f" {normalized} ":
+            requested.append("facts_snapshot")
+        if "/graph" in normalized:
+            graph_tail = str(normalized.split("/graph", 1)[1]).strip()
+            requested.append(f"graph:{graph_tail or 'overview'}")
         if normalized.startswith("/study") or "stability" in normalized:
             requested.append("study_snapshot")
         if normalized.startswith("/drift") or "drift" in normalized:
@@ -1608,6 +1676,70 @@ class MuseRuntimeManager:
         if "push truth" in normalized or "push-truth" in normalized:
             requested.append("push_truth_dry_run")
         return requested
+
+    def _grounded_reply_from_tool_rows_locked(
+        self, tool_rows: list[dict[str, Any]]
+    ) -> dict[str, Any] | None:
+        if not isinstance(tool_rows, list) or not tool_rows:
+            return None
+
+        facts_hash = ""
+        facts_path = ""
+        facts_nodes = 0
+        facts_edges = 0
+        graph_receipts: list[str] = []
+        query_names: list[str] = []
+        grounded = False
+
+        for row in tool_rows:
+            if not isinstance(row, dict):
+                continue
+            tool_name = str(row.get("tool", "")).strip().lower()
+            result = row.get("result", {})
+            if not isinstance(result, dict):
+                continue
+            if tool_name == "facts_snapshot" and bool(result.get("ok", False)):
+                grounded = True
+                facts_hash = str(result.get("snapshot_hash", "")).strip()
+                facts_path = str(result.get("snapshot_path", "")).strip()
+                facts_nodes = max(0, _safe_int(result.get("node_count", 0), 0))
+                facts_edges = max(0, _safe_int(result.get("edge_count", 0), 0))
+            if tool_name.startswith("graph:") and bool(result.get("ok", False)):
+                grounded = True
+                query_name = str(result.get("query", "")).strip()
+                if query_name and query_name not in query_names:
+                    query_names.append(query_name)
+                query_count = max(0, _safe_int(result.get("result_count", 0), 0))
+                graph_receipts.append(f"{query_name}:{query_count}")
+
+        if not grounded:
+            return None
+
+        reply_parts: list[str] = []
+        if facts_hash:
+            reply = (
+                f"Facts grounded at {facts_hash}. "
+                f"nodes={facts_nodes} edges={facts_edges}."
+            )
+            if facts_path:
+                reply += f" snapshot={facts_path}."
+            reply_parts.append(reply)
+        if graph_receipts:
+            reply_parts.append("Graph queries: " + ", ".join(graph_receipts[:6]) + ".")
+        if not reply_parts:
+            reply_parts.append(
+                "Grounding tools ran, but no resolvable facts were returned. unknown."
+            )
+
+        receipts = {
+            "snapshot_hash": facts_hash,
+            "snapshot_path": facts_path,
+            "queries_used": query_names,
+        }
+        return {
+            "reply": " ".join(reply_parts).strip(),
+            "receipts": receipts,
+        }
 
     def _resolve_media_command_action_locked(
         self,

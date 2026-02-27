@@ -1,3 +1,16 @@
+---
+title: "Local Embeddings Benchmarking and MRL Selection"
+summary: "Benchmark framework for choosing local embedding models and hardware with low tail latency and MRL quality."
+category: "research"
+created_at: "2026-02-20T16:30:08"
+original_filename: "2026.02.20.16.30.08.md"
+original_relpath: "docs/notes/research/2026.02.20.16.30.08.md"
+tags:
+  - research
+  - embeddings
+  - performance
+---
+
 # Local Embeddings: Benchmarking + Model/Hardware Selection (Speed + MRL)
 
 ## 0. Objective
@@ -412,4 +425,3 @@ And treat **dimension as a runtime knob**:
 Implement a tiny C harness that can do:
 `--backend cpu|gpu|npu --dim 768|256|128 --iters N --warmup W --threads T --pin 0|1`
 and outputs **CSV of per-call latencies** + a summary line with p50/p99/max.
-

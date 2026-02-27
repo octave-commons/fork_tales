@@ -1616,6 +1616,54 @@ function shortPathLabel(path: string): string {
   return `${leaf.slice(0, 19)}...`;
 }
 
+function isViewCompactionBundleNode(node: any): boolean {
+  if (!node || typeof node !== "object") {
+    return false;
+  }
+  const nodeRole = String(node?.kind ?? node?.presence_kind ?? "").trim().toLowerCase();
+  const semanticRole = String(node?.simulation_semantic_role ?? "").trim().toLowerCase();
+  const truthScope = String(node?.truth_scope ?? "").trim().toLowerCase();
+  const sourceRelPath = String(
+    node?.source_rel_path
+    ?? node?.archived_rel_path
+    ?? node?.archive_rel_path
+    ?? "",
+  ).trim().toLowerCase();
+  const projectionGroupId = String(node?.projection_group_id ?? "").trim();
+  return Boolean(node?.projection_overflow)
+    || Boolean(node?.consolidated)
+    || Boolean(node?.semantic_bundle)
+    || Boolean(node?.is_view_compaction_bundle)
+    || nodeRole === "projection_overflow"
+    || nodeRole === "view_compaction_bundle"
+    || semanticRole === "view_compaction_aggregate"
+    || truthScope === "excluded_projection_bundle"
+    || projectionGroupId.length > 0
+    || sourceRelPath.startsWith("_projection/")
+    || sourceRelPath.startsWith("_consolidated/");
+}
+
+function isViewCompactionBundleEdge(edge: any): boolean {
+  if (!edge || typeof edge !== "object") {
+    return false;
+  }
+  const semanticRole = String(edge?.simulation_semantic_role ?? "").trim().toLowerCase();
+  const truthScope = String(edge?.truth_scope ?? "").trim().toLowerCase();
+  const projectionGroupId = String(edge?.projection_group_id ?? "").trim();
+  const edgeId = String(edge?.id ?? "").trim();
+  const sourceText = String(edge?.source ?? "").trim();
+  const targetText = String(edge?.target ?? "").trim();
+  return Boolean(edge?.projection_overflow)
+    || Boolean(edge?.consolidated)
+    || Boolean(edge?.semantic_bundle)
+    || semanticRole === "view_compaction_aggregate"
+    || truthScope === "excluded_projection_bundle"
+    || projectionGroupId.length > 0
+    || edgeId.includes("projection:")
+    || sourceText.includes("projection:")
+    || targetText.includes("projection:");
+}
+
 function isRemoteHttpUrl(url: string): boolean {
   const trimmed = url.trim().toLowerCase();
   return trimmed.startsWith("http://") || trimmed.startsWith("https://");
@@ -4481,12 +4529,8 @@ export function SimulationCanvas({
             ?? node?.archive_rel_path
             ?? "",
           ).trim();
-          const isProjectionOverflowNode = Boolean(node?.projection_overflow)
-            || nodeRole === "projection_overflow"
-            || sourceRelPath.startsWith("_projection/");
-          const isConsolidatedNode = Boolean(node?.consolidated)
-            || sourceRelPath.startsWith("_consolidated/");
-          const isCompactionArtifactNode = isProjectionOverflowNode || isConsolidatedNode;
+          const isProjectionOverflowNode = isViewCompactionBundleNode(node);
+          const isCompactionArtifactNode = isProjectionOverflowNode;
           if (
             restrictGraphNodesToViewMap
             && !graphNodePositionMap.has(nodeId)
@@ -4758,16 +4802,7 @@ export function SimulationCanvas({
           const edge = edges[index] as any;
           const trueGraphEdgeMode = lockGraphToStaticLayout;
           if (trueGraphEdgeMode) {
-            const edgeId = String(edge?.id ?? "").trim();
-            const sourceText = String(edge?.source ?? "").trim();
-            const targetText = String(edge?.target ?? "").trim();
-            const projectionGroupId = String(edge?.projection_group_id ?? "").trim();
-            const isCompactionArtifactEdge = Boolean(edge?.projection_overflow)
-              || Boolean(edge?.consolidated)
-              || projectionGroupId.length > 0
-              || edgeId.includes("projection:")
-              || sourceText.includes("projection:")
-              || targetText.includes("projection:");
+            const isCompactionArtifactEdge = isViewCompactionBundleEdge(edge);
             if (isCompactionArtifactEdge) {
               continue;
             }
@@ -4906,7 +4941,7 @@ export function SimulationCanvas({
         const overflowAnchorByGroupId = new Map<string, { x: number; y: number }>();
         for (const node of fileNodes) {
           const groupId = String(node?.projection_group_id ?? "").trim();
-          if (!groupId || overflowAnchorByGroupId.has(groupId) || !node?.projection_overflow) {
+          if (!groupId || overflowAnchorByGroupId.has(groupId) || !isViewCompactionBundleNode(node)) {
             continue;
           }
           const id = String(node?.id ?? "").trim();
@@ -5823,8 +5858,7 @@ export function SimulationCanvas({
     const fileEdges = Array.isArray(fileGraph?.edges) ? fileGraph.edges : [];
     const projectionGroups = Array.isArray(projection?.groups) ? projection.groups : [];
     const overflowNodeCount = fileNodes.reduce((count: number, node: any) => {
-      const groupId = String(node?.projection_group_id ?? "").trim();
-      if (node?.projection_overflow || node?.kind === "projection_overflow" || groupId.length > 0) {
+      if (isViewCompactionBundleNode(node)) {
         return count + 1;
       }
       return count;

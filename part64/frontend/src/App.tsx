@@ -22,8 +22,6 @@ import {
   useEffect,
   useMemo,
   useRef,
-  lazy,
-  Suspense,
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
 } from "react";
@@ -31,8 +29,6 @@ import { type PanInfo } from "framer-motion";
 import { useAutopilotController } from "./hooks/useAutopilotController";
 import { useWorldState } from "./hooks/useWorldState";
 import {
-  OVERLAY_VIEW_OPTIONS,
-  SimulationCanvas,
   type NexusInteractionEvent,
   type OverlayViewId,
 } from "./components/Simulation/Canvas";
@@ -40,8 +36,6 @@ import { CoreBackdrop } from "./components/App/CoreBackdrop";
 import { CoreControlPanel, type MouseDaimonTuning } from "./components/App/CoreControlPanel";
 import { CoreLayerManagerOverlay } from "./components/App/CoreLayerManagerOverlay";
 import { WorldPanelsViewport } from "./components/App/WorldPanelsViewport";
-import { MusePresencePanel } from "./components/Panels/MusePresencePanel";
-import { ProjectionLedgerPanel } from "./components/Panels/ProjectionLedgerPanel";
 import {
   CORE_CAMERA_PITCH_MAX,
   CORE_CAMERA_PITCH_MIN,
@@ -111,367 +105,63 @@ import {
   overlapAmount,
   panelSizeForWorld,
   preferredSideForAnchor,
-  type PanelConfig,
   type PanelPreferredSide,
   type PanelWindowState,
   type WorldAnchorTarget,
   type WorldPanelNexusEntry,
   type WorldPanelLayoutEntry,
 } from "./app/worldPanelLayout";
-import { runtimeApiUrl, runtimeBaseUrl } from "./runtime/endpoints";
+import {
+  APP_WORKSPACE_NORMALIZE_OPTIONS,
+  COUNCIL_BOOST_STORAGE_KEY,
+  DEFAULT_INTERFACE_OPACITY,
+  GLASS_VIEWPORT_PANEL_ID,
+  INTERFACE_OPACITY_MAX,
+  INTERFACE_OPACITY_MIN,
+  INTERFACE_OPACITY_STORAGE_KEY,
+  MUSE_WORKSPACE_STORAGE_KEY,
+  PANEL_TOOL_HINTS,
+  PRESENCE_OPERATIONAL_ROLE_BY_ID,
+  RUNTIME_CONFIG_PANEL_ID,
+  TERTIARY_PIN_STORAGE_KEY,
+  USER_PRESENCE_BATCH_IDLE_FLUSH_MS,
+  USER_PRESENCE_BATCH_MAX_EVENTS,
+  USER_PRESENCE_BATCH_MAX_WINDOW_MS,
+  isGlassPrimaryPanelId,
+} from "./app/appShellConstants";
+import {
+  type OverlayApi,
+  type ParticleDisposition,
+  type RankedPanel,
+  type UiToast,
+  type UserPresenceInputPayload,
+} from "./app/appShellTypes";
+import {
+  buildDeviceSurroundingNodes,
+  clamp,
+  isCorePointerBlockedTarget,
+  isTextEntryTarget,
+  resolveRuntimeMediaUrl,
+  shouldRouteWheelToCore,
+  stableUnitHash,
+  toMuseSlug,
+} from "./app/appShellUtils";
+import { useAppPanelConfigs } from "./app/useAppPanelConfigs";
+import { useChatCommandHandlers } from "./app/useChatCommandHandlers";
+import { runtimeBaseUrl } from "./runtime/endpoints";
 import type {
   ChatMessage,
-  CouncilApiResponse,
-  DriftScanPayload,
   EntityManifestItem,
   FileGraphConceptPresence,
   FileGraphNode,
   MuseEvent,
   MuseWorkspaceContext,
   NamedFieldItem,
-  StudySnapshotPayload,
-  TaskQueueSnapshot,
   UIPerspective,
   UIProjectionBundle,
   UIProjectionElementState,
   WorldInteractionResponse,
 } from "./types";
-
-const VitalsPanel = lazy(() =>
-  import("./components/Panels/Vitals").then((module) => ({ default: module.VitalsPanel })),
-);
-const CatalogPanel = lazy(() =>
-  import("./components/Panels/Catalog").then((module) => ({ default: module.CatalogPanel })),
-);
-const OmniPanel = lazy(() =>
-  import("./components/Panels/Omni").then((module) => ({ default: module.OmniPanel })),
-);
-const MythWorldPanel = lazy(() =>
-  import("./components/Panels/MythWorld").then((module) => ({ default: module.MythWorldPanel })),
-);
-const WebGraphWeaverPanel = lazy(() =>
-  import("./components/Panels/WebGraphWeaverPanel").then((module) => ({
-    default: module.WebGraphWeaverPanel,
-  })),
-);
-const InspirationAtlasPanel = lazy(() =>
-  import("./components/Panels/InspirationAtlasPanel").then((module) => ({
-    default: module.InspirationAtlasPanel,
-  })),
-);
-const StabilityObservatoryPanel = lazy(() =>
-  import("./components/Panels/StabilityObservatoryPanel").then((module) => ({
-    default: module.StabilityObservatoryPanel,
-  })),
-);
-const RuntimeConfigPanel = lazy(() =>
-  import("./components/Panels/RuntimeConfigPanel").then((module) => ({
-    default: module.RuntimeConfigPanel,
-  })),
-);
-const DaimoiPresencePanel = lazy(() =>
-  import("./components/Panels/DaimoiPresencePanel").then((module) => ({
-    default: module.DaimoiPresencePanel,
-  })),
-);
-const WorldLogPanel = lazy(() =>
-  import("./components/Panels/WorldLogPanel").then((module) => ({
-    default: module.WorldLogPanel,
-  })),
-);
-
-interface OverlayApi {
-  pulseAt?: (x: number, y: number, power: number, target?: string) => void;
-  singAll?: () => void;
-  getAnchorRatio?: (kind: string, targetId: string) => { x: number; y: number; kind: string; label?: string } | null;
-  projectRatioToClient?: (xRatio: number, yRatio: number) => { x: number; y: number; w: number; h: number };
-  interactAt?: (
-    xRatio: number,
-    yRatio: number,
-    options?: { openWorldscreen?: boolean },
-  ) => { hitNode: boolean; openedWorldscreen: boolean; target: string; xRatio: number; yRatio: number };
-  interactClientAt?: (
-    clientX: number,
-    clientY: number,
-    options?: { openWorldscreen?: boolean },
-  ) => { hitNode: boolean; openedWorldscreen: boolean; target: string; xRatio: number; yRatio: number };
-}
-
-interface UiToast {
-  id: number;
-  title: string;
-  body: string;
-}
-
-interface UserPresenceInputPayload {
-  kind: string;
-  target: string;
-  message?: string;
-  xRatio?: number;
-  yRatio?: number;
-  embedDaimoi?: boolean;
-  meta?: Record<string, unknown>;
-}
-
-type ParticleDisposition = "neutral" | "role-bound";
-
-interface RankedPanel extends PanelConfig {
-  priority: number;
-  depth: number;
-  councilScore: number;
-  councilBoost: number;
-  councilReason: string;
-  presenceId: string;
-  presenceLabel: string;
-  presenceLabelJa: string;
-  presenceRole: string;
-  particleDisposition: ParticleDisposition;
-  particleCount: number;
-  toolHints: string[];
-}
-
-const PRESENCE_OPERATIONAL_ROLE_BY_ID: Record<string, string> = {
-  witness_thread: "crawl-routing",
-  keeper_of_receipts: "file-analysis",
-  mage_of_receipts: "image-captioning",
-  anchor_registry: "council-orchestration",
-  gates_of_truth: "compliance-gating",
-  view_lens_keeper: "camera-guidance",
-  health_sentinel_gpu1: "compute-scheduler",
-  health_sentinel_gpu0: "compute-scheduler",
-  health_sentinel_npu0: "compute-scheduler",
-  health_sentinel_cpu: "compute-scheduler",
-};
-
-const PANEL_TOOL_HINTS: Record<string, string[]> = {
-  "nexus.ui.command_center": ["call", "say", "webrtc"],
-  "nexus.ui.chat.witness_thread": ["ledger", "lineage", "particles"],
-  "nexus.ui.chat.chaos": ["chat", "nearby", "pin"],
-  "nexus.ui.chat.stability": ["chat", "nearby", "pin"],
-  "nexus.ui.chat.symmetry": ["chat", "nearby", "pin"],
-  "nexus.ui.web_graph_weaver": ["crawl", "queue", "graph"],
-  "nexus.ui.inspiration_atlas": ["search", "curate", "seed"],
-  "nexus.ui.entity_vitals": ["vitals", "telemetry", "watch"],
-  "nexus.ui.projection_ledger": ["projection", "trace", "audit"],
-  "nexus.ui.autopilot_ledger": ["autopilot", "risk", "gates"],
-  "nexus.ui.world_log": ["receipts", "events", "review"],
-  "nexus.ui.stability_observatory": ["study", "drift", "council"],
-  "nexus.ui.runtime_config": ["config", "constants", "tuning"],
-  "nexus.ui.daimoi_presence": ["daimoi", "presence", "focus"],
-  "nexus.ui.omni_archive": ["catalog", "memories", "artifacts"],
-  "nexus.ui.myth_commons": ["interact", "pray", "speak"],
-  "nexus.ui.dedicated_views": ["overlay", "focus", "monitor"],
-  "nexus.ui.glass_viewport": ["glass", "camera", "pan"],
-};
-
-const COUNCIL_BOOST_STORAGE_KEY = "eta_mu.council_boosts.v1";
-const TERTIARY_PIN_STORAGE_KEY = "eta_mu.tertiary_pin.v1";
-const MUSE_WORKSPACE_STORAGE_KEY = "eta_mu.muse_workspace.v1";
-const INTERFACE_OPACITY_STORAGE_KEY = "eta_mu.interface_opacity.v2";
-const GLASS_VIEWPORT_PANEL_ID = "nexus.ui.glass_viewport";
-const RUNTIME_CONFIG_PANEL_ID = "nexus.ui.runtime_config";
-const INTERFACE_OPACITY_MIN = 0.72;
-const INTERFACE_OPACITY_MAX = 1;
-const DEFAULT_INTERFACE_TRANSPARENCY_PERCENT = 0;
-const DEFAULT_INTERFACE_OPACITY = 1 - (DEFAULT_INTERFACE_TRANSPARENCY_PERCENT / 100);
-const FIXED_MUSE_PRESENCES = [
-  {
-    id: "nexus.ui.chat.witness_thread",
-    presenceId: "witness_thread",
-    label: "Witness Thread",
-  },
-  {
-    id: "nexus.ui.chat.chaos",
-    presenceId: "chaos",
-    label: "Chaos",
-  },
-  {
-    id: "nexus.ui.chat.stability",
-    presenceId: "stability",
-    label: "Stability",
-  },
-  {
-    id: "nexus.ui.chat.symmetry",
-    presenceId: "symmetry",
-    label: "Symmetry",
-  },
-] as const;
-
-const APP_WORKSPACE_NORMALIZE_OPTIONS = {
-  maxPinnedFileNodeIds: 48,
-  maxSearchQueryLength: 180,
-  maxPinnedNexusSummaries: 24,
-} as const;
-
-const USER_PRESENCE_BATCH_IDLE_FLUSH_MS = 2400;
-const USER_PRESENCE_BATCH_MAX_WINDOW_MS = 60_000;
-const USER_PRESENCE_BATCH_MAX_EVENTS = 36;
-
-function isGlassPrimaryPanelId(panelId: string): boolean {
-  return panelId === GLASS_VIEWPORT_PANEL_ID || panelId === "nexus.ui.dedicated_views";
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
-
-function resolveEventElement(target: EventTarget | null): Element | null {
-  if (target instanceof Element) {
-    return target;
-  }
-  if (target instanceof Node) {
-    return target.parentElement;
-  }
-  return null;
-}
-
-function isTextEntryTarget(target: EventTarget | null): boolean {
-  const element = resolveEventElement(target);
-  if (!(element instanceof HTMLElement)) {
-    return false;
-  }
-  if (element.isContentEditable) {
-    return true;
-  }
-  const tagName = element.tagName.toLowerCase();
-  return tagName === "input" || tagName === "textarea" || tagName === "select";
-}
-
-function isCorePointerBlockedTarget(target: EventTarget | null): boolean {
-  const element = resolveEventElement(target);
-  if (!element) {
-    return false;
-  }
-  if (isTextEntryTarget(element)) {
-    return true;
-  }
-  return Boolean(
-    element.closest(
-      "button, a, [role='button'], [data-core-pointer='block'], [data-panel-interactive='true']",
-    ),
-  );
-}
-
-function shouldRouteWheelToCore(target: EventTarget | null, deltaY = 0): boolean {
-  const element = resolveEventElement(target);
-  if (!element) {
-    return true;
-  }
-  if (
-    element.closest(
-      "input, textarea, select, option, [contenteditable='true'], [role='slider'], [data-core-wheel='block']",
-    )
-  ) {
-    return false;
-  }
-
-  if (element.closest("button, a, [role='button'], [data-panel-interactive='true']")) {
-    return false;
-  }
-
-  const panelBody = element.closest(".world-panel-body");
-  if (panelBody instanceof HTMLElement) {
-    const maxScrollTop = Math.max(0, panelBody.scrollHeight - panelBody.clientHeight);
-    if (maxScrollTop > 1) {
-      const atTop = panelBody.scrollTop <= 1;
-      const atBottom = panelBody.scrollTop >= maxScrollTop - 1;
-      if ((deltaY < 0 && !atTop) || (deltaY > 0 && !atBottom) || Math.abs(deltaY) < 0.5) {
-        return false;
-      }
-    }
-  }
-
-  return true;
-}
-
-function projectionOpacity(raw: number | undefined, floor = 0.9): number {
-  const normalized = clamp(typeof raw === "number" ? raw : 1, 0, 1);
-  return floor + normalized * (1 - floor);
-}
-
-function stableUnitHash(seed: string): number {
-  let hash = 2166136261;
-  for (let index = 0; index < seed.length; index += 1) {
-    hash ^= seed.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0) / 4294967295;
-}
-
-function toMuseSlug(raw: string): string {
-  const cleaned = String(raw || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_\s-]+/g, "")
-    .replace(/[\s-]+/g, "_")
-    .replace(/_+/g, "_")
-    .replace(/^_+|_+$/g, "");
-  if (!cleaned) {
-    return "";
-  }
-  if (/^[0-9]/.test(cleaned)) {
-    return `muse_${cleaned}`;
-  }
-  return cleaned;
-}
-
-function resolveRuntimeMediaUrl(rawUrl: string): string {
-  const trimmed = String(rawUrl || "").trim();
-  if (!trimmed) {
-    return "";
-  }
-  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
-    return trimmed;
-  }
-  if (trimmed.startsWith("/")) {
-    return runtimeApiUrl(trimmed);
-  }
-  return runtimeApiUrl(`/${trimmed.replace(/^\.+\//, "")}`);
-}
-
-function normalizeDeviceUtilization(raw: unknown): number {
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value <= 0) {
-    return 0;
-  }
-  const scaled = value > 1 ? value / 100 : value;
-  return clamp(scaled, 0, 1);
-}
-
-function buildDeviceSurroundingNodes(simulation: {
-  presence_dynamics?: {
-    resource_heartbeat?: {
-      devices?: Record<string, { utilization?: number } | undefined>;
-    };
-  };
-} | null): Array<Record<string, unknown>> {
-  const devices = simulation?.presence_dynamics?.resource_heartbeat?.devices;
-  if (!devices || typeof devices !== "object") {
-    return [];
-  }
-  return Object.entries(devices)
-    .map(([deviceId, payload]) => {
-      const utilization = normalizeDeviceUtilization(payload?.utilization);
-      return {
-        id: `device:${deviceId}`,
-        kind: "device",
-        label: deviceId,
-        text: `${deviceId} utilization ${Math.round(utilization * 100)}%`,
-        utilization,
-        visibility: "public",
-      };
-    })
-    .slice(0, 6);
-}
-
-function DeferredPanelPlaceholder({ title }: { title: string }) {
-  return (
-    <div className="rounded-xl border border-[var(--line)] bg-[rgba(45,46,39,0.82)] px-4 py-5">
-      <p className="text-sm font-semibold text-ink">{title}</p>
-      <p className="text-xs text-muted mt-1">warming up panel...</p>
-    </div>
-  );
-}
 
 export default function App() {
   const [uiPerspective, setUiPerspective] = useState<UIPerspective>("hybrid");
@@ -2543,343 +2233,16 @@ export default function App() {
     };
   }, [coreCameraYaw, coreFlightEnabled, coreFlightSpeed]);
 
-  const handleLedgerCommand = useCallback(
-    async (text: string): Promise<boolean> => {
-      const trimmed = text.trim();
-      if (!trimmed.toLowerCase().startsWith("/ledger")) {
-        return false;
-      }
-
-      const payloadText = trimmed.replace(/^\/ledger\s*/i, "");
-      const utterances = payloadText
-        ? payloadText
-            .split("|")
-            .map((row) => row.trim())
-            .filter((row) => row.length > 0)
-        : [];
-
-      try {
-        const baseUrl = runtimeBaseUrl();
-        const response = await fetch(`${baseUrl}/api/eta-mu-ledger`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ utterances }),
-        });
-        const payload = (await response.json()) as { jsonl?: string };
-        const body = payload?.jsonl ? payload.jsonl.trim() : "(no utterances)";
-        emitSystemMessage(`eta/mu ledger\n${body}`);
-      } catch {
-        emitSystemMessage("eta/mu ledger failed");
-      }
-      return true;
-    },
-    [emitSystemMessage],
-  );
-
-  const handlePresenceSayCommand = useCallback(
-    async (text: string, fallbackMusePresenceId = activeMusePresenceId): Promise<boolean> => {
-      const trimmed = text.trim();
-      if (!trimmed.toLowerCase().startsWith("/say")) {
-        return false;
-      }
-
-      const args = trimmed.replace(/^\/say\s*/i, "");
-      const [presenceIdRaw, ...rest] = args.split(/\s+/).filter((token) => token.length > 0);
-      const presence_id = presenceIdRaw || fallbackMusePresenceId || "witness_thread";
-      const messageText = rest.join(" ");
-      const surroundingNodes = buildMuseSurroundingNodes(presence_id, null);
-
-      try {
-        const baseUrl = runtimeBaseUrl();
-        const response = await fetch(`${baseUrl}/api/muse/message`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            muse_id: presence_id,
-            text: messageText,
-            mode: "deterministic",
-            token_budget: 1024,
-            graph_revision: simulation?.timestamp || catalog?.generated_at || "",
-            surrounding_nodes: surroundingNodes,
-          }),
-        });
-        if (!response.ok) {
-          throw new Error(`muse say request failed (${response.status})`);
-        }
-        const payload = (await response.json()) as {
-          ok?: boolean;
-          turn_id?: string;
-          muse?: { label?: string };
-          reply?: string;
-          mode?: string;
-          model?: string;
-          fallback?: boolean;
-          daimoi?: unknown[];
-          field_deltas?: unknown[];
-          gpu_claim?: Record<string, unknown>;
-          tool_results?: unknown[];
-          manifest?: {
-            explicit_selected?: unknown[];
-            surround_selected?: unknown[];
-          };
-        };
-        emitWitnessChatReply(payload, "command:/say", presence_id);
-        emitSystemMessage(
-          `${payload?.muse?.label || presence_id} / muse turn ${payload?.turn_id || ""}\n${payload?.reply || "(no reply)"}\n` +
-            `explicit=${payload?.manifest?.explicit_selected?.length || 0} surrounding=${payload?.manifest?.surround_selected?.length || 0}`,
-        );
-      } catch {
-        emitSystemMessage("muse say failed");
-      }
-      return true;
-    },
-    [
-      activeMusePresenceId,
-      buildMuseSurroundingNodes,
-      catalog?.generated_at,
-      emitSystemMessage,
-      emitWitnessChatReply,
-      simulation?.timestamp,
-    ],
-  );
-
-  const handleDriftCommand = useCallback(
-    async (text: string): Promise<boolean> => {
-      const trimmed = text.trim();
-      if (trimmed.toLowerCase() !== "/drift") {
-        return false;
-      }
-
-      try {
-        const baseUrl = runtimeBaseUrl();
-        const response = await fetch(`${baseUrl}/api/drift/scan`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({}),
-        });
-        const payload = (await response.json()) as {
-          active_drifts?: unknown[];
-          blocked_gates?: unknown[];
-        };
-        const drifts = Array.isArray(payload?.active_drifts) ? payload.active_drifts.length : 0;
-        const blocked = Array.isArray(payload?.blocked_gates) ? payload.blocked_gates.length : 0;
-        emitSystemMessage(`drift scan\nactive_drifts=${drifts} blocked_gates=${blocked}`);
-      } catch {
-        emitSystemMessage("drift scan failed");
-      }
-      return true;
-    },
-    [emitSystemMessage],
-  );
-
-  const handlePushTruthDryRunCommand = useCallback(
-    async (text: string): Promise<boolean> => {
-      const trimmed = text.trim().toLowerCase();
-      if (trimmed !== "/push-truth --dry-run") {
-        return false;
-      }
-
-      try {
-        const baseUrl = runtimeBaseUrl();
-        const response = await fetch(`${baseUrl}/api/push-truth/dry-run`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({}),
-        });
-        const payload = (await response.json()) as {
-          gate?: { blocked?: boolean };
-          needs?: string[];
-        };
-        const blocked = payload?.gate?.blocked ? "blocked" : "pass";
-        const needs = Array.isArray(payload?.needs) ? payload.needs.join(", ") : "";
-        emitSystemMessage(`push-truth dry-run\ngate=${blocked}\nneeds=${needs || "(none)"}`);
-      } catch {
-        emitSystemMessage("push-truth dry-run failed");
-      }
-      return true;
-    },
-    [emitSystemMessage],
-  );
-
-  const handleStudyCommand = useCallback(
-    async (text: string): Promise<boolean> => {
-      const raw = text.trim();
-      const trimmed = raw.toLowerCase();
-      const exportPrefix = "/study export";
-      if (trimmed === exportPrefix || trimmed.startsWith(`${exportPrefix} `)) {
-        const label = raw.slice(exportPrefix.length).trim();
-        try {
-          const baseUrl = runtimeBaseUrl();
-          const response = await fetch(`${baseUrl}/api/study/export`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              label: label || "chat-export",
-              include_truth: true,
-              refs: ["chat:/study export"],
-            }),
-          });
-          if (!response.ok) {
-            throw new Error(`study export failed: ${response.status}`);
-          }
-          const payload = (await response.json()) as {
-            ok?: boolean;
-            event?: { id?: string; ts?: string; label?: string };
-            history?: { count?: number; path?: string };
-          };
-          const eventId = String(payload.event?.id || "(unknown)");
-          const historyCount = Number(payload.history?.count ?? 0);
-          emitSystemMessage(
-            `study export\nid=${eventId}\nlabel=${String(payload.event?.label || label || "chat-export")}\nhistory=${historyCount}`,
-          );
-        } catch {
-          emitSystemMessage("study export failed");
-        }
-        return true;
-      }
-
-      if (trimmed !== "/study" && trimmed !== "/study now") {
-        return false;
-      }
-
-      const baseUrl = runtimeBaseUrl();
-      try {
-        const studyResponse = await fetch(`${baseUrl}/api/study?limit=6`);
-        if (studyResponse.ok) {
-          const study = (await studyResponse.json()) as StudySnapshotPayload;
-          const signals = study.signals;
-          const topDecision = study.council?.decisions?.[0];
-          const topDecisionLine = topDecision
-            ? `top_decision=${topDecision.status} id=${topDecision.id} source=${String(topDecision.resource?.source_rel_path || "(unknown)")}`
-            : "top_decision=(none)";
-          const gateReasons = (study.drift?.blocked_gates ?? [])
-            .map((row) => row.reason)
-            .slice(0, 4)
-            .join(", ");
-          const warningLine = (study.warnings ?? [])
-            .slice(0, 3)
-            .map((row) => `${row.code}:${row.message}`)
-            .join(" | ");
-
-          emitSystemMessage(
-            [
-              "study snapshot",
-              `stability=${Math.round(study.stability.score * 100)}% (${study.stability.label})`,
-              `truth_gate=${signals.truth_gate_blocked ? "blocked" : "clear"}`,
-              `blocked_gates=${signals.blocked_gate_count} active_drifts=${signals.active_drift_count}`,
-              `queue_pending=${signals.queue_pending_count} queue_events=${signals.queue_event_count}`,
-              `council_pending=${signals.council_pending_count} approved=${signals.council_approved_count} decisions=${signals.council_decision_count}`,
-              topDecisionLine,
-              `gate_reasons=${gateReasons || "(none)"}`,
-              `runtime_receipts_within_vault=${String(study.runtime.receipts_path_within_vault)}`,
-              `warnings=${warningLine || "(none)"}`,
-            ].join("\n"),
-          );
-          return true;
-        }
-
-        if (studyResponse.status !== 404) {
-          throw new Error(`study fetch failed: /api/study status=${studyResponse.status}`);
-        }
-
-        const [councilRes, queueRes, driftRes] = await Promise.all([
-          fetch(`${baseUrl}/api/council?limit=6`),
-          fetch(`${baseUrl}/api/task/queue`),
-          fetch(`${baseUrl}/api/drift/scan`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({}),
-          }),
-        ]);
-
-        if (!councilRes.ok || !queueRes.ok || !driftRes.ok) {
-          throw new Error(
-            `study fetch failed: council=${councilRes.status} queue=${queueRes.status} drift=${driftRes.status}`,
-          );
-        }
-
-        const councilPayload = (await councilRes.json()) as CouncilApiResponse;
-        const queuePayload = (await queueRes.json()) as { ok: boolean; queue: TaskQueueSnapshot };
-        const driftPayload = (await driftRes.json()) as DriftScanPayload;
-
-        const council = councilPayload.council;
-        const queue = queuePayload.queue;
-        const blocked = driftPayload.blocked_gates.length;
-        const drifts = driftPayload.active_drifts.length;
-        const pending = queue.pending_count;
-        const pendingCouncil = council.pending_count;
-        const truthBlocked = Boolean(
-          simulation?.truth_state?.gate?.blocked ?? catalog?.truth_state?.gate?.blocked,
-        );
-
-        const blockedPenalty = Math.min(0.34, (blocked / 4) * 0.34);
-        const driftPenalty = Math.min(0.18, (drifts / 8) * 0.18);
-        const queuePenalty = Math.min(0.2, (pending / 8) * 0.2);
-        const councilPenalty = Math.min(0.16, (pendingCouncil / 5) * 0.16);
-        const truthPenalty = truthBlocked ? 0.12 : 0;
-        const stabilityScore = Math.max(
-          0,
-          Math.min(1, 1 - blockedPenalty - driftPenalty - queuePenalty - councilPenalty - truthPenalty),
-        );
-
-        const topDecision = council.decisions?.[0];
-        const topDecisionLine = topDecision
-          ? `top_decision=${topDecision.status} id=${topDecision.id} source=${String(topDecision.resource?.source_rel_path || "(unknown)")}`
-          : "top_decision=(none)";
-        const gateReasons = driftPayload.blocked_gates
-          .map((row) => row.reason)
-          .slice(0, 4)
-          .join(", ");
-
-        emitSystemMessage(
-          [
-            "study snapshot",
-            `stability=${Math.round(stabilityScore * 100)}%`,
-            `truth_gate=${truthBlocked ? "blocked" : "clear"}`,
-            `blocked_gates=${blocked} active_drifts=${drifts}`,
-            `queue_pending=${pending} queue_events=${queue.event_count}`,
-            `council_pending=${pendingCouncil} approved=${council.approved_count} decisions=${council.decision_count}`,
-            topDecisionLine,
-            `gate_reasons=${gateReasons || "(none)"}`,
-            "runtime_receipts_within_vault=(unknown:legacy-mode)",
-          ].join("\n"),
-        );
-      } catch {
-        emitSystemMessage("study snapshot failed");
-      }
-      return true;
-    },
-    [catalog?.truth_state?.gate?.blocked, emitSystemMessage, simulation?.truth_state?.gate?.blocked],
-  );
-
-  const handleChatCommand = useCallback(
-    async (text: string, musePresenceId = activeMusePresenceId): Promise<boolean> => {
-      if (await handleLedgerCommand(text)) {
-        return true;
-      }
-      if (await handlePresenceSayCommand(text, musePresenceId)) {
-        return true;
-      }
-      if (await handleDriftCommand(text)) {
-        return true;
-      }
-      if (await handlePushTruthDryRunCommand(text)) {
-        return true;
-      }
-      if (await handleStudyCommand(text)) {
-        return true;
-      }
-      return false;
-    },
-    [
-      activeMusePresenceId,
-      handleDriftCommand,
-      handleLedgerCommand,
-      handlePresenceSayCommand,
-      handlePushTruthDryRunCommand,
-      handleStudyCommand,
-    ],
-  );
+  const { handleChatCommand } = useChatCommandHandlers({
+    activeMusePresenceId,
+    catalogGeneratedAt: catalog?.generated_at,
+    catalogTruthGateBlocked: catalog?.truth_state?.gate?.blocked,
+    simulationTimestamp: simulation?.timestamp,
+    simulationTruthGateBlocked: simulation?.truth_state?.gate?.blocked,
+    buildMuseSurroundingNodes,
+    emitSystemMessage,
+    emitWitnessChatReply,
+  });
 
   const handleMuseWorkspaceSend = useCallback((text: string, musePresenceId: string, workspace: MuseWorkspaceContext) => {
     const resolvedMusePresenceId = String(musePresenceId || activeMusePresenceId || "witness_thread").trim()
@@ -3253,11 +2616,6 @@ export default function App() {
     });
   }, [deferredCoreCameraZoom, viewportHeight, viewportWidth]);
 
-  const dedicatedOverlayViews = useMemo(
-    () => OVERLAY_VIEW_OPTIONS.filter((option) => option.id !== "omni"),
-    [],
-  );
-
   const projectionPerspective = activeProjection?.perspective ?? uiPerspective;
   const projectionOptions =
     activeProjection?.perspectives ??
@@ -3292,386 +2650,21 @@ export default function App() {
   const latestAutopilotEvent = autopilotEvents[0] ?? null;
   const museRuntimeSnapshot = catalog?.muse_runtime ?? null;
   const museForgePreviewId = toMuseSlug(museForgeLabel);
-
-  const panelConfigs = useMemo<PanelConfig[]>(() => [
-    {
-      id: "nexus.ui.dedicated_views",
-      fallbackSpan: 12,
-      render: () => (
-        <div className="mt-0 rounded-xl border border-[var(--line)] bg-[rgba(14,22,28,0.58)] p-3 h-full">
-          <p className="text-[11px] uppercase tracking-[0.12em] text-[#9ec7dd]">Dedicated World Views</p>
-          <p className="text-xs text-muted mt-1">Each overlay lane rendered as its own live viewport.</p>
-          <div className="mt-3 grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
-            {dedicatedOverlayViews.map((view) => (
-              <section key={view.id} className="rounded-lg border border-[rgba(126,166,192,0.32)] bg-[rgba(10,18,28,0.72)] p-2">
-                <div className="mb-2">
-                  <p className="text-sm font-semibold text-[#e5f3ff]">{view.label}</p>
-                  <p className="text-[11px] text-[#9fc4dd]">{view.description}</p>
-                </div>
-                <SimulationCanvas
-                  simulation={simulation}
-                  catalog={catalog}
-                  height={180}
-                  defaultOverlayView={view.id}
-                  overlayViewLocked
-                  compactHud
-                  interactive={false}
-                  particleDensity={deferredCoreSimulationTuning.particleDensity}
-                  particleScale={deferredCoreSimulationTuning.particleScale}
-                  motionSpeed={deferredCoreSimulationTuning.motionSpeed}
-                  mouseInfluence={deferredCoreSimulationTuning.mouseInfluence}
-                  layerDepth={deferredCoreSimulationTuning.layerDepth}
-                  graphNodeSmoothness={deferredCoreSimulationTuning.graphNodeSmoothness}
-                  graphNodeStepScale={deferredCoreSimulationTuning.graphNodeStepScale}
-                  museWorkspaceBindings={museWorkspaceBindings}
-                />
-              </section>
-            ))}
-          </div>
-        </div>
-      ),
-    },
-    {
-      id: GLASS_VIEWPORT_PANEL_ID,
-      fallbackSpan: 12,
-      anchorKind: "region",
-      anchorId: "view_lens_keeper",
-      worldSize: "xl",
-      pinnedByDefault: true,
-      render: () => (
-        <div className="mt-0 rounded-xl border border-[rgba(131,188,227,0.34)] bg-[rgba(8,20,31,0.7)] p-3 h-full">
-          <p className="text-[11px] uppercase tracking-[0.12em] text-[#a6d6f5]">
-            Glass Viewport Presence
-          </p>
-          <p className="text-xs text-[#cfe6f7] mt-1">
-            This lane is managed through transparent glass mode for camera guidance and gentle map panning.
-          </p>
-          <p className="text-[11px] text-[#9ec7dd] mt-2">
-            Use the glass controls to let the view-lens keeper guide what you see in the simulation.
-          </p>
-        </div>
-      ),
-    },
-    ...FIXED_MUSE_PRESENCES.map((muse) => {
-      const panelId = muse.id;
-      const musePresenceId = muse.presenceId;
-      const panelState = projectionStateByElement.get(panelId) ?? null;
-      const panelSession =
-        activeProjection?.chat_sessions?.find(
-          (session) => normalizeMusePresenceId(String(session.presence ?? "")) === normalizeMusePresenceId(musePresenceId),
-        )
-        ?? null;
-      const boundCount = museWorkspaceBindings[normalizeMusePresenceId(musePresenceId)]?.length ?? 0;
-
-      return {
-        id: panelId,
-        fallbackSpan: 4,
-        anchorKind: "node" as const,
-        anchorId: musePresenceId,
-        worldSize: "m" as const,
-        render: () => (
-          <div
-            style={{
-              opacity: panelState ? projectionOpacity(panelState.opacity, 0.92) : 1,
-              transform: panelState
-                ? `scale(${(1 + panelState.pulse * 0.01).toFixed(3)})`
-                : undefined,
-              transformOrigin: "center top",
-              transition: "transform 200ms ease, opacity 200ms ease",
-            }}
-          >
-            <MusePresencePanel
-              museId={musePresenceId}
-              onSend={handleMuseWorkspaceSend}
-              onRecord={handleRecord}
-              onTranscribe={handleTranscribe}
-              onSendVoice={handleSendVoice}
-              isRecording={isRecording}
-              isThinking={isThinking}
-              voiceInputMeta={voiceInputMeta}
-              catalog={catalog}
-              simulation={simulation}
-              workspaceContext={
-                museWorkspaceContexts[normalizeMusePresenceId(musePresenceId)]
-                ?? null
-              }
-              onWorkspaceContextChange={handleMuseWorkspaceContextChange}
-              onWorkspaceBindingsChange={handleMuseWorkspaceBindingsChange}
-              chatLensState={panelState}
-              activeChatSession={panelSession}
-              activeMusePresenceId={activeMusePresenceId}
-              onMusePresenceChange={setActiveMusePresenceId}
-            />
-            <p className="mt-2 text-[10px] text-[#8db3ca]">
-              workspace binds <code>{boundCount}</code>
-            </p>
-          </div>
-        ),
-      } satisfies PanelConfig;
-    }),
-    {
-      id: "nexus.ui.web_graph_weaver",
-      fallbackSpan: 6,
-      render: () => deferredPanelsReady ? (
-        <Suspense fallback={<DeferredPanelPlaceholder title="Web Graph Weaver" />}>
-          <WebGraphWeaverPanel />
-        </Suspense>
-      ) : (
-        <DeferredPanelPlaceholder title="Web Graph Weaver" />
-      ),
-    },
-    {
-      id: "nexus.ui.inspiration_atlas",
-      fallbackSpan: 6,
-      render: () => deferredPanelsReady ? (
-        <Suspense fallback={<DeferredPanelPlaceholder title="Inspiration Atlas" />}>
-          <InspirationAtlasPanel simulation={simulation} />
-        </Suspense>
-      ) : (
-        <DeferredPanelPlaceholder title="Inspiration Atlas" />
-      ),
-    },
-    {
-      id: "nexus.ui.entity_vitals",
-      fallbackSpan: 6,
-      className: "card relative overflow-hidden",
-      render: () => (
-        <>
-          <div className="absolute top-0 left-0 w-1 h-full bg-[#a6e22e] opacity-60" />
-          <h2 className="text-3xl font-bold mb-2">Entity Vitals / 実体バイタル</h2>
-          <p className="text-muted mb-6">Live telemetry from the canonical named forms.</p>
-          <div className="max-h-[62rem] overflow-y-auto pr-1">
-            {deferredPanelsReady ? (
-              <Suspense fallback={<DeferredPanelPlaceholder title="Entity Vitals" />}>
-                <VitalsPanel
-                  entities={simulation?.entities}
-                  catalog={catalog}
-                  presenceDynamics={simulation?.presence_dynamics}
-                />
-              </Suspense>
-            ) : (
-              <DeferredPanelPlaceholder title="Entity Vitals" />
-            )}
-          </div>
-        </>
-      ),
-    },
-    {
-      id: "nexus.ui.projection_ledger",
-      fallbackSpan: 6,
-      className: "card relative overflow-hidden",
-      render: () => (
-        <>
-          <div className="absolute top-0 left-0 w-1 h-full bg-[#66d9ef] opacity-70" />
-          <h2 className="text-2xl font-bold mb-2">Projection Ledger / 映台帳</h2>
-          <p className="text-muted mb-4">Sub-panels expose routing and control data for every known box.</p>
-          <div className="max-h-[74rem] overflow-y-auto pr-1">
-            <ProjectionLedgerPanel projection={activeProjection} />
-          </div>
-        </>
-      ),
-    },
-    {
-      id: "nexus.ui.autopilot_ledger",
-      fallbackSpan: 6,
-      className: "card relative overflow-hidden",
-      render: () => (
-        <>
-          <div className="absolute top-0 left-0 w-1 h-full bg-[#fd971f] opacity-70" />
-          <h2 className="text-2xl font-bold mb-2">Autopilot Ledger / 自動操縦台帳</h2>
-          <p className="text-muted mb-4">
-            Replay stream of intent, confidence, risk, permissions, and result.
-          </p>
-          <div className="space-y-2 max-h-[26rem] overflow-y-auto pr-1">
-            {autopilotEvents.length === 0 ? (
-              <p className="text-xs text-muted">No autopilot events yet.</p>
-            ) : (
-              autopilotEvents.map((event, index) => (
-                <div
-                  key={`${event.ts}-${event.actionId}-${index}`}
-                  className="border border-[var(--line)] rounded-lg bg-[rgba(45,46,39,0.86)] p-2"
-                >
-                  <p className="text-xs font-semibold text-ink">
-                    <code>{event.intent}</code>{" -> "}<code>{event.actionId}</code>
-                  </p>
-                  <p className="text-[11px] text-muted font-mono">
-                    confidence {event.confidence.toFixed(2)} | risk {event.risk.toFixed(2)} | result
-                    <code>{event.result}</code>
-                    {event.gate ? (
-                      <>
-                        {" "}| gate <code>{event.gate}</code>
-                      </>
-                    ) : null}
-                  </p>
-                  <p className="text-[11px] text-muted font-mono">
-                    perms {event.perms.length > 0 ? event.perms.join(", ") : "(none)"}
-                  </p>
-                  <p className="text-[11px] text-muted">{event.summary}</p>
-                </div>
-              ))
-            )}
-          </div>
-        </>
-      ),
-    },
-    {
-      id: "nexus.ui.world_log",
-      fallbackSpan: 6,
-      className: "card relative overflow-hidden",
-      render: () => (
-        <>
-          <div className="absolute top-0 left-0 w-1 h-full bg-[#a6e22e] opacity-70" />
-          <h2 className="text-2xl font-bold mb-2">World Log / 世界記録</h2>
-          <p className="text-muted mb-4">
-            Live timeline for receipts, eta-mu ingest, pending inbox files, presence account updates, and commentary events.
-          </p>
-          {deferredPanelsReady ? (
-            <Suspense fallback={<DeferredPanelPlaceholder title="World Log" />}>
-              <WorldLogPanel catalog={catalog} />
-            </Suspense>
-          ) : (
-            <DeferredPanelPlaceholder title="World Log" />
-          )}
-        </>
-      ),
-    },
-    {
-      id: "nexus.ui.stability_observatory",
-      fallbackSpan: 6,
-      className: "card relative overflow-hidden",
-      render: () => (
-        <>
-          <div className="absolute top-0 left-0 w-1 h-full bg-[#66d9ef] opacity-70" />
-          <h2 className="text-2xl font-bold mb-2">Stability Observatory / 安定観測</h2>
-          <p className="text-muted mb-4">
-            Evidence-first view for study mode: council, gates, queue, and drift movement.
-          </p>
-          {deferredPanelsReady ? (
-            <Suspense fallback={<DeferredPanelPlaceholder title="Stability Observatory" />}>
-              <StabilityObservatoryPanel catalog={catalog} simulation={simulation} />
-            </Suspense>
-          ) : (
-            <DeferredPanelPlaceholder title="Stability Observatory" />
-          )}
-        </>
-      ),
-    },
-    {
-      id: "nexus.ui.runtime_config",
-      fallbackSpan: 6,
-      className: "card relative overflow-hidden",
-      render: () => (
-        <>
-          <div className="absolute top-0 left-0 w-1 h-full bg-[#ae81ff] opacity-70" />
-          <h2 className="text-2xl font-bold mb-2">Runtime Config / 実行設定</h2>
-          <p className="text-muted mb-4">
-            Inspect live numeric constants exposed by <code>/api/config</code> for simulation and runtime tuning.
-          </p>
-          {deferredPanelsReady ? (
-            <Suspense fallback={<DeferredPanelPlaceholder title="Runtime Config" />}>
-              <RuntimeConfigPanel />
-            </Suspense>
-          ) : (
-            <DeferredPanelPlaceholder title="Runtime Config" />
-          )}
-        </>
-      ),
-    },
-    {
-      id: "nexus.ui.daimoi_presence",
-      fallbackSpan: 6,
-      className: "card relative overflow-hidden",
-      render: () => (
-        <>
-          <div className="absolute top-0 left-0 w-1 h-full bg-[#89c6eb] opacity-70" />
-          <h2 className="text-2xl font-bold mb-2">Daimoi Presence Deck / 代網存在甲板</h2>
-          <p className="text-muted mb-4">
-            Probabilistic daimoi and presence distributions with direct camera focus controls.
-          </p>
-          {deferredPanelsReady ? (
-            <Suspense fallback={<DeferredPanelPlaceholder title="Daimoi Presence" />}>
-              <DaimoiPresencePanel
-                catalog={catalog}
-                simulation={simulation}
-                onFocusAnchor={flyCameraToAnchor}
-                onEmitUserInput={handleUserPresenceInput}
-              />
-            </Suspense>
-          ) : (
-            <DeferredPanelPlaceholder title="Daimoi Presence" />
-          )}
-        </>
-      ),
-    },
-    {
-      id: "nexus.ui.omni_archive",
-      fallbackSpan: 8,
-      className: "card relative overflow-hidden",
-      render: () => (
-        <>
-          <div className="absolute top-0 left-0 w-1 h-full bg-[#ae81ff] opacity-65" />
-          <h2 className="text-3xl font-bold mb-2">Omni Panel / 全感覚パネル</h2>
-          <p className="text-muted mb-6">Receipt River, Mage of Receipts, and other cover entities.</p>
-          {deferredPanelsReady ? (
-            <Suspense fallback={<DeferredPanelPlaceholder title="Omni Archive" />}>
-              <OmniPanel catalog={catalog} />
-            </Suspense>
-          ) : (
-            <DeferredPanelPlaceholder title="Omni Archive" />
-          )}
-          <div className="mt-8">
-            <h3 className="text-2xl font-bold mb-4">Vault Artifacts / 遺物録</h3>
-            {deferredPanelsReady ? (
-              <Suspense fallback={<DeferredPanelPlaceholder title="Vault Artifacts" />}>
-                <CatalogPanel catalog={catalog} />
-              </Suspense>
-            ) : (
-              <DeferredPanelPlaceholder title="Vault Artifacts" />
-            )}
-          </div>
-        </>
-      ),
-    },
-    {
-      id: "nexus.ui.myth_commons",
-      fallbackSpan: 4,
-      className: "card relative overflow-hidden",
-      render: () => (
-        <>
-          <div className="absolute top-0 left-0 w-1 h-full bg-[#fd971f] opacity-70" />
-          <h2 className="text-3xl font-bold mb-2">Myth Commons / 神話共同体</h2>
-          <p className="text-muted mb-6">People sing, pray to the Presences, and keep writing the myth.</p>
-          {deferredPanelsReady ? (
-            <Suspense fallback={<DeferredPanelPlaceholder title="Myth Commons" />}>
-              <MythWorldPanel
-                simulation={simulation}
-                interaction={worldInteraction}
-                interactingPersonId={interactingPersonId}
-                onInteract={handleWorldInteract}
-              />
-            </Suspense>
-          ) : (
-            <DeferredPanelPlaceholder title="Myth Commons" />
-          )}
-        </>
-      ),
-    },
-  ], [
+  const panelConfigs = useAppPanelConfigs({
     activeMusePresenceId,
     activeProjection,
     autopilotEvents,
     catalog,
     deferredCoreSimulationTuning,
-    dedicatedOverlayViews,
     deferredPanelsReady,
     flyCameraToAnchor,
-    handleUserPresenceInput,
     handleMuseWorkspaceBindingsChange,
     handleMuseWorkspaceContextChange,
     handleMuseWorkspaceSend,
     handleRecord,
     handleSendVoice,
     handleTranscribe,
+    handleUserPresenceInput,
     handleWorldInteract,
     interactingPersonId,
     isRecording,
@@ -3679,10 +2672,11 @@ export default function App() {
     museWorkspaceBindings,
     museWorkspaceContexts,
     projectionStateByElement,
+    setActiveMusePresenceId,
     simulation,
     voiceInputMeta,
     worldInteraction,
-  ]);
+  });
 
   const sortedPanels = useMemo<RankedPanel[]>(() => {
     const panelDrafts = panelConfigs

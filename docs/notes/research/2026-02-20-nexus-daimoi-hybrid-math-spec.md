@@ -1,3 +1,16 @@
+---
+title: "Nexus-Daimoi Hybrid Math Specification"
+summary: "Compact mathematical specification for nexus, daimoi, nooi fields, collisions, and emission dynamics."
+category: "research"
+created_at: "2026-02-20T14:56:14"
+original_filename: "2026.02.20.14.56.14.md"
+original_relpath: "docs/notes/research/2026.02.20.14.56.14.md"
+tags:
+  - research
+  - math-spec
+  - simulation
+---
+
 # Nexus–Daimoi Hybrid Simulation: Compact Mathematical Specification
 
 ## 0. State Spaces

@@ -14,6 +14,7 @@ NOOI_DECAY_BASE = 0.985
 NOOI_DEPOSIT_ALPHA = 0.15
 NOOI_CELL_SIZE_X = 1.0 / NOOI_GRID_COLS
 NOOI_CELL_SIZE_Y = 1.0 / NOOI_GRID_ROWS
+NOOI_TRAIL_CAP = 256
 
 
 class NooiField:
@@ -26,6 +27,8 @@ class NooiField:
         self.layer_decay: list[float] = [
             1.0 - (0.01 * (i + 1)) for i in range(NOOI_LAYERS)
         ]
+        self._trail_rows: list[dict[str, Any]] = []
+        self._trail_seq = 0
 
     def decay(self, dt: float) -> None:
         """Apply decay to all field layers."""
@@ -79,6 +82,48 @@ class NooiField:
             vx += layer[idx]
             vy += layer[idx + 1]
         return (vx, vy)
+
+    def append_outcome_trail(
+        self,
+        *,
+        outcome: str,
+        x: float,
+        y: float,
+        vx: float,
+        vy: float,
+        intensity: float,
+        presence_id: str,
+        reason: str,
+        graph_node_id: str,
+        ts: str,
+    ) -> None:
+        clean_outcome = str(outcome or "").strip().lower()
+        if clean_outcome not in {"food", "death"}:
+            return
+        self._trail_seq += 1
+        row = {
+            "record": "eta-mu.daimoi-outcome.v1",
+            "schema_version": "daimoi.outcome.v1",
+            "seq": int(self._trail_seq),
+            "outcome": clean_outcome,
+            "x": round(min(1.0, max(0.0, float(x))), 6),
+            "y": round(min(1.0, max(0.0, float(y))), 6),
+            "vx": round(float(vx), 6),
+            "vy": round(float(vy), 6),
+            "intensity": round(max(0.0, float(intensity)), 6),
+            "presence_id": str(presence_id or "").strip(),
+            "graph_node_id": str(graph_node_id or "").strip(),
+            "reason": str(reason or "").strip(),
+            "ts": str(ts or "").strip(),
+        }
+        self._trail_rows.append(row)
+        if len(self._trail_rows) > NOOI_TRAIL_CAP:
+            self._trail_rows = self._trail_rows[-NOOI_TRAIL_CAP:]
+
+    def outcome_trails(self, *, limit: int = 64) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(NOOI_TRAIL_CAP, int(limit)))
+        rows = self._trail_rows[-safe_limit:]
+        return [dict(row) for row in rows]
 
     def get_grid_snapshot(
         self, particles: list[dict[str, Any]] | None = None
@@ -182,4 +227,5 @@ class NooiField:
             "cols": self.cols,
             "rows": self.rows,
             "cells": cells,
+            "outcome_trails": self.outcome_trails(limit=64),
         }

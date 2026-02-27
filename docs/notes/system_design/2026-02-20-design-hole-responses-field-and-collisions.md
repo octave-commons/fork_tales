@@ -1,3 +1,16 @@
+---
+title: "Design Hole Responses: Field and Collision Semantics"
+summary: "Clarifications on decay, field composition, nexus dynamics, ownership, and collision intent exchange."
+category: "system_design"
+created_at: "2026-02-20T11:50:18"
+original_filename: "2026.02.20.11.50.18.md"
+original_relpath: "docs/notes/system_design/2026.02.20.11.50.18.md"
+tags:
+  - system-design
+  - clarifications
+  - collisions
+---
+
 ## Hole A: The “Double Counting” Problem
 
 Answer: There is only one type of edge, the connections between nexus.
@@ -113,4 +126,3 @@ at that moment their wave function/probability distrobution collapses to a singl
 The intent, having an embedded meaning like everything else, is interpreted through the "lens" of the Presence's embedded "meaning/purpose"
 (their system prompt,
 the text that describes why they exist.)
-

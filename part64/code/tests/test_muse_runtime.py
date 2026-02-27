@@ -177,6 +177,76 @@ def test_muse_dedupe_tool_events_and_sealed_compliance_drop() -> None:
     assert "muse.message.deduped" in kinds
 
 
+def test_muse_tool_request_parses_facts_and_graph_commands() -> None:
+    manager = _manager()
+    tool_calls: list[str] = []
+
+    def _tool_callback(*, tool_name: str) -> dict[str, Any]:
+        tool_calls.append(tool_name)
+        if tool_name == "facts_snapshot":
+            return {
+                "ok": True,
+                "summary": "facts snapshot generated",
+                "snapshot_hash": "f" * 64,
+                "snapshot_path": "/tmp/facts.json",
+                "node_count": 3,
+                "edge_count": 2,
+            }
+        if tool_name.startswith("graph:"):
+            return {
+                "ok": True,
+                "summary": "graph query generated",
+                "query": "overview",
+                "snapshot_hash": "g" * 64,
+                "result_count": 2,
+            }
+        return {"ok": True, "summary": f"ran:{tool_name}"}
+
+    payload = manager.send_message(
+        muse_id=DEFAULT_MUSE_ID,
+        text="/facts then /graph overview",
+        mode="deterministic",
+        token_budget=900,
+        idempotency_key="facts-graph-1",
+        graph_revision="graph:v-facts",
+        surrounding_nodes=[],
+        tool_callback=_tool_callback,
+        reply_builder=_reply_builder,
+        seed="seed-facts-graph",
+    )
+    assert payload["ok"] is True
+    assert "facts_snapshot" in tool_calls
+    assert "graph:overview" in tool_calls
+    assert str(payload.get("reply", "")).startswith("Facts grounded at")
+    receipts = payload.get("grounded_receipts", {})
+    assert receipts.get("snapshot_hash") == "f" * 64
+    assert "overview" in receipts.get("queries_used", [])
+
+
+def test_muse_graph_neighbors_command_carries_argument_tail() -> None:
+    manager = _manager()
+    tool_calls: list[str] = []
+
+    def _tool_callback(*, tool_name: str) -> dict[str, Any]:
+        tool_calls.append(tool_name)
+        return {"ok": True, "summary": f"ran:{tool_name}"}
+
+    payload = manager.send_message(
+        muse_id=DEFAULT_MUSE_ID,
+        text="/graph neighbors url:aaaa",
+        mode="deterministic",
+        token_budget=700,
+        idempotency_key="graph-neighbors-1",
+        graph_revision="graph:v-neighbors",
+        surrounding_nodes=[],
+        tool_callback=_tool_callback,
+        reply_builder=_reply_builder,
+        seed="seed-neighbors",
+    )
+    assert payload["ok"] is True
+    assert "graph:neighbors url:aaaa" in tool_calls
+
+
 def test_bootstrap_fixed_muses_are_present_and_typed() -> None:
     manager = _manager()
     rows = manager.list_muses()

@@ -1,3 +1,16 @@
+---
+title: "Sigil and Daimoi Visual Language"
+summary: "UI/UX visual grammar for presence sigils, daimoi packets, swarm rendering, and field readability."
+category: "system_design"
+created_at: "2026-02-20T14:23:58"
+original_filename: "2026.02.20.14.23.58.md"
+original_relpath: "docs/notes/system_design/2026.02.20.14.23.58.md"
+tags:
+  - system-design
+  - visualization
+  - ux
+---
+
 # 1️⃣ Presence Sigils (Identity Layer)
 
 Each Presence gets:

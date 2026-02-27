@@ -1,3 +1,16 @@
+---
+title: "Barnes-Hut C Runtime Parallelization Request"
+summary: "Implementation request to parallelize clustering, collisions, and inverse-square forces in C using Barnes-Hut."
+category: "implementation"
+created_at: "2026-02-22T12:24:49"
+original_filename: "2026.02.22.12.24.49.md"
+original_relpath: "docs/notes/implementation/2026.02.22.12.24.49.md"
+tags:
+  - implementation
+  - barnes-hut
+  - c-runtime
+---
+
 using the code in @hacks/ as a reference,
 I want you to paralellize our clustering, collision, and inverse square force application through Barnes Hut
 Please do this in the C side of the code, so shared read only memory locking can take advantage completely of the double buffer architecture.

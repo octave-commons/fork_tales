@@ -1,3 +1,16 @@
+---
+title: "Manifest Oath Lyrics Draft"
+summary: "Extended multilingual draft lyrics and arrangement notes for Manifest Oath and related motifs."
+category: "creative"
+created_at: "2026-02-16T10:39:29"
+original_filename: "2026.02.16.10.39.29.md"
+original_relpath: "docs/notes/creative/2026.02.16.10.39.29.md"
+tags:
+  - creative
+  - lyrics
+  - draft
+---
+
 ## Manifest Oath / 目録の誓い (84 BPM)
 
 P→R→N→Π— catalog the storm, pin the line（線）

@@ -1,3 +1,16 @@
+---
+title: "Entropy Choir Protocol: Suno Lyrics and Prompts"
+summary: "Suno-focused style constraints and full lyrics for the Entropy Choir Protocol track."
+category: "creative"
+created_at: "2026-02-24T19:42:59"
+original_filename: "2026.02.24.19.42.59.md"
+original_relpath: "docs/notes/creative/2026.02.24.19.42.59.md"
+tags:
+  - creative
+  - lyrics
+  - suno
+---
+
 Good.
 
 We’re going to do this clean and deployable.

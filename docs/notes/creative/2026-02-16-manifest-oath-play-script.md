@@ -1,3 +1,16 @@
+---
+title: "Manifest Oath Play Script"
+summary: "Performance script with staged musical cues for Manifest Oath and related multilingual sections."
+category: "creative"
+created_at: "2026-02-16T10:59:57"
+original_filename: "2026.02.16.10.59.57.md"
+original_relpath: "docs/notes/creative/2026.02.16.10.59.57.md"
+tags:
+  - creative
+  - script
+  - music
+---
+
 # Manifest Oath / 目録の誓い — Play Script
 
 > Format: **Stage directions** are in *italics*. **Lyrics** are plain text. Sections flow in performance order.

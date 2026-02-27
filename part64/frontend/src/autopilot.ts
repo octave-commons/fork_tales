@@ -151,7 +151,7 @@ export class Autopilot<Context> {
             perms: action.requiredPerms,
             result: "skipped",
             summary: verdict.ask.need,
-            gate: verdict.ask.gate,
+            ...(verdict.ask.gate ? { gate: verdict.ask.gate } : {}),
           });
           requestUserInput(verdict.ask);
           return;

@@ -1,3 +1,16 @@
+---
+title: "Hybrid Field-Graph Formalism"
+summary: "Mathematical framework coupling daimoi semantic fields, graph compilation, ownership, and attribution."
+category: "system_design"
+created_at: "2026-02-20T11:23:12"
+original_filename: "2026.02.20.11.23.12.md"
+original_relpath: "docs/notes/system_design/2026.02.20.11.23.12.md"
+tags:
+  - system-design
+  - formalism
+  - hybrid-model
+---
+
 
 ## 0. Objects
 
@@ -451,5 +464,3 @@ Per tick:
 8. **Anchor** important events (append-only ledger).
 
 That’s a full hybrid dynamical system.
-
-

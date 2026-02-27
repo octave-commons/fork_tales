@@ -1,6 +1,12 @@
 import unittest
 from array import array
-from code.world_web.nooi import NooiField, NOOI_GRID_COLS, NOOI_GRID_ROWS, NOOI_LAYERS
+from code.world_web.nooi import (
+    NOOI_GRID_COLS,
+    NOOI_GRID_ROWS,
+    NOOI_LAYERS,
+    NOOI_TRAIL_CAP,
+    NooiField,
+)
 
 
 class TestNooiField(unittest.TestCase):
@@ -63,6 +69,29 @@ class TestNooiField(unittest.TestCase):
         vx, vy = field.sample_vector(0.4, 0.4)
         self.assertGreater(vx, 0.0)
         self.assertAlmostEqual(vy, 0.0, places=4)
+
+    def test_outcome_trails_are_bounded_and_present_in_snapshot(self):
+        field = NooiField(cols=8, rows=8)
+        for index in range(NOOI_TRAIL_CAP + 12):
+            field.append_outcome_trail(
+                outcome="food" if index % 2 == 0 else "death",
+                x=0.5,
+                y=0.5,
+                vx=1.0,
+                vy=0.0,
+                intensity=0.4,
+                presence_id="witness_thread",
+                reason="unit-test",
+                graph_node_id=f"node:{index}",
+                ts="2026-02-27T00:00:00+00:00",
+            )
+        trails = field.outcome_trails(limit=NOOI_TRAIL_CAP)
+        self.assertEqual(len(trails), NOOI_TRAIL_CAP)
+        self.assertEqual(trails[-1]["graph_node_id"], f"node:{NOOI_TRAIL_CAP + 11}")
+
+        snapshot = field.get_grid_snapshot()
+        self.assertIn("outcome_trails", snapshot)
+        self.assertTrue(isinstance(snapshot["outcome_trails"], list))
 
 
 if __name__ == "__main__":

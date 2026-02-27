@@ -4285,9 +4285,7 @@ def compute_graph_route_step_native(
             )
 
             margin = best_score - second_score if second_score > -9999.0 else 0.0
-            probability = 1.0 / (
-                1.0 + math.exp(-margin / max(0.05, _safe_float(temperature, 0.35)))
-            )
+            probability = _sigmoid(margin / max(0.05, _safe_float(temperature, 0.35)))
             next_nodes.append(best_node)
             drift_scores.append(math.tanh(best_score * 0.45))
             route_probabilities.append(_clamp01(probability))

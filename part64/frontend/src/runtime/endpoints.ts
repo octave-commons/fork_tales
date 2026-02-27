@@ -68,8 +68,12 @@ function normalizeHttpBase(value: unknown): string {
 
 function joinBasePath(base: string, path: string): string {
   const parsed = new URL(base);
-  const [pathWithHash, queryPart] = path.split("?", 2);
-  const [cleanPathPart, hashPart] = pathWithHash.split("#", 2);
+  const [pathWithHashRaw, queryPartRaw] = path.split("?", 2);
+  const pathWithHash = pathWithHashRaw ?? "";
+  const queryPart = queryPartRaw ?? "";
+  const [cleanPathPartRaw, hashPartRaw] = pathWithHash.split("#", 2);
+  const cleanPathPart = cleanPathPartRaw ?? "";
+  const hashPart = hashPartRaw ?? "";
   const basePath = parsed.pathname.replace(/\/+$/, "");
   const normalizedPath = cleanPathPart.startsWith("/")
     ? cleanPathPart
@@ -82,8 +86,8 @@ function joinBasePath(base: string, path: string): string {
   } else {
     parsed.pathname = `/${normalizedTail}`;
   }
-  parsed.search = queryPart ? `?${queryPart}` : "";
-  parsed.hash = hashPart ? `#${hashPart}` : "";
+  parsed.search = queryPart.length > 0 ? `?${queryPart}` : "";
+  parsed.hash = hashPart.length > 0 ? `#${hashPart}` : "";
   return parsed.toString();
 }
 
@@ -124,7 +128,7 @@ export function runtimeBaseUrl(): string {
     return bridgeBase;
   }
 
-  const envBase = normalizeHttpBase(import.meta.env.VITE_RUNTIME_BASE_URL);
+  const envBase = normalizeHttpBase(import.meta.env["VITE_RUNTIME_BASE_URL"]);
   if (envBase) {
     return envBase;
   }
@@ -175,7 +179,7 @@ export function runtimeWebSocketUrl(path: string): string {
 
 export function runtimeWeaverBaseCandidates(): string[] {
   const bridgeWeaverBase = normalizeHttpBase(runtimeBridgeConfig().weaverBaseUrl);
-  const envWeaverBase = normalizeHttpBase(import.meta.env.VITE_WEAVER_BASE_URL);
+  const envWeaverBase = normalizeHttpBase(import.meta.env["VITE_WEAVER_BASE_URL"]);
   const worldBase = runtimeBaseUrl();
   const prefixedWeaverBase = worldBase ? joinBasePath(worldBase, "/weaver") : "";
 

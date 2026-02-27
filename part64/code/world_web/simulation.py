@@ -34,7 +34,7 @@ from typing import Any
 from collections import defaultdict
 from array import array
 from hashlib import sha1
-from urllib.parse import urlparse, unquote
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse, unquote
 from urllib.request import Request, urlopen
 from urllib.error import URLError
 
@@ -117,6 +117,180 @@ from .resource_economy import (
     process_resource_cycle,
 )
 from .symbols import world_web_symbol as _world_web_symbol
+from .simulation_nexus import (
+    _build_unified_nexus_graph,
+    _build_canonical_nexus_node,
+    _build_canonical_nexus_edge,
+    _build_canonical_nexus_graph,
+    _build_field_registry,
+    _project_legacy_file_graph_from_nexus,
+    _project_legacy_logical_graph_from_nexus,
+)
+from . import simulation_resources as simulation_resources_module
+
+_RESOURCE_DAIMOI_TYPES = simulation_resources_module._RESOURCE_DAIMOI_TYPES
+_RESOURCE_DAIMOI_TYPE_ALIASES = (
+    simulation_resources_module._RESOURCE_DAIMOI_TYPE_ALIASES
+)
+_RESOURCE_DAIMOI_WALLET_FLOOR = (
+    simulation_resources_module._RESOURCE_DAIMOI_WALLET_FLOOR
+)
+_RESOURCE_DAIMOI_WALLET_CAP = simulation_resources_module._RESOURCE_DAIMOI_WALLET_CAP
+_RESOURCE_DAIMOI_CPU_SENTINEL_ID = (
+    simulation_resources_module._RESOURCE_DAIMOI_CPU_SENTINEL_ID
+)
+_RESOURCE_DAIMOI_SENTINEL_RESOURCE_BY_ID = (
+    simulation_resources_module._RESOURCE_DAIMOI_SENTINEL_RESOURCE_BY_ID
+)
+_RESOURCE_DAIMOI_CPU_SENTINEL_BURN_START_PERCENT = (
+    simulation_resources_module._RESOURCE_DAIMOI_CPU_SENTINEL_BURN_START_PERCENT
+)
+_RESOURCE_DAIMOI_CPU_SENTINEL_BURN_MAX_MULTIPLIER = (
+    simulation_resources_module._RESOURCE_DAIMOI_CPU_SENTINEL_BURN_MAX_MULTIPLIER
+)
+_RESOURCE_DAIMOI_CPU_SENTINEL_BURN_COST_MAX = (
+    simulation_resources_module._RESOURCE_DAIMOI_CPU_SENTINEL_BURN_COST_MAX
+)
+_RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_START_PERCENT = (
+    simulation_resources_module._RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_START_PERCENT
+)
+_RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_GAIN = (
+    simulation_resources_module._RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_GAIN
+)
+_RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_RESOURCE_BOOST = (
+    simulation_resources_module._RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_RESOURCE_BOOST
+)
+_RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_ALL_DAIMOI = (
+    simulation_resources_module._RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_ALL_DAIMOI
+)
+
+_canonical_resource_type = simulation_resources_module._canonical_resource_type
+_core_resource_type_from_presence_id = (
+    simulation_resources_module._core_resource_type_from_presence_id
+)
+_normalize_resource_wallet = simulation_resources_module._normalize_resource_wallet
+_resource_vector_normalized = simulation_resources_module._resource_vector_normalized
+_resource_vector_total = simulation_resources_module._resource_vector_total
+_resource_vector_quantized = simulation_resources_module._resource_vector_quantized
+_normalize_resource_wallet_denoms = (
+    simulation_resources_module._normalize_resource_wallet_denoms
+)
+_wallet_denoms_add_vector = simulation_resources_module._wallet_denoms_add_vector
+_resource_required_payment_vector = (
+    simulation_resources_module._resource_required_payment_vector
+)
+_wallet_denoms_payment_plan = simulation_resources_module._wallet_denoms_payment_plan
+_presence_anchor_position = simulation_resources_module._presence_anchor_position
+_resource_availability_ratio = simulation_resources_module._resource_availability_ratio
+_resource_usage_percent = simulation_resources_module._resource_usage_percent
+_resource_pressure_ratio = simulation_resources_module._resource_pressure_ratio
+_resource_debt_vector_update = simulation_resources_module._resource_debt_vector_update
+_resource_debt_snapshot = simulation_resources_module._resource_debt_snapshot
+_resource_velocity_vector = simulation_resources_module._resource_velocity_vector
+_resource_emission_rate = simulation_resources_module._resource_emission_rate
+_resource_ctl_budget_cap_vector = (
+    simulation_resources_module._resource_ctl_budget_cap_vector
+)
+_resource_ctl_budget_recharge_vector = (
+    simulation_resources_module._resource_ctl_budget_recharge_vector
+)
+_resource_ctl_budget_prepare = simulation_resources_module._resource_ctl_budget_prepare
+_resource_ctl_budget_commit = simulation_resources_module._resource_ctl_budget_commit
+_resource_need_ratio = simulation_resources_module._resource_need_ratio
+_resource_pressure_vector = simulation_resources_module._resource_pressure_vector
+_resource_mixing_weights = simulation_resources_module._resource_mixing_weights
+_resource_payment_plan = simulation_resources_module._resource_payment_plan
+
+
+def _sync_resource_module_overrides() -> None:
+    simulation_resources_module._RESOURCE_DAIMOI_CPU_SENTINEL_BURN_START_PERCENT = (
+        _RESOURCE_DAIMOI_CPU_SENTINEL_BURN_START_PERCENT
+    )
+    simulation_resources_module._RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_START_PERCENT = _RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_START_PERCENT
+    simulation_resources_module._RESOURCE_DAIMOI_CPU_SENTINEL_ID = (
+        _RESOURCE_DAIMOI_CPU_SENTINEL_ID
+    )
+
+
+def _resource_pressure_thresholds(resource_type: str) -> tuple[float, float]:
+    _sync_resource_module_overrides()
+    return simulation_resources_module._resource_pressure_thresholds(resource_type)
+
+
+def _resource_action_contract_estimate(
+    *,
+    row: dict[str, Any],
+    presence_id: str,
+    resource_pressure: dict[str, float],
+    resource_debt: dict[str, float],
+    queue_push: float,
+    sentinel_usage_by_presence: dict[str, float] | None = None,
+    cpu_sentinel_burn_threshold: float | None = None,
+) -> dict[str, Any]:
+    _sync_resource_module_overrides()
+    return simulation_resources_module._resource_action_contract_estimate(
+        row=row,
+        presence_id=presence_id,
+        resource_pressure=resource_pressure,
+        resource_debt=resource_debt,
+        queue_push=queue_push,
+        sentinel_usage_by_presence=sentinel_usage_by_presence,
+        cpu_sentinel_burn_threshold=cpu_sentinel_burn_threshold,
+    )
+
+
+def _resource_action_utility(
+    *,
+    row: dict[str, Any],
+    presence_id: str,
+    resource_pressure: dict[str, float],
+    queue_push: float,
+    resource_debt: dict[str, float] | None = None,
+    sentinel_usage_by_presence: dict[str, float] | None = None,
+    cpu_sentinel_burn_threshold: float | None = None,
+) -> float:
+    _sync_resource_module_overrides()
+    return simulation_resources_module._resource_action_utility(
+        row=row,
+        presence_id=presence_id,
+        resource_pressure=resource_pressure,
+        queue_push=queue_push,
+        resource_debt=resource_debt,
+        sentinel_usage_by_presence=sentinel_usage_by_presence,
+        cpu_sentinel_burn_threshold=cpu_sentinel_burn_threshold,
+    )
+
+
+def _apply_resource_daimoi_emissions(
+    *,
+    field_particles: list[dict[str, Any]],
+    presence_impacts: list[dict[str, Any]],
+    resource_heartbeat: dict[str, Any],
+    queue_ratio: float,
+) -> dict[str, Any]:
+    _sync_resource_module_overrides()
+    return simulation_resources_module._apply_resource_daimoi_emissions(
+        field_particles=field_particles,
+        presence_impacts=presence_impacts,
+        resource_heartbeat=resource_heartbeat,
+        queue_ratio=queue_ratio,
+    )
+
+
+def _apply_resource_daimoi_action_consumption(
+    *,
+    field_particles: list[dict[str, Any]],
+    presence_impacts: list[dict[str, Any]],
+    resource_heartbeat: dict[str, Any],
+    queue_ratio: float,
+) -> dict[str, Any]:
+    _sync_resource_module_overrides()
+    return simulation_resources_module._apply_resource_daimoi_action_consumption(
+        field_particles=field_particles,
+        presence_impacts=presence_impacts,
+        resource_heartbeat=resource_heartbeat,
+        queue_ratio=queue_ratio,
+    )
 
 
 SIMULATION_GROWTH_GUARD_RECORD = "eta-mu.simulation-growth-guard.v1"
@@ -763,6 +937,85 @@ def _nooi_flow_at(x_value: float, y_value: float) -> tuple[float, float, float]:
     if magnitude <= 1e-8:
         return (0.0, 0.0, 0.0)
     return (flow_x / magnitude, flow_y / magnitude, min(1.0, magnitude))
+
+
+def _nooi_outcome_from_particle(row: dict[str, Any]) -> dict[str, Any] | None:
+    consumed = max(0.0, _safe_float(row.get("resource_consume_amount", 0.0), 0.0))
+    blocked = bool(row.get("resource_action_blocked", False))
+    collisions = max(0, _safe_int(row.get("collision_count", 0), 0))
+    if consumed >= 0.04 and not blocked:
+        return {
+            "outcome": "food",
+            "intensity": min(1.0, 0.25 + consumed),
+            "reason": "resource_consumed",
+        }
+    if blocked or collisions > 0:
+        return {
+            "outcome": "death",
+            "intensity": min(1.0, 0.3 + (collisions * 0.1)),
+            "reason": "blocked_or_collision",
+        }
+    return None
+
+
+def _apply_nooi_from_particles(
+    particles: list[dict[str, Any]], *, dt_seconds: float
+) -> tuple[dict[str, Any], dict[str, int]]:
+    nooi_rows = [
+        row
+        for row in particles
+        if isinstance(row, dict) and _particle_influences_nooi(row)
+    ]
+    summary = {"food": 0, "death": 0, "total": 0}
+    _NOOI_FIELD.decay(dt_seconds)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for row in nooi_rows:
+        x_value = _safe_float(row.get("x", 0.5), 0.5)
+        y_value = _safe_float(row.get("y", 0.5), 0.5)
+        vx_value = _safe_float(row.get("vx", 0.0), 0.0)
+        vy_value = _safe_float(row.get("vy", 0.0), 0.0)
+        _NOOI_FIELD.deposit(x_value, y_value, vx_value, vy_value)
+
+        outcome = _nooi_outcome_from_particle(row)
+        if not isinstance(outcome, dict):
+            continue
+        outcome_kind = str(outcome.get("outcome", "")).strip().lower()
+        if outcome_kind not in {"food", "death"}:
+            continue
+        intensity = max(0.05, _safe_float(outcome.get("intensity", 0.2), 0.2))
+        direction_scale = 1.0 if outcome_kind == "food" else -1.0
+        layer_weights = [
+            intensity,
+            intensity * 0.85,
+            intensity * 0.72,
+            intensity * 0.58,
+            intensity * 0.46,
+            intensity * 0.35,
+            intensity * 0.24,
+            intensity * 0.16,
+        ]
+        _NOOI_FIELD.deposit(
+            x_value,
+            y_value,
+            vx_value * direction_scale,
+            vy_value * direction_scale,
+            layer_weights=layer_weights,
+        )
+        _NOOI_FIELD.append_outcome_trail(
+            outcome=outcome_kind,
+            x=x_value,
+            y=y_value,
+            vx=vx_value,
+            vy=vy_value,
+            intensity=intensity,
+            presence_id=str(row.get("presence_id", row.get("owner", "")) or ""),
+            reason=str(outcome.get("reason", "") or ""),
+            graph_node_id=str(row.get("graph_node_id", "") or ""),
+            ts=now_iso,
+        )
+        summary[outcome_kind] = summary.get(outcome_kind, 0) + 1
+        summary["total"] = summary.get("total", 0) + 1
+    return _NOOI_FIELD.get_grid_snapshot(nooi_rows), summary
 
 
 def _normalize_path_for_file_id(path_like: str) -> str:
@@ -5421,6 +5674,26 @@ def _fetch_weaver_graph_payload(part_root: Path) -> dict[str, Any]:
                 status_payload = json.loads(
                     response.read().decode("utf-8", errors="ignore")
                 )
+            events_payload: list[dict[str, Any]] = []
+            try:
+                with urlopen(
+                    Request(f"{base}/api/weaver/events?limit=120", method="GET"),
+                    timeout=WEAVER_GRAPH_FETCH_TIMEOUT_SECONDS,
+                ) as response:
+                    events_response = json.loads(
+                        response.read().decode("utf-8", errors="ignore")
+                    )
+                events_rows = (
+                    events_response.get("events", [])
+                    if isinstance(events_response, dict)
+                    else []
+                )
+                if isinstance(events_rows, list):
+                    events_payload = [
+                        dict(row) for row in events_rows if isinstance(row, dict)
+                    ]
+            except Exception:
+                events_payload = []
 
             graph = (
                 graph_payload.get("graph", {})
@@ -5447,12 +5720,14 @@ def _fetch_weaver_graph_payload(part_root: Path) -> dict[str, Any]:
                                     "ok": True,
                                     "graph": fallback_graph,
                                     "status": merged_status,
+                                    "events": events_payload,
                                     "source": str(fallback.get("source", "")),
                                 }
                 return {
                     "ok": True,
                     "graph": graph,
                     "status": status,
+                    "events": events_payload,
                     "source": f"{base}/api/weaver/graph",
                 }
         except Exception:
@@ -5466,6 +5741,7 @@ def _fetch_weaver_graph_payload(part_root: Path) -> dict[str, Any]:
         "ok": False,
         "graph": {"nodes": [], "edges": [], "counts": {}},
         "status": {},
+        "events": [],
         "source": "",
     }
 
@@ -5844,821 +6120,6 @@ def _prepare_file_graph_for_simulation(
     return _clone_prepared_file_graph(compact_graph), [
         dict(row) for row in embedding_points if isinstance(row, dict)
     ]
-
-
-def _build_unified_nexus_graph(
-    file_graph: dict[str, Any] | None,
-    crawler_graph: dict[str, Any] | None,
-    *,
-    include_crawler_in_file_nodes: bool,
-) -> dict[str, Any] | None:
-    if not isinstance(file_graph, dict):
-        return file_graph if isinstance(file_graph, dict) else None
-
-    unified = dict(file_graph)
-    field_nodes = [
-        dict(row) for row in file_graph.get("field_nodes", []) if isinstance(row, dict)
-    ]
-    tag_nodes = [
-        dict(row) for row in file_graph.get("tag_nodes", []) if isinstance(row, dict)
-    ]
-    file_nodes = [
-        dict(row) for row in file_graph.get("file_nodes", []) if isinstance(row, dict)
-    ]
-
-    nodes_raw = file_graph.get("nodes", [])
-    if isinstance(nodes_raw, list) and nodes_raw:
-        nodes = [dict(row) for row in nodes_raw if isinstance(row, dict)]
-    else:
-        nodes = [*field_nodes, *tag_nodes, *file_nodes]
-
-    edges = [dict(row) for row in file_graph.get("edges", []) if isinstance(row, dict)]
-    stats = (
-        dict(file_graph.get("stats", {}))
-        if isinstance(file_graph.get("stats", {}), dict)
-        else {}
-    )
-
-    node_id_set: set[str] = {
-        str(row.get("id", "")).strip()
-        for row in nodes
-        if str(row.get("id", "")).strip()
-    }
-    file_node_id_set: set[str] = {
-        str(row.get("id", "")).strip()
-        for row in file_nodes
-        if str(row.get("id", "")).strip()
-    }
-
-    field_target_aliases: dict[str, str] = {}
-    for field_node in field_nodes:
-        field_id = str(field_node.get("id", "")).strip()
-        node_id = str(field_node.get("node_id", "")).strip()
-        source_tokens = [field_id, node_id]
-        for token in source_tokens:
-            if not token:
-                continue
-            presence_id = token
-            if token.startswith("field:"):
-                presence_id = token.split("field:", 1)[1].strip()
-            if presence_id:
-                canonical_field_id = field_id or f"field:{presence_id}"
-                field_target_aliases[f"crawler-field:{presence_id}"] = (
-                    canonical_field_id
-                )
-
-    crawler_rows = (
-        crawler_graph.get("crawler_nodes", [])
-        if isinstance(crawler_graph, dict)
-        and isinstance(crawler_graph.get("crawler_nodes", []), list)
-        else []
-    )
-    merged_crawler_nodes: list[dict[str, Any]] = [
-        dict(row) for row in unified.get("crawler_nodes", []) if isinstance(row, dict)
-    ]
-    merged_crawler_id_set: set[str] = {
-        str(row.get("id", "")).strip()
-        for row in merged_crawler_nodes
-        if str(row.get("id", "")).strip()
-    }
-
-    for row in crawler_rows:
-        if not isinstance(row, dict):
-            continue
-        node_id = str(row.get("id", "")).strip()
-        if not node_id:
-            continue
-        normalized = dict(row)
-        normalized["id"] = node_id
-        normalized["node_type"] = "crawler"
-        crawler_kind = str(
-            normalized.get("crawler_kind", normalized.get("kind", "url"))
-        ).strip()
-        normalized["crawler_kind"] = crawler_kind or "url"
-        if not str(normalized.get("kind", "")).strip():
-            normalized["kind"] = normalized["crawler_kind"]
-        resource_kind = str(normalized.get("resource_kind", "")).strip().lower()
-        if not resource_kind:
-            resource_kind = _graph_resource_kind_from_crawler_node(normalized)
-        normalized["resource_kind"] = resource_kind
-        if not str(normalized.get("modality", "")).strip():
-            normalized["modality"] = _graph_modality_from_resource_kind(resource_kind)
-        normalized["x"] = round(_clamp01(_safe_float(normalized.get("x", 0.5), 0.5)), 4)
-        normalized["y"] = round(_clamp01(_safe_float(normalized.get("y", 0.5), 0.5)), 4)
-        normalized["importance"] = round(
-            _clamp01(_safe_float(normalized.get("importance", 0.28), 0.28)), 4
-        )
-        normalized["hue"] = int(_safe_float(normalized.get("hue", 198), 198.0))
-
-        if node_id not in node_id_set:
-            nodes.append(normalized)
-            node_id_set.add(node_id)
-        if include_crawler_in_file_nodes and node_id not in file_node_id_set:
-            file_nodes.append(normalized)
-            file_node_id_set.add(node_id)
-        if node_id not in merged_crawler_id_set:
-            merged_crawler_nodes.append(normalized)
-            merged_crawler_id_set.add(node_id)
-
-    seen_edges: set[tuple[str, str, str]] = set()
-    for row in edges:
-        source_id = str(row.get("source", "")).strip()
-        target_id = str(row.get("target", "")).strip()
-        kind = str(row.get("kind", "")).strip().lower()
-        if source_id and target_id:
-            seen_edges.add((source_id, target_id, kind))
-
-    crawler_edges = (
-        crawler_graph.get("edges", [])
-        if isinstance(crawler_graph, dict)
-        and isinstance(crawler_graph.get("edges", []), list)
-        else []
-    )
-    for row in crawler_edges:
-        if not isinstance(row, dict):
-            continue
-        source_id = str(row.get("source", "")).strip()
-        target_id = str(row.get("target", "")).strip()
-        if not source_id or not target_id:
-            continue
-        source_id = field_target_aliases.get(source_id, source_id)
-        target_id = field_target_aliases.get(target_id, target_id)
-        if source_id.startswith("crawler-field:"):
-            source_id = source_id.replace("crawler-field:", "field:", 1)
-        if target_id.startswith("crawler-field:"):
-            target_id = target_id.replace("crawler-field:", "field:", 1)
-        if source_id == target_id:
-            continue
-        if source_id not in node_id_set or target_id not in node_id_set:
-            continue
-        kind = str(row.get("kind", "hyperlink")).strip().lower() or "hyperlink"
-        edge_key = (source_id, target_id, kind)
-        if edge_key in seen_edges:
-            continue
-        seen_edges.add(edge_key)
-        edge_id = str(row.get("id", "")).strip()
-        if not edge_id:
-            edge_id = (
-                "nexus-crawler-edge:"
-                + sha1(f"{source_id}|{target_id}|{kind}".encode("utf-8")).hexdigest()[
-                    :18
-                ]
-            )
-        edges.append(
-            {
-                "id": edge_id,
-                "source": source_id,
-                "target": target_id,
-                "field": str(row.get("field", "")).strip(),
-                "kind": kind,
-                "weight": round(
-                    _clamp01(_safe_float(row.get("weight", 0.28), 0.28)), 4
-                ),
-            }
-        )
-
-    stats["crawler_nexus_count"] = len(merged_crawler_nodes)
-    stats["nexus_node_count"] = len(nodes)
-    stats["nexus_edge_count"] = len(edges)
-    if include_crawler_in_file_nodes:
-        stats["file_count"] = len(file_nodes)
-
-    unified["field_nodes"] = field_nodes
-    unified["tag_nodes"] = tag_nodes
-    unified["file_nodes"] = file_nodes
-    unified["nodes"] = nodes
-    unified["edges"] = edges
-    unified["crawler_nodes"] = merged_crawler_nodes
-    unified["stats"] = stats
-    return unified
-
-
-# ============================================================================
-# CANONICAL UNIFIED MODEL BUILDERS (v2)
-# ============================================================================
-#
-# These builders produce the canonical unified types:
-# - NexusNode / NexusEdge / NexusGraph
-# - Field / FieldRegistry
-# - Presence (unified)
-# - Daimon (unified)
-#
-# See specs/drafts/part64-deep-research-09-unified-nexus-graph.md
-# See specs/drafts/part64-deep-research-10-shared-fields-daimoi-dynamics.md
-# ============================================================================
-
-
-# Role mapping from legacy node_type to canonical NexusRole
-_NEXUS_ROLE_MAP: dict[str, str] = {
-    "field": "field",
-    "file": "file",
-    "image": "image",
-    "audio": "audio",
-    "tag": "tag",
-    "crawler": "crawler",
-    "presence": "presence",
-    "concept": "concept",
-    "organizer": "presence",
-    "resource": "resource",
-    "anchor": "anchor",
-    "logical": "logical",
-    "fact": "logical",
-    "rule": "logical",
-    "derivation": "logical",
-    "contradiction": "logical",
-    "gate": "logical",
-    "event": "event",
-    "test": "test_failure",
-    "test_failure": "test_failure",
-}
-
-
-def _build_canonical_nexus_node(
-    legacy_node: dict[str, Any],
-    *,
-    default_role: str = "file",
-    origin_graph: str = "unknown",
-) -> dict[str, Any]:
-    """
-    Convert a legacy graph node to canonical NexusNode format.
-
-    Canonical NexusNode schema:
-    - id: string
-    - role: NexusRole (file, field, tag, crawler, resource, concept, anchor, logical, presence, event, etc.)
-    - label: string
-    - label_ja?: string
-    - embedding?: { vector?: number[], centroid?: {x,y,z} }
-    - x, y, z?: number
-    - hue: number
-    - capacity?: { cap, load, pressure }
-    - demand?: { types: Record<string,number>, intensity }
-    - provenance?: { source_uri, file_id, path, origin_graph, created_at, hash }
-    - extension?: Record<string, unknown>
-    - confidence?: number
-    - status?: string
-    - importance?: number
-    """
-    if not isinstance(legacy_node, dict):
-        return {}
-
-    node_id = str(legacy_node.get("id") or legacy_node.get("node_id") or "").strip()
-    if not node_id:
-        return {}
-
-    # Map legacy node_type to canonical role
-    legacy_type = (
-        str(legacy_node.get("node_type", "") or legacy_node.get("kind", "") or "")
-        .strip()
-        .lower()
-    )
-    role = _NEXUS_ROLE_MAP.get(legacy_type, default_role)
-
-    # Special handling for presence kinds
-    presence_kind = str(legacy_node.get("presence_kind", "") or "").strip().lower()
-    if presence_kind == "concept":
-        role = "concept"
-    elif presence_kind == "organizer":
-        role = "presence"
-
-    # Build provenance
-    provenance: dict[str, Any] = {
-        "origin_graph": origin_graph,
-    }
-    source_rel_path = str(
-        legacy_node.get("source_rel_path") or legacy_node.get("archived_rel_path") or ""
-    ).strip()
-    if source_rel_path:
-        provenance["path"] = source_rel_path
-        provenance["source_uri"] = f"library:/{source_rel_path}"
-    if legacy_node.get("file_id"):
-        provenance["file_id"] = str(legacy_node.get("file_id"))
-    if legacy_node.get("url"):
-        provenance["source_uri"] = str(legacy_node.get("url"))
-
-    # Build canonical node
-    canonical: dict[str, Any] = {
-        "id": node_id,
-        "role": role,
-        "label": str(legacy_node.get("label") or legacy_node.get("name") or node_id),
-        "x": round(_clamp01(_safe_float(legacy_node.get("x", 0.5), 0.5)), 4),
-        "y": round(_clamp01(_safe_float(legacy_node.get("y", 0.5), 0.5)), 4),
-        "hue": int(_safe_float(legacy_node.get("hue", 198), 198.0)),
-        "provenance": provenance,
-    }
-
-    # Optional fields
-    if legacy_node.get("label_ja"):
-        canonical["label_ja"] = str(legacy_node.get("label_ja"))
-
-    if legacy_node.get("importance") is not None:
-        canonical["importance"] = round(
-            _clamp01(_safe_float(legacy_node.get("importance", 0.5), 0.5)), 4
-        )
-
-    if legacy_node.get("confidence") is not None:
-        canonical["confidence"] = round(
-            _clamp01(_safe_float(legacy_node.get("confidence", 1.0), 1.0)), 4
-        )
-
-    if legacy_node.get("status"):
-        canonical["status"] = str(legacy_node.get("status"))
-
-    # Copy relevant extension fields based on role
-    extension: dict[str, Any] = {}
-    if role == "file":
-        for key in (
-            "source_rel_path",
-            "archived_rel_path",
-            "archive_rel_path",
-            "resource_kind",
-            "modality",
-            "tags",
-            "summary",
-            "text_excerpt",
-        ):
-            if legacy_node.get(key):
-                extension[key] = legacy_node[key]
-    elif role == "crawler":
-        for key in (
-            "url",
-            "domain",
-            "title",
-            "content_type",
-            "crawler_kind",
-            "resource_kind",
-            "modality",
-            "compliance",
-            "dominant_field",
-        ):
-            if legacy_node.get(key):
-                extension[key] = legacy_node[key]
-    elif role == "field":
-        for key in ("field", "dominant_presence"):
-            if legacy_node.get(key):
-                extension[key] = legacy_node[key]
-    elif role == "tag":
-        for key in ("tag", "member_count"):
-            if legacy_node.get(key):
-                extension[key] = legacy_node[key]
-
-    if extension:
-        canonical["extension"] = extension
-
-    return canonical
-
-
-def _build_canonical_nexus_edge(
-    legacy_edge: dict[str, Any],
-    *,
-    node_id_set: set[str],
-) -> dict[str, Any] | None:
-    """
-    Convert a legacy graph edge to canonical NexusEdge format.
-
-    Canonical NexusEdge schema:
-    - id: string
-    - source: string (node id)
-    - target: string (node id)
-    - kind: NexusEdgeKind
-    - weight: number
-    - cost?: number
-    - affinity?: number
-    - saturation?: number
-    - health?: number
-    - field?: string
-    """
-    if not isinstance(legacy_edge, dict):
-        return None
-
-    source_id = str(legacy_edge.get("source", "")).strip()
-    target_id = str(legacy_edge.get("target", "")).strip()
-    if not source_id or not target_id:
-        return None
-    if source_id not in node_id_set or target_id not in node_id_set:
-        return None
-
-    edge_id = str(legacy_edge.get("id", "")).strip()
-    if not edge_id:
-        edge_id = f"nexus-edge:{hashlib.sha256(f'{source_id}|{target_id}'.encode('utf-8')).hexdigest()[:16]}"
-
-    kind = str(legacy_edge.get("kind", "relates")).strip().lower() or "relates"
-    weight = round(_clamp01(_safe_float(legacy_edge.get("weight", 0.5), 0.5)), 4)
-
-    canonical: dict[str, Any] = {
-        "id": edge_id,
-        "source": source_id,
-        "target": target_id,
-        "kind": kind,
-        "weight": weight,
-    }
-
-    if legacy_edge.get("field"):
-        canonical["field"] = str(legacy_edge.get("field"))
-
-    # Edge dynamics (if available)
-    if legacy_edge.get("cost") is not None:
-        canonical["cost"] = _safe_float(legacy_edge.get("cost"), 0.5)
-    if legacy_edge.get("affinity") is not None:
-        canonical["affinity"] = round(
-            _clamp01(_safe_float(legacy_edge.get("affinity", 0.5), 0.5)), 4
-        )
-    if legacy_edge.get("saturation") is not None:
-        canonical["saturation"] = round(
-            _clamp01(_safe_float(legacy_edge.get("saturation", 0.0), 0.0)), 4
-        )
-    if legacy_edge.get("health") is not None:
-        canonical["health"] = round(
-            _clamp01(_safe_float(legacy_edge.get("health", 1.0), 1.0)), 4
-        )
-
-    return canonical
-
-
-def _build_canonical_nexus_graph(
-    file_graph: dict[str, Any] | None,
-    crawler_graph: dict[str, Any] | None,
-    logical_graph: dict[str, Any] | None,
-    *,
-    include_crawler: bool = True,
-    include_logical: bool = True,
-) -> dict[str, Any]:
-    """
-    Build the canonical unified NexusGraph from all legacy graph sources.
-
-    This is the single source of truth for graph data. All other graph
-    payloads (file_graph, crawler_graph, logical_graph) become projections
-    of this canonical graph.
-    """
-    nodes: list[dict[str, Any]] = []
-    edges: list[dict[str, Any]] = []
-    node_id_set: set[str] = set()
-    edge_key_set: set[tuple[str, str, str]] = set()
-
-    # Joins indices
-    by_role: dict[str, list[str]] = {}
-    by_path: dict[str, str] = {}
-    by_source_uri: dict[str, str] = {}
-    by_file_id: dict[str, str] = {}
-
-    def _add_node(node: dict[str, Any], origin_graph: str) -> None:
-        if not isinstance(node, dict):
-            return
-        canonical = _build_canonical_nexus_node(node, origin_graph=origin_graph)
-        node_id = canonical.get("id", "")
-        if not node_id or node_id in node_id_set:
-            return
-        nodes.append(canonical)
-        node_id_set.add(node_id)
-
-        # Update indices
-        role = canonical.get("role", "unknown")
-        if role not in by_role:
-            by_role[role] = []
-        by_role[role].append(node_id)
-
-        prov = canonical.get("provenance", {})
-        if prov.get("path"):
-            by_path[prov["path"]] = node_id
-        if prov.get("source_uri"):
-            by_source_uri[prov["source_uri"]] = node_id
-        if prov.get("file_id"):
-            by_file_id[prov["file_id"]] = node_id
-
-    def _add_edge(edge: dict[str, Any]) -> None:
-        canonical = _build_canonical_nexus_edge(edge, node_id_set=node_id_set)
-        if not canonical:
-            return
-        source_id = canonical["source"]
-        target_id = canonical["target"]
-        kind = canonical["kind"]
-        edge_key = (source_id, target_id, kind)
-        if edge_key in edge_key_set:
-            return
-        edges.append(canonical)
-        edge_key_set.add(edge_key)
-
-    # Process file_graph
-    if isinstance(file_graph, dict):
-        for node in file_graph.get("field_nodes", []):
-            _add_node(node, "file_graph")
-        for node in file_graph.get("tag_nodes", []):
-            _add_node(node, "file_graph")
-        for node in file_graph.get("file_nodes", []):
-            _add_node(node, "file_graph")
-        for node in file_graph.get("nodes", []):
-            _add_node(node, "file_graph")
-        for edge in file_graph.get("edges", []):
-            _add_edge(edge)
-
-    # Process crawler_graph
-    if include_crawler and isinstance(crawler_graph, dict):
-        for node in crawler_graph.get("field_nodes", []):
-            _add_node(node, "crawler_graph")
-        for node in crawler_graph.get("crawler_nodes", []):
-            _add_node(node, "crawler_graph")
-        for edge in crawler_graph.get("edges", []):
-            _add_edge(edge)
-
-    # Process logical_graph (Logos projection)
-    if include_logical and isinstance(logical_graph, dict):
-        for node in logical_graph.get("nodes", []):
-            _add_node(node, "logical_graph")
-        for edge in logical_graph.get("edges", []):
-            _add_edge(edge)
-
-    # Build stats
-    role_counts: dict[str, int] = {}
-    for role, ids in by_role.items():
-        role_counts[role] = len(ids)
-
-    edge_kind_counts: dict[str, int] = {}
-    for edge in edges:
-        kind = edge.get("kind", "unknown")
-        edge_kind_counts[kind] = edge_kind_counts.get(kind, 0) + 1
-
-    # Mean connectivity
-    connectivity_sum = sum(
-        sum(1 for e in edges if e["source"] == node_id or e["target"] == node_id)
-        for node_id in node_id_set
-    )
-    mean_connectivity = (connectivity_sum / len(node_id_set)) if node_id_set else 0.0
-
-    return {
-        "record": "ημ.nexus-graph.v1",
-        "schema_version": "nexus.graph.v1",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "nodes": nodes,
-        "edges": edges,
-        "joins": {
-            "by_role": by_role,
-            "by_path": by_path,
-            "by_source_uri": by_source_uri,
-            "by_file_id": by_file_id,
-        },
-        "stats": {
-            "node_count": len(nodes),
-            "edge_count": len(edges),
-            "role_counts": role_counts,
-            "edge_kind_counts": edge_kind_counts,
-            "mean_connectivity": round(mean_connectivity, 4),
-        },
-    }
-
-
-def _build_field_registry(
-    catalog: dict[str, Any],
-    graph_runtime: dict[str, Any] | None,
-    *,
-    kernel_width: float = 0.3,
-    decay_rate: float = 0.1,
-    resolution: int = 32,
-) -> dict[str, Any]:
-    """
-    Build the shared field registry from catalog and graph runtime data.
-
-    The field registry contains a bounded set of shared fields:
-    - demand: Where in semantic space is there active demand
-    - flow: Aggregate movement patterns
-    - entropy: Where things are uncertain/unresolved
-    - graph: The compiled graph's influence on particle motion
-
-    All presences contribute to these shared fields, not to individual fields.
-    """
-    from .constants import FIELD_KINDS, MAX_FIELD_COUNT
-
-    fields: dict[str, dict[str, Any]] = {}
-
-    # Extract gravity data for demand field
-    gravity = (
-        graph_runtime.get("gravity", []) if isinstance(graph_runtime, dict) else []
-    )
-    node_count = len(gravity) if isinstance(gravity, list) else 0
-
-    # Build demand field samples from gravity
-    demand_samples: list[dict[str, Any]] = []
-    demand_max = 0.0
-    demand_sum = 0.0
-    demand_peak_loc: dict[str, float] | None = None
-
-    if gravity and isinstance(gravity, list):
-        # Sample at grid resolution
-        for i in range(min(resolution, node_count)):
-            g_val = _safe_float(gravity[i], 0.0) if i < len(gravity) else 0.0
-            x = (i % resolution) / resolution
-            y = (i // resolution) / resolution
-            if g_val > 0.001:
-                demand_samples.append(
-                    {"x": round(x, 4), "y": round(y, 4), "value": round(g_val, 6)}
-                )
-                demand_sum += g_val
-                if g_val > demand_max:
-                    demand_max = g_val
-                    demand_peak_loc = {"x": x, "y": y}
-
-    fields["demand"] = {
-        "kind": "demand",
-        "record": "ημ.shared-field.v1",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "samples": demand_samples[:256],  # Cap samples
-        "stats": {
-            "mean": round(demand_sum / max(1, len(demand_samples)), 6),
-            "max": round(demand_max, 6),
-            "min": 0.0,
-            "integral": round(demand_sum, 6),
-            "peak_location": demand_peak_loc,
-        },
-        "top_contributors": [],  # TODO: Add attribution
-        "params": {
-            "kernel_width": kernel_width,
-            "decay_rate": decay_rate,
-            "resolution": resolution,
-        },
-    }
-
-    # Build flow field (placeholder - would track daimon movement)
-    fields["flow"] = {
-        "kind": "flow",
-        "record": "ημ.shared-field.v1",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "samples": [],
-        "stats": {"mean": 0.0, "max": 0.0, "min": 0.0, "integral": 0.0},
-        "top_contributors": [],
-        "params": {
-            "kernel_width": kernel_width,
-            "decay_rate": decay_rate,
-            "resolution": resolution,
-        },
-    }
-
-    # Build entropy field (placeholder - would track type distribution entropy)
-    fields["entropy"] = {
-        "kind": "entropy",
-        "record": "ημ.shared-field.v1",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "samples": [],
-        "stats": {"mean": 0.0, "max": 0.0, "min": 0.0, "integral": 0.0},
-        "top_contributors": [],
-        "params": {
-            "kernel_width": kernel_width,
-            "decay_rate": decay_rate,
-            "resolution": resolution,
-        },
-    }
-
-    # Build graph field from graph runtime node prices
-    graph_samples: list[dict[str, Any]] = []
-    node_prices = (
-        graph_runtime.get("node_prices", []) if isinstance(graph_runtime, dict) else []
-    )
-    graph_sum = 0.0
-    graph_max = 0.0
-
-    if node_prices and isinstance(node_prices, list):
-        for i, price in enumerate(node_prices[: resolution * resolution]):
-            p_val = _safe_float(price, 0.0)
-            if p_val > 0.001:
-                x = (i % resolution) / resolution
-                y = (i // resolution) / resolution
-                graph_samples.append(
-                    {"x": round(x, 4), "y": round(y, 4), "value": round(p_val, 6)}
-                )
-                graph_sum += p_val
-                graph_max = max(graph_max, p_val)
-
-    fields["graph"] = {
-        "kind": "graph",
-        "record": "ημ.shared-field.v1",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "samples": graph_samples[:256],
-        "stats": {
-            "mean": round(graph_sum / max(1, len(graph_samples)), 6),
-            "max": round(graph_max, 6),
-            "min": 0.0,
-            "integral": round(graph_sum, 6),
-        },
-        "top_contributors": [],
-        "params": {
-            "kernel_width": kernel_width,
-            "decay_rate": decay_rate,
-            "resolution": resolution,
-        },
-    }
-
-    return {
-        "record": "ημ.field-registry.v1",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "fields": {k: fields.get(k, {}) for k in FIELD_KINDS},
-        "weights": {
-            "demand": 0.4,
-            "flow": 0.2,
-            "entropy": 0.15,
-            "graph": 0.25,
-        },
-        "field_count": len(FIELD_KINDS),
-        "bounded": len(FIELD_KINDS) <= MAX_FIELD_COUNT,
-    }
-
-
-def _project_legacy_file_graph_from_nexus(
-    nexus_graph: dict[str, Any],
-) -> dict[str, Any]:
-    """
-    Project the legacy file_graph payload from the canonical nexus_graph.
-    This provides backward compatibility during migration.
-    """
-    if not isinstance(nexus_graph, dict):
-        return {
-            "record": "ημ.file-graph.v1",
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "nodes": [],
-            "field_nodes": [],
-            "tag_nodes": [],
-            "file_nodes": [],
-            "edges": [],
-            "stats": {},
-        }
-
-    nodes = nexus_graph.get("nodes", [])
-    edges = nexus_graph.get("edges", [])
-
-    # Partition nodes by role
-    field_nodes = [n for n in nodes if n.get("role") == "field"]
-    tag_nodes = [n for n in nodes if n.get("role") == "tag"]
-    file_nodes = [n for n in nodes if n.get("role") in ("file", "resource")]
-
-    return {
-        "record": "ημ.file-graph.v1",
-        "generated_at": nexus_graph.get(
-            "generated_at", datetime.now(timezone.utc).isoformat()
-        ),
-        "nodes": nodes,
-        "field_nodes": field_nodes,
-        "tag_nodes": tag_nodes,
-        "file_nodes": file_nodes,
-        "edges": edges,
-        "stats": nexus_graph.get("stats", {}),
-    }
-
-
-def _project_legacy_logical_graph_from_nexus(
-    nexus_graph: dict[str, Any],
-) -> dict[str, Any]:
-    """
-    Project the legacy logical_graph payload from the canonical nexus_graph.
-    The logical graph is just the nodes with role in logical roles.
-    """
-    if not isinstance(nexus_graph, dict):
-        return {
-            "record": "ημ.logical-graph.v1",
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "nodes": [],
-            "edges": [],
-            "joins": {},
-            "stats": {},
-        }
-
-    logical_roles = {
-        "logical",
-        "fact",
-        "rule",
-        "derivation",
-        "contradiction",
-        "gate",
-        "event",
-        "tag",
-        "file",
-    }
-    nodes = nexus_graph.get("nodes", [])
-    edges = nexus_graph.get("edges", [])
-
-    logical_nodes = [n for n in nodes if n.get("role") in logical_roles]
-    logical_node_ids = {n.get("id") for n in logical_nodes}
-
-    # Filter edges to only those between logical nodes
-    logical_edges = [
-        e
-        for e in edges
-        if e.get("source") in logical_node_ids and e.get("target") in logical_node_ids
-    ]
-
-    return {
-        "record": "ημ.logical-graph.v1",
-        "generated_at": nexus_graph.get(
-            "generated_at", datetime.now(timezone.utc).isoformat()
-        ),
-        "nodes": logical_nodes,
-        "edges": logical_edges,
-        "joins": nexus_graph.get("joins", {}),
-        "stats": {
-            "file_nodes": len([n for n in logical_nodes if n.get("role") == "file"]),
-            "tag_nodes": len([n for n in logical_nodes if n.get("role") == "tag"]),
-            "fact_nodes": len(
-                [n for n in logical_nodes if n.get("role") in ("fact", "logical")]
-            ),
-            "event_nodes": len([n for n in logical_nodes if n.get("role") == "event"]),
-            "edge_count": len(logical_edges),
-        },
-    }
 
 
 def _clean_tokens(text: str) -> list[str]:
@@ -8104,6 +7565,110 @@ def _graph_suffix_from_path_like(path_like: Any) -> str:
     return Path(normalized).suffix.lower()
 
 
+def _graph_canonical_url(raw_url: Any) -> str:
+    text = str(raw_url or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = urlparse(text)
+    except Exception:
+        return ""
+    scheme = str(parsed.scheme or "").strip().lower()
+    if scheme not in {"http", "https"}:
+        return ""
+    host = str(parsed.hostname or "").strip().lower()
+    if not host:
+        return ""
+    port = int(parsed.port or 0)
+    include_port = (scheme == "http" and port not in {0, 80}) or (
+        scheme == "https" and port not in {0, 443}
+    )
+    netloc = host if not include_port else f"{host}:{port}"
+
+    path_value = str(parsed.path or "/")
+    while "//" in path_value:
+        path_value = path_value.replace("//", "/")
+    if len(path_value) > 1:
+        path_value = path_value.rstrip("/")
+    if not path_value:
+        path_value = "/"
+
+    params = sorted(parse_qsl(str(parsed.query or ""), keep_blank_values=True))
+    query_value = urlencode(params, doseq=True)
+    return urlunparse((scheme, netloc, path_value, "", query_value, ""))
+
+
+def _graph_url_node_id(canonical_url: str) -> str:
+    clean = str(canonical_url or "").strip()
+    if not clean:
+        return ""
+    return "url:" + hashlib.sha256(clean.encode("utf-8")).hexdigest()[:16]
+
+
+def _graph_resource_node_id(canonical_url: str, content_hash: str) -> str:
+    hash_basis = (
+        str(content_hash or "").strip().lower() or str(canonical_url or "").strip()
+    )
+    if not hash_basis:
+        return ""
+    return "res:" + hashlib.sha256(hash_basis.encode("utf-8")).hexdigest()[:16]
+
+
+def _graph_resource_excerpt_hash(text_excerpt: Any) -> str:
+    text = str(text_excerpt or "").strip()
+    if not text:
+        return ""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _normalize_weaver_event_row(event_row: dict[str, Any]) -> dict[str, Any] | None:
+    event_name = str(event_row.get("event", "")).strip().lower()
+    reason = str(event_row.get("reason", "")).strip().lower()
+
+    mapped = ""
+    if event_name == "node_discovered":
+        mapped = "web_fetch_scheduled"
+    elif event_name == "fetch_started":
+        mapped = "web_fetch_started"
+    elif event_name == "fetch_completed":
+        mapped = "web_fetch_completed"
+    elif event_name == "reference_extracted":
+        mapped = "web_extract_links"
+    elif event_name == "fetch_skipped" and reason in {
+        "node_cooldown",
+        "cooldown_active",
+    }:
+        mapped = "web_cooldown_blocked"
+    elif event_name == "fetch_skipped" and reason in {
+        "fetch_error",
+        "http_status",
+    }:
+        mapped = "web_fetch_failed"
+
+    if not mapped:
+        return None
+
+    canonical_url = _graph_canonical_url(event_row.get("url", ""))
+    url_id = _graph_url_node_id(canonical_url) if canonical_url else ""
+    ts_ms = max(0.0, _safe_float(event_row.get("timestamp", 0.0), 0.0))
+    ts = round(ts_ms / 1000.0, 6)
+    identity_seed = (
+        f"{mapped}|{ts}|{canonical_url}|{reason}|"
+        f"{_safe_int(event_row.get('depth', 0), 0)}"
+    )
+    return {
+        "id": "evt:" + hashlib.sha1(identity_seed.encode("utf-8")).hexdigest()[:16],
+        "kind": mapped,
+        "ts": ts,
+        "url_id": url_id,
+        "canonical_url": canonical_url,
+        "reason": reason,
+        "status": str(event_row.get("status", "") or "").strip().lower(),
+        "error": str(event_row.get("error", "") or "")[:160],
+        "outbound_count": max(0, _safe_int(event_row.get("outbound_count", 0), 0)),
+    }
+
+
 def _graph_resource_kind_from_crawler_node(node: dict[str, Any]) -> str:
     crawler_kind = (
         str(node.get("crawler_kind", node.get("kind", "url"))).strip().lower()
@@ -8234,10 +7799,15 @@ def _build_weaver_field_graph_uncached(
     status_payload = (
         source_payload.get("status", {}) if isinstance(source_payload, dict) else {}
     )
+    events_payload = (
+        source_payload.get("events", []) if isinstance(source_payload, dict) else []
+    )
     if not isinstance(graph_payload, dict):
         graph_payload = {}
     if not isinstance(status_payload, dict):
         status_payload = {}
+    if not isinstance(events_payload, list):
+        events_payload = []
 
     raw_nodes = graph_payload.get("nodes", [])
     raw_edges = graph_payload.get("edges", [])
@@ -8285,6 +7855,105 @@ def _build_weaver_field_graph_uncached(
     kind_counts: dict[str, int] = defaultdict(int)
     resource_kind_counts: dict[str, int] = defaultdict(int)
     field_counts: dict[str, int] = defaultdict(int)
+    web_role_counts: dict[str, int] = defaultdict(int)
+
+    crawler_node_ids: set[str] = set()
+    edge_keys: set[tuple[str, str, str]] = set()
+    url_node_meta: dict[str, dict[str, Any]] = {}
+    resource_node_by_url_id: dict[str, str] = {}
+
+    def _append_crawler_node(row: dict[str, Any]) -> None:
+        node_id = str(row.get("id", "")).strip()
+        if not node_id or node_id in crawler_node_ids:
+            return
+        crawler_node_ids.add(node_id)
+        crawler_nodes.append(row)
+        web_role = str(row.get("web_node_role", "")).strip().lower()
+        if web_role:
+            web_role_counts[web_role] += 1
+
+    def _append_edge(row: dict[str, Any]) -> None:
+        source_id = str(row.get("source", "")).strip()
+        target_id = str(row.get("target", "")).strip()
+        kind = str(row.get("kind", "")).strip().lower()
+        if not source_id or not target_id or not kind or source_id == target_id:
+            return
+        edge_key = (source_id, target_id, kind)
+        if edge_key in edge_keys:
+            return
+        edge_keys.add(edge_key)
+        edge_id = str(row.get("id", "")).strip()
+        if not edge_id:
+            edge_id = (
+                "crawl-link:"
+                + sha1(f"{source_id}|{target_id}|{kind}".encode("utf-8")).hexdigest()[
+                    :14
+                ]
+            )
+        edge_row = dict(row)
+        edge_row["id"] = edge_id
+        edge_row["source"] = source_id
+        edge_row["target"] = target_id
+        edge_row["kind"] = kind
+        edges.append(edge_row)
+
+    def _ensure_resource_for_url(url_id: str) -> str:
+        existing_resource_id = str(resource_node_by_url_id.get(url_id, "")).strip()
+        if existing_resource_id:
+            return existing_resource_id
+        meta = url_node_meta.get(url_id)
+        if not isinstance(meta, dict):
+            return ""
+        canonical_url = str(meta.get("canonical_url", "")).strip()
+        content_hash = str(meta.get("content_hash", "")).strip()
+        resource_id = _graph_resource_node_id(canonical_url, content_hash)
+        if not resource_id:
+            return ""
+        seed = sha1(f"resource|{resource_id}".encode("utf-8")).digest()
+        x = _clamp01(
+            _safe_float(meta.get("x", 0.5), 0.5) + ((seed[0] / 255.0) - 0.5) * 0.03
+        )
+        y = _clamp01(
+            _safe_float(meta.get("y", 0.5), 0.5) + ((seed[1] / 255.0) - 0.5) * 0.03
+        )
+        fetched_ts = max(0.0, _safe_float(meta.get("fetched_ts", 0.0), 0.0))
+        resource_row = {
+            "id": resource_id,
+            "node_id": resource_id,
+            "node_type": "web:resource",
+            "crawler_kind": "resource",
+            "web_node_role": "web:resource",
+            "resource_kind": str(meta.get("resource_kind", "text") or "text"),
+            "modality": str(meta.get("modality", "text") or "text"),
+            "label": str(meta.get("title", canonical_url) or canonical_url),
+            "x": round(x, 4),
+            "y": round(y, 4),
+            "hue": 24,
+            "importance": round(
+                _clamp01(
+                    0.22 + (_safe_float(meta.get("importance", 0.22), 0.22) * 0.58)
+                ),
+                4,
+            ),
+            "canonical_url": canonical_url,
+            "fetched_ts": round(fetched_ts, 6),
+            "content_hash": content_hash,
+            "text_excerpt_hash": str(meta.get("text_excerpt_hash", "") or ""),
+            "title": str(meta.get("title", "") or ""),
+            "source_url_id": url_id,
+        }
+        _append_crawler_node(resource_row)
+        resource_node_by_url_id[url_id] = resource_id
+        _append_edge(
+            {
+                "source": resource_id,
+                "target": url_id,
+                "field": "",
+                "weight": 1.0,
+                "kind": "web:source_of",
+            }
+        )
+        return resource_id
 
     for index, node in enumerate(raw_nodes[:WEAVER_GRAPH_NODE_LIMIT]):
         if not isinstance(node, dict):
@@ -8315,7 +7984,13 @@ def _build_weaver_field_graph_uncached(
         else:
             hue = int(_safe_float(anchor.get("hue", 200), 200.0))
 
-        graph_node_id = f"crawler:{sha1(original_id.encode('utf-8')).hexdigest()[:16]}"
+        canonical_url = _graph_canonical_url(node.get("url", ""))
+        if kind == "url" and canonical_url:
+            graph_node_id = _graph_url_node_id(canonical_url)
+        else:
+            graph_node_id = (
+                f"crawler:{sha1(original_id.encode('utf-8')).hexdigest()[:16]}"
+            )
         node_id_map[original_id] = graph_node_id
         kind_counts[kind] += 1
         field_counts[dominant_field] += 1
@@ -8329,33 +8004,79 @@ def _build_weaver_field_graph_uncached(
             or node.get("label", "")
             or original_id
         )
-        crawler_nodes.append(
-            {
-                "id": graph_node_id,
-                "node_id": original_id,
-                "node_type": "crawler",
-                "crawler_kind": kind,
+        status = str(node.get("status", "") or "").strip().lower()
+        cooldown_until_seconds = max(
+            0.0,
+            _safe_float(node.get("cooldown_until", 0.0), 0.0) / 1000.0,
+        )
+        fetched_ts = max(
+            0.0,
+            _safe_float(node.get("fetched_at", node.get("last_visited_at", 0.0)), 0.0)
+            / 1000.0,
+        )
+        fail_count = max(0, _safe_int(node.get("fail_count", 0), 0))
+        if fail_count <= 0 and status == "error":
+            fail_count = 1
+        if status in {"fetched", "duplicate"}:
+            last_status = "ok"
+        elif status.startswith("http_"):
+            last_status = status
+        else:
+            last_status = status or "unknown"
+
+        node_row: dict[str, Any] = {
+            "id": graph_node_id,
+            "node_id": original_id,
+            "node_type": "web:url" if kind == "url" and canonical_url else "crawler",
+            "crawler_kind": kind,
+            "web_node_role": "web:url" if kind == "url" and canonical_url else "",
+            "resource_kind": resource_kind,
+            "modality": modality,
+            "label": label,
+            "x": round(x, 4),
+            "y": round(y, 4),
+            "hue": int(hue),
+            "importance": round(importance, 4),
+            "url": str(node.get("url", "") or ""),
+            "canonical_url": canonical_url,
+            "domain": str(node.get("domain", "") or ""),
+            "title": str(node.get("title", "") or ""),
+            "status": str(node.get("status", "") or ""),
+            "content_type": str(node.get("content_type", "") or ""),
+            "compliance": str(node.get("compliance", "") or ""),
+            "next_allowed_fetch_ts": round(cooldown_until_seconds, 6),
+            "fail_count": int(fail_count),
+            "last_fetch_ts": round(fetched_ts, 6),
+            "last_status": last_status,
+            "dominant_field": dominant_field,
+            "dominant_presence": dominant_presence,
+            "field_scores": {
+                key: round(_safe_float(value, 0.0), 4) for key, value in scores.items()
+            },
+        }
+        _append_crawler_node(node_row)
+
+        if kind == "url" and canonical_url:
+            content_hash = str(node.get("content_hash", "") or "").strip().lower()
+            text_excerpt_hash = str(node.get("text_excerpt_hash", "") or "").strip()
+            if not text_excerpt_hash:
+                text_excerpt_hash = _graph_resource_excerpt_hash(
+                    node.get("text_excerpt", "")
+                )
+            url_node_meta[graph_node_id] = {
+                "canonical_url": canonical_url,
+                "x": x,
+                "y": y,
+                "title": str(node.get("title", "") or "").strip(),
                 "resource_kind": resource_kind,
                 "modality": modality,
-                "label": label,
-                "x": round(x, 4),
-                "y": round(y, 4),
-                "hue": int(hue),
-                "importance": round(importance, 4),
-                "url": str(node.get("url", "") or ""),
-                "domain": str(node.get("domain", "") or ""),
-                "title": str(node.get("title", "") or ""),
-                "status": str(node.get("status", "") or ""),
-                "content_type": str(node.get("content_type", "") or ""),
-                "compliance": str(node.get("compliance", "") or ""),
-                "dominant_field": dominant_field,
-                "dominant_presence": dominant_presence,
-                "field_scores": {
-                    key: round(_safe_float(value, 0.0), 4)
-                    for key, value in scores.items()
-                },
+                "importance": importance,
+                "fetched_ts": fetched_ts,
+                "content_hash": content_hash,
+                "text_excerpt_hash": text_excerpt_hash,
             }
-        )
+            if status in {"fetched", "duplicate"} or bool(content_hash):
+                _ensure_resource_for_url(graph_node_id)
 
         ranked = sorted(
             [
@@ -8371,7 +8092,7 @@ def _build_weaver_field_graph_uncached(
             target_presence = FIELD_TO_PRESENCE.get(field_id, dominant_presence)
             if target_presence not in entity_lookup:
                 continue
-            edges.append(
+            _append_edge(
                 {
                     "id": f"crawler-edge:{graph_node_id}:{field_id}:{edge_index}",
                     "source": graph_node_id,
@@ -8398,7 +8119,7 @@ def _build_weaver_field_graph_uncached(
             weight = 0.34
         else:
             weight = 0.28
-        edges.append(
+        _append_edge(
             {
                 "id": f"crawl-link:{str(edge.get('id', '')) or sha1((source_id + target_id + kind).encode('utf-8')).hexdigest()[:14]}",
                 "source": source_id,
@@ -8408,6 +8129,66 @@ def _build_weaver_field_graph_uncached(
                 "kind": kind,
             }
         )
+
+        source_is_url = source_id in url_node_meta
+        target_is_url = target_id in url_node_meta
+        if source_is_url and target_is_url and kind == "canonical_redirect":
+            _append_edge(
+                {
+                    "source": source_id,
+                    "target": target_id,
+                    "field": "",
+                    "weight": 0.36,
+                    "kind": "web:canonical_of",
+                }
+            )
+        if (
+            source_is_url
+            and target_is_url
+            and kind
+            in {
+                "hyperlink",
+                "citation",
+                "cross_reference",
+                "wiki_reference",
+                "paper_pdf",
+            }
+        ):
+            source_resource_id = _ensure_resource_for_url(source_id)
+            if source_resource_id:
+                _append_edge(
+                    {
+                        "source": source_resource_id,
+                        "target": target_id,
+                        "field": "",
+                        "weight": 0.42,
+                        "kind": "web:links_to",
+                    }
+                )
+
+    normalized_events: list[dict[str, Any]] = []
+    for row in events_payload[-120:]:
+        if not isinstance(row, dict):
+            continue
+        normalized = _normalize_weaver_event_row(row)
+        if not isinstance(normalized, dict):
+            continue
+        normalized_events.append(normalized)
+    normalized_events.sort(
+        key=lambda row: (
+            _safe_float(row.get("ts", 0.0), 0.0),
+            str(row.get("kind", "")),
+            str(row.get("id", "")),
+        )
+    )
+
+    web_edge_kind_counts: dict[str, int] = defaultdict(int)
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        kind = str(edge.get("kind", "")).strip().lower()
+        if kind.startswith("web:"):
+            web_edge_kind_counts[kind] += 1
 
     graph_counts = graph_payload.get("counts", {})
     if not isinstance(graph_counts, dict):
@@ -8421,6 +8202,7 @@ def _build_weaver_field_graph_uncached(
             "service": "web-graph-weaver",
         },
         "status": status_payload,
+        "events": normalized_events,
         "nodes": nodes,
         "field_nodes": field_nodes,
         "crawler_nodes": crawler_nodes,
@@ -8432,6 +8214,10 @@ def _build_weaver_field_graph_uncached(
             "kind_counts": dict(kind_counts),
             "resource_kind_counts": dict(resource_kind_counts),
             "field_counts": dict(field_counts),
+            "web_role_counts": dict(web_role_counts),
+            "web_edge_kind_counts": dict(web_edge_kind_counts),
+            "event_count": len(normalized_events),
+            "resource_id_scheme": "content_hash",
             "nodes_total": int(
                 _safe_float(
                     graph_counts.get("nodes_total", len(crawler_nodes)),
@@ -8654,332 +8440,6 @@ def _build_nooi_field_cells(
     }
 
 
-_RESOURCE_DAIMOI_TYPES: tuple[str, ...] = (
-    "cpu",
-    "ram",
-    "disk",
-    "network",
-    "gpu",
-    "npu",
-)
-_RESOURCE_DAIMOI_TYPE_ALIASES: dict[str, str] = {
-    "gpu1": "gpu",
-    "gpu2": "gpu",
-    "gpu_intel": "gpu",
-    "intel": "gpu",
-    "npu0": "npu",
-    "net": "network",
-    "netup": "network",
-    "netdown": "network",
-}
-_RESOURCE_DAIMOI_WALLET_FLOOR: dict[str, float] = {
-    "cpu": 6.0,
-    "ram": 6.0,
-    "disk": 4.0,
-    "network": 4.0,
-    "gpu": 5.0,
-    "npu": 5.0,
-}
-_RESOURCE_DAIMOI_WALLET_CAP: dict[str, float] = {
-    "cpu": 48.0,
-    "ram": 48.0,
-    "disk": 32.0,
-    "network": 32.0,
-    "gpu": 40.0,
-    "npu": 40.0,
-}
-_RESOURCE_DAIMOI_DENOM_QUANTUM = max(
-    1e-6,
-    min(
-        0.1,
-        _safe_float(
-            os.getenv("SIMULATION_RESOURCE_DAIMOI_DENOM_QUANTUM", "0.000001")
-            or "0.000001",
-            0.000001,
-        ),
-    ),
-)
-_RESOURCE_DAIMOI_DENOM_OVERPAY_PENALTY = max(
-    0.0,
-    min(
-        2.0,
-        _safe_float(
-            os.getenv("SIMULATION_RESOURCE_DAIMOI_DENOM_OVERPAY_PENALTY", "0.18")
-            or "0.18",
-            0.18,
-        ),
-    ),
-)
-_RESOURCE_DAIMOI_DENOM_GREEDY_STEP_LIMIT = max(
-    8,
-    min(
-        4096,
-        int(
-            _safe_float(
-                os.getenv("SIMULATION_RESOURCE_DAIMOI_DENOM_GREEDY_STEP_LIMIT", "256")
-                or "256",
-                256.0,
-            )
-        ),
-    ),
-)
-_RESOURCE_DAIMOI_MIX_EPSILON_BASE = max(
-    0.001,
-    min(
-        0.45,
-        _safe_float(
-            os.getenv("SIMULATION_RESOURCE_DAIMOI_MIX_EPSILON", "0.12") or "0.12",
-            0.12,
-        ),
-    ),
-)
-_RESOURCE_DAIMOI_MIX_PRESSURE_GAIN = max(
-    0.0,
-    min(
-        1.0,
-        _safe_float(
-            os.getenv("SIMULATION_RESOURCE_DAIMOI_MIX_PRESSURE_GAIN", "0.35") or "0.35",
-            0.35,
-        ),
-    ),
-)
-_RESOURCE_DAIMOI_PRESSURE_SOFT_PERCENT_DEFAULT = max(
-    0.0,
-    min(
-        100.0,
-        _safe_float(
-            os.getenv("SIMULATION_RESOURCE_PRESSURE_SOFT_PERCENT", "50") or "50",
-            50.0,
-        ),
-    ),
-)
-_RESOURCE_DAIMOI_PRESSURE_HARD_PERCENT_DEFAULT = max(
-    0.0,
-    min(
-        100.0,
-        _safe_float(
-            os.getenv("SIMULATION_RESOURCE_PRESSURE_HARD_PERCENT", "80") or "80",
-            80.0,
-        ),
-    ),
-)
-_RESOURCE_DAIMOI_DEBT_LOCK = threading.Lock()
-_RESOURCE_DAIMOI_DEBT_STATE: dict[str, float] = {
-    resource_type: 0.0 for resource_type in _RESOURCE_DAIMOI_TYPES
-}
-_RESOURCE_DAIMOI_DEBT_LAST_MONOTONIC = time.monotonic()
-_RESOURCE_DAIMOI_VELOCITY_LOCK = threading.Lock()
-_RESOURCE_DAIMOI_VELOCITY_STATE: dict[str, Any] = {
-    "last_monotonic": time.monotonic(),
-    "usage_prev": {resource_type: 0.0 for resource_type in _RESOURCE_DAIMOI_TYPES},
-}
-_RESOURCE_DAIMOI_EMIT_BASE_RATE = max(
-    0.0,
-    min(
-        0.2,
-        _safe_float(
-            os.getenv("SIMULATION_RESOURCE_DAIMOI_EMIT_BASE_RATE", "0.0025")
-            or "0.0025",
-            0.0025,
-        ),
-    ),
-)
-_RESOURCE_DAIMOI_EMIT_ALPHA = max(
-    0.0,
-    min(
-        0.8,
-        _safe_float(
-            os.getenv("SIMULATION_RESOURCE_DAIMOI_EMIT_ALPHA", "0.016") or "0.016",
-            0.016,
-        ),
-    ),
-)
-_RESOURCE_DAIMOI_EMIT_BETA = max(
-    0.0,
-    min(
-        0.8,
-        _safe_float(
-            os.getenv("SIMULATION_RESOURCE_DAIMOI_EMIT_BETA", "0.010") or "0.010",
-            0.010,
-        ),
-    ),
-)
-_RESOURCE_DAIMOI_EMIT_GAMMA = max(
-    0.0,
-    min(
-        0.8,
-        _safe_float(
-            os.getenv("SIMULATION_RESOURCE_DAIMOI_EMIT_GAMMA", "0.012") or "0.012",
-            0.012,
-        ),
-    ),
-)
-_RESOURCE_DAIMOI_ACTION_BASE_COST = 0.00001
-_RESOURCE_DAIMOI_ACTION_COST_MAX = 0.0028
-_RESOURCE_DAIMOI_ACTION_SATISFIED_RATIO = 0.85
-_RESOURCE_DAIMOI_ACTION_RISK_PREMIUM = max(
-    0.0,
-    min(
-        4.0,
-        _safe_float(
-            os.getenv("SIMULATION_RESOURCE_DAIMOI_ACTION_RISK_PREMIUM", "0.55")
-            or "0.55",
-            0.55,
-        ),
-    ),
-)
-_RESOURCE_DAIMOI_ACTION_UTILITY_ETA = max(
-    0.0,
-    min(
-        8.0,
-        _safe_float(
-            os.getenv("SIMULATION_RESOURCE_DAIMOI_ACTION_UTILITY_ETA", "1.0") or "1.0",
-            1.0,
-        ),
-    ),
-)
-_RESOURCE_DAIMOI_ACTION_UTILITY_XI = max(
-    0.0,
-    min(
-        8.0,
-        _safe_float(
-            os.getenv("SIMULATION_RESOURCE_DAIMOI_ACTION_UTILITY_XI", "1.0") or "1.0",
-            1.0,
-        ),
-    ),
-)
-_RESOURCE_DAIMOI_ACTION_UTILITY_KAPPA = max(
-    0.0,
-    min(
-        8.0,
-        _safe_float(
-            os.getenv("SIMULATION_RESOURCE_DAIMOI_ACTION_UTILITY_KAPPA", "0.55")
-            or "0.55",
-            0.55,
-        ),
-    ),
-)
-_RESOURCE_CTL_BUDGET_CAP_DEFAULT: dict[str, float] = {
-    "cpu": 1.0,
-    "ram": 0.85,
-    "disk": 0.6,
-    "network": 0.6,
-    "gpu": 0.7,
-    "npu": 0.7,
-}
-_RESOURCE_CTL_BUDGET_RECHARGE_DEFAULT: dict[str, float] = {
-    "cpu": 0.42,
-    "ram": 0.34,
-    "disk": 0.24,
-    "network": 0.24,
-    "gpu": 0.28,
-    "npu": 0.28,
-}
-_RESOURCE_CTL_BUDGET_EVAL_COST: dict[str, float] = {
-    "cpu": 0.0032,
-    "ram": 0.0018,
-    "disk": 0.0011,
-    "network": 0.0011,
-    "gpu": 0.0014,
-    "npu": 0.0014,
-}
-_RESOURCE_CTL_BUDGET_DENOM_EXTRA_COST: dict[str, float] = {
-    "cpu": 0.0024,
-    "ram": 0.0015,
-    "disk": 0.0009,
-    "network": 0.0009,
-    "gpu": 0.0012,
-    "npu": 0.0012,
-}
-_RESOURCE_CTL_BUDGET_QUEUE_TAX: dict[str, float] = {
-    "cpu": 0.02,
-    "ram": 0.012,
-    "disk": 0.018,
-    "network": 0.022,
-    "gpu": 0.008,
-    "npu": 0.008,
-}
-_RESOURCE_CTL_BUDGET_LOCK = threading.Lock()
-_RESOURCE_CTL_BUDGET_STATE: dict[str, Any] = {
-    "last_monotonic": time.monotonic(),
-    "budget": dict(_RESOURCE_CTL_BUDGET_CAP_DEFAULT),
-}
-_RESOURCE_DAIMOI_CPU_SENTINEL_ID = "health_sentinel_cpu"
-_RESOURCE_DAIMOI_SENTINEL_RESOURCE_BY_ID: dict[str, str] = {
-    "health_sentinel_cpu": "cpu",
-    "health_sentinel_gpu1": "gpu",
-    "health_sentinel_gpu2": "gpu",
-    "health_sentinel_npu0": "npu",
-}
-_RESOURCE_DAIMOI_CPU_SENTINEL_BURN_START_PERCENT = max(
-    0.0,
-    min(
-        100.0,
-        _safe_float(
-            os.getenv("SIMULATION_CPU_SENTINEL_BURN_START_PERCENT", "80") or "80",
-            80.0,
-        ),
-    ),
-)
-_RESOURCE_DAIMOI_CPU_SENTINEL_BURN_MAX_MULTIPLIER = max(
-    1.0,
-    min(
-        128.0,
-        _safe_float(
-            os.getenv("SIMULATION_CPU_SENTINEL_BURN_MAX_MULTIPLIER", "12.0") or "12.0",
-            12.0,
-        ),
-    ),
-)
-_RESOURCE_DAIMOI_CPU_SENTINEL_BURN_COST_MAX = max(
-    _RESOURCE_DAIMOI_ACTION_COST_MAX,
-    min(
-        4.0,
-        _safe_float(
-            os.getenv("SIMULATION_CPU_SENTINEL_BURN_COST_MAX", "0.4") or "0.4",
-            0.4,
-        ),
-    ),
-)
-_RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_START_PERCENT = max(
-    0.0,
-    min(
-        100.0,
-        _safe_float(
-            os.getenv(
-                "SIMULATION_CPU_SENTINEL_ATTRACTOR_START_PERCENT",
-                str(_RESOURCE_DAIMOI_CPU_SENTINEL_BURN_START_PERCENT),
-            )
-            or str(_RESOURCE_DAIMOI_CPU_SENTINEL_BURN_START_PERCENT),
-            _RESOURCE_DAIMOI_CPU_SENTINEL_BURN_START_PERCENT,
-        ),
-    ),
-)
-_RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_GAIN = max(
-    0.0,
-    min(
-        8.0,
-        _safe_float(
-            os.getenv("SIMULATION_CPU_SENTINEL_ATTRACTOR_GAIN", "1.8") or "1.8",
-            1.8,
-        ),
-    ),
-)
-_RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_RESOURCE_BOOST = max(
-    1.0,
-    min(
-        24.0,
-        _safe_float(
-            os.getenv("SIMULATION_CPU_SENTINEL_ATTRACTOR_RESOURCE_BOOST", "4.0")
-            or "4.0",
-            4.0,
-        ),
-    ),
-)
-_RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_ALL_DAIMOI = str(
-    os.getenv("SIMULATION_CPU_SENTINEL_ATTRACTOR_ALL_DAIMOI", "1") or "1"
-).strip().lower() in {"1", "true", "yes", "on"}
-
 _SIMULATION_BOOT_RESET_LOCK = threading.Lock()
 _SIMULATION_BOOT_RESET_APPLIED = False
 
@@ -8989,7 +8449,6 @@ def reset_simulation_bootstrap_state(
     clear_layout_cache: bool = True,
     rearm_boot_reset: bool = True,
 ) -> dict[str, Any]:
-    global _RESOURCE_DAIMOI_DEBT_LAST_MONOTONIC
     previous_layout_key = ""
     previous_embedding_points = 0
     if clear_layout_cache:
@@ -9011,18 +8470,7 @@ def reset_simulation_bootstrap_state(
             _SIMULATION_BOOT_RESET_APPLIED = False
             rearmed = True
 
-    with _RESOURCE_DAIMOI_DEBT_LOCK:
-        _RESOURCE_DAIMOI_DEBT_LAST_MONOTONIC = time.monotonic()
-        for resource_type in _RESOURCE_DAIMOI_TYPES:
-            _RESOURCE_DAIMOI_DEBT_STATE[resource_type] = 0.0
-    with _RESOURCE_DAIMOI_VELOCITY_LOCK:
-        _RESOURCE_DAIMOI_VELOCITY_STATE["last_monotonic"] = time.monotonic()
-        _RESOURCE_DAIMOI_VELOCITY_STATE["usage_prev"] = {
-            resource_type: 0.0 for resource_type in _RESOURCE_DAIMOI_TYPES
-        }
-    with _RESOURCE_CTL_BUDGET_LOCK:
-        _RESOURCE_CTL_BUDGET_STATE["last_monotonic"] = time.monotonic()
-        _RESOURCE_CTL_BUDGET_STATE["budget"] = _resource_ctl_budget_cap_vector()
+    simulation_resources_module.reset_resource_runtime_state()
 
     return {
         "ok": True,
@@ -9035,7 +8483,7 @@ def reset_simulation_bootstrap_state(
 
 
 def _maybe_reset_simulation_runtime_state() -> None:
-    global _SIMULATION_BOOT_RESET_APPLIED, _RESOURCE_DAIMOI_DEBT_LAST_MONOTONIC
+    global _SIMULATION_BOOT_RESET_APPLIED
     reset_on_boot = str(
         os.getenv("SIMULATION_RESET_DAIMOI_ON_BOOT", "1") or "1"
     ).strip().lower() in {"1", "true", "yes", "on"}
@@ -9047,2265 +8495,10 @@ def _maybe_reset_simulation_runtime_state() -> None:
         get_presence_runtime_manager().reset()
         with _DAIMO_DYNAMICS_LOCK:
             _DAIMO_DYNAMICS_CACHE.clear()
-        with _RESOURCE_DAIMOI_DEBT_LOCK:
-            _RESOURCE_DAIMOI_DEBT_LAST_MONOTONIC = time.monotonic()
-            for resource_type in _RESOURCE_DAIMOI_TYPES:
-                _RESOURCE_DAIMOI_DEBT_STATE[resource_type] = 0.0
-        with _RESOURCE_DAIMOI_VELOCITY_LOCK:
-            _RESOURCE_DAIMOI_VELOCITY_STATE["last_monotonic"] = time.monotonic()
-            _RESOURCE_DAIMOI_VELOCITY_STATE["usage_prev"] = {
-                resource_type: 0.0 for resource_type in _RESOURCE_DAIMOI_TYPES
-            }
-        with _RESOURCE_CTL_BUDGET_LOCK:
-            _RESOURCE_CTL_BUDGET_STATE["last_monotonic"] = time.monotonic()
-            _RESOURCE_CTL_BUDGET_STATE["budget"] = _resource_ctl_budget_cap_vector()
+        simulation_resources_module.reset_resource_runtime_state()
         _reset_nooi_field_state()
         _maybe_seed_random_nooi_field_vectors(force=True)
         _SIMULATION_BOOT_RESET_APPLIED = True
-
-
-def _canonical_resource_type(resource_type: str) -> str:
-    key = str(resource_type or "").strip().lower()
-    if not key:
-        return ""
-    if key in _RESOURCE_DAIMOI_TYPES:
-        return key
-    return str(_RESOURCE_DAIMOI_TYPE_ALIASES.get(key, "")).strip().lower()
-
-
-def _core_resource_type_from_presence_id(presence_id: str) -> str:
-    pid = str(presence_id or "").strip().lower()
-    prefix = "presence.core."
-    if not pid.startswith(prefix):
-        return ""
-    return _canonical_resource_type(pid[len(prefix) :])
-
-
-def _normalize_resource_wallet(
-    impact: dict[str, Any],
-) -> dict[str, float]:
-    wallet_raw = impact.get("resource_wallet", {})
-    wallet: dict[str, float] = {}
-    if isinstance(wallet_raw, dict):
-        for key, value in wallet_raw.items():
-            name_raw = str(key or "").strip().lower()
-            if not name_raw:
-                continue
-            amount = max(0.0, _safe_float(value, 0.0))
-            wallet[name_raw] = amount
-            canonical = _canonical_resource_type(name_raw)
-            if canonical:
-                wallet[canonical] = max(amount, wallet.get(canonical, 0.0))
-    impact["resource_wallet"] = wallet
-    return wallet
-
-
-def _resource_vector_normalized(raw_value: Any) -> dict[str, float]:
-    vector: dict[str, float] = {}
-    if isinstance(raw_value, dict):
-        for key, value in raw_value.items():
-            resource_name = _canonical_resource_type(str(key or ""))
-            if not resource_name:
-                continue
-            amount = max(0.0, _safe_float(value, 0.0))
-            if amount <= 1e-12:
-                continue
-            vector[resource_name] = vector.get(resource_name, 0.0) + amount
-    return vector
-
-
-def _resource_vector_total(vector: dict[str, float]) -> float:
-    return sum(max(0.0, _safe_float(value, 0.0)) for value in vector.values())
-
-
-def _resource_vector_quantized(vector: dict[str, float]) -> dict[str, float]:
-    quantum = max(1e-9, _safe_float(_RESOURCE_DAIMOI_DENOM_QUANTUM, 0.000001))
-    quantized: dict[str, float] = {}
-    for resource_name in _RESOURCE_DAIMOI_TYPES:
-        value = max(0.0, _safe_float(vector.get(resource_name, 0.0), 0.0))
-        if value <= 1e-12:
-            continue
-        snapped = round(round(value / quantum) * quantum, 6)
-        if snapped <= 1e-12:
-            continue
-        quantized[resource_name] = snapped
-    return quantized
-
-
-def _normalize_resource_wallet_denoms(
-    impact: dict[str, Any],
-) -> list[dict[str, Any]]:
-    denoms_raw = impact.get("resource_wallet_denoms", [])
-    normalized: list[dict[str, Any]] = []
-    if isinstance(denoms_raw, list):
-        for row in denoms_raw:
-            if not isinstance(row, dict):
-                continue
-            vector = _resource_vector_quantized(
-                _resource_vector_normalized(row.get("vector", {}))
-            )
-            if _resource_vector_total(vector) <= 1e-12:
-                continue
-            count = max(0, int(_safe_float(row.get("count", 0.0), 0.0)))
-            if count <= 0:
-                continue
-            normalized.append({"vector": vector, "count": count})
-
-    impact["resource_wallet_denoms"] = normalized
-    return normalized
-
-
-def _wallet_denoms_add_vector(
-    denoms: list[dict[str, Any]],
-    vector: dict[str, float],
-) -> None:
-    quantized = _resource_vector_quantized(vector)
-    if _resource_vector_total(quantized) <= 1e-12:
-        return
-    for bucket in denoms:
-        if not isinstance(bucket, dict):
-            continue
-        existing = _resource_vector_quantized(
-            _resource_vector_normalized(bucket.get("vector", {}))
-        )
-        if existing == quantized:
-            count = max(0, int(_safe_float(bucket.get("count", 0.0), 0.0)))
-            bucket["count"] = count + 1
-            bucket["vector"] = existing
-            return
-    denoms.append({"vector": quantized, "count": 1})
-
-
-def _resource_required_payment_vector(
-    *,
-    focus_resource: str,
-    desired_cost: float,
-    pressure: dict[str, float],
-) -> dict[str, float]:
-    desired = max(0.0, _safe_float(desired_cost, 0.0))
-    if desired <= 1e-12:
-        return {}
-
-    weights = _resource_mixing_weights(focus_resource, pressure=pressure)
-    total_weight = sum(max(0.0, _safe_float(value, 0.0)) for value in weights.values())
-    if total_weight <= 1e-12:
-        focus = _canonical_resource_type(focus_resource) or "cpu"
-        return {focus: desired}
-
-    vector: dict[str, float] = {}
-    for resource_name, value in sorted(weights.items()):
-        weight = max(0.0, _safe_float(value, 0.0))
-        if weight <= 1e-12:
-            continue
-        share = desired * (weight / total_weight)
-        if share <= 1e-12:
-            continue
-        vector[resource_name] = share
-    return _resource_vector_quantized(vector)
-
-
-def _wallet_denoms_payment_plan(
-    *,
-    denoms: list[dict[str, Any]],
-    required_vector: dict[str, float],
-) -> dict[str, Any]:
-    required = _resource_vector_quantized(required_vector)
-    if _resource_vector_total(required) <= 1e-12:
-        return {
-            "affordable": True,
-            "spent_vector": {},
-            "selected": {},
-            "required_vector": required,
-            "remaining_vector": {},
-            "overpay": 0.0,
-        }
-
-    remaining = {k: max(0.0, _safe_float(v, 0.0)) for k, v in required.items()}
-    spent_vector: dict[str, float] = {
-        resource_name: 0.0 for resource_name in _RESOURCE_DAIMOI_TYPES
-    }
-    selected_by_index: dict[int, int] = {}
-    epsilon = max(1e-9, _safe_float(_RESOURCE_DAIMOI_DENOM_QUANTUM, 0.000001) * 0.5)
-    overpay_penalty = max(
-        0.0, _safe_float(_RESOURCE_DAIMOI_DENOM_OVERPAY_PENALTY, 0.18)
-    )
-    step_limit = max(
-        8, int(_safe_float(_RESOURCE_DAIMOI_DENOM_GREEDY_STEP_LIMIT, 256.0))
-    )
-    steps = 0
-
-    while steps < step_limit and any(value > epsilon for value in remaining.values()):
-        steps += 1
-        best_idx = -1
-        best_score = -1.0
-        best_total = 0.0
-        best_vector: dict[str, float] = {}
-
-        for idx, bucket in enumerate(denoms):
-            if not isinstance(bucket, dict):
-                continue
-            count = max(0, int(_safe_float(bucket.get("count", 0.0), 0.0)))
-            used_count = max(0, int(selected_by_index.get(idx, 0)))
-            if used_count >= count:
-                continue
-
-            vector = _resource_vector_quantized(
-                _resource_vector_normalized(bucket.get("vector", {}))
-            )
-            if _resource_vector_total(vector) <= 1e-12:
-                continue
-
-            useful_cover = 0.0
-            overpay = 0.0
-            total = 0.0
-            for resource_name in _RESOURCE_DAIMOI_TYPES:
-                amount = max(0.0, _safe_float(vector.get(resource_name, 0.0), 0.0))
-                if amount <= 1e-12:
-                    continue
-                need = max(0.0, _safe_float(remaining.get(resource_name, 0.0), 0.0))
-                useful_cover += min(need, amount)
-                overpay += max(0.0, amount - need)
-                total += amount
-
-            score = useful_cover / max(1e-9, 1.0 + (overpay * overpay_penalty))
-            if score <= 1e-12:
-                continue
-            if score > best_score + 1e-12 or (
-                abs(score - best_score) <= 1e-12 and total < best_total
-            ):
-                best_idx = idx
-                best_score = score
-                best_total = total
-                best_vector = vector
-
-        if best_idx < 0 or _resource_vector_total(best_vector) <= 1e-12:
-            break
-
-        selected_by_index[best_idx] = selected_by_index.get(best_idx, 0) + 1
-        for resource_name in _RESOURCE_DAIMOI_TYPES:
-            amount = max(0.0, _safe_float(best_vector.get(resource_name, 0.0), 0.0))
-            if amount <= 1e-12:
-                continue
-            spent_vector[resource_name] = spent_vector.get(resource_name, 0.0) + amount
-            remaining[resource_name] = max(
-                0.0,
-                _safe_float(remaining.get(resource_name, 0.0), 0.0) - amount,
-            )
-
-    affordable = all(value <= epsilon for value in remaining.values())
-    spent_quantized = _resource_vector_quantized(spent_vector)
-    overpay = max(
-        0.0,
-        _resource_vector_total(spent_quantized) - _resource_vector_total(required),
-    )
-    return {
-        "affordable": bool(affordable),
-        "spent_vector": spent_quantized if affordable else {},
-        "selected": selected_by_index if affordable else {},
-        "required_vector": required,
-        "remaining_vector": _resource_vector_quantized(remaining),
-        "overpay": overpay if affordable else 0.0,
-    }
-
-
-def _presence_anchor_position(
-    presence_id: str,
-    impact: dict[str, Any],
-    *,
-    manifest_by_id: dict[str, dict[str, Any]],
-) -> tuple[float, float]:
-    x_value = impact.get("x")
-    y_value = impact.get("y")
-    if x_value is not None and y_value is not None:
-        return (
-            _clamp01(_safe_float(x_value, 0.5)),
-            _clamp01(_safe_float(y_value, 0.5)),
-        )
-
-    meta = manifest_by_id.get(presence_id, {})
-    if isinstance(meta, dict):
-        return (
-            _clamp01(
-                _safe_float(
-                    meta.get("x", _stable_ratio(f"{presence_id}|anchor", 3)),
-                    _stable_ratio(f"{presence_id}|anchor", 3),
-                )
-            ),
-            _clamp01(
-                _safe_float(
-                    meta.get("y", _stable_ratio(f"{presence_id}|anchor", 11)),
-                    _stable_ratio(f"{presence_id}|anchor", 11),
-                )
-            ),
-        )
-
-    return (
-        _clamp01(_stable_ratio(f"{presence_id}|anchor", 3)),
-        _clamp01(_stable_ratio(f"{presence_id}|anchor", 11)),
-    )
-
-
-def _resource_availability_ratio(
-    resource_type: str,
-    resource_heartbeat: dict[str, Any],
-) -> float:
-    usage_clamped = _resource_usage_percent(resource_type, resource_heartbeat)
-    return _clamp01((100.0 - usage_clamped) / 100.0)
-
-
-def _resource_usage_percent(
-    resource_type: str,
-    resource_heartbeat: dict[str, Any],
-) -> float:
-    kind = _canonical_resource_type(resource_type)
-    if not kind:
-        return 100.0
-
-    devices = (
-        resource_heartbeat.get("devices", {})
-        if isinstance(resource_heartbeat, dict)
-        else {}
-    )
-    if not isinstance(devices, dict):
-        devices = {}
-    monitor = (
-        resource_heartbeat.get("resource_monitor", {})
-        if isinstance(resource_heartbeat, dict)
-        else {}
-    )
-    if not isinstance(monitor, dict):
-        monitor = {}
-
-    usage_percent = 100.0
-    if kind == "cpu":
-        usage_percent = _safe_float(
-            (
-                devices.get("cpu", {}) if isinstance(devices.get("cpu"), dict) else {}
-            ).get("utilization", monitor.get("cpu_percent", 100.0)),
-            _safe_float(monitor.get("cpu_percent", 100.0), 100.0),
-        )
-    elif kind == "ram":
-        usage_percent = _safe_float(monitor.get("memory_percent", 100.0), 100.0)
-    elif kind == "disk":
-        usage_percent = _safe_float(monitor.get("disk_percent", 100.0), 100.0)
-    elif kind == "network":
-        usage_percent = _safe_float(monitor.get("network_percent", 100.0), 100.0)
-    elif kind == "gpu":
-        gpu1 = _safe_float(
-            (
-                devices.get("gpu1", {}) if isinstance(devices.get("gpu1"), dict) else {}
-            ).get("utilization", 100.0),
-            100.0,
-        )
-        gpu2 = _safe_float(
-            (
-                devices.get("gpu2", {}) if isinstance(devices.get("gpu2"), dict) else {}
-            ).get("utilization", 100.0),
-            100.0,
-        )
-        usage_percent = min(gpu1, gpu2)
-    elif kind == "npu":
-        usage_percent = _safe_float(
-            (
-                devices.get("npu0", {}) if isinstance(devices.get("npu0"), dict) else {}
-            ).get("utilization", 100.0),
-            100.0,
-        )
-
-    return max(0.0, min(100.0, usage_percent))
-
-
-def _resource_pressure_thresholds(resource_type: str) -> tuple[float, float]:
-    kind = _canonical_resource_type(resource_type)
-    if not kind:
-        kind = "cpu"
-
-    if kind == "cpu":
-        soft_default = max(
-            0.0,
-            min(
-                100.0,
-                _safe_float(
-                    os.getenv("SIMULATION_CPU_DAIMOI_STOP_PERCENT", "50") or "50",
-                    50.0,
-                ),
-            ),
-        )
-        hard_default = max(
-            0.0,
-            min(
-                100.0,
-                _safe_float(
-                    os.getenv("SIMULATION_CPU_SENTINEL_BURN_START_PERCENT", "80")
-                    or "80",
-                    80.0,
-                ),
-            ),
-        )
-    else:
-        soft_default = max(
-            0.0,
-            min(
-                100.0,
-                _safe_float(
-                    os.getenv(
-                        "SIMULATION_RESOURCE_PRESSURE_SOFT_PERCENT",
-                        str(_RESOURCE_DAIMOI_PRESSURE_SOFT_PERCENT_DEFAULT),
-                    )
-                    or str(_RESOURCE_DAIMOI_PRESSURE_SOFT_PERCENT_DEFAULT),
-                    _RESOURCE_DAIMOI_PRESSURE_SOFT_PERCENT_DEFAULT,
-                ),
-            ),
-        )
-        hard_default = max(
-            0.0,
-            min(
-                100.0,
-                _safe_float(
-                    os.getenv(
-                        "SIMULATION_RESOURCE_PRESSURE_HARD_PERCENT",
-                        str(_RESOURCE_DAIMOI_PRESSURE_HARD_PERCENT_DEFAULT),
-                    )
-                    or str(_RESOURCE_DAIMOI_PRESSURE_HARD_PERCENT_DEFAULT),
-                    _RESOURCE_DAIMOI_PRESSURE_HARD_PERCENT_DEFAULT,
-                ),
-            ),
-        )
-
-    key = str(kind or "cpu").upper()
-    soft = max(
-        0.0,
-        min(
-            100.0,
-            _safe_float(
-                os.getenv(f"SIMULATION_{key}_PRESSURE_SOFT_PERCENT", str(soft_default))
-                or str(soft_default),
-                soft_default,
-            ),
-        ),
-    )
-    hard = max(
-        0.0,
-        min(
-            100.0,
-            _safe_float(
-                os.getenv(f"SIMULATION_{key}_PRESSURE_HARD_PERCENT", str(hard_default))
-                or str(hard_default),
-                hard_default,
-            ),
-        ),
-    )
-    if hard <= soft:
-        hard = min(100.0, soft + 1.0)
-        if hard <= soft:
-            soft = max(0.0, hard - 1.0)
-    return soft, hard
-
-
-def _resource_pressure_ratio(
-    usage_percent: float,
-    *,
-    soft_percent: float,
-    hard_percent: float,
-) -> float:
-    usage = max(0.0, min(100.0, _safe_float(usage_percent, 0.0)))
-    soft = max(0.0, min(100.0, _safe_float(soft_percent, 50.0)))
-    hard = max(0.0, min(100.0, _safe_float(hard_percent, 80.0)))
-    if hard <= soft:
-        hard = min(100.0, soft + 1.0)
-    return _clamp01((usage - soft) / max(1.0, hard - soft))
-
-
-def _resource_debt_vector_update(
-    resource_heartbeat: dict[str, Any],
-) -> dict[str, float]:
-    global _RESOURCE_DAIMOI_DEBT_LAST_MONOTONIC
-    now = time.monotonic()
-    with _RESOURCE_DAIMOI_DEBT_LOCK:
-        dt_seconds = max(
-            0.001,
-            min(2.0, now - _safe_float(_RESOURCE_DAIMOI_DEBT_LAST_MONOTONIC, now)),
-        )
-        _RESOURCE_DAIMOI_DEBT_LAST_MONOTONIC = now
-
-        updated: dict[str, float] = {}
-        for resource_type in _RESOURCE_DAIMOI_TYPES:
-            usage = _resource_usage_percent(resource_type, resource_heartbeat)
-            soft, hard = _resource_pressure_thresholds(resource_type)
-            overload = max(0.0, usage - soft)
-            overload_norm = overload / max(1.0, hard - soft)
-            next_value = max(
-                0.0,
-                _safe_float(_RESOURCE_DAIMOI_DEBT_STATE.get(resource_type, 0.0), 0.0)
-                + (dt_seconds * overload_norm),
-            )
-            _RESOURCE_DAIMOI_DEBT_STATE[resource_type] = next_value
-            updated[resource_type] = next_value
-        return updated
-
-
-def _resource_debt_snapshot() -> dict[str, float]:
-    with _RESOURCE_DAIMOI_DEBT_LOCK:
-        return {
-            resource_type: max(
-                0.0,
-                _safe_float(_RESOURCE_DAIMOI_DEBT_STATE.get(resource_type, 0.0), 0.0),
-            )
-            for resource_type in _RESOURCE_DAIMOI_TYPES
-        }
-
-
-def _resource_velocity_vector(
-    resource_heartbeat: dict[str, Any],
-    *,
-    queue_ratio: float,
-) -> dict[str, float]:
-    now = time.monotonic()
-    queue_push = _clamp01(_safe_float(queue_ratio, 0.0))
-    with _RESOURCE_DAIMOI_VELOCITY_LOCK:
-        last = _safe_float(
-            _RESOURCE_DAIMOI_VELOCITY_STATE.get("last_monotonic", now),
-            now,
-        )
-        dt_seconds = max(0.001, min(2.0, now - last))
-        _RESOURCE_DAIMOI_VELOCITY_STATE["last_monotonic"] = now
-
-        previous_raw = _RESOURCE_DAIMOI_VELOCITY_STATE.get("usage_prev", {})
-        previous_usage = previous_raw if isinstance(previous_raw, dict) else {}
-        next_usage: dict[str, float] = {}
-        velocity: dict[str, float] = {}
-
-        for resource_type in _RESOURCE_DAIMOI_TYPES:
-            usage_now = _resource_usage_percent(resource_type, resource_heartbeat)
-            usage_prev = _safe_float(
-                previous_usage.get(resource_type, usage_now), usage_now
-            )
-            delta_per_second = abs(usage_now - usage_prev) / max(
-                1.0, dt_seconds * 100.0
-            )
-            queue_weight = 0.58 if resource_type in {"cpu", "disk", "network"} else 0.34
-            velocity_signal = _clamp01(
-                (delta_per_second * 0.78) + (queue_push * queue_weight)
-            )
-            velocity[resource_type] = velocity_signal
-            next_usage[resource_type] = usage_now
-
-        _RESOURCE_DAIMOI_VELOCITY_STATE["usage_prev"] = next_usage
-        return velocity
-
-
-def _resource_emission_rate(
-    *,
-    resource_type: str,
-    pressure_signal: float,
-    debt_value: float,
-    velocity_signal: float,
-) -> float:
-    resource_name = _canonical_resource_type(resource_type)
-    if not resource_name:
-        resource_name = "cpu"
-
-    debt_norm = _clamp01(
-        max(0.0, _safe_float(debt_value, 0.0))
-        / max(1.0, max(0.0, _safe_float(debt_value, 0.0)) + 1.0)
-    )
-    pressure = _clamp01(_safe_float(pressure_signal, 0.0))
-    velocity = _clamp01(_safe_float(velocity_signal, 0.0))
-
-    base_rate = max(
-        0.0,
-        min(
-            0.2,
-            _safe_float(
-                os.getenv(
-                    f"SIMULATION_{resource_name.upper()}_DAIMOI_EMIT_BASE_RATE",
-                    str(_RESOURCE_DAIMOI_EMIT_BASE_RATE),
-                )
-                or str(_RESOURCE_DAIMOI_EMIT_BASE_RATE),
-                _RESOURCE_DAIMOI_EMIT_BASE_RATE,
-            ),
-        ),
-    )
-    alpha = max(
-        0.0,
-        min(
-            0.8,
-            _safe_float(
-                os.getenv(
-                    f"SIMULATION_{resource_name.upper()}_DAIMOI_EMIT_ALPHA",
-                    str(_RESOURCE_DAIMOI_EMIT_ALPHA),
-                )
-                or str(_RESOURCE_DAIMOI_EMIT_ALPHA),
-                _RESOURCE_DAIMOI_EMIT_ALPHA,
-            ),
-        ),
-    )
-    beta = max(
-        0.0,
-        min(
-            0.8,
-            _safe_float(
-                os.getenv(
-                    f"SIMULATION_{resource_name.upper()}_DAIMOI_EMIT_BETA",
-                    str(_RESOURCE_DAIMOI_EMIT_BETA),
-                )
-                or str(_RESOURCE_DAIMOI_EMIT_BETA),
-                _RESOURCE_DAIMOI_EMIT_BETA,
-            ),
-        ),
-    )
-    gamma = max(
-        0.0,
-        min(
-            0.8,
-            _safe_float(
-                os.getenv(
-                    f"SIMULATION_{resource_name.upper()}_DAIMOI_EMIT_GAMMA",
-                    str(_RESOURCE_DAIMOI_EMIT_GAMMA),
-                )
-                or str(_RESOURCE_DAIMOI_EMIT_GAMMA),
-                _RESOURCE_DAIMOI_EMIT_GAMMA,
-            ),
-        ),
-    )
-
-    return max(
-        0.0, base_rate + (alpha * pressure) + (beta * debt_norm) + (gamma * velocity)
-    )
-
-
-def _resource_ctl_budget_cap_vector() -> dict[str, float]:
-    global_cap = max(
-        0.05,
-        min(
-            32.0,
-            _safe_float(
-                os.getenv("SIMULATION_RESOURCE_CTL_BUDGET_CAP", "1.0") or "1.0",
-                1.0,
-            ),
-        ),
-    )
-    caps: dict[str, float] = {}
-    for resource_name in _RESOURCE_DAIMOI_TYPES:
-        default_cap = max(
-            0.01,
-            _safe_float(_RESOURCE_CTL_BUDGET_CAP_DEFAULT.get(resource_name, 1.0), 1.0),
-        )
-        cap = max(
-            0.01,
-            min(
-                32.0,
-                _safe_float(
-                    os.getenv(
-                        f"SIMULATION_RESOURCE_CTL_BUDGET_CAP_{resource_name.upper()}",
-                        str(default_cap),
-                    )
-                    or str(default_cap),
-                    default_cap,
-                ),
-            ),
-        )
-        caps[resource_name] = cap * global_cap
-    return caps
-
-
-def _resource_ctl_budget_recharge_vector(caps: dict[str, float]) -> dict[str, float]:
-    global_recharge = max(
-        0.0,
-        min(
-            8.0,
-            _safe_float(
-                os.getenv("SIMULATION_RESOURCE_CTL_BUDGET_RECHARGE", "1.0") or "1.0",
-                1.0,
-            ),
-        ),
-    )
-    recharge: dict[str, float] = {}
-    for resource_name in _RESOURCE_DAIMOI_TYPES:
-        default_rate = max(
-            0.0,
-            _safe_float(
-                _RESOURCE_CTL_BUDGET_RECHARGE_DEFAULT.get(resource_name, 0.2), 0.2
-            ),
-        )
-        rate = max(
-            0.0,
-            min(
-                32.0,
-                _safe_float(
-                    os.getenv(
-                        f"SIMULATION_RESOURCE_CTL_BUDGET_RECHARGE_{resource_name.upper()}",
-                        str(default_rate),
-                    )
-                    or str(default_rate),
-                    default_rate,
-                ),
-            ),
-        )
-        recharge[resource_name] = rate * global_recharge
-    return recharge
-
-
-def _resource_ctl_budget_prepare(
-    *,
-    queue_push: float,
-    candidate_count: int,
-) -> dict[str, Any]:
-    now = time.monotonic()
-    caps = _resource_ctl_budget_cap_vector()
-    recharge = _resource_ctl_budget_recharge_vector(caps)
-    queue_signal = _clamp01(_safe_float(queue_push, 0.0))
-
-    with _RESOURCE_CTL_BUDGET_LOCK:
-        last = _safe_float(_RESOURCE_CTL_BUDGET_STATE.get("last_monotonic", now), now)
-        dt_seconds = max(0.001, min(2.0, now - last))
-        _RESOURCE_CTL_BUDGET_STATE["last_monotonic"] = now
-
-        budget_raw = _RESOURCE_CTL_BUDGET_STATE.get("budget", {})
-        budget = budget_raw if isinstance(budget_raw, dict) else {}
-        next_budget: dict[str, float] = {}
-        for resource_name in _RESOURCE_DAIMOI_TYPES:
-            current = max(
-                0.0,
-                _safe_float(
-                    budget.get(resource_name, caps.get(resource_name, 1.0)),
-                    caps.get(resource_name, 1.0),
-                ),
-            )
-            replenished = current + (
-                max(0.0, _safe_float(recharge.get(resource_name, 0.0), 0.0))
-                * dt_seconds
-            )
-            tax = queue_signal * max(
-                0.0,
-                _safe_float(
-                    _RESOURCE_CTL_BUDGET_QUEUE_TAX.get(resource_name, 0.0), 0.0
-                ),
-            )
-            next_budget[resource_name] = max(
-                0.0,
-                min(_safe_float(caps.get(resource_name, 1.0), 1.0), replenished - tax),
-            )
-        _RESOURCE_CTL_BUDGET_STATE["budget"] = dict(next_budget)
-
-    ratio_values = [
-        _clamp01(
-            _safe_float(next_budget.get(resource_name, 0.0), 0.0)
-            / max(1e-6, _safe_float(caps.get(resource_name, 1.0), 1.0))
-        )
-        for resource_name in _RESOURCE_DAIMOI_TYPES
-    ]
-    budget_ratio = min(ratio_values) if ratio_values else 0.0
-
-    if budget_ratio < 0.08:
-        mode = "minimal"
-        max_actions = 12
-        allow_denom = False
-    elif budget_ratio < 0.16:
-        mode = "reduced"
-        max_actions = 24
-        allow_denom = False
-    elif budget_ratio < 0.3:
-        mode = "moderate"
-        max_actions = 48
-        allow_denom = True
-    else:
-        mode = "full"
-        max_actions = 256
-        allow_denom = True
-
-    max_actions = max(1, min(max_actions, max(1, int(candidate_count))))
-    return {
-        "cap": {k: round(_safe_float(v, 0.0), 6) for k, v in sorted(caps.items())},
-        "before": {
-            k: round(_safe_float(v, 0.0), 6) for k, v in sorted(next_budget.items())
-        },
-        "mode": mode,
-        "ratio": round(_clamp01(budget_ratio), 6),
-        "max_actions": int(max_actions),
-        "allow_denom": bool(allow_denom),
-    }
-
-
-def _resource_ctl_budget_commit(overhead_vector: dict[str, float]) -> dict[str, float]:
-    with _RESOURCE_CTL_BUDGET_LOCK:
-        budget_raw = _RESOURCE_CTL_BUDGET_STATE.get("budget", {})
-        budget = budget_raw if isinstance(budget_raw, dict) else {}
-        updated: dict[str, float] = {}
-        for resource_name in _RESOURCE_DAIMOI_TYPES:
-            current = max(0.0, _safe_float(budget.get(resource_name, 0.0), 0.0))
-            spent = max(0.0, _safe_float(overhead_vector.get(resource_name, 0.0), 0.0))
-            updated[resource_name] = max(0.0, current - spent)
-        _RESOURCE_CTL_BUDGET_STATE["budget"] = dict(updated)
-        return updated
-
-
-def _resource_need_ratio(
-    impact: dict[str, Any],
-    resource_type: str,
-    *,
-    queue_ratio: float,
-) -> float:
-    kind = _canonical_resource_type(resource_type)
-    if not kind:
-        return 0.0
-    affected_by = impact.get("affected_by", {})
-    if not isinstance(affected_by, dict):
-        affected_by = {}
-
-    wallet = _normalize_resource_wallet(impact)
-    balance = max(0.0, _safe_float(wallet.get(kind, 0.0), 0.0))
-    floor = max(0.1, _safe_float(_RESOURCE_DAIMOI_WALLET_FLOOR.get(kind, 4.0), 4.0))
-    deficit_ratio = _clamp01((floor - balance) / floor)
-    base_need = _clamp01(_safe_float(affected_by.get("resource", 0.0), 0.0))
-    queue_push = _clamp01(_safe_float(queue_ratio, 0.0))
-    is_sub_sim = bool(
-        str(impact.get("presence_type", "")).strip() == "sub-sim"
-        or str(impact.get("id", "")).strip().startswith("presence.sim.")
-    )
-    sub_sim_boost = 0.22 if is_sub_sim else 0.0
-    return _clamp01(
-        (base_need * 0.34)
-        + (deficit_ratio * 0.46)
-        + (queue_push * 0.18)
-        + sub_sim_boost
-    )
-
-
-def _resource_pressure_vector(resource_heartbeat: dict[str, Any]) -> dict[str, float]:
-    pressures: dict[str, float] = {}
-    for resource_type in _RESOURCE_DAIMOI_TYPES:
-        usage = _resource_usage_percent(resource_type, resource_heartbeat)
-        soft, hard = _resource_pressure_thresholds(resource_type)
-        pressures[resource_type] = _resource_pressure_ratio(
-            usage,
-            soft_percent=soft,
-            hard_percent=hard,
-        )
-    return pressures
-
-
-def _resource_mixing_weights(
-    focus_resource: str,
-    *,
-    pressure: dict[str, float] | None = None,
-) -> dict[str, float]:
-    focus = _canonical_resource_type(focus_resource)
-    if not focus:
-        focus = "cpu"
-
-    pressure_map = pressure if isinstance(pressure, dict) else {}
-    mix_epsilon = max(
-        0.001,
-        min(
-            0.45,
-            _safe_float(
-                os.getenv(
-                    "SIMULATION_RESOURCE_DAIMOI_MIX_EPSILON",
-                    str(_RESOURCE_DAIMOI_MIX_EPSILON_BASE),
-                )
-                or str(_RESOURCE_DAIMOI_MIX_EPSILON_BASE),
-                _RESOURCE_DAIMOI_MIX_EPSILON_BASE,
-            ),
-        ),
-    )
-    pressure_gain = max(
-        0.0,
-        min(
-            1.0,
-            _safe_float(
-                os.getenv(
-                    "SIMULATION_RESOURCE_DAIMOI_MIX_PRESSURE_GAIN",
-                    str(_RESOURCE_DAIMOI_MIX_PRESSURE_GAIN),
-                )
-                or str(_RESOURCE_DAIMOI_MIX_PRESSURE_GAIN),
-                _RESOURCE_DAIMOI_MIX_PRESSURE_GAIN,
-            ),
-        ),
-    )
-    focus_pressure = _clamp01(_safe_float(pressure_map.get(focus, 0.0), 0.0))
-    coupled_weight = max(
-        0.001,
-        min(0.45, mix_epsilon * (1.0 + (math.sqrt(focus_pressure) * pressure_gain))),
-    )
-
-    weights: dict[str, float] = {}
-    for resource_type in _RESOURCE_DAIMOI_TYPES:
-        resource_pressure = _clamp01(
-            _safe_float(pressure_map.get(resource_type, 0.0), 0.0)
-        )
-        value = (
-            1.0
-            if resource_type == focus
-            else (coupled_weight * (0.5 + (resource_pressure * 0.5)))
-        )
-        if value > 1e-9:
-            weights[resource_type] = value
-
-    # Keep direct spend path available even if matrix is misconfigured.
-    weights[focus] = max(1.0, _safe_float(weights.get(focus, 0.0), 0.0))
-    return weights
-
-
-def _resource_payment_plan(
-    *,
-    wallet: dict[str, float],
-    focus_resource: str,
-    desired_cost: float,
-    pressure: dict[str, float],
-    prefer_high_pressure: bool,
-) -> dict[str, Any]:
-    desired = max(0.0, _safe_float(desired_cost, 0.0))
-    if desired <= 1e-12:
-        return {
-            "desired": desired,
-            "effective_credit": 0.0,
-            "affordable_credit": 0.0,
-            "debt": 0.0,
-            "spent_total": 0.0,
-            "breakdown": {},
-            "affordability": 1.0,
-        }
-
-    weights = _resource_mixing_weights(focus_resource, pressure=pressure)
-    balances: dict[str, float] = {
-        resource_type: max(0.0, _safe_float(wallet.get(resource_type, 0.0), 0.0))
-        for resource_type in _RESOURCE_DAIMOI_TYPES
-    }
-
-    affordable_credit = 0.0
-    ranked_sources: list[tuple[float, str, float, float]] = []
-    for resource_type, mix_weight in weights.items():
-        unit_credit = max(0.0, _safe_float(mix_weight, 0.0))
-        if unit_credit <= 1e-9:
-            continue
-        balance = balances.get(resource_type, 0.0)
-        if balance <= 1e-12:
-            continue
-        resource_pressure = _clamp01(_safe_float(pressure.get(resource_type, 1.0), 1.0))
-        if prefer_high_pressure:
-            priority = unit_credit * (0.35 + (resource_pressure * 1.05))
-        else:
-            priority = unit_credit * (1.2 - (resource_pressure * 0.65))
-        ranked_sources.append((priority, resource_type, unit_credit, balance))
-        affordable_credit += balance * unit_credit
-
-    ranked_sources.sort(key=lambda row: (-row[0], row[1]))
-    target_credit = min(desired, affordable_credit)
-    remaining_credit = target_credit
-    spent_by_resource: dict[str, float] = {}
-    effective_credit = 0.0
-
-    for _, resource_type, unit_credit, balance in ranked_sources:
-        if remaining_credit <= 1e-12:
-            break
-        max_credit = balance * unit_credit
-        if max_credit <= 1e-12:
-            continue
-        taken_credit = min(remaining_credit, max_credit)
-        spent_amount = taken_credit / max(1e-9, unit_credit)
-        if spent_amount <= 1e-12:
-            continue
-        spent_by_resource[resource_type] = (
-            spent_by_resource.get(resource_type, 0.0) + spent_amount
-        )
-        effective_credit += taken_credit
-        remaining_credit -= taken_credit
-
-    spent_total = sum(spent_by_resource.values())
-    debt = max(0.0, desired - effective_credit)
-    affordability = _clamp01(effective_credit / max(1e-9, desired))
-    return {
-        "desired": desired,
-        "effective_credit": effective_credit,
-        "affordable_credit": affordable_credit,
-        "debt": debt,
-        "spent_total": spent_total,
-        "breakdown": spent_by_resource,
-        "affordability": affordability,
-    }
-
-
-def _resource_action_contract_estimate(
-    *,
-    row: dict[str, Any],
-    presence_id: str,
-    resource_pressure: dict[str, float],
-    resource_debt: dict[str, float],
-    queue_push: float,
-    sentinel_usage_by_presence: dict[str, float] | None = None,
-    cpu_sentinel_burn_threshold: float | None = None,
-) -> dict[str, Any]:
-    sentinel_resource = _RESOURCE_DAIMOI_SENTINEL_RESOURCE_BY_ID.get(presence_id, "")
-    is_resource_sentinel = bool(sentinel_resource)
-    focus_resource = sentinel_resource if is_resource_sentinel else "cpu"
-    threshold = (
-        _safe_float(
-            cpu_sentinel_burn_threshold,
-            _RESOURCE_DAIMOI_CPU_SENTINEL_BURN_START_PERCENT,
-        )
-        if cpu_sentinel_burn_threshold is not None
-        else _RESOURCE_DAIMOI_CPU_SENTINEL_BURN_START_PERCENT
-    )
-    sentinel_usage_map = (
-        sentinel_usage_by_presence
-        if isinstance(sentinel_usage_by_presence, dict)
-        else {}
-    )
-    sentinel_usage = max(
-        0.0, _safe_float(sentinel_usage_map.get(presence_id, 0.0), 0.0)
-    )
-
-    focus_pressure = _clamp01(
-        _safe_float(resource_pressure.get(focus_resource, 0.0), 0.0)
-    )
-    focus_debt = max(0.0, _safe_float(resource_debt.get(focus_resource, 0.0), 0.0))
-    focus_debt_norm = _clamp01(focus_debt / max(1.0, focus_debt + 1.0))
-
-    influence_power = _clamp01(
-        _safe_float(
-            row.get("influence_power", row.get("message_probability", 0.0)), 0.0
-        )
-    )
-    message_probability = _clamp01(
-        _safe_float(row.get("message_probability", 0.0), 0.0)
-    )
-    route_probability = _clamp01(_safe_float(row.get("route_probability", 0.0), 0.0))
-    drift_signal = _clamp01(abs(_safe_float(row.get("drift_score", 0.0), 0.0)))
-
-    base_cost = (
-        _RESOURCE_DAIMOI_ACTION_BASE_COST
-        + (influence_power * 0.00086)
-        + (message_probability * 0.00054)
-        + (route_probability * 0.00032)
-        + (drift_signal * 0.00024)
-        + (queue_push * 0.00028)
-    )
-    base_cost = min(
-        _RESOURCE_DAIMOI_ACTION_COST_MAX,
-        max(_RESOURCE_DAIMOI_ACTION_BASE_COST, base_cost),
-    )
-
-    sentinel_burn_intensity = 0.0
-    sentinel_burn_multiplier = 1.0
-    if is_resource_sentinel:
-        sentinel_burn_intensity = _clamp01(
-            (sentinel_usage - threshold) / max(1.0, (100.0 - threshold))
-        )
-        sentinel_burn_multiplier = 1.0 + (
-            sentinel_burn_intensity
-            * (_RESOURCE_DAIMOI_CPU_SENTINEL_BURN_MAX_MULTIPLIER - 1.0)
-        )
-        base_cost = min(
-            _RESOURCE_DAIMOI_CPU_SENTINEL_BURN_COST_MAX,
-            max(
-                _RESOURCE_DAIMOI_ACTION_BASE_COST, base_cost * sentinel_burn_multiplier
-            ),
-        )
-
-    action_risk = _clamp01(
-        (drift_signal * 0.46)
-        + ((1.0 - message_probability) * 0.18)
-        + (route_probability * 0.22)
-        + (queue_push * 0.14)
-    )
-    risk_multiplier = 1.0 + (
-        _RESOURCE_DAIMOI_ACTION_RISK_PREMIUM * action_risk * focus_pressure
-    )
-    debt_multiplier = 1.0 + (focus_debt_norm * 0.38)
-    desired_cost = min(
-        _RESOURCE_DAIMOI_CPU_SENTINEL_BURN_COST_MAX
-        if is_resource_sentinel
-        else _RESOURCE_DAIMOI_ACTION_COST_MAX,
-        max(
-            _RESOURCE_DAIMOI_ACTION_BASE_COST,
-            base_cost * risk_multiplier * debt_multiplier,
-        ),
-    )
-
-    expected_cost_vector = _resource_required_payment_vector(
-        focus_resource=focus_resource,
-        desired_cost=desired_cost,
-        pressure=resource_pressure,
-    )
-
-    risk_component_factor = (
-        _RESOURCE_DAIMOI_ACTION_RISK_PREMIUM * action_risk * desired_cost
-    )
-    payment_vector_raw: dict[str, float] = {}
-    for resource_name in _RESOURCE_DAIMOI_TYPES:
-        expected_component = max(
-            0.0,
-            _safe_float(expected_cost_vector.get(resource_name, 0.0), 0.0),
-        )
-        pressure_component = _clamp01(
-            _safe_float(resource_pressure.get(resource_name, 0.0), 0.0)
-        )
-        risk_component = max(0.0, risk_component_factor * pressure_component)
-        total_component = expected_component + risk_component
-        if total_component <= 1e-12:
-            continue
-        payment_vector_raw[resource_name] = total_component
-    payment_vector = _resource_vector_quantized(payment_vector_raw)
-    if _resource_vector_total(payment_vector) <= 1e-12 and desired_cost > 1e-12:
-        payment_vector = _resource_vector_quantized({focus_resource: desired_cost})
-
-    reclaim_estimate = focus_pressure * (
-        0.58 + (route_probability * 0.22) + (influence_power * 0.2)
-    )
-    reclaim_vector = _resource_vector_quantized(
-        {focus_resource: max(0.0, desired_cost * reclaim_estimate)}
-    )
-
-    reclaim_term = sum(
-        (
-            _RESOURCE_DAIMOI_ACTION_UTILITY_ETA
-            * _clamp01(_safe_float(resource_pressure.get(resource_name, 0.0), 0.0))
-            * max(0.0, _safe_float(reclaim_vector.get(resource_name, 0.0), 0.0))
-        )
-        for resource_name in _RESOURCE_DAIMOI_TYPES
-    )
-    cost_term = sum(
-        (
-            _RESOURCE_DAIMOI_ACTION_UTILITY_XI
-            * _clamp01(_safe_float(resource_pressure.get(resource_name, 0.0), 0.0))
-            * max(0.0, _safe_float(payment_vector.get(resource_name, 0.0), 0.0))
-        )
-        for resource_name in _RESOURCE_DAIMOI_TYPES
-    )
-    utility = (
-        reclaim_term - cost_term - (_RESOURCE_DAIMOI_ACTION_UTILITY_KAPPA * action_risk)
-    )
-
-    return {
-        "focus_resource": focus_resource,
-        "is_resource_sentinel": is_resource_sentinel,
-        "sentinel_usage": sentinel_usage,
-        "sentinel_threshold": threshold,
-        "sentinel_burn_intensity": sentinel_burn_intensity,
-        "sentinel_burn_multiplier": sentinel_burn_multiplier,
-        "focus_pressure": focus_pressure,
-        "focus_debt": focus_debt,
-        "action_risk": action_risk,
-        "risk_multiplier": risk_multiplier,
-        "debt_multiplier": debt_multiplier,
-        "desired_cost": desired_cost,
-        "expected_cost_vector": expected_cost_vector,
-        "required_payment_vector": payment_vector,
-        "reclaim_vector": reclaim_vector,
-        "utility": utility,
-    }
-
-
-def _resource_action_utility(
-    *,
-    row: dict[str, Any],
-    presence_id: str,
-    resource_pressure: dict[str, float],
-    queue_push: float,
-    resource_debt: dict[str, float] | None = None,
-    sentinel_usage_by_presence: dict[str, float] | None = None,
-    cpu_sentinel_burn_threshold: float | None = None,
-) -> float:
-    contract = _resource_action_contract_estimate(
-        row=row,
-        presence_id=presence_id,
-        resource_pressure=resource_pressure,
-        resource_debt=resource_debt if isinstance(resource_debt, dict) else {},
-        queue_push=queue_push,
-        sentinel_usage_by_presence=sentinel_usage_by_presence,
-        cpu_sentinel_burn_threshold=cpu_sentinel_burn_threshold,
-    )
-
-    return _safe_float(contract.get("utility", 0.0), 0.0)
-
-
-def _apply_resource_daimoi_emissions(
-    *,
-    field_particles: list[dict[str, Any]],
-    presence_impacts: list[dict[str, Any]],
-    resource_heartbeat: dict[str, Any],
-    queue_ratio: float,
-) -> dict[str, Any]:
-    resource_devices = (
-        resource_heartbeat.get("devices", {})
-        if isinstance(resource_heartbeat, dict)
-        else {}
-    )
-    cpu_utilization = max(
-        0.0,
-        min(
-            100.0,
-            _safe_float(
-                (
-                    resource_devices.get("cpu", {})
-                    if isinstance(resource_devices.get("cpu", {}), dict)
-                    else {}
-                ).get("utilization", 0.0),
-                0.0,
-            ),
-        ),
-    )
-    cpu_sentinel_attractor_active = (
-        cpu_utilization >= _RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_START_PERCENT
-    )
-    resource_pressure_by_type = _resource_pressure_vector(resource_heartbeat)
-    resource_debt = _resource_debt_vector_update(resource_heartbeat)
-    resource_velocity = _resource_velocity_vector(
-        resource_heartbeat,
-        queue_ratio=queue_ratio,
-    )
-
-    summary: dict[str, Any] = {
-        "record": "eta-mu.resource-daimoi-flow.v1",
-        "schema_version": "resource.daimoi.flow.v1",
-        "emitter_rows": 0,
-        "delivered_packets": 0,
-        "total_transfer": 0.0,
-        "by_resource": {},
-        "recipients": [],
-        "queue_ratio": round(_clamp01(_safe_float(queue_ratio, 0.0)), 6),
-        "cpu_utilization": round(cpu_utilization, 2),
-        "cpu_sentinel_id": _RESOURCE_DAIMOI_CPU_SENTINEL_ID,
-        "cpu_sentinel_attractor_threshold": round(
-            _RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_START_PERCENT,
-            2,
-        ),
-        "cpu_sentinel_attractor_active": bool(cpu_sentinel_attractor_active),
-        "cpu_sentinel_forced_packets": 0,
-    }
-    if not isinstance(field_particles, list) or not isinstance(presence_impacts, list):
-        return summary
-
-    manifest_by_id = {
-        str(row.get("id", "")).strip(): row
-        for row in ENTITY_MANIFEST
-        if isinstance(row, dict) and str(row.get("id", "")).strip()
-    }
-
-    recipient_impacts: list[dict[str, Any]] = []
-    fallback_recipients: list[dict[str, Any]] = []
-    anchor_by_presence: dict[str, tuple[float, float]] = {}
-    impact_by_id: dict[str, dict[str, Any]] = {}
-    for impact in presence_impacts:
-        if not isinstance(impact, dict):
-            continue
-        presence_id = str(impact.get("id", "")).strip()
-        if not presence_id:
-            continue
-        _normalize_resource_wallet(impact)
-        impact_by_id[presence_id] = impact
-        if _core_resource_type_from_presence_id(presence_id):
-            continue
-
-        anchor_by_presence[presence_id] = _presence_anchor_position(
-            presence_id,
-            impact,
-            manifest_by_id=manifest_by_id,
-        )
-        fallback_recipients.append(impact)
-        # All presences with anchors are valid recipients
-        recipient_impacts.append(impact)
-
-    if not recipient_impacts:
-        recipient_impacts = fallback_recipients
-    if not recipient_impacts:
-        return summary
-
-    cpu_emitter_stop_percent = max(
-        0.0,
-        min(
-            100.0,
-            _safe_float(
-                os.getenv("SIMULATION_CPU_DAIMOI_STOP_PERCENT", "50") or "50",
-                50.0,
-            ),
-        ),
-    )
-    cpu_emitter_cutoff_active = cpu_utilization >= cpu_emitter_stop_percent
-    summary["cpu_emitter_stop_percent"] = round(cpu_emitter_stop_percent, 2)
-    summary["cpu_emitter_cutoff_active"] = bool(cpu_emitter_cutoff_active)
-    summary["resource_pressure"] = {
-        resource_type: round(_clamp01(_safe_float(value, 0.0)), 6)
-        for resource_type, value in sorted(resource_pressure_by_type.items())
-    }
-    summary["resource_debt"] = {
-        resource_type: round(max(0.0, _safe_float(value, 0.0)), 6)
-        for resource_type, value in sorted(resource_debt.items())
-    }
-    summary["resource_velocity"] = {
-        resource_type: round(_clamp01(_safe_float(value, 0.0)), 6)
-        for resource_type, value in sorted(resource_velocity.items())
-    }
-
-    # Ambient mint for core emitters. This is intentionally slow and pressure-aware:
-    # emitters replenish from live headroom/pressure/debt and do not use hard caps.
-    core_minted_totals: dict[str, float] = {key: 0.0 for key in _RESOURCE_DAIMOI_TYPES}
-    for impact in presence_impacts:
-        if not isinstance(impact, dict):
-            continue
-        presence_id = str(impact.get("id", "")).strip()
-        resource_type = _core_resource_type_from_presence_id(presence_id)
-        if not resource_type:
-            continue
-        wallet = _normalize_resource_wallet(impact)
-        current = max(0.0, _safe_float(wallet.get(resource_type, 0.0), 0.0))
-        availability = _resource_availability_ratio(resource_type, resource_heartbeat)
-        pressure_signal = _clamp01(
-            _safe_float(resource_pressure_by_type.get(resource_type, 0.0), 0.0)
-        )
-        debt_signal = _clamp01(
-            _safe_float(resource_debt.get(resource_type, 0.0), 0.0)
-            / max(1.0, _safe_float(resource_debt.get(resource_type, 0.0), 0.0) + 1.0)
-        )
-        mint_amount = 0.0
-        if not cpu_emitter_cutoff_active:
-            mint_amount = (
-                0.002
-                + (availability * 0.018)
-                + (pressure_signal * 0.010)
-                + (debt_signal * 0.014)
-            ) * max(
-                0.2,
-                1.0 - (_clamp01(_safe_float(queue_ratio, 0.0)) * 0.55),
-            )
-        next_balance = current + max(0.0, mint_amount)
-        minted = max(0.0, next_balance - current)
-        wallet[resource_type] = round(next_balance, 6)
-        impact["resource_wallet"] = wallet
-        if minted > 1e-8:
-            core_minted_totals[resource_type] = (
-                core_minted_totals.get(resource_type, 0.0) + minted
-            )
-    summary["core_minted"] = {
-        key: round(value, 6)
-        for key, value in sorted(core_minted_totals.items())
-        if value > 1e-8
-    }
-
-    resource_totals: dict[str, float] = {key: 0.0 for key in _RESOURCE_DAIMOI_TYPES}
-    recipient_totals: dict[str, float] = {}
-    lambda_totals: dict[str, float] = {key: 0.0 for key in _RESOURCE_DAIMOI_TYPES}
-    lambda_counts: dict[str, int] = {key: 0 for key in _RESOURCE_DAIMOI_TYPES}
-    packet_count = 0
-    emitter_rows = 0
-    cpu_sentinel_forced_packets = 0
-    cpu_sentinel_impact = impact_by_id.get(_RESOURCE_DAIMOI_CPU_SENTINEL_ID)
-
-    for row in field_particles:
-        if not isinstance(row, dict):
-            continue
-        if bool(row.get("is_nexus", False)):
-            continue
-        presence_id = str(row.get("presence_id", "")).strip()
-        if presence_id == USER_PRESENCE_ID:
-            continue
-        if presence_id == _RESOURCE_DAIMOI_CPU_SENTINEL_ID:
-            row["resource_emit_disabled"] = True
-            row["resource_emit_disabled_reason"] = "cpu_sentinel_sink"
-            continue
-        resource_type = _core_resource_type_from_presence_id(presence_id)
-        if not resource_type:
-            row["resource_emit_disabled"] = True
-            row["resource_emit_disabled_reason"] = "non_core_presence"
-            continue
-        if cpu_emitter_cutoff_active:
-            row["resource_emit_disabled"] = True
-            row["resource_emit_disabled_reason"] = "global_cpu_cutoff"
-            continue
-
-        emitter_cpu_cost = 0.0
-        emitter_cpu_payment: dict[str, Any] | None = None
-        emitter_impact = impact_by_id.get(presence_id)
-        if not isinstance(emitter_impact, dict):
-            continue
-        emitter_wallet = _normalize_resource_wallet(emitter_impact)
-        source_balance = max(
-            0.0, _safe_float(emitter_wallet.get(resource_type, 0.0), 0.0)
-        )
-
-        resource_floor = max(
-            0.1,
-            _safe_float(_RESOURCE_DAIMOI_WALLET_FLOOR.get(resource_type, 4.0), 4.0),
-        )
-        resource_pressure = _clamp01(source_balance / max(1e-6, resource_floor))
-        if source_balance <= 1e-8:
-            continue
-
-        if resource_type != "cpu":
-            emitter_cpu_cost = _RESOURCE_DAIMOI_ACTION_BASE_COST
-            emitter_cpu_payment = _resource_payment_plan(
-                wallet=emitter_wallet,
-                focus_resource="cpu",
-                desired_cost=emitter_cpu_cost,
-                pressure=resource_pressure_by_type,
-                prefer_high_pressure=False,
-            )
-            if _safe_float(
-                emitter_cpu_payment.get("effective_credit", 0.0), 0.0
-            ) + 1e-9 < (emitter_cpu_cost * _RESOURCE_DAIMOI_ACTION_SATISFIED_RATIO):
-                row["resource_action_blocked"] = True
-                row["resource_block_reason"] = "resource_wallet_required_for_emit"
-                row["resource_emit_affordability"] = round(
-                    _clamp01(
-                        _safe_float(emitter_cpu_payment.get("affordability", 0.0), 0.0)
-                    ),
-                    6,
-                )
-                row["top_job"] = "resource_starved"
-                continue
-
-        emitter_rows += 1
-
-        availability = _resource_availability_ratio(resource_type, resource_heartbeat)
-        pressure_signal = _clamp01(
-            _safe_float(resource_pressure_by_type.get(resource_type, 0.0), 0.0)
-        )
-        debt_signal = max(0.0, _safe_float(resource_debt.get(resource_type, 0.0), 0.0))
-        velocity_signal = _clamp01(
-            _safe_float(resource_velocity.get(resource_type, 0.0), 0.0)
-        )
-        emission_lambda = _resource_emission_rate(
-            resource_type=resource_type,
-            pressure_signal=pressure_signal,
-            debt_value=debt_signal,
-            velocity_signal=velocity_signal,
-        )
-        lambda_totals[resource_type] = (
-            lambda_totals.get(resource_type, 0.0) + emission_lambda
-        )
-        lambda_counts[resource_type] = lambda_counts.get(resource_type, 0) + 1
-
-        influence_power = _clamp01(
-            _safe_float(
-                row.get(
-                    "influence_power",
-                    row.get("message_probability", 0.0),
-                ),
-                0.0,
-            )
-        )
-        route_probability = _clamp01(
-            _safe_float(row.get("route_probability", 0.5), 0.5)
-        )
-        drift_score = _clamp01(abs(_safe_float(row.get("drift_score", 0.0), 0.0)))
-        gravity_potential = max(
-            0.0, _safe_float(row.get("gravity_potential", 0.0), 0.0)
-        )
-        gravity_signal = _clamp01(gravity_potential / (gravity_potential + 1.0))
-        row_signal = _clamp01(
-            (influence_power * 0.45)
-            + (route_probability * 0.24)
-            + (drift_score * 0.16)
-            + (gravity_signal * 0.15)
-        )
-
-        emit_amount = emission_lambda
-        emit_amount *= 0.5 + (row_signal * 0.5)
-        emit_amount *= 0.2 + (availability * 0.8)
-        emit_amount *= max(0.2, 1.0 - (_clamp01(_safe_float(queue_ratio, 0.0)) * 0.45))
-        emit_amount = min(source_balance, emit_amount)
-        emit_amount = max(0.0, emit_amount)
-        if emit_amount <= 1e-7:
-            continue
-
-        px = _clamp01(_safe_float(row.get("x", 0.5), 0.5))
-        py = _clamp01(_safe_float(row.get("y", 0.5), 0.5))
-
-        best_target: dict[str, Any] | None = None
-        best_target_id = ""
-        best_score = -1.0
-        forced_cpu_target = False
-        if (
-            cpu_sentinel_attractor_active
-            and resource_type == "cpu"
-            and isinstance(cpu_sentinel_impact, dict)
-            and presence_id != _RESOURCE_DAIMOI_CPU_SENTINEL_ID
-        ):
-            forced_target_id = str(cpu_sentinel_impact.get("id", "")).strip()
-            if forced_target_id:
-                best_target = cpu_sentinel_impact
-                best_target_id = forced_target_id
-                best_score = 1.0
-                forced_cpu_target = True
-
-        if best_target is None:
-            for impact in recipient_impacts:
-                target_id = str(impact.get("id", "")).strip()
-                if not target_id:
-                    continue
-                need_ratio = _resource_need_ratio(
-                    impact,
-                    resource_type,
-                    queue_ratio=queue_ratio,
-                )
-                ax, ay = anchor_by_presence.get(target_id, (0.5, 0.5))
-                distance = math.sqrt(((ax - px) * (ax - px)) + ((ay - py) * (ay - py)))
-                proximity = _clamp01(1.0 - min(1.0, distance / 1.15))
-                score = (need_ratio * 0.72) + (proximity * 0.28)
-                if score > best_score:
-                    best_score = score
-                    best_target = impact
-                    best_target_id = target_id
-
-        if best_target is None or best_score <= 1e-8:
-            continue
-
-        credited = max(0.0, emit_amount)
-        if credited <= 1e-8:
-            continue
-
-        mix_weights = _resource_mixing_weights(
-            resource_type,
-            pressure=resource_pressure_by_type,
-        )
-        mix_vector: dict[str, float] = {}
-        for mix_resource, mix_weight in sorted(mix_weights.items()):
-            resource_name = _canonical_resource_type(mix_resource)
-            if not resource_name:
-                continue
-            component = max(0.0, credited * max(0.0, _safe_float(mix_weight, 0.0)))
-            if component <= 1e-9:
-                continue
-            mix_vector[resource_name] = component
-        credit_total = sum(mix_vector.values())
-        if credit_total <= 1e-8:
-            continue
-
-        target_wallet = _normalize_resource_wallet(best_target)
-        target_denoms = _normalize_resource_wallet_denoms(best_target)
-        for mix_resource, mix_amount in mix_vector.items():
-            prior = max(0.0, _safe_float(target_wallet.get(mix_resource, 0.0), 0.0))
-            target_wallet[mix_resource] = round(prior + mix_amount, 6)
-        _wallet_denoms_add_vector(target_denoms, mix_vector)
-        best_target["resource_wallet"] = target_wallet
-        best_target["resource_wallet_denoms"] = target_denoms
-
-        packet_count += 1
-        for mix_resource, mix_amount in mix_vector.items():
-            resource_totals[mix_resource] = (
-                resource_totals.get(mix_resource, 0.0) + mix_amount
-            )
-        recipient_totals[best_target_id] = (
-            recipient_totals.get(best_target_id, 0.0) + credit_total
-        )
-
-        row["resource_daimoi"] = True
-        row["resource_type"] = resource_type
-        row["resource_emit_amount"] = round(credited, 6)
-        row["resource_emit_credit_total"] = round(credit_total, 6)
-        row["resource_mix_vector"] = {
-            mix_resource: round(max(0.0, _safe_float(mix_amount, 0.0)), 6)
-            for mix_resource, mix_amount in sorted(mix_vector.items())
-            if _safe_float(mix_amount, 0.0) > 1e-8
-        }
-        row["resource_emit_wallet_credit"] = True
-        row["resource_target_presence_id"] = best_target_id
-        row["resource_availability"] = round(availability, 6)
-        row["resource_lambda"] = round(max(0.0, emission_lambda), 6)
-        row["resource_pressure"] = round(pressure_signal, 6)
-        row["resource_debt"] = round(debt_signal, 6)
-        row["resource_velocity"] = round(velocity_signal, 6)
-        row["resource_action_blocked"] = False
-        row["cpu_sentinel_attractor_active"] = bool(
-            cpu_sentinel_attractor_active and resource_type == "cpu"
-        )
-        if forced_cpu_target:
-            row["resource_forced_target"] = "cpu_sentinel_attractor"
-            cpu_sentinel_forced_packets += 1
-        row["top_job"] = "emit_resource_packet"
-        row["job_probabilities"] = {
-            "emit_resource_packet": round(0.74, 6),
-            "invoke_resource_probe": round(0.16, 6),
-            "deliver_message": round(0.10, 6),
-        }
-        # Decrement payload from source
-        source_after = max(0.0, source_balance - credited)
-        emitter_wallet[resource_type] = round(source_after, 6)
-
-        if emitter_cpu_cost > 0.0 and isinstance(emitter_impact, dict):
-            cost_breakdown = (
-                emitter_cpu_payment.get("breakdown", {})
-                if isinstance(emitter_cpu_payment, dict)
-                else {}
-            )
-            if isinstance(cost_breakdown, dict):
-                for cost_resource, cost_value in cost_breakdown.items():
-                    resource_name = _canonical_resource_type(cost_resource)
-                    if not resource_name:
-                        continue
-                    balance = max(
-                        0.0,
-                        _safe_float(emitter_wallet.get(resource_name, 0.0), 0.0),
-                    )
-                    reduced = max(0.0, balance - max(0.0, _safe_float(cost_value, 0.0)))
-                    emitter_wallet[resource_name] = round(reduced, 6)
-
-            row["resource_emit_cpu_cost"] = round(emitter_cpu_cost, 6)
-            row["resource_emit_payment_vector"] = {
-                resource_name: round(max(0.0, _safe_float(cost, 0.0)), 6)
-                for resource_name, cost in sorted(cost_breakdown.items())
-                if _safe_float(cost, 0.0) > 1e-8
-            }
-            row["resource_emit_affordability"] = round(
-                _clamp01(
-                    _safe_float(
-                        (emitter_cpu_payment or {}).get("affordability", 0.0),
-                        0.0,
-                    )
-                ),
-                6,
-            )
-            row["resource_emit_cpu_balance_after"] = round(
-                max(0.0, _safe_float(emitter_wallet.get("cpu", 0.0), 0.0)),
-                6,
-            )
-
-        emitter_impact["resource_wallet"] = emitter_wallet
-
-    summary["emitter_rows"] = int(emitter_rows)
-    summary["delivered_packets"] = int(packet_count)
-    summary["total_transfer"] = round(sum(resource_totals.values()), 6)
-    summary["cpu_sentinel_forced_packets"] = int(cpu_sentinel_forced_packets)
-    summary["lambda_by_resource"] = {
-        key: round(
-            _safe_float(lambda_totals.get(key, 0.0), 0.0)
-            / float(max(1, int(lambda_counts.get(key, 0)))),
-            6,
-        )
-        for key in sorted(lambda_totals.keys())
-        if int(lambda_counts.get(key, 0)) > 0
-    }
-    summary["by_resource"] = {
-        key: round(value, 6)
-        for key, value in sorted(resource_totals.items())
-        if value > 1e-8
-    }
-    summary["recipients"] = [
-        {
-            "presence_id": key,
-            "credited": round(value, 6),
-        }
-        for key, value in sorted(
-            recipient_totals.items(),
-            key=lambda item: (-_safe_float(item[1], 0.0), item[0]),
-        )[:16]
-    ]
-    return summary
-
-
-def _apply_resource_daimoi_action_consumption(
-    *,
-    field_particles: list[dict[str, Any]],
-    presence_impacts: list[dict[str, Any]],
-    resource_heartbeat: dict[str, Any],
-    queue_ratio: float,
-) -> dict[str, Any]:
-    resource_devices = (
-        resource_heartbeat.get("devices", {})
-        if isinstance(resource_heartbeat, dict)
-        else {}
-    )
-    cpu_utilization = max(
-        0.0,
-        min(
-            100.0,
-            _safe_float(
-                (
-                    resource_devices.get("cpu", {})
-                    if isinstance(resource_devices.get("cpu", {}), dict)
-                    else {}
-                ).get("utilization", 0.0),
-                0.0,
-            ),
-        ),
-    )
-    cpu_sentinel_burn_threshold = max(
-        0.0,
-        min(
-            100.0,
-            _safe_float(
-                os.getenv(
-                    "SIMULATION_CPU_SENTINEL_BURN_START_PERCENT",
-                    str(_RESOURCE_DAIMOI_CPU_SENTINEL_BURN_START_PERCENT),
-                )
-                or str(_RESOURCE_DAIMOI_CPU_SENTINEL_BURN_START_PERCENT),
-                _RESOURCE_DAIMOI_CPU_SENTINEL_BURN_START_PERCENT,
-            ),
-        ),
-    )
-    sentinel_usage_by_presence: dict[str, float] = {}
-    sentinel_burn_active_by_presence: dict[str, bool] = {}
-    for (
-        sentinel_id,
-        sentinel_resource,
-    ) in _RESOURCE_DAIMOI_SENTINEL_RESOURCE_BY_ID.items():
-        usage = _resource_usage_percent(sentinel_resource, resource_heartbeat)
-        sentinel_usage_by_presence[sentinel_id] = usage
-        sentinel_burn_active_by_presence[sentinel_id] = (
-            usage >= cpu_sentinel_burn_threshold
-        )
-    cpu_sentinel_burn_active = bool(
-        sentinel_burn_active_by_presence.get(_RESOURCE_DAIMOI_CPU_SENTINEL_ID, False)
-    )
-    resource_pressure = _resource_pressure_vector(resource_heartbeat)
-    resource_debt = _resource_debt_snapshot()
-
-    summary: dict[str, Any] = {
-        "record": "eta-mu.resource-daimoi-consumption.v1",
-        "schema_version": "resource.daimoi.consumption.v1",
-        "action_packets": 0,
-        "blocked_packets": 0,
-        "consumed_total": 0.0,
-        "debt_total": 0.0,
-        "by_resource": {},
-        "starved_presences": [],
-        "active_presences": [],
-        "queue_ratio": round(_clamp01(_safe_float(queue_ratio, 0.0)), 6),
-        "cpu_utilization": round(cpu_utilization, 2),
-        "cpu_sentinel_id": _RESOURCE_DAIMOI_CPU_SENTINEL_ID,
-        "cpu_sentinel_burn_threshold": round(
-            cpu_sentinel_burn_threshold,
-            2,
-        ),
-        "cpu_sentinel_burn_max_multiplier": round(
-            _RESOURCE_DAIMOI_CPU_SENTINEL_BURN_MAX_MULTIPLIER,
-            6,
-        ),
-        "cpu_sentinel_burn_cost_max": round(
-            _RESOURCE_DAIMOI_CPU_SENTINEL_BURN_COST_MAX,
-            6,
-        ),
-        "cpu_sentinel_burn_active": bool(cpu_sentinel_burn_active),
-        "sentinel_burn_threshold": round(
-            cpu_sentinel_burn_threshold,
-            2,
-        ),
-        "sentinel_burn_active": {
-            sentinel_id: bool(active)
-            for sentinel_id, active in sorted(sentinel_burn_active_by_presence.items())
-        },
-        "sentinel_resource_usage": {
-            sentinel_id: round(_safe_float(usage, 0.0), 2)
-            for sentinel_id, usage in sorted(sentinel_usage_by_presence.items())
-        },
-        "resource_pressure": {
-            resource_type: round(_clamp01(_safe_float(value, 0.0)), 6)
-            for resource_type, value in sorted(resource_pressure.items())
-        },
-        "resource_debt": {
-            resource_type: round(max(0.0, _safe_float(value, 0.0)), 6)
-            for resource_type, value in sorted(resource_debt.items())
-        },
-    }
-    if not isinstance(field_particles, list) or not isinstance(presence_impacts, list):
-        return summary
-
-    impact_by_id: dict[str, dict[str, Any]] = {}
-    for impact in presence_impacts:
-        if not isinstance(impact, dict):
-            continue
-        presence_id = str(impact.get("id", "")).strip()
-        if not presence_id:
-            continue
-        _normalize_resource_wallet(impact)
-        impact_by_id[presence_id] = impact
-
-    if not impact_by_id:
-        return summary
-
-    queue_push = _clamp01(_safe_float(queue_ratio, 0.0))
-    consumed_by_resource: dict[str, float] = {
-        key: 0.0 for key in _RESOURCE_DAIMOI_TYPES
-    }
-    consumed_by_presence: dict[str, float] = {}
-    debt_by_presence: dict[str, float] = {}
-    blocked_by_presence: dict[str, int] = {}
-    blocked_packets = 0
-    action_packets = 0
-    ctl_overhead: dict[str, float] = {key: 0.0 for key in _RESOURCE_DAIMOI_TYPES}
-
-    ordered_rows = [row for row in field_particles if isinstance(row, dict)]
-    control_budget = _resource_ctl_budget_prepare(
-        queue_push=queue_push,
-        candidate_count=len(ordered_rows),
-    )
-    ordered_rows.sort(
-        key=lambda row: _resource_action_utility(
-            row=row,
-            presence_id=str(
-                (row if isinstance(row, dict) else {}).get("presence_id", "")
-            ).strip(),
-            resource_pressure=resource_pressure,
-            queue_push=queue_push,
-            resource_debt=resource_debt,
-            sentinel_usage_by_presence=sentinel_usage_by_presence,
-            cpu_sentinel_burn_threshold=cpu_sentinel_burn_threshold,
-        ),
-        reverse=True,
-    )
-    max_actions = max(
-        1, int(_safe_float(control_budget.get("max_actions", 256), 256.0))
-    )
-    allow_denom = bool(control_budget.get("allow_denom", True))
-    candidate_rows = len(ordered_rows)
-    if len(ordered_rows) > max_actions:
-        ordered_rows = ordered_rows[:max_actions]
-    summary["control_budget"] = {
-        "mode": str(control_budget.get("mode", "full")),
-        "ratio": round(_safe_float(control_budget.get("ratio", 0.0), 0.0), 6),
-        "allow_denom": bool(allow_denom),
-        "max_actions": int(max_actions),
-        "candidate_rows": int(candidate_rows),
-        "scheduled_rows": int(len(ordered_rows)),
-        "cap": {
-            key: round(_safe_float(value, 0.0), 6)
-            for key, value in sorted(
-                (
-                    control_budget.get("cap", {})
-                    if isinstance(control_budget, dict)
-                    else {}
-                ).items()
-            )
-        },
-        "before": {
-            key: round(_safe_float(value, 0.0), 6)
-            for key, value in sorted(
-                (
-                    control_budget.get("before", {})
-                    if isinstance(control_budget, dict)
-                    else {}
-                ).items()
-            )
-        },
-    }
-
-    for row in ordered_rows:
-        presence_id = str(row.get("presence_id", "")).strip()
-        for resource_name, eval_cost in _RESOURCE_CTL_BUDGET_EVAL_COST.items():
-            ctl_overhead[resource_name] = ctl_overhead.get(resource_name, 0.0) + max(
-                0.0,
-                _safe_float(eval_cost, 0.0),
-            )
-        if not presence_id:
-            continue
-        if presence_id == USER_PRESENCE_ID:
-            row["resource_action_blocked"] = False
-            continue
-        if _core_resource_type_from_presence_id(presence_id):
-            continue
-
-        impact = impact_by_id.get(presence_id)
-        if not isinstance(impact, dict):
-            continue
-
-        sentinel_resource = _RESOURCE_DAIMOI_SENTINEL_RESOURCE_BY_ID.get(
-            presence_id,
-            "",
-        )
-        is_resource_sentinel = bool(sentinel_resource)
-        sentinel_usage = _safe_float(
-            sentinel_usage_by_presence.get(
-                presence_id,
-                cpu_utilization
-                if presence_id == _RESOURCE_DAIMOI_CPU_SENTINEL_ID
-                else 0.0,
-            ),
-            0.0,
-        )
-        sentinel_burn_active = bool(
-            sentinel_burn_active_by_presence.get(
-                presence_id,
-                False,
-            )
-        )
-
-        if is_resource_sentinel and not sentinel_burn_active:
-            row["resource_action_blocked"] = False
-            row["resource_sentinel_idle"] = True
-            row["resource_sentinel_resource_type"] = sentinel_resource
-            row["resource_sentinel_usage_percent"] = round(sentinel_usage, 2)
-            row["resource_sentinel_burn_threshold"] = round(
-                cpu_sentinel_burn_threshold,
-                2,
-            )
-            if presence_id == _RESOURCE_DAIMOI_CPU_SENTINEL_ID:
-                row["resource_sentinel_cpu_utilization"] = round(cpu_utilization, 2)
-            top_job = str(row.get("top_job", "")).strip()
-            if top_job in {"", "observe"}:
-                row["top_job"] = "observe"
-            continue
-
-        wallet = _normalize_resource_wallet(impact)
-        denoms = _normalize_resource_wallet_denoms(impact)
-        contract = _resource_action_contract_estimate(
-            row=row,
-            presence_id=presence_id,
-            resource_pressure=resource_pressure,
-            resource_debt=resource_debt,
-            queue_push=queue_push,
-            sentinel_usage_by_presence=sentinel_usage_by_presence,
-            cpu_sentinel_burn_threshold=cpu_sentinel_burn_threshold,
-        )
-        focus_resource = (
-            _canonical_resource_type(
-                str(contract.get("focus_resource", "cpu") or "cpu")
-            )
-            or "cpu"
-        )
-        desired_cost = max(
-            _RESOURCE_DAIMOI_ACTION_BASE_COST,
-            _safe_float(contract.get("desired_cost", 0.0), 0.0),
-        )
-        action_risk = _clamp01(_safe_float(contract.get("action_risk", 0.0), 0.0))
-        focus_pressure = _clamp01(_safe_float(contract.get("focus_pressure", 0.0), 0.0))
-        focus_debt = max(0.0, _safe_float(contract.get("focus_debt", 0.0), 0.0))
-        risk_multiplier = max(
-            1.0,
-            _safe_float(contract.get("risk_multiplier", 1.0), 1.0),
-        )
-        debt_multiplier = max(
-            1.0,
-            _safe_float(contract.get("debt_multiplier", 1.0), 1.0),
-        )
-        row["resource_action_risk"] = round(action_risk, 6)
-        row["resource_action_focus_pressure"] = round(focus_pressure, 6)
-        row["resource_action_focus_debt"] = round(focus_debt, 6)
-        row["resource_action_risk_multiplier"] = round(risk_multiplier, 6)
-        row["resource_action_debt_multiplier"] = round(debt_multiplier, 6)
-        row["resource_action_utility"] = round(
-            _safe_float(contract.get("utility", 0.0), 0.0),
-            6,
-        )
-
-        if is_resource_sentinel:
-            row["resource_sentinel_idle"] = False
-            row["resource_sentinel_resource_type"] = focus_resource
-            row["resource_sentinel_usage_percent"] = round(
-                _safe_float(
-                    contract.get("sentinel_usage", sentinel_usage), sentinel_usage
-                ),
-                2,
-            )
-            row["resource_sentinel_burn_intensity"] = round(
-                _clamp01(
-                    _safe_float(contract.get("sentinel_burn_intensity", 0.0), 0.0)
-                ),
-                6,
-            )
-            row["resource_sentinel_burn_multiplier"] = round(
-                max(
-                    1.0, _safe_float(contract.get("sentinel_burn_multiplier", 1.0), 1.0)
-                ),
-                6,
-            )
-            if presence_id == _RESOURCE_DAIMOI_CPU_SENTINEL_ID:
-                row["resource_sentinel_cpu_utilization"] = round(cpu_utilization, 2)
-            row["resource_sentinel_burn_threshold"] = round(
-                _safe_float(
-                    contract.get("sentinel_threshold", cpu_sentinel_burn_threshold),
-                    cpu_sentinel_burn_threshold,
-                ),
-                2,
-            )
-
-        expected_cost_vector = _resource_vector_quantized(
-            _resource_vector_normalized(contract.get("expected_cost_vector", {}))
-        )
-        reclaim_vector = _resource_vector_quantized(
-            _resource_vector_normalized(contract.get("reclaim_vector", {}))
-        )
-        required_payment_vector = _resource_vector_quantized(
-            _resource_vector_normalized(contract.get("required_payment_vector", {}))
-        )
-        if _resource_vector_total(required_payment_vector) <= 1e-12:
-            required_payment_vector = _resource_required_payment_vector(
-                focus_resource=focus_resource,
-                desired_cost=desired_cost,
-                pressure=resource_pressure,
-            )
-        desired_cost = max(
-            desired_cost, _resource_vector_total(required_payment_vector)
-        )
-
-        row["resource_contract_cost_vector"] = {
-            resource_name: round(max(0.0, _safe_float(amount, 0.0)), 6)
-            for resource_name, amount in sorted(expected_cost_vector.items())
-            if _safe_float(amount, 0.0) > 1e-8
-        }
-        row["resource_contract_reclaim_vector"] = {
-            resource_name: round(max(0.0, _safe_float(amount, 0.0)), 6)
-            for resource_name, amount in sorted(reclaim_vector.items())
-            if _safe_float(amount, 0.0) > 1e-8
-        }
-        row["resource_required_payment_vector"] = {
-            resource_name: round(max(0.0, _safe_float(amount, 0.0)), 6)
-            for resource_name, amount in sorted(required_payment_vector.items())
-            if _safe_float(amount, 0.0) > 1e-8
-        }
-
-        consume_breakdown: dict[str, float] = {}
-        consumed = 0.0
-        effective_credit = 0.0
-        action_debt = max(0.0, desired_cost)
-        satisfied = False
-        overpay = 0.0
-
-        if denoms and allow_denom:
-            row["resource_burn_strategy"] = "denom_knapsack"
-            for (
-                resource_name,
-                extra_cost,
-            ) in _RESOURCE_CTL_BUDGET_DENOM_EXTRA_COST.items():
-                ctl_overhead[resource_name] = ctl_overhead.get(
-                    resource_name, 0.0
-                ) + max(
-                    0.0,
-                    _safe_float(extra_cost, 0.0),
-                )
-            denom_plan = _wallet_denoms_payment_plan(
-                denoms=denoms,
-                required_vector=required_payment_vector,
-            )
-            satisfied = bool(
-                desired_cost <= 1e-9 or bool(denom_plan.get("affordable", False))
-            )
-            if satisfied:
-                selected_by_index_raw = (
-                    denom_plan.get("selected", {})
-                    if isinstance(denom_plan, dict)
-                    else {}
-                )
-                selected_by_index: dict[int, int] = {}
-                if isinstance(selected_by_index_raw, dict):
-                    for key, value in selected_by_index_raw.items():
-                        index = int(
-                            _safe_float(key, key if isinstance(key, int) else 0)
-                        )
-                        count = max(0, int(_safe_float(value, 0.0)))
-                        if count <= 0:
-                            continue
-                        selected_by_index[index] = (
-                            selected_by_index.get(index, 0) + count
-                        )
-
-                spent_vector = (
-                    denom_plan.get("spent_vector", {})
-                    if isinstance(denom_plan, dict)
-                    else {}
-                )
-                if isinstance(spent_vector, dict):
-                    consume_breakdown = _resource_vector_quantized(
-                        _resource_vector_normalized(spent_vector)
-                    )
-
-                for index in sorted(selected_by_index.keys(), reverse=True):
-                    used_count = max(0, int(selected_by_index.get(index, 0)))
-                    if used_count <= 0:
-                        continue
-                    if index < 0 or index >= len(denoms):
-                        continue
-                    bucket = denoms[index]
-                    if not isinstance(bucket, dict):
-                        continue
-                    bucket_count = max(
-                        0, int(_safe_float(bucket.get("count", 0.0), 0.0))
-                    )
-                    next_count = max(0, bucket_count - used_count)
-                    if next_count <= 0:
-                        denoms.pop(index)
-                    else:
-                        bucket["count"] = next_count
-                        denoms[index] = bucket
-
-                for resource_name, spend_amount in consume_breakdown.items():
-                    balance = max(0.0, _safe_float(wallet.get(resource_name, 0.0), 0.0))
-                    wallet[resource_name] = round(
-                        max(0.0, balance - max(0.0, _safe_float(spend_amount, 0.0))),
-                        6,
-                    )
-
-                consumed = max(0.0, _resource_vector_total(consume_breakdown))
-                effective_credit = max(0.0, desired_cost)
-                action_debt = max(0.0, desired_cost - effective_credit)
-                overpay = max(0.0, _safe_float(denom_plan.get("overpay", 0.0), 0.0))
-            else:
-                consume_breakdown = {}
-                consumed = 0.0
-                effective_credit = 0.0
-                action_debt = max(0.0, desired_cost)
-        else:
-            row["resource_burn_strategy"] = "aggregate_mix"
-            payment = _resource_payment_plan(
-                wallet=wallet,
-                focus_resource=focus_resource,
-                desired_cost=desired_cost,
-                pressure=resource_pressure,
-                prefer_high_pressure=is_resource_sentinel,
-            )
-            effective_credit_raw = max(
-                0.0,
-                _safe_float(payment.get("effective_credit", 0.0), 0.0),
-            )
-            consume_breakdown_raw = payment.get("breakdown", {})
-            satisfied = desired_cost <= 1e-9 or effective_credit_raw >= (
-                desired_cost * _RESOURCE_DAIMOI_ACTION_SATISFIED_RATIO
-            )
-            if satisfied and isinstance(consume_breakdown_raw, dict):
-                for cost_resource, cost_value in consume_breakdown_raw.items():
-                    resource_name = _canonical_resource_type(cost_resource)
-                    if not resource_name:
-                        continue
-                    spend_amount = max(0.0, _safe_float(cost_value, 0.0))
-                    if spend_amount <= 1e-12:
-                        continue
-                    current_balance = max(
-                        0.0,
-                        _safe_float(wallet.get(resource_name, 0.0), 0.0),
-                    )
-                    next_balance = max(0.0, current_balance - spend_amount)
-                    wallet[resource_name] = round(next_balance, 6)
-                    consume_breakdown[resource_name] = (
-                        consume_breakdown.get(resource_name, 0.0) + spend_amount
-                    )
-
-                consumed = max(0.0, sum(consume_breakdown.values()))
-                effective_credit = effective_credit_raw
-                action_debt = max(0.0, desired_cost - effective_credit)
-            else:
-                consume_breakdown = {}
-                consumed = 0.0
-                effective_credit = 0.0
-                action_debt = max(0.0, desired_cost)
-        remaining = max(0.0, _safe_float(wallet.get(focus_resource, 0.0), 0.0))
-        impact["resource_wallet"] = wallet
-        impact["resource_wallet_denoms"] = denoms
-
-        row["resource_consume_type"] = focus_resource
-        row["resource_consume_amount"] = round(consumed, 6)
-        row["resource_action_cost"] = round(desired_cost, 6)
-        row["resource_effective_credit"] = round(effective_credit, 6)
-        row["resource_action_debt"] = round(action_debt, 6)
-        row["resource_affordability"] = round(
-            _clamp01(effective_credit / max(1e-9, desired_cost)),
-            6,
-        )
-        row["resource_payment_overpay"] = round(max(0.0, overpay), 6)
-        row["resource_payment_vector"] = {
-            resource_name: round(max(0.0, _safe_float(cost, 0.0)), 6)
-            for resource_name, cost in sorted(consume_breakdown.items())
-            if _safe_float(cost, 0.0) > 1e-8
-        }
-        row["resource_balance_after"] = round(remaining, 6)
-
-        action_packets += 1
-        for resource_name, cost_value in consume_breakdown.items():
-            consumed_by_resource[resource_name] = consumed_by_resource.get(
-                resource_name, 0.0
-            ) + max(0.0, _safe_float(cost_value, 0.0))
-        consumed_by_presence[presence_id] = (
-            consumed_by_presence.get(presence_id, 0.0) + consumed
-        )
-        debt_by_presence[presence_id] = (
-            debt_by_presence.get(presence_id, 0.0) + action_debt
-        )
-        if not satisfied:
-            blocked_packets += 1
-            blocked_by_presence[presence_id] = (
-                blocked_by_presence.get(presence_id, 0) + 1
-            )
-            row["resource_action_blocked"] = True
-            row["top_job"] = "resource_starved"
-            row["message_probability"] = round(
-                _clamp01(_safe_float(row.get("message_probability", 0.0), 0.0) * 0.22),
-                6,
-            )
-            row["route_probability"] = round(
-                _clamp01(_safe_float(row.get("route_probability", 0.0), 0.0) * 0.32),
-                6,
-            )
-            row["influence_power"] = round(
-                _clamp01(_safe_float(row.get("influence_power", 0.0), 0.0) * 0.28),
-                6,
-            )
-            row["vx"] = round(_safe_float(row.get("vx", 0.0), 0.0) * 0.4, 6)
-            row["vy"] = round(_safe_float(row.get("vy", 0.0), 0.0) * 0.4, 6)
-            row["r"] = round(
-                _clamp01((_safe_float(row.get("r", 0.4), 0.4) * 0.78) + 0.16),
-                5,
-            )
-            row["g"] = round(
-                _clamp01(_safe_float(row.get("g", 0.4), 0.4) * 0.42),
-                5,
-            )
-            row["b"] = round(
-                _clamp01(_safe_float(row.get("b", 0.4), 0.4) * 0.42),
-                5,
-            )
-        else:
-            row["resource_action_blocked"] = False
-            if is_resource_sentinel:
-                row["top_job"] = "burn_resource_packet"
-            else:
-                top_job = str(row.get("top_job", "")).strip()
-                if top_job in {"", "observe"}:
-                    row["top_job"] = "consume_resource_packet"
-
-    summary["action_packets"] = int(action_packets)
-    summary["blocked_packets"] = int(blocked_packets)
-    summary["consumed_total"] = round(sum(consumed_by_resource.values()), 6)
-    summary["debt_total"] = round(sum(debt_by_presence.values()), 6)
-    summary["by_resource"] = {
-        resource: round(amount, 6)
-        for resource, amount in sorted(consumed_by_resource.items())
-        if amount > 1e-8
-    }
-    summary["starved_presences"] = [
-        {
-            "presence_id": presence_id,
-            "blocked_packets": blocked,
-        }
-        for presence_id, blocked in sorted(
-            blocked_by_presence.items(),
-            key=lambda item: (-item[1], item[0]),
-        )[:16]
-    ]
-    summary["active_presences"] = [
-        {
-            "presence_id": presence_id,
-            "consumed": round(amount, 6),
-        }
-        for presence_id, amount in sorted(
-            consumed_by_presence.items(),
-            key=lambda item: (-_safe_float(item[1], 0.0), item[0]),
-        )[:16]
-        if amount > 1e-8
-    ]
-    summary["debt_by_presence"] = [
-        {
-            "presence_id": presence_id,
-            "debt": round(amount, 6),
-        }
-        for presence_id, amount in sorted(
-            debt_by_presence.items(),
-            key=lambda item: (-_safe_float(item[1], 0.0), item[0]),
-        )[:16]
-        if amount > 1e-8
-    ]
-    ctl_after = _resource_ctl_budget_commit(ctl_overhead)
-    control_budget_row = summary.get("control_budget", {})
-    if isinstance(control_budget_row, dict):
-        control_budget_row["overhead"] = {
-            key: round(_safe_float(value, 0.0), 6)
-            for key, value in sorted(ctl_overhead.items())
-            if _safe_float(value, 0.0) > 1e-8
-        }
-        control_budget_row["after"] = {
-            key: round(_safe_float(value, 0.0), 6)
-            for key, value in sorted(ctl_after.items())
-        }
-        summary["control_budget"] = control_budget_row
-    return summary
 
 
 def _snapshot_user_presence_runtime_state(
@@ -12968,23 +10161,10 @@ def build_simulation_state(
 
     emitted_field_particles = normalized_field_particles
 
-    nooi_driver_particles = [
-        row
-        for row in emitted_field_particles
-        if isinstance(row, dict) and _particle_influences_nooi(row)
-    ]
-
-    _NOOI_FIELD.decay(DAIMO_DT_SECONDS)
-    for particle in nooi_driver_particles:
-        if not isinstance(particle, dict):
-            continue
-        _NOOI_FIELD.deposit(
-            _safe_float(particle.get("x", 0.5), 0.5),
-            _safe_float(particle.get("y", 0.5), 0.5),
-            _safe_float(particle.get("vx", 0.0), 0.0),
-            _safe_float(particle.get("vy", 0.0), 0.0),
-        )
-    nooi_field = _NOOI_FIELD.get_grid_snapshot(nooi_driver_particles)
+    nooi_field, nooi_outcome_summary = _apply_nooi_from_particles(
+        emitted_field_particles,
+        dt_seconds=DAIMO_DT_SECONDS,
+    )
 
     distributed_runtime = sync_presence_runtime_state(
         field_particles=emitted_field_particles,
@@ -13051,6 +10231,8 @@ def build_simulation_state(
             )[-12:]
         ],
         "nooi_field": nooi_field,
+        "daimoi_outcome_summary": nooi_outcome_summary,
+        "daimoi_outcome_trails": nooi_field.get("outcome_trails", []),
         "river_flow": {
             "unit": "m3/s",
             "rate": river_flow_rate,
@@ -14912,20 +12094,13 @@ def advance_simulation_field_particles(
     field_particles = [r for r in rows if not r.get("_absorbed")]
     presence_dynamics["field_particles"] = field_particles
 
-    nooi_driver_rows = [
-        row
-        for row in field_particles
-        if isinstance(row, dict) and _particle_influences_nooi(row)
-    ]
-    _NOOI_FIELD.decay(dt)
-    for row in nooi_driver_rows:
-        _NOOI_FIELD.deposit(
-            _safe_float(row.get("x", 0.5), 0.5),
-            _safe_float(row.get("y", 0.5), 0.5),
-            _safe_float(row.get("vx", 0.0), 0.0),
-            _safe_float(row.get("vy", 0.0), 0.0),
-        )
-    presence_dynamics["nooi_field"] = _NOOI_FIELD.get_grid_snapshot(nooi_driver_rows)
+    nooi_field, nooi_outcome_summary = _apply_nooi_from_particles(
+        field_particles,
+        dt_seconds=dt,
+    )
+    presence_dynamics["nooi_field"] = nooi_field
+    presence_dynamics["daimoi_outcome_summary"] = nooi_outcome_summary
+    presence_dynamics["daimoi_outcome_trails"] = nooi_field.get("outcome_trails", [])
 
     _update_stream_motion_overlays(
         presence_dynamics,

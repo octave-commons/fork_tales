@@ -13,14 +13,44 @@ export const lintBudgets = {
     maxFileLines: 1800,
   },
   error: {
-    cognitiveComplexity: 180,
-    cyclomaticComplexity: 200,
-    maxFileLines: 7000,
+    cognitiveComplexity: 28,
+    cyclomaticComplexity: 20,
+    maxFileLines: 1400,
+  },
+  functional: {
+    cognitiveComplexity: 22,
+    cyclomaticComplexity: 18,
+    maxFunctionLines: 180,
+    maxParams: 6,
+    maxStatements: 60,
   },
 }
 
+export const strictFunctionalIgnores = [
+  '**/*.test.ts',
+  '**/*.test.tsx',
+  'src/App.tsx',
+  'src/components/App/CoreControlPanel.tsx',
+  'src/components/App/WorldPanelsViewport.tsx',
+  'src/components/Panels/Catalog.tsx',
+  'src/components/Panels/Chat.tsx',
+  'src/components/Panels/DaimoiPresencePanel.tsx',
+  'src/components/Panels/PresenceCallDeck.tsx',
+  'src/components/Panels/ProjectionLedgerPanel.tsx',
+  'src/components/Panels/RuntimeConfigPanel.tsx',
+  'src/components/Panels/StabilityObservatoryPanel.tsx',
+  'src/components/Panels/Vitals.tsx',
+  'src/components/Panels/WebGraphWeaverPanel.tsx',
+  'src/components/Panels/WorldLogPanel.tsx',
+  'src/components/Simulation/Canvas.tsx',
+  'src/components/Simulation/GalaxyModelDock.tsx',
+  'src/hooks/useAutopilotController.ts',
+  'src/hooks/useWorldState.ts',
+  'src/types/index.ts',
+]
+
 const baseConfig = defineConfig([
-  globalIgnores(['dist', 'dist-ssr', 'coverage']),
+  globalIgnores(['dist', 'dist-ssr', 'coverage', 'e2e', 'playwright.config.ts']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [
@@ -38,6 +68,17 @@ const baseConfig = defineConfig([
     },
     rules: {
       'react-hooks/set-state-in-effect': 'off',
+      'max-depth': ['warn', 4],
+      'max-params': ['warn', 5],
+      'max-lines-per-function': [
+        'warn',
+        {
+          max: 150,
+          skipBlankLines: true,
+          skipComments: true,
+          IIFEs: true,
+        },
+      ],
       'sonarjs/cognitive-complexity': ['warn', lintBudgets.warning.cognitiveComplexity],
       complexity: ['warn', { max: lintBudgets.warning.cyclomaticComplexity }],
       'max-lines': [

@@ -393,7 +393,7 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
 
   const connect = useCallback(() => {
     const url = runtimeWebSocketUrl(
-      `/ws?perspective=${encodeURIComponent(perspective)}&delta_stream=workers&wire=arr&simulation_payload=trimmed&particle_payload=lite&ws_chunk=1&catalog_events=0&skip_catalog_bootstrap=1`,
+      `/ws?perspective=${encodeURIComponent(perspective)}&delta_stream=workers&wire=arr&simulation_payload=trimmed&particle_payload=lite&ws_chunk=0&catalog_events=0&skip_catalog_bootstrap=1`,
     );
 
     wsChunkAssembliesRef.current = {};

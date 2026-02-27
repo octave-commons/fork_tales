@@ -1,3 +1,16 @@
+---
+title: "Distributed Probabilistic ECS Analogues Survey"
+summary: "Research survey mapping daimoi-presence architecture to HPC, actor systems, logs, and vector infrastructure."
+category: "research"
+created_at: "2026-02-20T11:04:58"
+original_filename: "2026.02.20.11.04.58.md"
+original_relpath: "docs/notes/research/2026.02.20.11.04.58.md"
+tags:
+  - research
+  - distributed-systems
+  - ecs
+---
+
 # Distributed Probabilistic ECS Analogues for Daimoi–Presence Simulations
 
 ## Executive summary

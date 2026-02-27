@@ -1,0 +1,100 @@
+import { useMemo } from "react";
+
+import { OVERLAY_VIEW_OPTIONS } from "../components/Simulation/Canvas";
+import { type UseAppPanelConfigsArgs } from "./appPanelConfigTypes";
+import { buildPanelConfigs } from "./panelConfigBuilders";
+import { type PanelConfig } from "./worldPanelLayout";
+
+export function useAppPanelConfigs(args: UseAppPanelConfigsArgs): PanelConfig[] {
+  const {
+    activeMusePresenceId,
+    activeProjection,
+    autopilotEvents,
+    catalog,
+    deferredCoreSimulationTuning,
+    deferredPanelsReady,
+    flyCameraToAnchor,
+    handleUserPresenceInput,
+    handleMuseWorkspaceBindingsChange,
+    handleMuseWorkspaceContextChange,
+    handleMuseWorkspaceSend,
+    handleRecord,
+    handleSendVoice,
+    handleTranscribe,
+    handleWorldInteract,
+    interactingPersonId,
+    isRecording,
+    isThinking,
+    museWorkspaceBindings,
+    museWorkspaceContexts,
+    projectionStateByElement,
+    setActiveMusePresenceId,
+    simulation,
+    voiceInputMeta,
+    worldInteraction,
+  } = args;
+
+  const dedicatedOverlayViews = useMemo(
+    () => OVERLAY_VIEW_OPTIONS.filter((option) => option.id !== "omni"),
+    [],
+  );
+
+  return useMemo(
+    () => buildPanelConfigs({
+      activeMusePresenceId,
+      activeProjection,
+      autopilotEvents,
+      catalog,
+      deferredCoreSimulationTuning,
+      deferredPanelsReady,
+      flyCameraToAnchor,
+      handleUserPresenceInput,
+      handleMuseWorkspaceBindingsChange,
+      handleMuseWorkspaceContextChange,
+      handleMuseWorkspaceSend,
+      handleRecord,
+      handleSendVoice,
+      handleTranscribe,
+      handleWorldInteract,
+      interactingPersonId,
+      isRecording,
+      isThinking,
+      museWorkspaceBindings,
+      museWorkspaceContexts,
+      projectionStateByElement,
+      setActiveMusePresenceId,
+      simulation,
+      voiceInputMeta,
+      worldInteraction,
+      dedicatedOverlayViews,
+    }),
+    [
+      activeMusePresenceId,
+      activeProjection,
+      autopilotEvents,
+      catalog,
+      deferredCoreSimulationTuning,
+      deferredPanelsReady,
+      flyCameraToAnchor,
+      handleUserPresenceInput,
+      handleMuseWorkspaceBindingsChange,
+      handleMuseWorkspaceContextChange,
+      handleMuseWorkspaceSend,
+      handleRecord,
+      handleSendVoice,
+      handleTranscribe,
+      handleWorldInteract,
+      interactingPersonId,
+      isRecording,
+      isThinking,
+      museWorkspaceBindings,
+      museWorkspaceContexts,
+      projectionStateByElement,
+      setActiveMusePresenceId,
+      simulation,
+      voiceInputMeta,
+      worldInteraction,
+      dedicatedOverlayViews,
+    ],
+  );
+}
