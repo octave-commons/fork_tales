@@ -112,6 +112,12 @@ export const PANEL_ANCHOR_PRESETS: Record<string, PanelAnchorPreset> = {
     kind: "cluster",
     worldSize: "m",
   },
+  "nexus.ui.threat_radar": {
+    kind: "node",
+    worldSize: "l",
+    pinnedByDefault: true,
+    anchorId: "witness_thread",
+  },
   "nexus.ui.inspiration_atlas": {
     kind: "cluster",
     worldSize: "m",

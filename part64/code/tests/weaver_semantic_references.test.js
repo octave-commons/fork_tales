@@ -12,6 +12,7 @@ const {
   canonicalWikipediaArticleUrl,
   extractSemanticReferences,
   classifyKnowledgeUrl,
+  normalizeAnalysisSummary,
   parseAuthHeader,
   llmAuthHeaders,
   WebGraphWeaver,
@@ -198,6 +199,25 @@ test("classifyKnowledgeUrl recognizes arXiv and Wikipedia pages", () => {
     "wikipedia_article",
   );
   assert.equal(classifyKnowledgeUrl("https://example.com"), "other");
+});
+
+test("normalizeAnalysisSummary removes prompt echo and placeholders", () => {
+  const noisy =
+    "**Summary:** the page text in 2 concise bullets. FocusIntent: <what should a graph crawler learn from this page>.";
+  const normalized = normalizeAnalysisSummary(
+    noisy,
+    "CISA advisory references a known exploited vulnerability and mitigation steps.",
+  );
+
+  assert.match(normalized, /^- .+\n- .+\nFocusIntent: .+/s);
+  assert.equal(
+    normalized.toLowerCase().includes("the page text in 2 concise bullets"),
+    false,
+  );
+  assert.equal(
+    normalized.includes("<what should a graph crawler learn from this page>"),
+    false,
+  );
 });
 
 test("llm auth header helpers normalize auth env shapes", () => {

@@ -23,6 +23,11 @@ _LOGGER = logging.getLogger(__name__)
 _MAX_EVENT_ROWS = 480
 _MAX_RESOURCES = 640
 _MAX_TRACE_EDGES = 2400
+_MAX_CONVERSATION_ROWS = 180
+_MAX_CONVERSATION_BODY_CHARS = 6000
+_MAX_CONVERSATION_TEXT_CHARS = 48000
+_MAX_SUMMARY_CHARS = 320
+_MAX_EXCERPT_CHARS = 9000
 
 
 def _now_iso() -> str:
@@ -45,6 +50,24 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 def _safe_str(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _safe_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    token = _safe_str(value).lower()
+    if token in {"1", "true", "yes", "y", "on"}:
+        return True
+    if token in {"0", "false", "no", "n", "off"}:
+        return False
+    return bool(default)
+
+
+def _bounded_text(value: Any, limit: int) -> str:
+    text = _safe_str(value)
+    if len(text) <= max(0, int(limit)):
+        return text
+    return text[: max(0, int(limit))]
 
 
 def _canonical_repo_name(value: Any) -> str:
@@ -520,6 +543,337 @@ class GithubPresence:
         links.sort()
         return links[:64]
 
+    def _conversation_context_enabled(self) -> bool:
+        return _safe_bool(self.config.get("include_conversation_context", True), True)
+
+    def _pr_commit_context_enabled(self) -> bool:
+        return _safe_bool(self.config.get("include_pr_commit_context", True), True)
+
+    def _max_conversation_rows(self) -> int:
+        configured = _safe_int(
+            self.config.get("max_conversation_rows", _MAX_CONVERSATION_ROWS),
+            _MAX_CONVERSATION_ROWS,
+        )
+        return max(8, min(_MAX_CONVERSATION_ROWS, configured))
+
+    def _max_conversation_body_chars(self) -> int:
+        configured = _safe_int(
+            self.config.get(
+                "max_conversation_body_chars", _MAX_CONVERSATION_BODY_CHARS
+            ),
+            _MAX_CONVERSATION_BODY_CHARS,
+        )
+        return max(280, min(_MAX_CONVERSATION_BODY_CHARS, configured))
+
+    def _conversation_rows_from_payload(
+        self,
+        payload_rows: Any,
+        *,
+        channel: str,
+        max_rows: int,
+        max_body_chars: int,
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        if not isinstance(payload_rows, list):
+            return rows
+
+        for item in payload_rows:
+            if not isinstance(item, dict):
+                continue
+            body = _bounded_text(item.get("body", ""), max_body_chars)
+            if not body:
+                continue
+            user_row = item.get("user", {})
+            author = (
+                _safe_str(user_row.get("login", ""))
+                if isinstance(user_row, dict)
+                else ""
+            )
+            created_at = _safe_str(item.get("created_at", item.get("submitted_at", "")))
+            rows.append(
+                {
+                    "channel": channel,
+                    "author": author,
+                    "created_at": created_at,
+                    "body": body,
+                }
+            )
+            if len(rows) >= max_rows:
+                break
+        return rows[:max_rows]
+
+    def _fetch_structured_rows(
+        self,
+        *,
+        repo: str,
+        source_url: str,
+        target_url: str,
+        now_ts: float,
+        fetch_budget: int,
+    ) -> tuple[list[dict[str, Any]], int]:
+        if fetch_budget <= 0:
+            return [], fetch_budget
+        ok, _, result = self._fetch_with_schedule(
+            repo=repo,
+            source_url=source_url,
+            target_url=target_url,
+            now_ts=now_ts,
+        )
+        fetch_budget -= 1
+        if not ok or not isinstance(result, dict):
+            return [], fetch_budget
+        payload_rows = result.get("payload", [])
+        if not isinstance(payload_rows, list):
+            return [], fetch_budget
+        return [row for row in payload_rows if isinstance(row, dict)], fetch_budget
+
+    def _resource_text_context(
+        self,
+        payload: dict[str, Any],
+        *,
+        conversation_rows: list[dict[str, Any]],
+        commit_rows: list[dict[str, Any]],
+        diff_keyword_hits: list[dict[str, Any]],
+    ) -> tuple[str, str, str]:
+        title = _bounded_text(payload.get("title", payload.get("name", "")), 240)
+        body = _bounded_text(payload.get("body", ""), _MAX_CONVERSATION_TEXT_CHARS)
+
+        markdown_lines: list[str] = []
+        if title:
+            markdown_lines.append(f"# {title}")
+        if body:
+            markdown_lines.append("")
+            markdown_lines.append("## Root Body")
+            markdown_lines.append(body)
+
+        if conversation_rows:
+            markdown_lines.append("")
+            markdown_lines.append("## Conversation")
+            for index, row in enumerate(conversation_rows, start=1):
+                channel = _safe_str(row.get("channel", "comment"))
+                author = _safe_str(row.get("author", "unknown")) or "unknown"
+                created_at = _safe_str(row.get("created_at", ""))
+                stamp = f" @ {created_at}" if created_at else ""
+                markdown_lines.append("")
+                markdown_lines.append(f"### {index}. {channel} by {author}{stamp}")
+                markdown_lines.append(
+                    _bounded_text(row.get("body", ""), _MAX_CONVERSATION_BODY_CHARS)
+                )
+
+        if commit_rows:
+            markdown_lines.append("")
+            markdown_lines.append("## Commits")
+            for row in commit_rows:
+                sha = _safe_str(row.get("sha", ""))
+                short_sha = sha[:12] if sha else "unknown"
+                author = _safe_str(row.get("author", "")) or "unknown"
+                message = _safe_str(row.get("message", ""))
+                if message:
+                    markdown_lines.append(f"- `{short_sha}` {author}: {message}")
+
+        if diff_keyword_hits:
+            markdown_lines.append("")
+            markdown_lines.append("## Diff Signals")
+            for row in diff_keyword_hits[:24]:
+                if not isinstance(row, dict):
+                    continue
+                file_name = _safe_str(row.get("file", ""))
+                term = _safe_str(row.get("term", ""))
+                if file_name and term:
+                    markdown_lines.append(f"- `{file_name}` matched `{term}`")
+
+        conversation_markdown = _bounded_text(
+            "\n".join(markdown_lines).strip(), _MAX_CONVERSATION_TEXT_CHARS
+        )
+
+        summary_parts = [title]
+        if body:
+            summary_parts.append(body.splitlines()[0])
+        if conversation_rows:
+            summary_parts.append(f"{len(conversation_rows)} discussion entries")
+        if commit_rows:
+            summary_parts.append(f"{len(commit_rows)} commit entries")
+        summary = _bounded_text(
+            " | ".join(part for part in summary_parts if part), _MAX_SUMMARY_CHARS
+        )
+
+        excerpt_parts: list[str] = []
+        if title:
+            excerpt_parts.append(title)
+        if body:
+            excerpt_parts.append(body)
+        for row in conversation_rows[:48]:
+            excerpt_parts.append(_safe_str(row.get("body", "")))
+        for row in commit_rows[:32]:
+            excerpt_parts.append(_safe_str(row.get("message", "")))
+        for row in diff_keyword_hits[:24]:
+            if isinstance(row, dict):
+                excerpt_parts.append(
+                    f"{_safe_str(row.get('file', ''))} {_safe_str(row.get('term', ''))}".strip()
+                )
+        text_excerpt = _bounded_text(
+            "\n".join(part for part in excerpt_parts if part), _MAX_EXCERPT_CHARS
+        )
+        return conversation_markdown, summary, text_excerpt
+
+    def _fetch_item_context(
+        self,
+        *,
+        repo: str,
+        kind: str,
+        payload: dict[str, Any],
+        source_url: str,
+        now_ts: float,
+        fetch_budget: int,
+    ) -> tuple[dict[str, Any], int]:
+        if fetch_budget <= 0:
+            return {
+                "conversation_rows": [],
+                "commit_rows": [],
+            }, fetch_budget
+
+        if not self._conversation_context_enabled():
+            return {
+                "conversation_rows": [],
+                "commit_rows": [],
+            }, fetch_budget
+
+        number = _safe_int(payload.get("number", 0), 0)
+        if number <= 0:
+            return {
+                "conversation_rows": [],
+                "commit_rows": [],
+            }, fetch_budget
+
+        max_rows = self._max_conversation_rows()
+        max_body_chars = self._max_conversation_body_chars()
+        conversation_rows: list[dict[str, Any]] = []
+        commit_rows: list[dict[str, Any]] = []
+
+        issue_comments_url = (
+            f"https://api.github.com/repos/{repo}/issues/{number}/comments?per_page=100"
+        )
+        issue_rows, fetch_budget = self._fetch_structured_rows(
+            repo=repo,
+            source_url=source_url,
+            target_url=issue_comments_url,
+            now_ts=now_ts,
+            fetch_budget=fetch_budget,
+        )
+        if issue_rows:
+            remaining = max(0, max_rows - len(conversation_rows))
+            conversation_rows.extend(
+                self._conversation_rows_from_payload(
+                    issue_rows,
+                    channel="issue-comment",
+                    max_rows=remaining,
+                    max_body_chars=max_body_chars,
+                )
+            )
+
+        kind_token = _safe_str(kind)
+        if kind_token == "github:pr":
+            if fetch_budget > 0:
+                review_rows, fetch_budget = self._fetch_structured_rows(
+                    repo=repo,
+                    source_url=source_url,
+                    target_url=f"https://api.github.com/repos/{repo}/pulls/{number}/reviews?per_page=100",
+                    now_ts=now_ts,
+                    fetch_budget=fetch_budget,
+                )
+                if review_rows:
+                    remaining = max(0, max_rows - len(conversation_rows))
+                    conversation_rows.extend(
+                        self._conversation_rows_from_payload(
+                            review_rows,
+                            channel="review",
+                            max_rows=remaining,
+                            max_body_chars=max_body_chars,
+                        )
+                    )
+
+            if fetch_budget > 0:
+                review_comment_rows, fetch_budget = self._fetch_structured_rows(
+                    repo=repo,
+                    source_url=source_url,
+                    target_url=f"https://api.github.com/repos/{repo}/pulls/{number}/comments?per_page=100",
+                    now_ts=now_ts,
+                    fetch_budget=fetch_budget,
+                )
+                if review_comment_rows:
+                    remaining = max(0, max_rows - len(conversation_rows))
+                    conversation_rows.extend(
+                        self._conversation_rows_from_payload(
+                            review_comment_rows,
+                            channel="review-comment",
+                            max_rows=remaining,
+                            max_body_chars=max_body_chars,
+                        )
+                    )
+
+            if fetch_budget > 0 and self._pr_commit_context_enabled():
+                commit_payload_rows, fetch_budget = self._fetch_structured_rows(
+                    repo=repo,
+                    source_url=source_url,
+                    target_url=f"https://api.github.com/repos/{repo}/pulls/{number}/commits?per_page=100",
+                    now_ts=now_ts,
+                    fetch_budget=fetch_budget,
+                )
+                for row in commit_payload_rows[:64]:
+                    sha = _safe_str(row.get("sha", ""))
+                    commit = row.get("commit", {})
+                    if not isinstance(commit, dict):
+                        commit = {}
+                    message = _bounded_text(
+                        commit.get("message", ""),
+                        max_body_chars,
+                    )
+                    author_obj = commit.get("author", {})
+                    author = (
+                        _safe_str(author_obj.get("name", ""))
+                        if isinstance(author_obj, dict)
+                        else ""
+                    )
+                    if not message:
+                        continue
+                    commit_rows.append(
+                        {
+                            "sha": sha,
+                            "author": author,
+                            "message": message,
+                        }
+                    )
+
+        deduped_rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in conversation_rows:
+            key = "|".join(
+                [
+                    _safe_str(row.get("channel", "")),
+                    _safe_str(row.get("author", "")),
+                    _safe_str(row.get("created_at", "")),
+                    _safe_str(row.get("body", ""))[:128],
+                ]
+            )
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            deduped_rows.append(row)
+            if len(deduped_rows) >= max_rows:
+                break
+        deduped_rows.sort(
+            key=lambda row: (
+                _safe_str(row.get("created_at", "")),
+                _safe_str(row.get("channel", "")),
+                _safe_str(row.get("author", "")),
+            )
+        )
+
+        return {
+            "conversation_rows": deduped_rows,
+            "commit_rows": commit_rows[:64],
+        }, fetch_budget
+
     def _store_resource(
         self,
         *,
@@ -531,6 +885,7 @@ class GithubPresence:
         atoms: list[dict[str, Any]],
         filenames_touched: list[str],
         diff_keyword_hits: list[dict[str, Any]],
+        conversation_context: dict[str, Any] | None,
         now_ts: float,
     ) -> dict[str, Any] | None:
         canonical_url = _safe_str(fetch_result.get("canonical_url", ""))
@@ -572,18 +927,36 @@ class GithubPresence:
         for link in links_to:
             self._url_state_row(link)
 
+        context = (
+            dict(conversation_context)
+            if isinstance(conversation_context, dict)
+            else {"conversation_rows": [], "commit_rows": []}
+        )
+        conversation_rows = [
+            row for row in context.get("conversation_rows", []) if isinstance(row, dict)
+        ]
+        commit_rows = [
+            row for row in context.get("commit_rows", []) if isinstance(row, dict)
+        ]
+        conversation_markdown, context_summary, context_excerpt = (
+            self._resource_text_context(
+                payload,
+                conversation_rows=conversation_rows,
+                commit_rows=commit_rows,
+                diff_keyword_hits=diff_keyword_hits,
+            )
+        )
+        context_hash = (
+            hashlib.sha256(context_excerpt.encode("utf-8")).hexdigest()
+            if context_excerpt
+            else ""
+        )
+
         row = {
             "id": res_id,
             "canonical_url": canonical_url,
             "fetched_ts": round(max(0.0, now_ts), 6),
             "content_hash": content_hash,
-            "text_excerpt_hash": _safe_str(
-                (
-                    fetch_result.get("resource", {})
-                    if isinstance(fetch_result.get("resource", {}), dict)
-                    else {}
-                ).get("text_excerpt_hash", "")
-            ),
             "title": title,
             "kind": _safe_str(kind_hint),
             "repo": repo,
@@ -601,6 +974,23 @@ class GithubPresence:
             "state": _safe_str(payload.get("state", "")),
             "merged_at": _safe_str(payload.get("merged_at", "")),
             "links_to": links_to,
+            "summary": context_summary,
+            "text_excerpt": context_excerpt,
+            "text_excerpt_hash": context_hash
+            or _safe_str(
+                (
+                    fetch_result.get("resource", {})
+                    if isinstance(fetch_result.get("resource", {}), dict)
+                    else {}
+                ).get("text_excerpt_hash", "")
+            ),
+            "conversation_markdown": conversation_markdown,
+            "conversation_comment_count": len(conversation_rows),
+            "conversation_rows": conversation_rows[
+                : max(8, self._max_conversation_rows())
+            ],
+            "commit_count": len(commit_rows),
+            "commit_rows": commit_rows[:64],
         }
 
         resources = self.state.get("resources", {})
@@ -828,6 +1218,15 @@ class GithubPresence:
                     payload["filenames_touched"] = list(filenames_touched)
                     payload["diff_keyword_hits"] = list(diff_keyword_hits)
 
+            conversation_context, fetch_budget = self._fetch_item_context(
+                repo=repo,
+                kind=_safe_str(candidate.get("kind", "github:repo")),
+                payload=payload,
+                source_url=item_canonical,
+                now_ts=now_ts,
+                fetch_budget=fetch_budget,
+            )
+
             atoms = extract_github_atoms(item_canonical, payload, self.config)
             resource_row = self._store_resource(
                 repo=repo,
@@ -838,6 +1237,7 @@ class GithubPresence:
                 atoms=atoms,
                 filenames_touched=filenames_touched,
                 diff_keyword_hits=diff_keyword_hits,
+                conversation_context=conversation_context,
                 now_ts=now_ts,
             )
 
@@ -1053,6 +1453,12 @@ class GithubPresence:
                     ),
                     "content_hash": _safe_str(row.get("content_hash", "")),
                     "text_excerpt_hash": _safe_str(row.get("text_excerpt_hash", "")),
+                    "text_excerpt": _bounded_text(
+                        row.get("text_excerpt", ""), _MAX_EXCERPT_CHARS
+                    ),
+                    "summary": _bounded_text(
+                        row.get("summary", ""), _MAX_SUMMARY_CHARS
+                    ),
                     "title": _safe_str(row.get("title", "")),
                     "source_url_id": _safe_str(row.get("source_url_id", "")),
                     "kind": _safe_str(row.get("kind", "github:repo")),
@@ -1085,6 +1491,25 @@ class GithubPresence:
                         for hit in row.get("diff_keyword_hits", [])
                         if isinstance(hit, dict)
                     ][:24],
+                    "conversation_markdown": _bounded_text(
+                        row.get("conversation_markdown", ""),
+                        _MAX_CONVERSATION_TEXT_CHARS,
+                    ),
+                    "conversation_comment_count": max(
+                        0,
+                        _safe_int(row.get("conversation_comment_count", 0), 0),
+                    ),
+                    "conversation_rows": [
+                        item
+                        for item in row.get("conversation_rows", [])
+                        if isinstance(item, dict)
+                    ][: max(8, self._max_conversation_rows())],
+                    "commit_count": max(0, _safe_int(row.get("commit_count", 0), 0)),
+                    "commit_rows": [
+                        item
+                        for item in row.get("commit_rows", [])
+                        if isinstance(item, dict)
+                    ][:64],
                     "links_to": [
                         _safe_str(link)
                         for link in row.get("links_to", [])
@@ -1297,6 +1722,23 @@ def merge_crawler_graph_with_github(
     crawler_nodes = [
         row for row in base.get("crawler_nodes", []) if isinstance(row, dict)
     ]
+    crawler_nodes.sort(
+        key=lambda row: (
+            max(
+                0,
+                _safe_int(
+                    row.get("depth", row.get("crawl_depth", 99)),
+                    99,
+                ),
+            ),
+            0
+            if _safe_str(row.get("status", "")).strip().lower()
+            in {"fetched", "duplicate", "ok"}
+            else 1,
+            len(_safe_str(row.get("canonical_url", row.get("url", "")))),
+            _safe_str(row.get("id", "")),
+        )
+    )
     edges = [row for row in base.get("edges", []) if isinstance(row, dict)]
     events = [row for row in base.get("events", []) if isinstance(row, dict)]
 
@@ -1305,6 +1747,7 @@ def merge_crawler_graph_with_github(
         for row in crawler_nodes
         if _safe_str(row.get("id", ""))
     }
+    github_new_nodes: list[dict[str, Any]] = []
     for row in (
         github.get("crawler_nodes", [])
         if isinstance(github.get("crawler_nodes", []), list)
@@ -1316,7 +1759,21 @@ def merge_crawler_graph_with_github(
         if not node_id or node_id in node_ids:
             continue
         node_ids.add(node_id)
-        crawler_nodes.append(row)
+        github_new_nodes.append(row)
+
+    github_new_nodes.sort(
+        key=lambda row: (
+            0
+            if _safe_str(row.get("web_node_role", "")).strip().lower() == "web:resource"
+            else 1,
+            -_safe_float(row.get("fetched_ts", 0.0), 0.0),
+            _safe_str(row.get("id", "")),
+        )
+    )
+    github_priority_limit = max(24, min(160, len(github_new_nodes)))
+    github_priority_nodes = github_new_nodes[:github_priority_limit]
+    github_overflow_nodes = github_new_nodes[github_priority_limit:]
+    crawler_nodes = [*github_priority_nodes, *crawler_nodes, *github_overflow_nodes]
 
     edge_keys = {
         (

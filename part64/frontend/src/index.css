@@ -269,7 +269,9 @@ body {
 }
 
 .world-panel-body {
-  height: calc(100% - 2.5rem);
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
   overflow: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
@@ -667,6 +669,8 @@ body {
 .world-focus-pane {
   min-height: calc(100vh - 20rem);
   max-height: calc(100vh - 12.2rem);
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   border-radius: 0.86rem;
   border: 1px solid rgba(139, 196, 234, 0.34);

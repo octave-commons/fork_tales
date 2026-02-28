@@ -538,7 +538,7 @@ export function WebGraphWeaverPanel() {
   const [events, setEvents] = useState<WeaverEvent[]>([]);
   const [connection, setConnection] = useState<"connecting" | "online" | "offline">("connecting");
   const [seedInput, setSeedInput] = useState(
-    "https://arxiv.org/list/cs.AI/recent\nhttps://en.wikipedia.org/wiki/Artificial_intelligence",
+    "https://opencode.ai/\nhttps://openrouter.ai/\nhttps://www.cisa.gov/known-exploited-vulnerabilities-catalog\nhttps://www.cisa.gov/news-events/cybersecurity-advisories\nhttps://nvd.nist.gov/vuln/search\nhttps://attack.mitre.org/\nhttps://blog.google/threat-analysis-group/\nhttps://unit42.paloaltonetworks.com/",
   );
   const [maxDepth, setMaxDepth] = useState(3);
   const [maxNodes, setMaxNodes] = useState(2500);

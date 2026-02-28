@@ -84,6 +84,47 @@ def test_extract_github_atoms_is_bounded_and_deterministic() -> None:
     )
 
 
+def test_extract_github_atoms_reads_conversation_and_commit_context() -> None:
+    payload = {
+        "title": "refactor",
+        "body": "minor cleanup",
+        "conversation_rows": [
+            {
+                "channel": "issue-comment",
+                "author": "security-review",
+                "body": "Please address oauth token leak before merge.",
+            }
+        ],
+        "commit_rows": [
+            {
+                "sha": "abcdef012345",
+                "author": "octocat",
+                "message": "fix oauth token handling and add CVE-2026-3333 note",
+            }
+        ],
+    }
+    config = {"keywords": ["oauth", "leak"]}
+    canonical = "https://github.com/acme/repo/pull/99"
+
+    atoms = extract_github_atoms(canonical, payload, config)
+    kinds = {str(row.get("kind", "")) for row in atoms}
+    terms = {
+        str(row.get("term", "")).lower()
+        for row in atoms
+        if str(row.get("kind", "")) == "mentions"
+    }
+    cves = {
+        str(row.get("cve_id", ""))
+        for row in atoms
+        if str(row.get("kind", "")) == "references_cve"
+    }
+
+    assert "mentions" in kinds
+    assert "oauth" in terms
+    assert "leak" in terms
+    assert "CVE-2026-3333" in cves
+
+
 def test_github_presence_builds_graph_nodes_edges_and_events() -> None:
     calls: list[str] = []
 
@@ -134,6 +175,48 @@ def test_github_presence_builds_graph_nodes_edges_and_events() -> None:
             ]
             return _success_result(url, payload)
 
+        if "/issues/7/comments" in url:
+            payload = [
+                {
+                    "user": {"login": "reviewer-a"},
+                    "created_at": "2026-02-27T00:00:07Z",
+                    "body": "Please harden token validation in parser path.",
+                }
+            ]
+            return _success_result(url, payload)
+
+        if "/pulls/7/reviews" in url:
+            payload = [
+                {
+                    "user": {"login": "security-bot"},
+                    "submitted_at": "2026-02-27T00:00:08Z",
+                    "body": "LGTM after CVE note and release mention.",
+                }
+            ]
+            return _success_result(url, payload)
+
+        if "/pulls/7/comments" in url:
+            payload = [
+                {
+                    "user": {"login": "reviewer-b"},
+                    "created_at": "2026-02-27T00:00:09Z",
+                    "body": "Patch line near token parser should include tests.",
+                }
+            ]
+            return _success_result(url, payload)
+
+        if "/pulls/7/commits" in url:
+            payload = [
+                {
+                    "sha": "abc1234567890deadbeef",
+                    "commit": {
+                        "author": {"name": "octocat"},
+                        "message": "tighten parser token checks for CVE path",
+                    },
+                }
+            ]
+            return _success_result(url, payload)
+
         return {
             "ok": False,
             "url": url,
@@ -154,7 +237,7 @@ def test_github_presence_builds_graph_nodes_edges_and_events() -> None:
                 "file_patterns": ["package.json", "requirements.txt"],
                 "max_repos": 1,
                 "max_items_per_repo": 3,
-                "max_github_fetches_per_tick": 3,
+                "max_github_fetches_per_tick": 10,
                 "repo_cooldown_s": 0,
                 "url_cooldown_s": 1200,
                 "endpoint_order": ["pulls"],
@@ -164,7 +247,7 @@ def test_github_presence_builds_graph_nodes_edges_and_events() -> None:
         presence = GithubPresence(part_root, fetcher=fake_fetcher)
         touched = presence.tick(slack_ms=80.0, now_ts=1_700_000_000.0)
         assert touched
-        assert len(calls) == 3
+        assert len(calls) == 7
 
         graph = presence.graph_snapshot()
         nodes = graph.get("crawler_nodes", [])
@@ -185,6 +268,12 @@ def test_github_presence_builds_graph_nodes_edges_and_events() -> None:
         assert pr_resource.get("number") == 7
         assert "package.json" in pr_resource.get("filenames_touched", [])
         assert int(pr_resource.get("importance_score", 0)) >= 4
+        assert int(pr_resource.get("conversation_comment_count", 0)) >= 3
+        assert int(pr_resource.get("commit_count", 0)) == 1
+        assert "parser" in str(pr_resource.get("text_excerpt", "")).lower()
+        assert (
+            "conversation" in str(pr_resource.get("conversation_markdown", "")).lower()
+        )
 
         edge_kinds = {
             str(row.get("kind", "")).strip().lower()
@@ -330,6 +419,7 @@ def test_github_presence_counts_pr_files_subfetch_in_budget() -> None:
                 "repo_cooldown_s": 0,
                 "url_cooldown_s": 0,
                 "endpoint_order": ["pulls"],
+                "include_conversation_context": False,
             },
         )
 

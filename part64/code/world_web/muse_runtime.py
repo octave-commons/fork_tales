@@ -47,6 +47,11 @@ BOOTSTRAP_MUSE_SPECS: tuple[dict[str, Any], ...] = (
         "label": "Symmetry",
         "anchor": {"x": 0.82, "y": 0.23, "zoom": 1.0, "kind": "bootstrap"},
     },
+    {
+        "id": "github_security_review",
+        "label": "GitHub Threat Radar",
+        "anchor": {"x": 0.82, "y": 0.5, "zoom": 1.0, "kind": "bootstrap"},
+    },
 )
 DEFAULT_AUDIO_INTENT_ENABLED = True
 DEFAULT_AUDIO_MIN_SCORE = 0.55
@@ -1732,6 +1737,27 @@ class MuseRuntimeManager:
             if asks_arxiv_papers:
                 _append_tool("graph_query:arxiv_papers 8")
 
+            asks_github_threat_radar = "threat radar" in normalized or (
+                (
+                    "github" in normalized
+                    or "repo" in normalized
+                    or "pull request" in normalized
+                    or "code review" in normalized
+                )
+                and (
+                    "threat" in normalized
+                    or "security" in normalized
+                    or "cve" in normalized
+                    or "vuln" in normalized
+                    or "exploit" in normalized
+                    or "supply chain" in normalized
+                )
+            )
+            if asks_github_threat_radar:
+                _append_tool("graph_query:github_threat_radar 1440 24")
+                _append_tool("graph_query:github_recent_changes 1440 32")
+                _append_tool("graph_query:github_status")
+
             asks_web_resource_summary = (
                 "crawler learn" in normalized
                 or "what got crawled" in normalized
@@ -1772,6 +1798,7 @@ class MuseRuntimeManager:
         grounded = False
         crawler_summary: dict[str, Any] = {}
         arxiv_summary: dict[str, Any] = {}
+        github_threat_summary: dict[str, Any] = {}
 
         for row in tool_rows:
             if not isinstance(row, dict):
@@ -1837,6 +1864,37 @@ class MuseRuntimeManager:
                             and str(item.get("canonical_url", "")).strip()
                         ],
                     }
+                if query_name == "github_threat_radar" and isinstance(
+                    query_payload, dict
+                ):
+                    github_threat_summary = {
+                        "count": max(
+                            0,
+                            _safe_int(query_payload.get("count", 0), 0),
+                        ),
+                        "critical_count": max(
+                            0,
+                            _safe_int(query_payload.get("critical_count", 0), 0),
+                        ),
+                        "high_count": max(
+                            0,
+                            _safe_int(query_payload.get("high_count", 0), 0),
+                        ),
+                        "medium_count": max(
+                            0,
+                            _safe_int(query_payload.get("medium_count", 0), 0),
+                        ),
+                        "repo": str(query_payload.get("repo", "") or "").strip(),
+                        "threats": [
+                            row
+                            for row in (
+                                query_payload.get("threats", [])
+                                if isinstance(query_payload.get("threats", []), list)
+                                else []
+                            )
+                            if isinstance(row, dict)
+                        ][:4],
+                    }
 
         if not grounded:
             return None
@@ -1852,7 +1910,69 @@ class MuseRuntimeManager:
             if facts_path:
                 facts_line += f" snapshot={facts_path}."
             facts_lines.append(facts_line)
-        if arxiv_summary:
+        if github_threat_summary:
+            threat_count = max(
+                0,
+                _safe_int(github_threat_summary.get("count", 0), 0),
+            )
+            critical_count = max(
+                0,
+                _safe_int(github_threat_summary.get("critical_count", 0), 0),
+            )
+            high_count = max(
+                0,
+                _safe_int(github_threat_summary.get("high_count", 0), 0),
+            )
+            medium_count = max(
+                0,
+                _safe_int(github_threat_summary.get("medium_count", 0), 0),
+            )
+            repo_filter = str(github_threat_summary.get("repo", "") or "").strip()
+            derivation_lines.append(
+                "GitHub threat radar: "
+                + f"count={threat_count}, critical={critical_count}, high={high_count}, medium={medium_count}"
+                + (f", repo={repo_filter}." if repo_filter else ".")
+            )
+            top_lines: list[str] = []
+            for row in github_threat_summary.get("threats", []):
+                if not isinstance(row, dict):
+                    continue
+                risk_level = str(row.get("risk_level", "") or "").strip().lower()
+                risk_score = max(0, _safe_int(row.get("risk_score", 0), 0))
+                repo = str(row.get("repo", "") or "").strip()
+                number = max(0, _safe_int(row.get("number", 0), 0))
+                title = str(row.get("title", "") or "").strip()
+                url = str(row.get("canonical_url", "") or "").strip()
+                cves = [
+                    str(item).strip()
+                    for item in (
+                        row.get("cves", [])
+                        if isinstance(row.get("cves", []), list)
+                        else []
+                    )
+                    if str(item).strip()
+                ]
+                label = f"[{risk_level or 'risk'}:{risk_score}]"
+                target = f"{repo}#{number}" if repo and number > 0 else (repo or url)
+                descriptor = title or url or target
+                top_line = f"{label} {target}: {descriptor}".strip()
+                if cves:
+                    top_line += f" cves={','.join(cves[:3])}"
+                top_lines.append(top_line)
+                if len(top_lines) >= 3:
+                    break
+            if top_lines:
+                derivation_lines.append(
+                    "Top threat candidates: " + "; ".join(top_lines) + "."
+                )
+            else:
+                derivation_lines.append(
+                    "Threat radar produced no candidate rows in this window."
+                )
+            unknown_lines.append(
+                "Threat radar is heuristic scoring from crawler atoms; verify against full issue/PR threads before action."
+            )
+        elif arxiv_summary:
             total = max(0, _safe_int(arxiv_summary.get("count_total", 0), 0))
             fetched = max(0, _safe_int(arxiv_summary.get("count_fetched", 0), 0))
             derivation_lines.append(

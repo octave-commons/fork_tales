@@ -61,8 +61,35 @@ def _normalize_query_name(name: Any) -> str:
         "github_repo": "github_repo_summary",
         "github_search": "github_find",
         "github_recent": "github_recent_changes",
+        "github_threats": "github_threat_radar",
+        "threat_radar": "github_threat_radar",
+        "threats": "github_threat_radar",
     }
     return aliases.get(text, text)
+
+
+_GITHUB_THREAT_TERMS: set[str] = {
+    "0day",
+    "auth",
+    "credential",
+    "cve",
+    "dos",
+    "exploit",
+    "hotfix",
+    "injection",
+    "leak",
+    "malware",
+    "phishing",
+    "privilege",
+    "rce",
+    "secret",
+    "security",
+    "supply",
+    "token",
+    "vuln",
+    "xss",
+    "xxe",
+}
 
 
 def _node_role(node: dict[str, Any]) -> str:
@@ -1078,6 +1105,173 @@ def _query_github_recent_changes(
     }
 
 
+def _github_threat_score(
+    row: dict[str, Any],
+) -> tuple[int, list[str], list[str]]:
+    atoms = row.get("atoms", []) if isinstance(row.get("atoms", []), list) else []
+    atom_kinds: set[str] = set()
+    mention_terms: set[str] = set()
+    labels: set[str] = set()
+    cves: set[str] = set()
+
+    for atom in atoms:
+        if not isinstance(atom, dict):
+            continue
+        kind = str(atom.get("kind", "") or "").strip().lower()
+        if not kind:
+            continue
+        atom_kinds.add(kind)
+        if kind == "mentions":
+            term = str(atom.get("term", "") or "").strip().lower()
+            if term:
+                mention_terms.add(term)
+        elif kind == "has_label":
+            label = str(atom.get("label", "") or "").strip().lower()
+            if label:
+                labels.add(label)
+        elif kind == "references_cve":
+            cve_id = str(atom.get("cve_id", "") or "").strip().upper()
+            if cve_id:
+                cves.add(cve_id)
+
+    score = 0
+    signals: list[str] = []
+    kind = str(row.get("kind", "") or "").strip().lower()
+    state = str(row.get("state", "") or "").strip().lower()
+    title = str(row.get("title", "") or "").strip().lower()
+    importance_score = max(0, _safe_int(row.get("importance_score", 0), 0))
+
+    if kind == "github:advisory":
+        score += 8
+        signals.append("github_advisory")
+    if cves:
+        score += 8 + min(4, max(0, len(cves) - 1))
+        signals.append("references_cve")
+    if "changes_dependency" in atom_kinds:
+        score += 4
+        signals.append("changes_dependency")
+    if any(label in {"security", "hotfix", "bug"} for label in labels):
+        score += 2
+        signals.append("security_label")
+    if any(term in _GITHUB_THREAT_TERMS for term in mention_terms):
+        score += 2
+        signals.append("mentions_security_term")
+    if any(token in title for token in _GITHUB_THREAT_TERMS):
+        score += 2
+        signals.append("title_security_term")
+    if state == "open":
+        score += 1
+        signals.append("open_state")
+    if kind == "github:pr" and "pr_merged" in atom_kinds:
+        score += 2
+        signals.append("pr_merged")
+    if importance_score > 0:
+        score += min(4, max(1, int(round(importance_score / 2.0))))
+        signals.append("importance_boost")
+
+    deduped_signals = sorted({token for token in signals if token})
+    sorted_cves = sorted(cves)
+    return int(score), deduped_signals, sorted_cves
+
+
+def _query_github_threat_radar(
+    nodes: list[dict[str, Any]],
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    resources = _github_resource_rows(nodes)
+    repo_filter = str(args.get("repo", "") or "").strip().lower()
+    window_ticks = max(1, min(20_000, _safe_int(args.get("window_ticks", 1440), 1440)))
+    limit = max(1, min(128, _safe_int(args.get("limit", 24), 24)))
+
+    latest_fetched_ts = max(
+        [_safe_float(row.get("fetched_ts", 0.0), 0.0) for row in resources],
+        default=0.0,
+    )
+    min_fetched_ts = max(0.0, latest_fetched_ts - float(window_ticks))
+
+    rows: list[dict[str, Any]] = []
+    for row in resources:
+        row_repo = str(row.get("repo", "") or "").strip().lower()
+        if repo_filter and row_repo != repo_filter:
+            continue
+
+        fetched_ts = max(0.0, _safe_float(row.get("fetched_ts", 0.0), 0.0))
+        if min_fetched_ts > 0.0 and fetched_ts > 0.0 and fetched_ts < min_fetched_ts:
+            continue
+
+        risk_score, signals, cves = _github_threat_score(row)
+        if risk_score <= 0:
+            continue
+
+        if risk_score >= 11:
+            risk_level = "critical"
+        elif risk_score >= 8:
+            risk_level = "high"
+        elif risk_score >= 5:
+            risk_level = "medium"
+        else:
+            risk_level = "low"
+
+        rows.append(
+            {
+                "risk_score": int(risk_score),
+                "risk_level": risk_level,
+                "repo": row.get("repo", ""),
+                "kind": row.get("kind", ""),
+                "number": row.get("number", 0),
+                "title": row.get("title", ""),
+                "canonical_url": row.get("canonical_url", ""),
+                "fetched_ts": fetched_ts,
+                "updated_at": row.get("updated_at", ""),
+                "state": row.get("state", ""),
+                "importance_score": row.get("importance_score", 0),
+                "signals": signals,
+                "cves": cves,
+            }
+        )
+
+    rows.sort(
+        key=lambda row: (
+            -_safe_int(row.get("risk_score", 0), 0),
+            -_safe_float(row.get("fetched_ts", 0.0), 0.0),
+            str(row.get("canonical_url", "")),
+        )
+    )
+
+    level_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    repo_risk: dict[str, int] = {}
+    for row in rows:
+        level = str(row.get("risk_level", "low") or "low").strip().lower()
+        if level in level_counts:
+            level_counts[level] += 1
+        repo = str(row.get("repo", "") or "").strip()
+        if not repo:
+            continue
+        score = _safe_int(row.get("risk_score", 0), 0)
+        previous = _safe_int(repo_risk.get(repo, 0), 0)
+        if score > previous:
+            repo_risk[repo] = score
+
+    repo_hotlist = sorted(
+        repo_risk.items(),
+        key=lambda item: (-_safe_int(item[1], 0), str(item[0])),
+    )
+
+    return {
+        "repo": repo_filter,
+        "window_ticks": int(window_ticks),
+        "count": len(rows),
+        "critical_count": int(level_counts["critical"]),
+        "high_count": int(level_counts["high"]),
+        "medium_count": int(level_counts["medium"]),
+        "low_count": int(level_counts["low"]),
+        "hot_repos": [
+            {"repo": repo, "max_risk_score": score} for repo, score in repo_hotlist[:16]
+        ],
+        "threats": rows[:limit],
+    }
+
+
 def _query_web_resource_summary(
     nodes: list[dict[str, Any]],
     edges: list[dict[str, Any]],
@@ -1179,6 +1373,13 @@ def _query_web_resource_summary(
                 6,
             ),
             "content_hash": str(resource_node.get("content_hash", "") or "").strip(),
+            "summary": str(resource_node.get("summary", "") or "").strip(),
+            "text_excerpt": str(resource_node.get("text_excerpt", "") or "").strip(),
+            "conversation_comment_count": max(
+                0,
+                _safe_int(resource_node.get("conversation_comment_count", 0), 0),
+            ),
+            "commit_count": max(0, _safe_int(resource_node.get("commit_count", 0), 0)),
             "source_url_id": str(resource_node.get("source_url_id", "") or "").strip(),
         },
         "link_count": len(links),
@@ -1267,6 +1468,10 @@ def run_named_graph_query(
             nodes,
             query_args,
         ),
+        "github_threat_radar": lambda: _query_github_threat_radar(
+            nodes,
+            query_args,
+        ),
         "web_resource_summary": lambda: _query_web_resource_summary(
             nodes,
             edges,
@@ -1297,6 +1502,7 @@ def run_named_graph_query(
                 "github_repo_summary",
                 "github_find",
                 "github_recent_changes",
+                "github_threat_radar",
                 "web_resource_summary",
             ],
         }

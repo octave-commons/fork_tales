@@ -1,0 +1,72 @@
+{
+  "ok": true,
+  "record": "eta-mu.sim-learning-eval.v1",
+  "generated_at": "2026-02-21T02:15:20Z",
+  "config": {
+    "runtimes": [
+      {
+        "label": "cdb",
+        "url": "http://127.0.0.1:18880"
+      }
+    ],
+    "timeout": 35.0,
+    "latency_requests": 24,
+    "latency_warmup": 6,
+    "training_rounds": 4,
+    "song_rounds": 2,
+    "environment_events": 48,
+    "seed": 4207,
+    "circumstances": "/home/err/devel/vaults/fork_tales/world_state/muse_semantic_training_circumstances.json",
+    "regimen": "/home/err/devel/vaults/fork_tales/world_state/muse_song_training_regime.json"
+  },
+  "npu_checks": [
+    {
+      "label": "cdb",
+      "runtime": "http://127.0.0.1:18880",
+      "ok": true,
+      "backend": "openvino",
+      "openvino_device": "NPU",
+      "openvino_endpoint": "http://host.docker.internal:18000/v1/embeddings",
+      "probe_ok": true,
+      "probe_error": "",
+      "c_runtime_source": "c-onnxruntime:NPU",
+      "c_runtime_error": "",
+      "apply_ok": true
+    }
+  ],
+  "environment_injections": [
+    {
+      "label": "cdb",
+      "runtime": "http://127.0.0.1:18880",
+      "ok": true,
+      "processed": 48,
+      "event_count": 52,
+      "error": ""
+    }
+  ],
+  "simulation_latency": [
+    {
+      "label": "cdb",
+      "runtime": "http://127.0.0.1:18880",
+      "ok": true,
+      "samples": 24,
+      "failures": 0,
+      "mean_ms": 4679.688858083372,
+      "p50_ms": 1893.9345860003414,
+      "p95_ms": 10878.43477889951,
+      "p99_ms": 11123.859586309618,
+      "max_ms": 11190.760974999648
+    }
+  ],
+  "training": [],
+  "song_benchmark": {
+    "ok": false,
+    "skipped": true
+  },
+  "summary": {
+    "failure_count": 0,
+    "best_latency_runtime": "cdb",
+    "mean_target_accuracy": 0.0,
+    "mean_routed_accuracy": 0.0
+  }
+}

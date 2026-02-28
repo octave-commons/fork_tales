@@ -111,11 +111,11 @@ NEXUS_GRAVITY_FLOW_GAIN = 0.0037
 NEXUS_DAMPING = 0.89
 NEXUS_SPEED_CAP_BASE = 0.0019
 NEXUS_SPEED_CAP_GRAVITY_GAIN = 0.001
-DAIMOI_ANTI_CLUMP_TARGET = 0.38
-DAIMOI_ANTI_CLUMP_KP = 0.22
-DAIMOI_ANTI_CLUMP_KI = 0.04
-DAIMOI_ANTI_CLUMP_SMOOTHING = 0.15
-DAIMOI_ANTI_CLUMP_UPDATE_STRIDE = 10
+DAIMOI_ANTI_CLUMP_TARGET = 0.34
+DAIMOI_ANTI_CLUMP_KP = 0.30
+DAIMOI_ANTI_CLUMP_KI = 0.05
+DAIMOI_ANTI_CLUMP_SMOOTHING = 0.20
+DAIMOI_ANTI_CLUMP_UPDATE_STRIDE = 6
 DAIMOI_ANTI_CLUMP_INTEGRAL_LIMIT = 1.5
 DAIMOI_ANTI_CLUMP_DRIVE_LIMIT = 1.0
 DAIMOI_ANTI_CLUMP_GRID_SIZE = 16
@@ -145,8 +145,8 @@ DAIMOI_OBSERVER_SNR_EPS = max(
 DAIMOI_OBSERVER_HIGH_SNR_PERTURB_GAIN = max(
     0.0,
     _safe_float(
-        os.getenv("DAIMOI_OBSERVER_HIGH_SNR_PERTURB_GAIN", "0.28") or "0.28",
-        0.28,
+        os.getenv("DAIMOI_OBSERVER_HIGH_SNR_PERTURB_GAIN", "0.34") or "0.34",
+        0.34,
     ),
 )
 
@@ -3202,6 +3202,37 @@ def build_probabilistic_daimoi_particles(
         elif prior_tick_ms >= 72.0:
             chaos_perturb_stride += 1
 
+        soft_repulsion_stride = 1
+        if state_count > 760:
+            soft_repulsion_stride = 4
+        elif state_count > 520:
+            soft_repulsion_stride = 4
+        elif state_count > 320:
+            soft_repulsion_stride = 3
+        elif state_count > 200:
+            soft_repulsion_stride = 2
+        elif state_count > 120:
+            soft_repulsion_stride = 2
+        if prior_tick_ms >= 96.0:
+            soft_repulsion_stride += 2
+        elif prior_tick_ms >= 72.0:
+            soft_repulsion_stride += 1
+        soft_repulsion_radius_base = _clamp_range(
+            0.032 + (anti_clump_density_drive * 0.026),
+            0.024,
+            0.088,
+        )
+        soft_repulsion_gain_base = _clamp_range(
+            0.00052 + (anti_clump_density_drive * 0.0016),
+            0.00024,
+            0.0028,
+        )
+        soft_repulsion_overlap_gain = _clamp_range(
+            0.00092 + (anti_clump_density_drive * 0.0022),
+            0.00038,
+            0.0038,
+        )
+
         nexus_position_by_node_id: dict[str, tuple[float, float]] = {}
         nexus_balance_seed_by_node_id: dict[str, float] = {}
         nexus_bundle_gravity_by_node_id: dict[str, float] = {}
@@ -3604,6 +3635,95 @@ def build_probabilistic_daimoi_particles(
                 )
 
             if not is_nexus:
+                repulsion_fx = _safe_float(state.get("repulsion_fx", 0.0), 0.0)
+                repulsion_fy = _safe_float(state.get("repulsion_fy", 0.0), 0.0)
+                if not is_chaos:
+                    if age % soft_repulsion_stride == 0:
+                        repulsion_fx = 0.0
+                        repulsion_fy = 0.0
+                        self_id = str(state.get("id", "")).strip()
+                        self_radius = max(
+                            0.006,
+                            _safe_float(state.get("radius", 0.014), 0.014),
+                        )
+                        repulsion_radius = max(
+                            self_radius * 1.7,
+                            soft_repulsion_radius_base,
+                        )
+                        repulsion_candidates: list[dict[str, Any]] = []
+                        _quadtree_query_radius(
+                            state_tree,
+                            px,
+                            py,
+                            repulsion_radius,
+                            repulsion_candidates,
+                        )
+                        for other_state in repulsion_candidates:
+                            if not isinstance(other_state, dict):
+                                continue
+                            other_id = str(other_state.get("id", "")).strip()
+                            if not other_id or other_id == self_id:
+                                continue
+                            if bool(other_state.get("is_nexus", False)):
+                                continue
+                            other_x = _safe_float(other_state.get("x", px), px)
+                            other_y = _safe_float(other_state.get("y", py), py)
+                            repel_dx = px - other_x
+                            repel_dy = py - other_y
+                            repel_dist_sq = (repel_dx * repel_dx) + (
+                                repel_dy * repel_dy
+                            )
+                            if repel_dist_sq <= 1e-12:
+                                repel_angle = (
+                                    _stable_ratio(
+                                        f"{self_id}|repel-jitter|{other_id}",
+                                        age + 37,
+                                    )
+                                    * math.tau
+                                )
+                                repulsion_fx += math.cos(repel_angle) * (
+                                    soft_repulsion_gain_base * 0.35
+                                )
+                                repulsion_fy += math.sin(repel_angle) * (
+                                    soft_repulsion_gain_base * 0.35
+                                )
+                                continue
+                            repel_dist = math.sqrt(repel_dist_sq)
+                            if repel_dist > repulsion_radius:
+                                continue
+                            other_radius = max(
+                                0.006,
+                                _safe_float(other_state.get("radius", 0.014), 0.014),
+                            )
+                            contact_radius = max(
+                                0.008,
+                                (self_radius + other_radius) * 0.86,
+                            )
+                            repel_falloff = _clamp01(
+                                1.0 - (repel_dist / repulsion_radius)
+                            )
+                            overlap_pressure = _clamp01(
+                                (contact_radius - repel_dist)
+                                / max(1e-6, contact_radius)
+                            )
+                            repel_gain = (
+                                soft_repulsion_gain_base
+                                * (repel_falloff * repel_falloff)
+                            ) + (
+                                soft_repulsion_overlap_gain
+                                * (overlap_pressure * overlap_pressure)
+                            )
+                            repulsion_fx += (repel_dx / repel_dist) * repel_gain
+                            repulsion_fy += (repel_dy / repel_dist) * repel_gain
+                    else:
+                        repulsion_fx *= 0.82
+                        repulsion_fy *= 0.82
+
+                state["repulsion_fx"] = repulsion_fx
+                state["repulsion_fy"] = repulsion_fy
+                fx += repulsion_fx
+                fy += repulsion_fy
+
                 semantic_vector = _state_unit_vector(state, "e_curr")
                 near_radius = max(
                     0.03,

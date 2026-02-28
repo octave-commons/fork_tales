@@ -7854,6 +7854,17 @@ def _build_backend_field_particles(
             short_range_radius = 0.16 + (local_density_ratio * 0.04)
             interaction_radius = 0.36
             long_range_radius = 0.92
+            spread = max(
+                0.028,
+                min(
+                    0.14,
+                    0.072 + (local_density_ratio * 0.056) + (cluster_ratio * 0.022),
+                ),
+            )
+            peer_repulsion_radius = max(0.032, min(0.18, spread * 1.35))
+            peer_repulsion_strength = (
+                0.00022 + (local_density_ratio * 0.00088) + (cluster_ratio * 0.00034)
+            )
 
             for local_index in range(particle_count):
                 particle_id = f"field:{presence_id}:{local_index}"
@@ -7863,7 +7874,6 @@ def _build_backend_field_particles(
                     cache_row = {}
 
                 seed_ratio = _stable_ratio(f"{particle_id}|seed", local_index + 11)
-                spread = max(0.018, 0.085 - (local_density_ratio * 0.045))
                 home_dx = (
                     (_stable_ratio(f"{particle_id}|home-x", local_index + 19) * 2.0)
                     - 1.0
@@ -7886,6 +7896,89 @@ def _build_backend_field_particles(
 
                 fx = (home_x - px) * (0.18 + (ledger_influence * 0.18))
                 fy = (home_y - py) * (0.18 + (ledger_influence * 0.18))
+
+                if particle_count > 1 and peer_repulsion_strength > 1e-9:
+                    for peer_index in range(particle_count):
+                        if peer_index == local_index:
+                            continue
+                        peer_id = f"field:{presence_id}:{peer_index}"
+                        peer_home_dx = (
+                            (
+                                _stable_ratio(
+                                    f"{peer_id}|home-x",
+                                    peer_index + 19,
+                                )
+                                * 2.0
+                            )
+                            - 1.0
+                        ) * spread
+                        peer_home_dy = (
+                            (
+                                (
+                                    _stable_ratio(
+                                        f"{peer_id}|home-y",
+                                        peer_index + 29,
+                                    )
+                                    * 2.0
+                                )
+                                - 1.0
+                            )
+                            * spread
+                            * 0.82
+                        )
+                        peer_home_x = _clamp01(field_center_x + peer_home_dx)
+                        peer_home_y = _clamp01(field_center_y + peer_home_dy)
+                        peer_cache_row = particle_cache.get(peer_id, {})
+                        if isinstance(peer_cache_row, dict):
+                            peer_x = _clamp01(
+                                _safe_float(
+                                    peer_cache_row.get("x", peer_home_x),
+                                    peer_home_x,
+                                )
+                            )
+                            peer_y = _clamp01(
+                                _safe_float(
+                                    peer_cache_row.get("y", peer_home_y),
+                                    peer_home_y,
+                                )
+                            )
+                        else:
+                            peer_x = peer_home_x
+                            peer_y = peer_home_y
+
+                        repel_dx = px - peer_x
+                        repel_dy = py - peer_y
+                        repel_distance = math.sqrt(
+                            (repel_dx * repel_dx) + (repel_dy * repel_dy)
+                        )
+                        if repel_distance <= 1e-8:
+                            repel_angle = (
+                                (
+                                    seed_ratio
+                                    + _stable_ratio(
+                                        f"{particle_id}|peer:{peer_index}",
+                                        peer_index + 53,
+                                    )
+                                )
+                                % 1.0
+                            ) * (math.pi * 2.0)
+                            fx += math.cos(repel_angle) * (
+                                peer_repulsion_strength * 0.9
+                            )
+                            fy += math.sin(repel_angle) * (
+                                peer_repulsion_strength * 0.9
+                            )
+                            continue
+                        if repel_distance >= peer_repulsion_radius:
+                            continue
+                        repel_falloff = _clamp01(
+                            1.0 - (repel_distance / peer_repulsion_radius)
+                        )
+                        repel_strength = peer_repulsion_strength * (
+                            repel_falloff * repel_falloff
+                        )
+                        fx += (repel_dx / repel_distance) * repel_strength
+                        fy += (repel_dy / repel_distance) * repel_strength
 
                 for node in node_signals:
                     dx = _safe_float(node.get("x", 0.5), 0.5) - px
@@ -8691,6 +8784,8 @@ def _build_weaver_field_graph_uncached(
             "node_type": "web:url" if kind == "url" and canonical_url else "crawler",
             "crawler_kind": kind,
             "web_node_role": "web:url" if kind == "url" and canonical_url else "",
+            "depth": max(0, _safe_int(node.get("depth", 0), 0)),
+            "crawl_depth": max(0, _safe_int(node.get("depth", 0), 0)),
             "resource_kind": resource_kind,
             "modality": modality,
             "label": label,

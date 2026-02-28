@@ -853,3 +853,81 @@ def test_eta_mu_space_forms_support_layered_collections(monkeypatch: Any) -> Non
     collections = vecstore.get("collections", {})
     assert collections.get("text") == text_collection
     assert collections.get("image") == image_collection
+
+
+def test_docmeta_record_rejects_path_only_llm_summary(monkeypatch: Any) -> None:
+    from code.world_web import catalog as catalog_module
+
+    monkeypatch.setattr(
+        catalog_module,
+        "_ollama_generate_text",
+        lambda *_args, **_kwargs: (
+            '{"summary":"demo.zip .opencode/knowledge/archive/2026/02/16/demo.zip", "tags":["archive","file"]}',
+            "stub-llm",
+        ),
+    )
+
+    with tempfile.TemporaryDirectory() as td:
+        record = catalog_module._build_docmeta_record(
+            {
+                "id": "knowledge.demo",
+                "source_hash": "abc123",
+                "source_rel_path": ".ημ/demo.zip",
+                "archive_rel_path": ".opencode/knowledge/archive/demo.zip",
+                "kind": "file",
+                "name": "demo.zip",
+                "dominant_field": "f3",
+                "text_excerpt": ".opencode/knowledge/archive/2026/02/16/demo.zip",
+            },
+            Path(td),
+        )
+
+    summary = str(record.get("summary", ""))
+    assert summary
+    assert "opencode/knowledge/archive" not in summary.lower()
+    assert catalog_module._docmeta_summary_is_usable(summary) is True
+
+
+def test_docmeta_record_keeps_concrete_llm_summary(monkeypatch: Any) -> None:
+    from code.world_web import catalog as catalog_module
+
+    monkeypatch.setattr(
+        catalog_module,
+        "_ollama_generate_text",
+        lambda *_args, **_kwargs: (
+            '{"summary":"Release note describing token validation hardening and dependency update impact.", "tags":["security_update","token_validation","dependency_update","release_note"]}',
+            "stub-llm",
+        ),
+    )
+
+    with tempfile.TemporaryDirectory() as td:
+        record = catalog_module._build_docmeta_record(
+            {
+                "id": "knowledge.release-note",
+                "source_hash": "def456",
+                "source_rel_path": ".ημ/release-note.md",
+                "archive_rel_path": ".opencode/knowledge/archive/release-note.zip",
+                "kind": "text",
+                "name": "release-note.md",
+                "dominant_field": "f7",
+                "text_excerpt": "Updated token validation and parser dependency for security release.",
+            },
+            Path(td),
+        )
+
+    assert record.get("strategy") == "llm"
+    assert "token validation" in str(record.get("summary", "")).lower()
+    assert len(record.get("tags", [])) >= 3
+
+
+def test_embedding_caption_normalizer_strips_labels_and_bounds_words() -> None:
+    raw = (
+        "Caption: A complex observatory interior with instrument panels, warning lights, "
+        "status displays, and operators monitoring security telemetry across multiple monitors "
+        "during an incident response drill."
+    )
+    normalized = ai_module._normalize_embedding_caption_text(raw)
+
+    assert normalized
+    assert not normalized.lower().startswith("caption:")
+    assert len(normalized.split()) <= 28

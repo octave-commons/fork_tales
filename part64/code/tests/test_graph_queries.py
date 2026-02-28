@@ -247,6 +247,70 @@ def test_run_named_graph_query_named_menu_uses_simulation_context() -> None:
     assert summary.get("result", {}).get("node_count") == 4
 
 
+def test_run_named_graph_query_github_threat_radar_ranks_security_rows() -> None:
+    graph = {
+        "nodes": [
+            {
+                "id": "res:gh-issue",
+                "role": "web:resource",
+                "kind": "github:issue",
+                "repo": "openai/codex",
+                "number": 42,
+                "canonical_url": "https://github.com/openai/codex/issues/42",
+                "title": "CVE-2026-1234 token leak in auth flow",
+                "state": "open",
+                "fetched_ts": 200.0,
+                "importance_score": 7,
+                "atoms": [
+                    {
+                        "kind": "references_cve",
+                        "repo": "openai/codex",
+                        "cve_id": "CVE-2026-1234",
+                    },
+                    {
+                        "kind": "changes_dependency",
+                        "repo": "openai/codex",
+                        "dep_name": "package-lock.json",
+                    },
+                    {
+                        "kind": "has_label",
+                        "repo": "openai/codex",
+                        "label": "security",
+                    },
+                ],
+            },
+            {
+                "id": "res:gh-pr",
+                "role": "web:resource",
+                "kind": "github:pr",
+                "repo": "openai/codex",
+                "number": 99,
+                "canonical_url": "https://github.com/openai/codex/pull/99",
+                "title": "Refactor docs",
+                "state": "open",
+                "fetched_ts": 199.0,
+                "importance_score": 1,
+                "atoms": [],
+            },
+        ],
+        "edges": [],
+    }
+
+    payload = run_named_graph_query(
+        graph,
+        "github_threat_radar",
+        args={"window_ticks": 400, "limit": 8},
+    )
+
+    result = payload.get("result", {})
+    assert result.get("count", 0) >= 1
+    first = (result.get("threats", []) or [{}])[0]
+    assert first.get("repo") == "openai/codex"
+    assert first.get("number") == 42
+    assert first.get("risk_score", 0) >= 8
+    assert "references_cve" in (first.get("signals", []) or [])
+
+
 def test_build_facts_snapshot_includes_web_sections_and_writes_file() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)

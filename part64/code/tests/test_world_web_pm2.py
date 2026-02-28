@@ -295,6 +295,136 @@ def test_simulation_ws_lite_field_particles_respects_max_rows() -> None:
     assert compact[1].get("id") == "dm:2"
 
 
+def test_github_conversation_payload_includes_root_and_issue_comments(
+    monkeypatch: Any,
+) -> None:
+    def fake_fetch(url: str, *, timeout_s: float) -> tuple[bool, Any, int, str]:
+        del timeout_s
+        if "/issues/123/comments" in url:
+            return (
+                True,
+                [
+                    {
+                        "id": 10,
+                        "body": "First reply from thread.",
+                        "user": {"login": "octo"},
+                        "created_at": "2026-02-27T10:00:00Z",
+                        "html_url": "https://example.test/comment/10",
+                    },
+                    {"id": 11, "body": "", "user": {"login": "empty"}},
+                ],
+                200,
+                "",
+            )
+        if "/issues/123" in url:
+            return (
+                True,
+                {
+                    "title": "Issue title",
+                    "state": "open",
+                    "html_url": "https://example.test/issues/123",
+                    "body": "Root issue body text.",
+                },
+                200,
+                "",
+            )
+        raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setattr(world_web_server, "_github_conversation_fetch_json", fake_fetch)
+
+    payload = world_web_server._github_conversation_payload(
+        repo="octo/example",
+        number=123,
+        kind="github:issue",
+        max_comments=10,
+        max_root_body_chars=4000,
+        max_comment_body_chars=2000,
+        max_markdown_chars=12000,
+        include_review_comments=True,
+        timeout_s=4.0,
+    )
+
+    assert payload.get("ok") is True
+    assert payload.get("comment_count") == 1
+    markdown = str(payload.get("markdown", ""))
+    assert "Root issue body text." in markdown
+    assert "First reply from thread." in markdown
+    assert "issue-comment" in markdown
+
+
+def test_github_conversation_payload_pr_includes_reviews_and_review_comments(
+    monkeypatch: Any,
+) -> None:
+    def fake_fetch(url: str, *, timeout_s: float) -> tuple[bool, Any, int, str]:
+        del timeout_s
+        if "/pulls/7/comments" in url:
+            return (
+                True,
+                [
+                    {
+                        "id": 72,
+                        "body": "Inline review comment.",
+                        "user": {"login": "reviewer-inline"},
+                        "created_at": "2026-02-27T10:06:00Z",
+                    }
+                ],
+                200,
+                "",
+            )
+        if "/pulls/7/reviews" in url:
+            return (
+                True,
+                [
+                    {
+                        "id": 71,
+                        "body": "Overall PR review summary.",
+                        "user": {"login": "reviewer"},
+                        "submitted_at": "2026-02-27T10:05:00Z",
+                    }
+                ],
+                200,
+                "",
+            )
+        if "/issues/7/comments" in url:
+            return (True, [], 200, "")
+        if "/pulls/7" in url:
+            return (
+                True,
+                {
+                    "title": "PR title",
+                    "state": "open",
+                    "html_url": "https://example.test/pull/7",
+                    "body": "PR root description.",
+                },
+                200,
+                "",
+            )
+        raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setattr(world_web_server, "_github_conversation_fetch_json", fake_fetch)
+
+    payload = world_web_server._github_conversation_payload(
+        repo="octo/example",
+        number=7,
+        kind="github:pr",
+        max_comments=10,
+        max_root_body_chars=4000,
+        max_comment_body_chars=2000,
+        max_markdown_chars=12000,
+        include_review_comments=True,
+        timeout_s=4.0,
+    )
+
+    assert payload.get("ok") is True
+    comments = payload.get("comments", [])
+    assert isinstance(comments, list)
+    channels = {
+        str(row.get("channel", "")) for row in comments if isinstance(row, dict)
+    }
+    assert "review" in channels
+    assert "review-comment" in channels
+
+
 def test_library_resolution_uses_eta_mu_substrate_root() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -403,6 +533,10 @@ def test_world_panel_layering_interaction_guards_present() -> None:
 def test_world_panel_world_space_state_space_contract_present() -> None:
     part_root = Path(__file__).resolve().parents[2]
     app_path = part_root / "frontend" / "src" / "App.tsx"
+    panel_builder_path = (
+        part_root / "frontend" / "src" / "app" / "panelConfigBuilders.tsx"
+    )
+    app_utils_path = part_root / "frontend" / "src" / "app" / "appShellUtils.ts"
     viewport_path = (
         part_root
         / "frontend"
@@ -414,6 +548,8 @@ def test_world_panel_world_space_state_space_contract_present() -> None:
     css_path = part_root / "frontend" / "src" / "index.css"
 
     app_source = app_path.read_text("utf-8")
+    panel_builder_source = panel_builder_path.read_text("utf-8")
+    app_utils_source = app_utils_path.read_text("utf-8")
     viewport_source = viewport_path.read_text("utf-8")
     css_source = css_path.read_text("utf-8")
 
@@ -432,7 +568,8 @@ def test_world_panel_world_space_state_space_contract_present() -> None:
     assert "const closePanelWindow = useCallback((panelId: string) => {" in app_source
     assert "const panelStateSpaceBiases = useMemo(() => {" in app_source
     assert "const worldDeltaX = info.offset.x / pixelsPerWorldX" in app_source
-    assert "function shouldRouteWheelToCore" in app_source
+    assert "shouldRouteWheelToCore," in app_source
+    assert "export function shouldRouteWheelToCore" in app_utils_source
     assert (
         'window.addEventListener("wheel", onGlobalWheel, { passive: false, capture: true });'
         in app_source
@@ -442,9 +579,9 @@ def test_world_panel_world_space_state_space_contract_present() -> None:
     assert "shadow-[0_12px_30px_rgba(2,8,14,0.34)] pointer-events-auto" in app_source
     assert "panelWorldX" in app_source
     assert "pixelsPerWorldX" in app_source
-    assert 'id: "nexus.ui.world_log"' in app_source
-    assert "id: GLASS_VIEWPORT_PANEL_ID" in app_source
-    assert "<WorldLogPanel catalog={catalog} />" in app_source
+    assert 'id: "nexus.ui.world_log"' in panel_builder_source
+    assert "id: GLASS_VIEWPORT_PANEL_ID" in panel_builder_source
+    assert "<WorldLogPanel catalog={args.catalog} />" in panel_builder_source
     assert "onNudgeCameraPan={nudgeCameraPan}" in app_source
     assert "isGlassPrimaryPanelId" in app_source
     assert "Glass lane preferred" in app_source
@@ -506,10 +643,12 @@ def test_hologram_canvas_remote_resource_metadata_contract() -> None:
     assert "interactive={false}" not in backdrop_source
     assert "\n          interactive\n" in backdrop_source
 
-    assert (
-        'type GraphWorldscreenView = "website" | "editor" | "video" | "metadata";'
-        in canvas_source
-    )
+    assert "type GraphWorldscreenView =" in canvas_source
+    assert '"website"' in canvas_source
+    assert '"editor"' in canvas_source
+    assert '"video"' in canvas_source
+    assert '"metadata"' in canvas_source
+    assert '"markdown"' in canvas_source
     assert (
         'type GraphWorldscreenMode = "overview" | "conversation" | "stats";'
         in canvas_source
@@ -578,18 +717,20 @@ def test_canvas_file_graph_positions_are_server_authoritative() -> None:
 
 def test_world_log_panel_contract_present() -> None:
     part_root = Path(__file__).resolve().parents[2]
-    app_path = part_root / "frontend" / "src" / "App.tsx"
+    panel_builder_path = (
+        part_root / "frontend" / "src" / "app" / "panelConfigBuilders.tsx"
+    )
     layout_path = part_root / "frontend" / "src" / "app" / "worldPanelLayout.ts"
     panel_path = (
         part_root / "frontend" / "src" / "components" / "Panels" / "WorldLogPanel.tsx"
     )
 
-    app_source = app_path.read_text("utf-8")
+    panel_builder_source = panel_builder_path.read_text("utf-8")
     layout_source = layout_path.read_text("utf-8")
     panel_source = panel_path.read_text("utf-8")
 
-    assert 'id: "nexus.ui.world_log"' in app_source
-    assert "<WorldLogPanel catalog={catalog} />" in app_source
+    assert 'id: "nexus.ui.world_log"' in panel_builder_source
+    assert "<WorldLogPanel catalog={args.catalog} />" in panel_builder_source
     assert '"nexus.ui.world_log": {' in layout_source
     assert 'anchorId: "witness_thread"' in layout_source
 
@@ -604,20 +745,27 @@ def test_world_log_panel_contract_present() -> None:
 def test_witness_thread_ledger_panel_contract_present() -> None:
     part_root = Path(__file__).resolve().parents[2]
     app_path = part_root / "frontend" / "src" / "App.tsx"
+    constants_path = part_root / "frontend" / "src" / "app" / "appShellConstants.ts"
+    panel_builder_path = (
+        part_root / "frontend" / "src" / "app" / "panelConfigBuilders.tsx"
+    )
     layout_path = part_root / "frontend" / "src" / "app" / "worldPanelLayout.ts"
     panel_path = part_root / "frontend" / "src" / "components" / "Panels" / "Chat.tsx"
     server_path = part_root / "code" / "world_web" / "server.py"
 
     app_source = app_path.read_text("utf-8")
+    constants_source = constants_path.read_text("utf-8")
+    panel_builder_source = panel_builder_path.read_text("utf-8")
     layout_source = layout_path.read_text("utf-8")
     panel_source = panel_path.read_text("utf-8")
     server_source = server_path.read_text("utf-8")
 
-    assert 'id: "nexus.ui.chat.witness_thread"' in app_source
+    assert 'id: "nexus.ui.chat.witness_thread"' in constants_source
+    assert "const panelConfigs = useAppPanelConfigs({" in app_source
     assert "multi_entity: true" in app_source
     assert 'presence_ids: [resolvedMusePresenceId || "witness_thread"]' in app_source
-    assert "activeMusePresenceId={activeMusePresenceId}" in app_source
-    assert "onMusePresenceChange={setActiveMusePresenceId}" in app_source
+    assert "activeMusePresenceId={args.activeMusePresenceId}" in panel_builder_source
+    assert "onMusePresenceChange={args.setActiveMusePresenceId}" in panel_builder_source
     assert "emitWitnessChatReply" in app_source
     assert '"nexus.ui.chat.witness_thread": {' in layout_source
     assert 'anchorId: "witness_thread"' in layout_source
@@ -633,6 +781,33 @@ def test_witness_thread_ledger_panel_contract_present() -> None:
 
     assert 'if parsed.path == "/api/witness/lineage":' in server_source
     assert "build_witness_lineage_payload(self.part_root)" in server_source
+
+
+def test_threat_radar_panel_and_report_route_contract_present() -> None:
+    part_root = Path(__file__).resolve().parents[2]
+    panel_builder_path = (
+        part_root / "frontend" / "src" / "app" / "panelConfigBuilders.tsx"
+    )
+    panel_path = (
+        part_root
+        / "frontend"
+        / "src"
+        / "components"
+        / "Panels"
+        / "ThreatRadarPanel.tsx"
+    )
+    server_path = part_root / "code" / "world_web" / "server.py"
+
+    panel_builder_source = panel_builder_path.read_text("utf-8")
+    panel_source = panel_path.read_text("utf-8")
+    server_source = server_path.read_text("utf-8")
+
+    assert 'id: "nexus.ui.threat_radar"' in panel_builder_source
+    assert "<ThreatRadarPanel />" in panel_builder_source
+    assert "/api/muse/threat-radar/report" in panel_source
+    assert "/api/github/conversation" in panel_source
+    assert 'if parsed.path == "/api/muse/threat-radar/report":' in server_source
+    assert '"record": "eta-mu.muse-threat-radar-report.v1"' in server_source
 
 
 def test_stability_observatory_panel_npu_widget_contract_present() -> None:
@@ -1292,6 +1467,19 @@ def test_build_image_commentary_falls_back_without_ollama(
     assert payload["ok"] is True
     assert payload["backend"] == "vllm-fallback"
     assert "witness_thread" in str(payload.get("commentary", ""))
+
+
+def test_image_commentary_normalizer_emits_observation_action_contract() -> None:
+    from code.world_web import ai as ai_module
+
+    normalized = ai_module._normalize_image_commentary_response(
+        "The image appears to show a warning banner near a dashboard.\nNext: verify against source telemetry.",
+        fallback_subject="demo.png",
+    )
+
+    assert normalized.startswith("Observation:")
+    assert "\nAction:" in normalized
+    assert "warning banner" in normalized.lower()
 
 
 def test_eta_mu_image_derive_segment_adds_vllm_caption_for_embedding(

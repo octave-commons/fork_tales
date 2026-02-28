@@ -1665,7 +1665,12 @@ def _presence_prompt(
         "You are one presence in the eta-mu world daemon.\n"
         f"Presence: {entity.get('en')} / {entity.get('ja')}\n"
         f"Allowed tools: {', '.join(allowed_tools) if allowed_tools else 'none'}\n"
-        "Write 1-2 short lines, bilingual EN/JA style.\n"
+        "Write 2-3 short lines in bilingual EN/JA style.\n"
+        "Line 1: direct answer in English.\n"
+        "Line 2: Japanese mirror or close parallel.\n"
+        "Optional line 3: one concrete next step.\n"
+        "If uncertain, say what is unknown and what evidence is missing.\n"
+        "Do not invent tool outputs, file changes, or runtime states.\n"
         "Use trigger tags only if needed: [[PULSE]] [[GLITCH]] [[SING]].\n"
         f"Context:\n{context_block}\n"
         f"Conversation:\n{history_text}\n"
@@ -2443,6 +2448,81 @@ def _tensorflow_image_fingerprint(image_bytes: bytes) -> dict[str, Any]:
         }
 
 
+def _normalize_image_commentary_response(
+    raw_text: Any,
+    *,
+    fallback_subject: str,
+) -> str:
+    text = str(raw_text or "").strip()
+    cleaned_lines = [
+        re.sub(r"\s+", " ", line).strip(" -*`\"'")
+        for line in str(text).splitlines()
+        if str(line).strip()
+    ]
+    if not cleaned_lines and text:
+        cleaned_lines = [re.sub(r"\s+", " ", text).strip(" -*`\"'")]
+
+    observation = ""
+    action = ""
+    for line in cleaned_lines:
+        normalized = re.sub(r"\s+", " ", str(line or "")).strip()
+        if not normalized:
+            continue
+        lowered = normalized.lower()
+        if lowered.startswith("observation:"):
+            candidate = normalized.split(":", 1)[1].strip()
+            if candidate and not observation:
+                observation = candidate
+            continue
+        if lowered.startswith("action:") or lowered.startswith("next:"):
+            candidate = normalized.split(":", 1)[1].strip()
+            if candidate and not action:
+                action = candidate
+            continue
+        if not observation:
+            observation = normalized
+            continue
+        if not action:
+            action = normalized
+            continue
+
+    if not observation:
+        observation = f"The image ({fallback_subject or 'artifact'}) shows details that need verification."
+    if not action:
+        action = "Verify the observation against trusted source material before acting."
+
+    observation = re.sub(r"\s+", " ", observation).strip()
+    action = re.sub(r"\s+", " ", action).strip()
+    if len(observation) > 320:
+        observation = observation[:320].rstrip(" .,;:")
+    if len(action) > 320:
+        action = action[:320].rstrip(" .,;:")
+    return f"Observation: {observation}\nAction: {action}"
+
+
+def _normalize_embedding_caption_text(raw_text: Any) -> str:
+    clean = re.sub(r"\s+", " ", str(raw_text or "")).strip()
+    if not clean:
+        return ""
+    clean = re.sub(
+        r"^(caption|summary|description|focusintent)\s*[:\-]\s*",
+        "",
+        clean,
+        flags=re.IGNORECASE,
+    )
+    clean = clean.strip("`*\"' ")
+    clean = re.sub(r"\s+", " ", clean).strip()
+    if not clean:
+        return ""
+
+    words = [token for token in clean.split(" ") if token]
+    if len(words) > 28:
+        clean = " ".join(words[:28]).rstrip(".,;:") + "."
+    if len(clean) > 320:
+        clean = clean[:320].rstrip(".,;:") + "."
+    return clean
+
+
 def build_image_commentary(
     *,
     image_bytes: bytes,
@@ -2494,7 +2574,11 @@ def build_image_commentary(
         f"Image ref: {clean_image_ref or '[inline-upload]'}",
         f"MIME: {clean_mime}",
         f"TensorFlow fingerprint: size={size_label} channels={int(fingerprint.get('channels', 0))} mean_luma={luma_label}",
-        "Write one concise, concrete observation and one actionable follow-up sentence.",
+        "Respond in plain text with exactly two lines:",
+        "Observation: <one concrete visual observation grounded in visible evidence>",
+        "Action: <one practical follow-up step>",
+        "Do not use markdown, tables, or code fences.",
+        "If image quality is uncertain, state what is unclear before giving the action.",
     ]
     if clean_prompt:
         prompt_bits.append(f"User request: {clean_prompt}")
@@ -2542,6 +2626,10 @@ def build_image_commentary(
         request_error = "vision_unconfigured"
 
     if response_text:
+        normalized_commentary = _normalize_image_commentary_response(
+            response_text,
+            fallback_subject=clean_image_ref or image_sha[:12],
+        )
         _record_compute_job(
             kind="llm",
             op="image_commentary.vllm",
@@ -2556,7 +2644,7 @@ def build_image_commentary(
         return {
             "ok": True,
             "error": "",
-            "commentary": response_text,
+            "commentary": normalized_commentary,
             "model": chosen_model,
             "backend": "vllm",
             "analysis": {
@@ -2566,12 +2654,21 @@ def build_image_commentary(
             },
         }
 
-    fallback_line = (
+    fallback_observation = (
         f"[{clean_presence_id}] sees image {clean_image_ref or image_sha[:12]} "
-        f"({size_label}, luma={luma_label}) and requests a manual verification pass."
+        f"({size_label}, luma={luma_label})."
+    )
+    fallback_action = (
+        "Run a manual verification pass against trusted reference material."
     )
     if clean_prompt:
-        fallback_line = f"{fallback_line} Request context: {clean_prompt[:180]}"
+        fallback_action = (
+            f"{fallback_action} Include request context: {clean_prompt[:140]}"
+        )
+    fallback_line = _normalize_image_commentary_response(
+        f"Observation: {fallback_observation}\nAction: {fallback_action}",
+        fallback_subject=clean_image_ref or image_sha[:12],
+    )
     _record_compute_job(
         kind="llm",
         op="image_commentary.vllm",
@@ -3038,9 +3135,11 @@ def _eta_mu_image_vllm_caption_for_embedding(
         "ascii"
     )
     prompt_text = (
-        "Create one concise visual caption for embedding retrieval. "
-        "Focus on concrete visible objects, scene context, and distinctive attributes. "
-        "No markdown. Max 24 words. "
+        "You write captions for embedding retrieval.\n"
+        "Output exactly one sentence in plain text (8-24 words).\n"
+        "Describe concrete visible entities, scene context, and any readable identifiers.\n"
+        "No markdown, no preamble, no labels, no code fences.\n"
+        "If visibility is low, still provide the best concise visual description available.\n"
         f"Source path: {source_rel_path}"
     )
 
@@ -3078,9 +3177,9 @@ def _eta_mu_image_vllm_caption_for_embedding(
             "error": "vision_unavailable",
         }
 
-    caption = _extract_openai_chat_response_text(raw)
+    caption = _normalize_embedding_caption_text(_extract_openai_chat_response_text(raw))
     if not caption and isinstance(raw, dict):
-        caption = str(raw.get("response", "") or "").strip()
+        caption = _normalize_embedding_caption_text(raw.get("response", ""))
     resolved_model = (
         str((raw.get("model") if isinstance(raw, dict) else "") or chosen_model).strip()
         or chosen_model
@@ -3093,11 +3192,8 @@ def _eta_mu_image_vllm_caption_for_embedding(
             "error": "empty_caption",
         }
 
-    normalized_caption = " ".join(str(caption).split())
-    if len(normalized_caption) > 320:
-        normalized_caption = normalized_caption[:320].rstrip()
     return {
-        "caption": normalized_caption,
+        "caption": caption,
         "model": resolved_model,
         "backend": "vllm",
         "error": "",

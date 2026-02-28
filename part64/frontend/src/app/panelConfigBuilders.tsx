@@ -29,6 +29,11 @@ const WebGraphWeaverPanel = lazy(() =>
     default: module.WebGraphWeaverPanel,
   })),
 );
+const ThreatRadarPanel = lazy(() =>
+  import("../components/Panels/ThreatRadarPanel").then((module) => ({
+    default: module.ThreatRadarPanel,
+  })),
+);
 const InspirationAtlasPanel = lazy(() =>
   import("../components/Panels/InspirationAtlasPanel").then((module) => ({
     default: module.InspirationAtlasPanel,
@@ -204,6 +209,18 @@ function buildWebGraphWeaverPanel(args: BuildPanelConfigsArgs): PanelConfig {
     id: "nexus.ui.web_graph_weaver",
     fallbackSpan: 6,
     render: () => renderDeferredPanel(args.deferredPanelsReady, "Web Graph Weaver", <WebGraphWeaverPanel />),
+  };
+}
+
+function buildThreatRadarPanel(args: BuildPanelConfigsArgs): PanelConfig {
+  return {
+    id: "nexus.ui.threat_radar",
+    fallbackSpan: 6,
+    anchorKind: "node",
+    anchorId: "witness_thread",
+    worldSize: "l",
+    pinnedByDefault: true,
+    render: () => renderDeferredPanel(args.deferredPanelsReady, "Threat Radar", <ThreatRadarPanel />),
   };
 }
 
@@ -439,6 +456,7 @@ export function buildPanelConfigs(args: BuildPanelConfigsArgs): PanelConfig[] {
     buildGlassViewportPanel(),
     ...buildMusePresencePanels(args),
     buildWebGraphWeaverPanel(args),
+    buildThreatRadarPanel(args),
     buildInspirationAtlasPanel(args),
     buildEntityVitalsPanel(args),
     buildProjectionLedgerPanel(args),

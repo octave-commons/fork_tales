@@ -2729,7 +2729,14 @@ export default function App() {
             + (lowPriorityCycle ? 0.19 : 0)
             + (particleCount <= 2 ? 0.03 : 0)
           : 0;
-        const councilScore = clamp(priority + glassPreferenceBoost + (councilBoost * 0.11), 0, 2);
+        const threatRadarBoost = config.id === "nexus.ui.threat_radar"
+          ? 0.62 + (lowPriorityCycle ? 0.14 : 0)
+          : 0;
+        const councilScore = clamp(
+          priority + glassPreferenceBoost + threatRadarBoost + (councilBoost * 0.11),
+          0,
+          2,
+        );
         const depth = Math.round(clamp(councilScore, 0, 1) * 160) + 24;
         const toolHints = PANEL_TOOL_HINTS[config.id] ?? ["inspect", "focus", "act"];
         const baseCouncilReason = String(

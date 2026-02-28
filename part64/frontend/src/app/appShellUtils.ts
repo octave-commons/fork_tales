@@ -14,6 +14,28 @@ function resolveEventElement(target: EventTarget | null): Element | null {
   return null;
 }
 
+function canConsumeWheelInDirection(element: HTMLElement, deltaY: number): boolean {
+  const style = window.getComputedStyle(element);
+  const overflowY = style.overflowY.toLowerCase();
+  const allowsVerticalScroll = overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay";
+  if (!allowsVerticalScroll) {
+    return false;
+  }
+  const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+  if (maxScrollTop <= 1) {
+    return false;
+  }
+  const atTop = element.scrollTop <= 1;
+  const atBottom = element.scrollTop >= maxScrollTop - 1;
+  if (Math.abs(deltaY) < 0.5) {
+    return true;
+  }
+  if (deltaY < 0) {
+    return !atTop;
+  }
+  return !atBottom;
+}
+
 export function isTextEntryTarget(target: EventTarget | null): boolean {
   const element = resolveEventElement(target);
   if (!(element instanceof HTMLElement)) {
@@ -58,16 +80,15 @@ export function shouldRouteWheelToCore(target: EventTarget | null, deltaY = 0): 
     return false;
   }
 
-  const panelBody = element.closest(".world-panel-body");
-  if (panelBody instanceof HTMLElement) {
-    const maxScrollTop = Math.max(0, panelBody.scrollHeight - panelBody.clientHeight);
-    if (maxScrollTop > 1) {
-      const atTop = panelBody.scrollTop <= 1;
-      const atBottom = panelBody.scrollTop >= maxScrollTop - 1;
-      if ((deltaY < 0 && !atTop) || (deltaY > 0 && !atBottom) || Math.abs(deltaY) < 0.5) {
-        return false;
-      }
+  let current: HTMLElement | null = element instanceof HTMLElement ? element : element.parentElement;
+  while (current) {
+    if (canConsumeWheelInDirection(current, deltaY)) {
+      return false;
     }
+    if (current === document.body || current === document.documentElement) {
+      break;
+    }
+    current = current.parentElement;
   }
 
   return true;

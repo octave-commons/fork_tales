@@ -321,10 +321,25 @@ def extract_github_atoms(
         "name",
         "tag_name",
         "message",
+        "summary",
+        "text_excerpt",
+        "conversation_markdown",
     ):
         token = _safe_str(payload.get(key, ""))
         if token:
             text_parts.append(token)
+    conversation_rows = payload.get("conversation_rows", [])
+    if isinstance(conversation_rows, list):
+        for row in conversation_rows[:80]:
+            if not isinstance(row, dict):
+                continue
+            text_parts.append(_safe_str(row.get("body", "")))
+    commit_rows = payload.get("commit_rows", [])
+    if isinstance(commit_rows, list):
+        for row in commit_rows[:64]:
+            if not isinstance(row, dict):
+                continue
+            text_parts.append(_safe_str(row.get("message", "")))
     corpus = "\n".join(text_parts)
     corpus_lower = corpus.lower()
 

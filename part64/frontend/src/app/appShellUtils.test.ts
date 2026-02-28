@@ -50,6 +50,7 @@ describe("appShellUtils", () => {
   it("routes wheel events only when panel body cannot scroll", () => {
     const panelBody = document.createElement("div");
     panelBody.className = "world-panel-body";
+    panelBody.style.overflowY = "auto";
     const target = document.createElement("span");
     panelBody.appendChild(target);
     document.body.appendChild(panelBody);
@@ -60,6 +61,34 @@ describe("appShellUtils", () => {
 
     expect(shouldRouteWheelToCore(target, 6)).toBe(false);
     panelBody.scrollTop = 200;
+    expect(shouldRouteWheelToCore(target, 6)).toBe(true);
+  });
+
+  it("respects nested scroll containers before routing wheel to core", () => {
+    const panelBody = document.createElement("div");
+    panelBody.className = "world-panel-body";
+    panelBody.style.overflowY = "auto";
+    const nested = document.createElement("div");
+    nested.style.overflowY = "auto";
+    const target = document.createElement("span");
+    nested.appendChild(target);
+    panelBody.appendChild(nested);
+    document.body.appendChild(panelBody);
+
+    Object.defineProperty(panelBody, "scrollHeight", { value: 500, configurable: true });
+    Object.defineProperty(panelBody, "clientHeight", { value: 250, configurable: true });
+    Object.defineProperty(panelBody, "scrollTop", { value: 0, configurable: true, writable: true });
+
+    Object.defineProperty(nested, "scrollHeight", { value: 600, configurable: true });
+    Object.defineProperty(nested, "clientHeight", { value: 200, configurable: true });
+    Object.defineProperty(nested, "scrollTop", { value: 120, configurable: true, writable: true });
+
+    expect(shouldRouteWheelToCore(target, 6)).toBe(false);
+
+    nested.scrollTop = 400;
+    expect(shouldRouteWheelToCore(target, 6)).toBe(false);
+
+    panelBody.scrollTop = 250;
     expect(shouldRouteWheelToCore(target, 6)).toBe(true);
   });
 

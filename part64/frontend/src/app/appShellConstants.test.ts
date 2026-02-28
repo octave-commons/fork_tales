@@ -27,6 +27,7 @@ describe("appShellConstants", () => {
       "symmetry",
     ]);
     expect(PANEL_TOOL_HINTS[GLASS_VIEWPORT_PANEL_ID]).toEqual(["glass", "camera", "pan"]);
+    expect(PANEL_TOOL_HINTS["nexus.ui.threat_radar"]).toEqual(["threat", "security", "review"]);
   });
 
   it("maps known presence roles and glass panel detection", () => {

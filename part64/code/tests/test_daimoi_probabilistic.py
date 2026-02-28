@@ -4,6 +4,7 @@ import math
 from typing import Any
 
 import pytest
+import code.world_web.daimoi_observer as daimoi_observer_module
 import code.world_web.server as server_module
 import code.world_web.simulation as simulation_module
 
@@ -300,6 +301,99 @@ def test_anti_clump_scales_raise_slip_and_simplex_for_positive_drive() -> None:
     assert float(neutral.get("simplex_scale", 1.0)) > float(
         low.get("simplex_scale", 1.0)
     )
+
+
+def test_anti_clump_controller_applies_drive_slew_limit() -> None:
+    config = daimoi_observer_module.anti_clump_controller_config(
+        observer_config=daimoi_observer_module.anti_clump_observer_config(),
+        update_stride=1,
+        smoothing=1.0,
+        kp=8.0,
+        ki=0.0,
+        drive_slew_enabled=True,
+        drive_slew_limit=0.05,
+        deadband_enabled=False,
+        integral_sign_stable_updates=1,
+    )
+    state = daimoi_observer_module.anti_clump_controller_update(
+        {
+            "tick": 0,
+            "drive": 0.0,
+            "integral": 0.0,
+            "integral_snr": 0.0,
+            "integral_score": 0.0,
+            "score_ema": 0.5,
+        },
+        particles=_snr_test_particles(aligned=False),
+        previous_collision_count=0,
+        config=config,
+    )
+
+    assert abs(float(state.get("drive", 0.0))) <= 0.051
+    assert bool(state.get("slew_clamped", False)) is True
+
+
+def test_anti_clump_controller_sign_flip_freezes_integral() -> None:
+    config = daimoi_observer_module.anti_clump_controller_config(
+        observer_config=daimoi_observer_module.anti_clump_observer_config(),
+        update_stride=1,
+        deadband_enabled=False,
+        integral_leak=0.12,
+        integral_sign_stable_updates=3,
+        integral_freeze_on_sign_flip=True,
+        adaptive_enabled=False,
+    )
+    state = daimoi_observer_module.anti_clump_controller_update(
+        {
+            "tick": 0,
+            "drive": 0.15,
+            "integral": 0.6,
+            "integral_snr": 0.6,
+            "integral_score": 0.6,
+            "error_sign": -1,
+            "error_sign_streak": 2,
+        },
+        particles=_snr_test_particles(aligned=False),
+        previous_collision_count=0,
+        config=config,
+    )
+
+    assert int(state.get("error_sign_streak", 0)) == 1
+    assert float(state.get("integral_snr", 0.0)) < 0.6
+
+
+def test_anti_clump_controller_adaptive_detunes_under_oscillation() -> None:
+    config = daimoi_observer_module.anti_clump_controller_config(
+        observer_config=daimoi_observer_module.anti_clump_observer_config(),
+        update_stride=1,
+        deadband_enabled=False,
+        adaptive_enabled=True,
+        osc_window=8,
+        osc_zero_crossings_hi=3,
+        osc_sat_frac_hi=0.4,
+        integral_sign_stable_updates=1,
+    )
+    state = daimoi_observer_module.anti_clump_controller_update(
+        {
+            "tick": 0,
+            "drive": 0.98,
+            "integral": 0.2,
+            "integral_snr": 0.2,
+            "integral_score": 0.2,
+            "kp_mult": 1.0,
+            "ki_mult": 1.0,
+            "error_hist": [0.3, -0.2, 0.25, -0.22, 0.2, -0.18, 0.16],
+            "drive_hist": [0.99, 0.98, 0.97, 0.99, 0.96, 0.98, 0.99],
+        },
+        particles=_snr_test_particles(aligned=False),
+        previous_collision_count=0,
+        config=config,
+    )
+
+    assert int(state.get("osc_zero_crossings", 0)) >= 3
+    assert float(state.get("osc_sat_frac", 0.0)) >= 0.4
+    assert float(state.get("kp_mult", 1.0)) < 1.0
+    assert float(state.get("ki_mult", 1.0)) < 1.0
 
 
 def test_web_objective_profile_recognizes_url_and_resource_nodes() -> None:

@@ -588,6 +588,158 @@ function fallbackTextSummary(text) {
   return `${clean.slice(0, 257)}...`;
 }
 
+function focusIntentFromText(text) {
+  const lowered = String(text || "").toLowerCase();
+  if (!lowered.trim()) {
+    return "Re-crawl this source with alternate rendering to extract reliable content.";
+  }
+  if (/\b(cve|vulnerability|exploit|security|advisory|mitre|nvd|cisa|patch)\b/.test(lowered)) {
+    return "Track affected systems, severity signals, and remediation guidance from this source.";
+  }
+  if (/\b(release|changelog|version|update|roadmap)\b/.test(lowered)) {
+    return "Track release changes, version deltas, and references to impacted components.";
+  }
+  if (/\b(doc|documentation|guide|tutorial|quickstart|api)\b/.test(lowered)) {
+    return "Track implementation guidance, API references, and linked technical dependencies.";
+  }
+  return "Track the key entities, claims, and outbound references from this page.";
+}
+
+function structuredFallbackAnalysisSummary(text) {
+  const compact = fallbackTextSummary(text);
+  if (!compact || compact === "No readable text extracted.") {
+    return [
+      "- No reliable page text was extracted.",
+      "- The source may require JavaScript, authentication, or alternate rendering.",
+      "FocusIntent: Re-crawl this source with alternate rendering to capture substantive content.",
+    ].join("\n");
+  }
+  const first = compact.length > 220 ? `${compact.slice(0, 217)}...` : compact;
+  return [
+    `- ${first}`,
+    "- Auto-condensed summary; verify important claims against the canonical source.",
+    `FocusIntent: ${focusIntentFromText(compact)}`,
+  ].join("\n");
+}
+
+function normalizeAnalysisSummary(rawText, fallbackText) {
+  const fallbackSummary = structuredFallbackAnalysisSummary(fallbackText);
+  const cleanRaw = String(rawText || "").replace(/\r/g, "\n").trim();
+  if (!cleanRaw) {
+    return fallbackSummary;
+  }
+
+  const flattened = cleanRaw
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!flattened) {
+    return fallbackSummary;
+  }
+
+  const lowered = flattened.toLowerCase();
+  if (
+    lowered.includes("<what should a graph crawler learn from this page>") ||
+    lowered.includes("the page text in 2 concise bullet") ||
+    lowered === "text" ||
+    lowered === "page text"
+  ) {
+    return fallbackSummary;
+  }
+
+  const tokens = lowered.match(/[a-z0-9_/-]+/g) || [];
+  if (tokens.length >= 12) {
+    const uniqueRatio = new Set(tokens).size / tokens.length;
+    if (uniqueRatio < 0.28) {
+      return fallbackSummary;
+    }
+  }
+
+  const rows = cleanRaw
+    .split(/\n+/)
+    .map((line) => String(line || "").replace(/\s+/g, " ").trim())
+    .filter((line) => line.length > 0);
+
+  const bulletCandidates = [];
+  let focusIntent = "";
+  for (const row of rows) {
+    const noMarkdown = row.replace(/^#+\s*/, "").trim();
+    const focusMatch = /^focus\s*intent\s*[:\-]\s*(.+)$/i.exec(noMarkdown);
+    if (focusMatch && !focusIntent) {
+      focusIntent = String(focusMatch[1] || "").replace(/\s+/g, " ").trim();
+      continue;
+    }
+    const stripped = noMarkdown
+      .replace(/^[-*•]\s*/, "")
+      .replace(/^\d+[.)]\s*/, "")
+      .trim();
+    if (!stripped) {
+      continue;
+    }
+    if (/^focus\s*intent\b/i.test(stripped)) {
+      continue;
+    }
+    bulletCandidates.push(stripped);
+  }
+
+  if (bulletCandidates.length < 2) {
+    const sentenceCandidates = flattened
+      .split(/[.!?]\s+/)
+      .map((item) => String(item || "").replace(/\s+/g, " ").trim())
+      .filter((item) => item.length >= 12);
+    for (const sentence of sentenceCandidates) {
+      bulletCandidates.push(sentence);
+      if (bulletCandidates.length >= 3) {
+        break;
+      }
+    }
+  }
+
+  const dedupedBullets = [];
+  const seen = new Set();
+  for (const item of bulletCandidates) {
+    const normalized = String(item || "").replace(/\s+/g, " ").trim();
+    if (!normalized) {
+      continue;
+    }
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    dedupedBullets.push(normalized);
+    if (dedupedBullets.length >= 4) {
+      break;
+    }
+  }
+
+  const fallbackRows = fallbackSummary.split(/\n+/);
+  const fallbackBulletA = String(fallbackRows[0] || "").replace(/^[-*]\s*/, "").trim();
+  const fallbackBulletB = String(fallbackRows[1] || "").replace(/^[-*]\s*/, "").trim();
+
+  const bulletA = dedupedBullets[0] || fallbackBulletA || "No reliable summary extracted.";
+  const bulletB =
+    dedupedBullets[1] ||
+    fallbackBulletB ||
+    "Verify key claims against the original source before acting.";
+  const resolvedIntent =
+    String(focusIntent || "").trim() || focusIntentFromText(flattened);
+
+  const clamp = (text, limit) => {
+    const clean = String(text || "").replace(/\s+/g, " ").trim();
+    if (clean.length <= limit) {
+      return clean;
+    }
+    return `${clean.slice(0, Math.max(0, limit - 3)).trim()}...`;
+  };
+
+  return [
+    `- ${clamp(bulletA, 260)}`,
+    `- ${clamp(bulletB, 260)}`,
+    `FocusIntent: ${clamp(resolvedIntent, 240)}`,
+  ].join("\n");
+}
+
 function extractCanonicalHref(html) {
   const match = /<link[^>]+rel\s*=\s*["'][^"']*canonical[^"']*["'][^>]*href\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'>]+))/i.exec(
     html,
@@ -1759,7 +1911,7 @@ class WebGraphWeaver {
     this.analysisInFlight.add(url);
 
     const briefText = textExcerpt.slice(0, Math.max(1200, LLM_TEXT_MAX_CHARS));
-    const fallbackSummary = fallbackTextSummary(briefText);
+    const fallbackSummary = structuredFallbackAnalysisSummary(briefText);
 
     this._emit("link_text_analysis_started", {
       url,
@@ -1774,9 +1926,14 @@ class WebGraphWeaver {
 
       if (LLM_ENABLED) {
         const prompt = [
-          "Summarize the page text in 2 concise bullets.",
-          "Then provide one line: FocusIntent: <what should a graph crawler learn from this page>.",
-          "Avoid markdown tables and keep under 600 characters.",
+          "You summarize crawled page text for graph indexing.",
+          "Output EXACTLY 3 plain-text lines:",
+          "- <key fact or update>",
+          "- <security/operational implication or notable entity>",
+          "FocusIntent: <what the crawler should track next from this source>",
+          "Rules: no markdown headers, no tables, no code fences, no placeholder text, no instruction echo.",
+          "If the text is noisy or JS-heavy, still extract the best concrete signal and keep uncertainty explicit.",
+          "Keep total output under 650 characters.",
           "--- PAGE TEXT START ---",
           briefText,
           "--- PAGE TEXT END ---",
@@ -1812,17 +1969,17 @@ class WebGraphWeaver {
           const payload = await response.json();
           const candidate = String(
             payload?.choices?.[0]?.message?.content || payload?.choices?.[0]?.text || "",
-          )
-            .replace(/\s+/g, " ")
-            .trim();
+          ).trim();
           if (candidate) {
-            summary = candidate.slice(0, 700);
+            summary = normalizeAnalysisSummary(candidate, briefText);
             provider = "openai-chat";
           }
         } finally {
           clearTimeout(timeoutId);
         }
       }
+
+      summary = normalizeAnalysisSummary(summary, briefText);
 
       this.graph.setUrlStatus(url, {
         analysis_summary: summary,
@@ -1841,7 +1998,7 @@ class WebGraphWeaver {
     } catch (err) {
       this.stats.llm_analysis_fail += 1;
       this.graph.setUrlStatus(url, {
-        analysis_summary: fallbackSummary,
+        analysis_summary: normalizeAnalysisSummary("", briefText),
         analysis_provider: "fallback",
         analysis_model: LLM_MODEL,
         last_analyzed_at: nowMs(),
@@ -3484,6 +3641,7 @@ module.exports = {
   canonicalWikipediaArticleUrl,
   extractSemanticReferences,
   classifyKnowledgeUrl,
+  normalizeAnalysisSummary,
   parseAuthHeader,
   llmAuthHeaders,
   FrontierQueue,

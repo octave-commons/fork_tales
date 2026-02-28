@@ -48,6 +48,10 @@ vi.mock("../components/Panels/WebGraphWeaverPanel", () => ({
   WebGraphWeaverPanel: () => <div data-testid="lazy-web-graph-panel" />,
 }));
 
+vi.mock("../components/Panels/ThreatRadarPanel", () => ({
+  ThreatRadarPanel: () => <div data-testid="lazy-threat-radar-panel" />,
+}));
+
 vi.mock("../components/Panels/InspirationAtlasPanel", () => ({
   InspirationAtlasPanel: () => <div data-testid="lazy-inspiration-panel" />,
 }));
@@ -143,6 +147,7 @@ describe("useAppPanelConfigs", () => {
     expect(panelIds).toContain(GLASS_VIEWPORT_PANEL_ID);
     expect(panelIds).toContain("nexus.ui.chat.witness_thread");
     expect(panelIds).toContain("nexus.ui.runtime_config");
+    expect(panelIds).toContain("nexus.ui.threat_radar");
 
     const dedicated = result.current.find((entry) => entry.id === "nexus.ui.dedicated_views");
     if (!dedicated) {
@@ -164,6 +169,29 @@ describe("useAppPanelConfigs", () => {
     expect(view.container.textContent).toContain("2");
     expect(view.container.innerHTML).toContain("opacity: 0.96");
     expect(view.container.innerHTML).toContain("scale(1.100)");
+  });
+
+  it("keeps witness and world log panel contracts wired", async () => {
+    const { result } = renderHook(() => useAppPanelConfigs(createArgs({ deferredPanelsReady: true })));
+
+    const witness = result.current.find((entry) => entry.id === "nexus.ui.chat.witness_thread");
+    if (!witness) {
+      throw new Error("witness panel missing");
+    }
+    expect(witness.anchorKind).toBe("node");
+    expect(witness.anchorId).toBe("witness_thread");
+    expect(witness.worldSize).toBe("m");
+
+    const worldLog = result.current.find((entry) => entry.id === "nexus.ui.world_log");
+    if (!worldLog) {
+      throw new Error("world log panel missing");
+    }
+    expect(worldLog.className).toContain("card");
+    render(<>{worldLog.render()}</>);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("lazy-world-log-panel")).toBeTruthy();
+    });
   });
 
   it("renders placeholders for deferred lazy panels when not ready", () => {
@@ -189,15 +217,17 @@ describe("useAppPanelConfigs", () => {
     const { result } = renderHook(() => useAppPanelConfigs(createArgs({ deferredPanelsReady: true })));
 
     const webGraphPanel = result.current.find((entry) => entry.id === "nexus.ui.web_graph_weaver");
+    const threatRadarPanel = result.current.find((entry) => entry.id === "nexus.ui.threat_radar");
     const runtimeConfigPanel = result.current.find((entry) => entry.id === "nexus.ui.runtime_config");
     const mythCommonsPanel = result.current.find((entry) => entry.id === "nexus.ui.myth_commons");
-    if (!webGraphPanel || !runtimeConfigPanel || !mythCommonsPanel) {
+    if (!webGraphPanel || !threatRadarPanel || !runtimeConfigPanel || !mythCommonsPanel) {
       throw new Error("missing deferred panel config");
     }
 
     render(
       <>
         {webGraphPanel.render()}
+        {threatRadarPanel.render()}
         {runtimeConfigPanel.render()}
         {mythCommonsPanel.render()}
       </>,
@@ -205,6 +235,7 @@ describe("useAppPanelConfigs", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("lazy-web-graph-panel")).toBeTruthy();
+      expect(screen.getByTestId("lazy-threat-radar-panel")).toBeTruthy();
       expect(screen.getByTestId("lazy-runtime-config-panel")).toBeTruthy();
       expect(screen.getByTestId("lazy-myth-panel")).toBeTruthy();
     });

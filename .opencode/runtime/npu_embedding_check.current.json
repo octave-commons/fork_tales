@@ -1,0 +1,18 @@
+{
+  "ok": true,
+  "record": "eta-mu.npu-embedding-check.v1",
+  "runtimes": [
+    {
+      "label": "cdb",
+      "runtime": "http://127.0.0.1:18880",
+      "ok": true,
+      "backend": "openvino",
+      "openvino_device": "NPU",
+      "openvino_endpoint": "http://host.docker.internal:18000/v1/embeddings",
+      "probe_ok": true,
+      "probe_error": "",
+      "c_runtime_source": "c-onnxruntime:NPU",
+      "c_runtime_error": ""
+    }
+  ]
+}

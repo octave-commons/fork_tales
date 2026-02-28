@@ -1,0 +1,16 @@
+{
+  "ok": false,
+  "record": "eta-mu.npu-embedding-check.v1",
+  "runtimes": [
+    {
+      "label": "gateway",
+      "runtime": "http://127.0.0.1:8787",
+      "ok": false,
+      "backend": "openvino",
+      "openvino_device": "NPU",
+      "openvino_endpoint": "http://host.docker.internal:18000/v1/embeddings",
+      "probe_ok": false,
+      "probe_error": "missing or invalid query embedding; provide embedding or query text with reachable embeddings backend"
+    }
+  ]
+}

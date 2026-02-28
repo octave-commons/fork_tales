@@ -48,6 +48,73 @@ def _cfg_int(config: dict[str, Any] | None, key: str, default: int) -> int:
     return default
 
 
+def _safe_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in {"1", "true", "yes", "on"}:
+            return True
+        if token in {"0", "false", "no", "off", ""}:
+            return False
+    return default
+
+
+def _cfg_bool(config: dict[str, Any] | None, key: str, default: bool) -> bool:
+    if isinstance(config, dict):
+        return _safe_bool(config.get(key, default), default)
+    return default
+
+
+def _trim_float_history(value: Any, *, max_len: int) -> list[float]:
+    if not isinstance(value, list):
+        return []
+    window = max(1, int(max_len))
+    rows = [_safe_float(item, 0.0) for item in value]
+    if len(rows) <= window:
+        return rows
+    return rows[-window:]
+
+
+def _error_sign(value: float, *, eps: float = 1e-9) -> int:
+    if value > eps:
+        return 1
+    if value < -eps:
+        return -1
+    return 0
+
+
+def _zero_crossings(values: list[float]) -> int:
+    if not values:
+        return 0
+    crossings = 0
+    previous_sign = 0
+    for value in values:
+        sign = _error_sign(_safe_float(value, 0.0))
+        if sign == 0:
+            continue
+        if previous_sign != 0 and sign != previous_sign:
+            crossings += 1
+        previous_sign = sign
+    return crossings
+
+
+def _integral_step(
+    *,
+    value: float,
+    error: float,
+    integrate: bool,
+    leak: float,
+    integral_limit: float,
+) -> float:
+    if integrate:
+        return _clamp_range(value + error, -integral_limit, integral_limit)
+    decay = max(0.0, 1.0 - _clamp01(leak))
+    return _clamp_range(value * decay, -integral_limit, integral_limit)
+
+
 def anti_clump_observer_config(
     *,
     sample_limit: Any = 96,
@@ -85,8 +152,34 @@ def anti_clump_controller_config(
     update_stride: Any = 10,
     min_particles: Any = 24,
     high_snr_perturb_gain: Any = 0.28,
+    drive_slew_limit: Any = 0.12,
+    drive_slew_enabled: Any = True,
+    integral_enabled: Any = True,
+    integral_leak: Any = 0.06,
+    integral_freeze_on_saturation: Any = True,
+    integral_saturation_epsilon: Any = 0.02,
+    integral_freeze_on_sign_flip: Any = True,
+    integral_sign_stable_updates: Any = 1,
+    deadband_enabled: Any = True,
+    score_deadband: Any = 0.03,
+    snr_low_gap_deadband: Any = 0.03,
+    snr_score_blend: Any = 0.6,
+    deadband_integral_leak_boost: Any = 0.10,
+    adaptive_enabled: Any = True,
+    osc_window: Any = 8,
+    osc_zero_crossings_hi: Any = 3,
+    osc_sat_frac_hi: Any = 0.5,
+    gain_detune_kp_down: Any = 0.85,
+    gain_detune_ki_down: Any = 0.70,
+    gain_recover_kp_up: Any = 1.03,
+    gain_recover_ki_up: Any = 1.02,
+    kp_mult_min: Any = 0.25,
+    ki_mult_min: Any = 0.10,
 ) -> dict[str, Any]:
     config = dict(observer_config) if isinstance(observer_config, dict) else {}
+    kp_mult_min_value = _clamp_range(_safe_float(kp_mult_min, 0.25), 0.05, 1.0)
+    ki_mult_min_value = _clamp_range(_safe_float(ki_mult_min, 0.10), 0.01, 1.0)
+    osc_window_value = max(3, min(12, _safe_int(osc_window, 8)))
     config.update(
         {
             "drive_limit": max(0.25, _safe_float(drive_limit, 1.0)),
@@ -101,6 +194,78 @@ def anti_clump_controller_config(
                 0.0,
                 _safe_float(high_snr_perturb_gain, 0.28),
             ),
+            "drive_slew_limit": max(0.0, _safe_float(drive_slew_limit, 0.12)),
+            "drive_slew_enabled": _safe_bool(drive_slew_enabled, True),
+            "integral_enabled": _safe_bool(integral_enabled, True),
+            "integral_leak": _clamp01(_safe_float(integral_leak, 0.06)),
+            "integral_freeze_on_saturation": _safe_bool(
+                integral_freeze_on_saturation,
+                True,
+            ),
+            "integral_saturation_epsilon": _clamp_range(
+                _safe_float(integral_saturation_epsilon, 0.02),
+                0.0,
+                1.0,
+            ),
+            "integral_freeze_on_sign_flip": _safe_bool(
+                integral_freeze_on_sign_flip,
+                True,
+            ),
+            "integral_sign_stable_updates": max(
+                1,
+                _safe_int(integral_sign_stable_updates, 1),
+            ),
+            "deadband_enabled": _safe_bool(deadband_enabled, True),
+            "score_deadband": _clamp_range(
+                _safe_float(score_deadband, 0.03),
+                0.0,
+                1.0,
+            ),
+            "snr_low_gap_deadband": _clamp_range(
+                _safe_float(snr_low_gap_deadband, 0.03),
+                0.0,
+                1.0,
+            ),
+            "snr_score_blend": _clamp_range(
+                _safe_float(snr_score_blend, 0.6),
+                0.0,
+                2.0,
+            ),
+            "deadband_integral_leak_boost": _clamp01(
+                _safe_float(deadband_integral_leak_boost, 0.10)
+            ),
+            "adaptive_enabled": _safe_bool(adaptive_enabled, True),
+            "osc_window": osc_window_value,
+            "osc_zero_crossings_hi": max(
+                1,
+                min(
+                    osc_window_value,
+                    _safe_int(osc_zero_crossings_hi, 3),
+                ),
+            ),
+            "osc_sat_frac_hi": _clamp01(_safe_float(osc_sat_frac_hi, 0.5)),
+            "gain_detune_kp_down": _clamp_range(
+                _safe_float(gain_detune_kp_down, 0.85),
+                0.10,
+                1.0,
+            ),
+            "gain_detune_ki_down": _clamp_range(
+                _safe_float(gain_detune_ki_down, 0.70),
+                0.05,
+                1.0,
+            ),
+            "gain_recover_kp_up": _clamp_range(
+                _safe_float(gain_recover_kp_up, 1.03),
+                1.0,
+                1.20,
+            ),
+            "gain_recover_ki_up": _clamp_range(
+                _safe_float(gain_recover_ki_up, 1.02),
+                1.0,
+                1.20,
+            ),
+            "kp_mult_min": kp_mult_min_value,
+            "ki_mult_min": ki_mult_min_value,
         }
     )
     return config
@@ -508,9 +673,36 @@ def anti_clump_summary_from_snapshot(
         "drive": round(_clamp_range(drive, -1.0, 1.0), 6),
         "error": round(_safe_float(row.get("error", 0.0), 0.0), 6),
         "integral": round(_safe_float(row.get("integral", 0.0), 0.0), 6),
+        "integral_snr": round(_safe_float(row.get("integral_snr", 0.0), 0.0), 6),
+        "integral_score": round(
+            _safe_float(row.get("integral_score", 0.0), 0.0),
+            6,
+        ),
         "updated": bool(row.get("updated", False)),
         "tick": max(0, _safe_int(row.get("tick", 0), 0)),
         "particle_count": max(0, _safe_int(row.get("particle_count", 0), 0)),
+        "mode": str(row.get("mode", "")).strip(),
+        "deadband_active": bool(row.get("deadband_active", False)),
+        "is_saturated": bool(row.get("is_saturated", False)),
+        "slew_clamped": bool(row.get("slew_clamped", False)),
+        "kp_eff": round(max(0.0, _safe_float(row.get("kp_eff", 0.0), 0.0)), 6),
+        "ki_eff": round(max(0.0, _safe_float(row.get("ki_eff", 0.0), 0.0)), 6),
+        "kp_mult": round(
+            _clamp_range(_safe_float(row.get("kp_mult", 1.0), 1.0), 0.0, 1.0),
+            6,
+        ),
+        "ki_mult": round(
+            _clamp_range(_safe_float(row.get("ki_mult", 1.0), 1.0), 0.0, 1.0),
+            6,
+        ),
+        "osc_zero_crossings": max(
+            0,
+            _safe_int(row.get("osc_zero_crossings", 0), 0),
+        ),
+        "osc_sat_frac": round(
+            _clamp01(_safe_float(row.get("osc_sat_frac", 0.0), 0.0)),
+            6,
+        ),
         "snr": round(snr, 6),
         "snr_valid": snr_valid,
         "snr_band": {
@@ -617,16 +809,106 @@ def anti_clump_controller_update(
     smoothing = _clamp01(_cfg_float(config, "smoothing", 0.15))
     update_stride = max(1, _cfg_int(config, "update_stride", 10))
     min_particles = max(8, _cfg_int(config, "min_particles", 24))
+    drive_slew_limit = max(0.0, _cfg_float(config, "drive_slew_limit", 0.12))
+    drive_slew_enabled = _cfg_bool(config, "drive_slew_enabled", True)
+    integral_enabled = _cfg_bool(config, "integral_enabled", True)
+    integral_leak = _clamp01(_cfg_float(config, "integral_leak", 0.06))
+    integral_freeze_on_saturation = _cfg_bool(
+        config,
+        "integral_freeze_on_saturation",
+        True,
+    )
+    integral_saturation_epsilon = _clamp_range(
+        _cfg_float(config, "integral_saturation_epsilon", 0.02),
+        0.0,
+        1.0,
+    )
+    integral_freeze_on_sign_flip = _cfg_bool(
+        config,
+        "integral_freeze_on_sign_flip",
+        True,
+    )
+    integral_sign_stable_updates = max(
+        1,
+        _cfg_int(config, "integral_sign_stable_updates", 1),
+    )
+    deadband_enabled = _cfg_bool(config, "deadband_enabled", True)
+    score_deadband = _clamp_range(_cfg_float(config, "score_deadband", 0.03), 0.0, 1.0)
+    snr_low_gap_deadband = _clamp_range(
+        _cfg_float(config, "snr_low_gap_deadband", 0.03),
+        0.0,
+        1.0,
+    )
+    snr_score_blend = _clamp_range(
+        _cfg_float(config, "snr_score_blend", 0.6),
+        0.0,
+        2.0,
+    )
+    deadband_integral_leak_boost = _clamp01(
+        _cfg_float(config, "deadband_integral_leak_boost", 0.10)
+    )
+    adaptive_enabled = _cfg_bool(config, "adaptive_enabled", True)
+    osc_window = max(3, min(12, _cfg_int(config, "osc_window", 8)))
+    osc_zero_crossings_hi = max(
+        1,
+        min(osc_window, _cfg_int(config, "osc_zero_crossings_hi", 3)),
+    )
+    osc_sat_frac_hi = _clamp01(_cfg_float(config, "osc_sat_frac_hi", 0.5))
+    gain_detune_kp_down = _clamp_range(
+        _cfg_float(config, "gain_detune_kp_down", 0.85),
+        0.10,
+        1.0,
+    )
+    gain_detune_ki_down = _clamp_range(
+        _cfg_float(config, "gain_detune_ki_down", 0.70),
+        0.05,
+        1.0,
+    )
+    gain_recover_kp_up = _clamp_range(
+        _cfg_float(config, "gain_recover_kp_up", 1.03),
+        1.0,
+        1.20,
+    )
+    gain_recover_ki_up = _clamp_range(
+        _cfg_float(config, "gain_recover_ki_up", 1.02),
+        1.0,
+        1.20,
+    )
+    kp_mult_min = _clamp_range(_cfg_float(config, "kp_mult_min", 0.25), 0.05, 1.0)
+    ki_mult_min = _clamp_range(_cfg_float(config, "ki_mult_min", 0.10), 0.01, 1.0)
 
     previous_drive = _clamp_range(
         _safe_float(state.get("drive", 0.0), 0.0),
         -drive_limit,
         drive_limit,
     )
-    integral = _clamp_range(
-        _safe_float(state.get("integral", 0.0), 0.0),
+    integral_seed = _safe_float(state.get("integral", 0.0), 0.0)
+    integral_snr = _clamp_range(
+        _safe_float(state.get("integral_snr", integral_seed), integral_seed),
         -integral_limit,
         integral_limit,
+    )
+    integral_score = _clamp_range(
+        _safe_float(state.get("integral_score", integral_seed), integral_seed),
+        -integral_limit,
+        integral_limit,
+    )
+    kp_mult = _clamp_range(
+        _safe_float(state.get("kp_mult", 1.0), 1.0),
+        kp_mult_min,
+        1.0,
+    )
+    ki_mult = _clamp_range(
+        _safe_float(state.get("ki_mult", 1.0), 1.0),
+        ki_mult_min,
+        1.0,
+    )
+    error_history = _trim_float_history(state.get("error_hist", []), max_len=osc_window)
+    drive_history = _trim_float_history(state.get("drive_hist", []), max_len=osc_window)
+    previous_error_sign = _safe_int(state.get("error_sign", 0), 0)
+    previous_error_sign_streak = max(
+        0,
+        _safe_int(state.get("error_sign_streak", 0), 0),
     )
     score_ema = _clamp01(_safe_float(state.get("score_ema", target), target))
 
@@ -655,49 +937,203 @@ def anti_clump_controller_update(
             _safe_float(metrics.get("snr_max", 1.65), 1.65),
         )
 
+        mode = "score"
+        score_error = score_ema - target
+        error = score_error
         if particle_count < min_particles:
-            error = score_ema - target
-            integral = _clamp_range(integral * 0.82, -integral_limit, integral_limit)
-            raw_drive = 0.0
+            mode = "underpop"
         elif snr_valid:
+            mode = "snr"
             error = snr_low_gap
-            if snr_in_band:
-                integral = _clamp_range(
-                    integral * 0.84, -integral_limit, integral_limit
-                )
-            else:
-                integral = _clamp_range(
-                    integral + error,
-                    -integral_limit,
-                    integral_limit,
-                )
-            raw_drive = (
-                (kp * error) + (ki * integral) + (snr_high_gap * high_snr_perturb_gain)
-            )
-        else:
-            error = score_ema - target
-            integral = _clamp_range(
-                integral + error,
-                -integral_limit,
-                integral_limit,
-            )
-            raw_drive = (kp * error) + (ki * integral)
+            score_excess = max(0.0, score_error)
+            error = max(error, score_excess * snr_score_blend)
 
-        drive = _clamp_range(
+        deadband_active = False
+        if deadband_enabled:
+            if (
+                mode == "snr"
+                and error < snr_low_gap_deadband
+                and snr_high_gap < snr_low_gap_deadband
+            ):
+                deadband_active = True
+            elif mode == "score" and abs(error) < score_deadband:
+                deadband_active = True
+        if deadband_active:
+            error = 0.0
+
+        saturation_threshold = max(0.0, drive_limit - integral_saturation_epsilon)
+        is_saturated = abs(previous_drive) >= saturation_threshold
+
+        error_sign = _error_sign(error)
+        if error_sign == 0:
+            error_sign_streak = 0
+        elif error_sign == previous_error_sign:
+            error_sign_streak = previous_error_sign_streak + 1
+        else:
+            error_sign_streak = 1
+
+        leak = _clamp01(
+            integral_leak + (deadband_integral_leak_boost if deadband_active else 0.0)
+        )
+        if mode == "underpop":
+            leak = max(leak, 0.18)
+        elif mode == "snr" and snr_in_band:
+            leak = max(leak, 0.16)
+
+        can_integrate = (
+            integral_enabled
+            and mode in {"snr", "score"}
+            and not deadband_active
+            and not (mode == "snr" and snr_in_band)
+        )
+        if can_integrate and integral_freeze_on_saturation and is_saturated:
+            can_integrate = False
+        if (
+            can_integrate
+            and integral_freeze_on_sign_flip
+            and error_sign_streak < integral_sign_stable_updates
+        ):
+            can_integrate = False
+
+        if mode == "snr":
+            integral_snr = _integral_step(
+                value=integral_snr,
+                error=error,
+                integrate=can_integrate,
+                leak=leak,
+                integral_limit=integral_limit,
+            )
+            integral_score = _integral_step(
+                value=integral_score,
+                error=0.0,
+                integrate=False,
+                leak=leak,
+                integral_limit=integral_limit,
+            )
+            active_integral = integral_snr
+        elif mode == "score":
+            integral_score = _integral_step(
+                value=integral_score,
+                error=error,
+                integrate=can_integrate,
+                leak=leak,
+                integral_limit=integral_limit,
+            )
+            integral_snr = _integral_step(
+                value=integral_snr,
+                error=0.0,
+                integrate=False,
+                leak=leak,
+                integral_limit=integral_limit,
+            )
+            active_integral = integral_score
+        else:
+            integral_snr = _integral_step(
+                value=integral_snr,
+                error=0.0,
+                integrate=False,
+                leak=leak,
+                integral_limit=integral_limit,
+            )
+            integral_score = _integral_step(
+                value=integral_score,
+                error=0.0,
+                integrate=False,
+                leak=leak,
+                integral_limit=integral_limit,
+            )
+            active_integral = integral_score
+
+        kp_eff = kp * kp_mult
+        ki_eff = ki * ki_mult
+
+        if mode == "underpop" or deadband_active:
+            raw_drive = 0.0
+        elif mode == "snr":
+            raw_drive = (kp_eff * error) + (ki_eff * active_integral)
+            raw_drive += snr_high_gap * high_snr_perturb_gain
+        else:
+            raw_drive = (kp_eff * error) + (ki_eff * active_integral)
+
+        candidate_drive = _clamp_range(
             ((previous_drive * (1.0 - smoothing)) + (raw_drive * smoothing)),
             -drive_limit,
             drive_limit,
         )
+        slew_clamped = False
+        if drive_slew_enabled and drive_slew_limit > 0.0:
+            drive_delta = candidate_drive - previous_drive
+            clamped_delta = _clamp_range(
+                drive_delta,
+                -drive_slew_limit,
+                drive_slew_limit,
+            )
+            slew_clamped = abs(clamped_delta - drive_delta) > 1e-12
+            drive = _clamp_range(
+                previous_drive + clamped_delta,
+                -drive_limit,
+                drive_limit,
+            )
+        else:
+            drive = candidate_drive
+
+        error_history = _trim_float_history(
+            [*error_history, error],
+            max_len=osc_window,
+        )
+        drive_history = _trim_float_history(
+            [*drive_history, drive],
+            max_len=osc_window,
+        )
+        osc_zero_crossings = _zero_crossings(error_history)
+        saturated_samples = len(
+            [
+                value
+                for value in drive_history
+                if abs(_safe_float(value, 0.0)) >= saturation_threshold
+            ]
+        )
+        osc_sat_frac = (
+            saturated_samples / float(len(drive_history)) if drive_history else 0.0
+        )
+
+        if adaptive_enabled:
+            if (
+                osc_zero_crossings >= osc_zero_crossings_hi
+                or osc_sat_frac >= osc_sat_frac_hi
+            ):
+                kp_mult = max(kp_mult_min, kp_mult * gain_detune_kp_down)
+                ki_mult = max(ki_mult_min, ki_mult * gain_detune_ki_down)
+            else:
+                kp_mult = min(1.0, kp_mult * gain_recover_kp_up)
+                ki_mult = min(1.0, ki_mult * gain_recover_ki_up)
+
         state.update(
             {
                 "tick": tick,
                 "updated": True,
                 "drive": drive,
-                "integral": integral,
+                "integral": active_integral,
+                "integral_snr": integral_snr,
+                "integral_score": integral_score,
                 "error": error,
+                "error_sign": error_sign,
+                "error_sign_streak": error_sign_streak,
                 "score_ema": score_ema,
                 "particle_count": particle_count,
                 "clump_score": score_raw,
+                "mode": mode,
+                "deadband_active": bool(deadband_active),
+                "is_saturated": bool(is_saturated),
+                "slew_clamped": bool(slew_clamped),
+                "kp_eff": max(0.0, kp_eff),
+                "ki_eff": max(0.0, ki_eff),
+                "kp_mult": _clamp_range(kp_mult, kp_mult_min, 1.0),
+                "ki_mult": _clamp_range(ki_mult, ki_mult_min, 1.0),
+                "osc_zero_crossings": max(0, int(osc_zero_crossings)),
+                "osc_sat_frac": _clamp01(osc_sat_frac),
+                "error_hist": [float(value) for value in error_history],
+                "drive_hist": [float(value) for value in drive_history],
                 "nn_term": _clamp01(_safe_float(metrics.get("nn_term", 0.0), 0.0)),
                 "entropy_norm": _clamp01(
                     _safe_float(metrics.get("entropy_norm", 1.0), 1.0)

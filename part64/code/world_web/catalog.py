@@ -600,21 +600,137 @@ def _heuristic_docmeta_tags(entry: dict[str, Any], source_text: str) -> list[str
     return _dedupe_docmeta_tags(seeds, limit=ETA_MU_DOCMETA_TAG_LIMIT)
 
 
+_DOCMETA_LOW_SIGNAL_MARKERS: tuple[str, ...] = (
+    "opencode/knowledge/archive",
+    "focusintent:<",
+    "<what should a graph crawler learn from this page>",
+)
+
+
+def _compact_docmeta_text(value: Any) -> str:
+    return " ".join(str(value or "").split()).strip()
+
+
+def _normalize_docmeta_summary(summary: Any) -> str:
+    clean = _compact_docmeta_text(summary)
+    if not clean:
+        return ""
+    clean = re.sub(
+        r"^(summary|caption|description|observation)\s*[:\-]\s*",
+        "",
+        clean,
+        flags=re.IGNORECASE,
+    )
+    clean = re.sub(r"^[-*]\s*", "", clean)
+    clean = clean.strip("`\"' ")
+    clean = re.sub(r"\s+", " ", clean).strip()
+    return clean
+
+
+def _docmeta_text_is_low_signal(value: Any) -> bool:
+    clean = _normalize_docmeta_summary(value)
+    if not clean:
+        return True
+    lowered = clean.lower()
+    if any(marker in lowered for marker in _DOCMETA_LOW_SIGNAL_MARKERS):
+        return True
+
+    tokens = re.findall(r"[a-z0-9._:/-]+", lowered)
+    if len(tokens) <= 1:
+        return True
+
+    path_like = 0
+    hash_like = 0
+    for token in tokens:
+        if "/" in token or token.startswith("."):
+            path_like += 1
+        if token.endswith(
+            (
+                ".zip",
+                ".sha256",
+                ".png",
+                ".jpg",
+                ".jpeg",
+                ".webp",
+                ".gif",
+                ".pdf",
+                ".md",
+                ".txt",
+                ".json",
+            )
+        ):
+            path_like += 1
+        if re.fullmatch(r"[a-f0-9]{20,}", token):
+            hash_like += 1
+
+    noisy_count = path_like + hash_like
+    if noisy_count >= max(2, int(len(tokens) * 0.58)):
+        return True
+
+    if len(tokens) >= 8:
+        unique_ratio = len(set(tokens)) / float(len(tokens))
+        if unique_ratio < 0.34:
+            return True
+    return False
+
+
+def _docmeta_summary_is_usable(summary: str) -> bool:
+    clean = _normalize_docmeta_summary(summary)
+    if len(clean) < 18:
+        return False
+    if _docmeta_text_is_low_signal(clean):
+        return False
+    return True
+
+
 def _heuristic_docmeta_summary(entry: dict[str, Any], source_text: str) -> str:
     max_len = max(80, int(ETA_MU_DOCMETA_SUMMARY_CHAR_LIMIT))
-    excerpt = str(entry.get("text_excerpt", "")).strip()
+    excerpt = _compact_docmeta_text(entry.get("text_excerpt", ""))
     if excerpt:
-        compact = " ".join(excerpt.split())
-        return compact[:max_len]
+        vision_match = re.search(r"vision-caption=([^\n]+)", excerpt, re.IGNORECASE)
+        if vision_match:
+            vision_caption = _normalize_docmeta_summary(vision_match.group(1))
+            if vision_caption:
+                return f"Visual artifact: {vision_caption}"[:max_len]
 
-    compact_source = " ".join(str(source_text or "").split())
-    if compact_source:
+        pdf_text_match = re.search(
+            r"pdf page\s+\d+\s+.*?text=(.+?)(?:\s+vision-caption=|$)",
+            excerpt,
+            re.IGNORECASE,
+        )
+        if pdf_text_match:
+            pdf_snippet = _normalize_docmeta_summary(pdf_text_match.group(1))
+            if pdf_snippet and not _docmeta_text_is_low_signal(pdf_snippet):
+                return f"PDF excerpt: {pdf_snippet}"[:max_len]
+
+        normalized_excerpt = _normalize_docmeta_summary(excerpt)
+        if normalized_excerpt and not _docmeta_text_is_low_signal(normalized_excerpt):
+            return normalized_excerpt[:max_len]
+
+    compact_source = _compact_docmeta_text(source_text)
+    if compact_source and not _docmeta_text_is_low_signal(compact_source):
         return compact_source[:max_len]
 
-    name = str(entry.get("name", "")).strip() or "document"
-    kind_value = str(entry.get("kind", "file")).strip() or "file"
-    fallback = f"{name} ({kind_value})"
-    return fallback[:max_len]
+    source_rel = str(entry.get("source_rel_path", "")).strip()
+    name = str(entry.get("name", "")).strip() or Path(source_rel).name or "artifact"
+    kind_value = str(entry.get("kind", "file")).strip().lower() or "file"
+    dominant_field = str(entry.get("dominant_field", "")).strip().lower()
+
+    if name.lower().endswith(".sha256"):
+        fallback = f"Checksum artifact {name} for archive integrity verification."
+    elif name.lower().endswith(".zip"):
+        fallback = f"Archive package {name} preserved for runtime provenance."
+    elif kind_value == "image":
+        fallback = f"Image artifact {name} indexed for visual retrieval."
+    elif kind_value == "pdf":
+        fallback = f"PDF artifact {name} indexed for page-level retrieval."
+    elif kind_value == "audio":
+        fallback = f"Audio artifact {name} indexed for media retrieval."
+    elif dominant_field:
+        fallback = f"{kind_value.title()} artifact {name} associated with field {dominant_field}."
+    else:
+        fallback = f"Archived {kind_value} artifact {name} prepared for retrieval."
+    return _normalize_docmeta_summary(fallback)[:max_len]
 
 
 def _parse_docmeta_json(raw_text: str) -> dict[str, Any]:
@@ -688,15 +804,20 @@ def _build_docmeta_record(entry: dict[str, Any], vault_root: Path) -> dict[str, 
     strategy = "heuristic"
 
     prompt = (
-        "You are creating metadata for a simulation knowledge graph. "
-        "Return JSON only with keys summary and tags. "
-        "summary must be a single sentence under 280 chars. "
-        "tags must be 3-8 concise lowercase tokens using underscores.\n"
+        "You produce metadata used for retrieval quality, embeddings, and graph search.\n"
+        "Return STRICT JSON only with exactly two keys: summary and tags.\n"
+        'Schema: {"summary": "...", "tags": ["..."]}\n'
+        "Rules:\n"
+        "- summary: one plain sentence, 18-280 chars, concrete and specific.\n"
+        "- summary must describe what this artifact contains and why it matters.\n"
+        "- do not output filename/path/hash-only summaries.\n"
+        "- tags: 4-8 lowercase snake_case tokens; prioritize topical terms and artifact role.\n"
+        "- no markdown, no commentary, no extra keys.\n"
         f"name: {str(entry.get('name', '')).strip()}\n"
         f"kind: {str(entry.get('kind', '')).strip()}\n"
         f"dominant_field: {str(entry.get('dominant_field', '')).strip()}\n"
         f"source_rel_path: {str(entry.get('source_rel_path', '')).strip()}\n"
-        f"text:\n{source_text}"
+        f"source_text:\n{source_text}"
     )
     text, model_name = _ollama_generate_text(
         prompt,
@@ -705,14 +826,19 @@ def _build_docmeta_record(entry: dict[str, Any], vault_root: Path) -> dict[str, 
     )
     if text:
         payload = _parse_docmeta_json(text)
-        summary = str(payload.get("summary", "")).strip()
+        summary = _normalize_docmeta_summary(payload.get("summary", ""))
         tags = _dedupe_docmeta_tags(
             payload.get("tags", []), limit=ETA_MU_DOCMETA_TAG_LIMIT
         )
+        if summary and not _docmeta_summary_is_usable(summary):
+            summary = ""
         if summary or tags:
             strategy = "llm"
 
     if not summary:
+        summary = _heuristic_docmeta_summary(entry, source_text)
+    summary = _normalize_docmeta_summary(summary)
+    if not _docmeta_summary_is_usable(summary):
         summary = _heuristic_docmeta_summary(entry, source_text)
     if not tags:
         tags = _heuristic_docmeta_tags(entry, source_text)

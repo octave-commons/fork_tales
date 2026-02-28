@@ -333,6 +333,68 @@ def test_muse_tool_request_maps_natural_language_arxiv_paper_query() -> None:
     assert "https://arxiv.org/abs/2602.23342" in reply
 
 
+def test_muse_tool_request_maps_natural_language_github_threat_radar() -> None:
+    manager = _manager()
+    tool_calls: list[str] = []
+
+    def _tool_callback(*, tool_name: str) -> dict[str, Any]:
+        tool_calls.append(tool_name)
+        if tool_name.startswith("graph_query:github_threat_radar"):
+            return {
+                "ok": True,
+                "summary": "graph query generated",
+                "query": "github_threat_radar",
+                "snapshot_hash": "g" * 64,
+                "result_count": 2,
+                "result": {
+                    "count": 2,
+                    "critical_count": 1,
+                    "high_count": 1,
+                    "medium_count": 0,
+                    "threats": [
+                        {
+                            "risk_level": "critical",
+                            "risk_score": 12,
+                            "repo": "openai/codex",
+                            "number": 42,
+                            "title": "CVE-2026-1234 in auth token flow",
+                            "canonical_url": "https://github.com/openai/codex/issues/42",
+                            "cves": ["CVE-2026-1234"],
+                        }
+                    ],
+                },
+            }
+        if tool_name.startswith("graph_query:"):
+            return {
+                "ok": True,
+                "summary": "graph query generated",
+                "query": tool_name.split(":", 1)[1].split(" ", 1)[0],
+                "snapshot_hash": "g" * 64,
+                "result_count": 1,
+            }
+        return {"ok": True, "summary": f"ran:{tool_name}"}
+
+    payload = manager.send_message(
+        muse_id=DEFAULT_MUSE_ID,
+        text="run github threat radar for security cve code review risks",
+        mode="deterministic",
+        token_budget=900,
+        idempotency_key="github-threat-radar-1",
+        graph_revision="graph:v-github-threat-radar",
+        surrounding_nodes=[],
+        tool_callback=_tool_callback,
+        reply_builder=_reply_builder,
+        seed="seed-github-threat-radar",
+    )
+    assert payload["ok"] is True
+    assert any(
+        call.startswith("graph_query:github_threat_radar") for call in tool_calls
+    )
+    reply = str(payload.get("reply", ""))
+    assert "GitHub threat radar" in reply
+    assert "CVE-2026-1234" in reply
+
+
 def test_muse_tool_request_maps_natural_language_daimoi_outcome_queries() -> None:
     manager = _manager()
     tool_calls: list[str] = []

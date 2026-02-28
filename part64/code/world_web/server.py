@@ -39,6 +39,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Iterator, cast
+import urllib.error
 from urllib.parse import parse_qs, quote, unquote, urlparse
 from urllib.request import Request, urlopen
 
@@ -565,6 +566,55 @@ _SIMULATION_WS_MUSE_POLL_SECONDS = max(
     0.05,
     float(os.getenv("SIMULATION_WS_MUSE_POLL_SECONDS", "0.5") or "0.5"),
 )
+_MUSE_THREAT_RADAR_ENABLED = str(
+    os.getenv("MUSE_THREAT_RADAR_ENABLED", "1") or "1"
+).strip().lower() in {"1", "true", "yes", "on"}
+_MUSE_THREAT_RADAR_MUSE_ID = (
+    str(os.getenv("MUSE_THREAT_RADAR_MUSE_ID", "github_security_review") or "")
+    .strip()
+    .lower()
+)
+if not _MUSE_THREAT_RADAR_MUSE_ID:
+    _MUSE_THREAT_RADAR_MUSE_ID = "github_security_review"
+_MUSE_THREAT_RADAR_LABEL = (
+    str(
+        os.getenv("MUSE_THREAT_RADAR_LABEL", "GitHub Threat Radar")
+        or "GitHub Threat Radar"
+    ).strip()
+    or "GitHub Threat Radar"
+)
+_MUSE_THREAT_RADAR_INTERVAL_SECONDS = max(
+    8.0,
+    float(os.getenv("MUSE_THREAT_RADAR_INTERVAL_SECONDS", "45") or "45"),
+)
+_MUSE_THREAT_RADAR_TOKEN_BUDGET = max(
+    320,
+    min(
+        4096,
+        int(float(os.getenv("MUSE_THREAT_RADAR_TOKEN_BUDGET", "1400") or "1400")),
+    ),
+)
+_MUSE_THREAT_RADAR_PROMPT = (
+    str(
+        os.getenv(
+            "MUSE_THREAT_RADAR_PROMPT",
+            "/facts /graph github_threat_radar 1440 24",
+        )
+        or "/facts /graph github_threat_radar 1440 24"
+    ).strip()
+    or "/facts /graph github_threat_radar 1440 24"
+)
+_MUSE_THREAT_RADAR_LOCK = threading.Lock()
+_MUSE_THREAT_RADAR_STATE: dict[str, Any] = {
+    "next_run_monotonic": 0.0,
+    "last_run_monotonic": 0.0,
+    "last_run_at": "",
+    "last_status": "idle",
+    "last_turn_id": "",
+    "last_error": "",
+    "last_reason": "",
+    "last_skipped_reason": "",
+}
 _SIMULATION_WS_STREAM_PARTICLE_MAX = max(
     48,
     int(float(os.getenv("SIMULATION_WS_STREAM_PARTICLE_MAX", "180") or "180")),
@@ -5201,6 +5251,302 @@ def _safe_bool_query(value: str, default: bool = False) -> bool:
     return default
 
 
+def _github_conversation_headers() -> dict[str, str]:
+    headers: dict[str, str] = {
+        "User-Agent": "fork-tales-part64-github-conversation/1.0",
+        "Accept": "application/vnd.github+json",
+    }
+    token = str(os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN") or "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _github_conversation_fetch_json(
+    url: str,
+    *,
+    timeout_s: float,
+) -> tuple[bool, Any, int, str]:
+    request = Request(url, headers=_github_conversation_headers(), method="GET")
+    try:
+        with urlopen(request, timeout=max(2.0, float(timeout_s))) as response:
+            status = int(_safe_float(getattr(response, "status", 200), 200.0))
+            payload_bytes = response.read()
+            if not isinstance(payload_bytes, (bytes, bytearray)):
+                payload_bytes = bytes(str(payload_bytes or ""), "utf-8")
+            payload_text = bytes(payload_bytes).decode("utf-8", errors="replace")
+            try:
+                payload = json.loads(payload_text)
+            except Exception:
+                payload = {}
+            return True, payload, status, ""
+    except urllib.error.HTTPError as exc:
+        status = int(_safe_float(getattr(exc, "code", 0), 0.0))
+        detail = ""
+        try:
+            detail_bytes = exc.read()
+            if isinstance(detail_bytes, (bytes, bytearray)):
+                detail = bytes(detail_bytes).decode("utf-8", errors="replace")
+        except Exception:
+            detail = ""
+        detail = str(detail or "").strip()
+        if len(detail) > 280:
+            detail = f"{detail[:279].rstrip()}…"
+        return False, {}, status, detail or f"http_error:{status}"
+    except Exception as exc:
+        return False, {}, 0, f"{exc.__class__.__name__}:{exc}"
+
+
+def _github_conversation_comment_rows(
+    payload: Any,
+    *,
+    channel: str,
+    max_comments: int,
+    max_body_chars: int,
+) -> list[dict[str, Any]]:
+    rows = payload if isinstance(payload, list) else []
+    entries: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        body = str(row.get("body", "") or "").strip()
+        if not body:
+            continue
+        if len(body) > max_body_chars:
+            body = f"{body[: max(1, max_body_chars - 1)].rstrip()}…"
+        user_row = row.get("user", {}) if isinstance(row.get("user", {}), dict) else {}
+        author = str(user_row.get("login", "") or "").strip() or "unknown"
+        created_at = str(
+            row.get("created_at", "") or row.get("submitted_at", "") or ""
+        ).strip()
+        updated_at = str(
+            row.get("updated_at", "") or row.get("submitted_at", "") or ""
+        ).strip()
+        html_url = str(row.get("html_url", "") or "").strip()
+        entry_id = str(row.get("id", "") or "").strip()
+        entries.append(
+            {
+                "id": entry_id,
+                "channel": channel,
+                "author": author,
+                "created_at": created_at,
+                "updated_at": updated_at,
+                "url": html_url,
+                "body": body,
+            }
+        )
+        if len(entries) >= max_comments:
+            break
+    entries.sort(
+        key=lambda row: (
+            str(row.get("created_at", "")),
+            str(row.get("id", "")),
+            str(row.get("channel", "")),
+        )
+    )
+    return entries[:max_comments]
+
+
+def _github_conversation_markdown(
+    *,
+    repo: str,
+    number: int,
+    kind: str,
+    title: str,
+    state: str,
+    html_url: str,
+    root_body: str,
+    comments: list[dict[str, Any]],
+    max_markdown_chars: int,
+) -> str:
+    heading = title or f"{kind} #{number}"
+    lines: list[str] = [
+        f"# {heading}",
+        "",
+        f"- Repo: {repo}",
+        f"- Kind: {kind}",
+        f"- Number: {max(0, int(number))}",
+        f"- State: {state or 'unknown'}",
+    ]
+    if html_url:
+        lines.append(f"- URL: {html_url}")
+
+    lines.extend(["", "## Root", "", root_body or "_No root message body returned._"])
+    lines.extend(["", "## Conversation Chain", ""])
+    if comments:
+        for index, row in enumerate(comments, start=1):
+            author = str(row.get("author", "unknown") or "unknown").strip() or "unknown"
+            created_at = str(row.get("created_at", "") or "").strip() or "unknown-time"
+            channel = str(row.get("channel", "comment") or "comment").strip()
+            body = str(row.get("body", "") or "").strip()
+            url = str(row.get("url", "") or "").strip()
+            lines.append(f"### {index}. @{author} · {created_at} · {channel}")
+            if url:
+                lines.append(f"- Link: {url}")
+            lines.append("")
+            lines.append(body or "_empty comment body_")
+            lines.append("")
+    else:
+        lines.append("_No comments returned for this item._")
+
+    markdown = "\n".join(lines).strip()
+    if len(markdown) > max_markdown_chars:
+        markdown = f"{markdown[: max(1, max_markdown_chars - 1)].rstrip()}…"
+    return f"{markdown}\n"
+
+
+def _github_conversation_payload(
+    *,
+    repo: str,
+    number: int,
+    kind: str,
+    max_comments: int,
+    max_root_body_chars: int,
+    max_comment_body_chars: int,
+    max_markdown_chars: int,
+    include_review_comments: bool,
+    timeout_s: float,
+) -> dict[str, Any]:
+    normalized_kind = str(kind or "").strip().lower()
+    if normalized_kind not in {"github:issue", "github:pr"}:
+        normalized_kind = "github:issue"
+
+    safe_number = max(1, int(number))
+    if normalized_kind == "github:pr":
+        item_url = f"https://api.github.com/repos/{repo}/pulls/{safe_number}"
+    else:
+        item_url = f"https://api.github.com/repos/{repo}/issues/{safe_number}"
+
+    ok_item, item_payload, item_status, item_error = _github_conversation_fetch_json(
+        item_url,
+        timeout_s=timeout_s,
+    )
+    if not ok_item or not isinstance(item_payload, dict):
+        return {
+            "ok": False,
+            "error": item_error or "github_item_fetch_failed",
+            "status": item_status,
+            "repo": repo,
+            "number": safe_number,
+            "kind": normalized_kind,
+        }
+
+    title = str(item_payload.get("title", "") or item_payload.get("name", "")).strip()
+    state = str(item_payload.get("state", "") or "").strip()
+    html_url = str(item_payload.get("html_url", "") or "").strip()
+    root_body = str(item_payload.get("body", "") or "").strip()
+    if len(root_body) > max_root_body_chars:
+        root_body = f"{root_body[: max(1, max_root_body_chars - 1)].rstrip()}…"
+
+    comments: list[dict[str, Any]] = []
+    issue_comments_url = f"https://api.github.com/repos/{repo}/issues/{safe_number}/comments?per_page=100"
+    ok_issue_comments, issue_comments_payload, _, _ = _github_conversation_fetch_json(
+        issue_comments_url,
+        timeout_s=timeout_s,
+    )
+    if ok_issue_comments:
+        comments.extend(
+            _github_conversation_comment_rows(
+                issue_comments_payload,
+                channel="issue-comment",
+                max_comments=max_comments,
+                max_body_chars=max_comment_body_chars,
+            )
+        )
+
+    if normalized_kind == "github:pr" and include_review_comments:
+        reviews_url = f"https://api.github.com/repos/{repo}/pulls/{safe_number}/reviews?per_page=100"
+        ok_reviews, reviews_payload, _, _ = _github_conversation_fetch_json(
+            reviews_url,
+            timeout_s=timeout_s,
+        )
+        if ok_reviews and len(comments) < max_comments:
+            remaining = max(1, max_comments - len(comments))
+            comments.extend(
+                _github_conversation_comment_rows(
+                    reviews_payload,
+                    channel="review",
+                    max_comments=remaining,
+                    max_body_chars=max_comment_body_chars,
+                )
+            )
+
+        review_comments_url = f"https://api.github.com/repos/{repo}/pulls/{safe_number}/comments?per_page=100"
+        ok_review_comments, review_comments_payload, _, _ = (
+            _github_conversation_fetch_json(
+                review_comments_url,
+                timeout_s=timeout_s,
+            )
+        )
+        if ok_review_comments and len(comments) < max_comments:
+            remaining = max(1, max_comments - len(comments))
+            comments.extend(
+                _github_conversation_comment_rows(
+                    review_comments_payload,
+                    channel="review-comment",
+                    max_comments=remaining,
+                    max_body_chars=max_comment_body_chars,
+                )
+            )
+
+    deduped_comments: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, str, str, str]] = set()
+    for row in comments:
+        if not isinstance(row, dict):
+            continue
+        key = (
+            str(row.get("id", "")),
+            str(row.get("channel", "")),
+            str(row.get("created_at", "")),
+            str(row.get("body", "")),
+        )
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduped_comments.append(row)
+        if len(deduped_comments) >= max_comments:
+            break
+
+    deduped_comments.sort(
+        key=lambda row: (
+            str(row.get("created_at", "")),
+            str(row.get("id", "")),
+            str(row.get("channel", "")),
+        )
+    )
+    markdown = _github_conversation_markdown(
+        repo=repo,
+        number=safe_number,
+        kind=normalized_kind,
+        title=title,
+        state=state,
+        html_url=html_url,
+        root_body=root_body,
+        comments=deduped_comments,
+        max_markdown_chars=max_markdown_chars,
+    )
+
+    token_configured = bool(
+        str(os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN") or "").strip()
+    )
+    return {
+        "ok": True,
+        "record": "eta-mu.github-conversation.v1",
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "repo": repo,
+        "number": safe_number,
+        "kind": normalized_kind,
+        "title": title,
+        "state": state,
+        "url": html_url,
+        "root_body": root_body,
+        "comment_count": len(deduped_comments),
+        "comments": deduped_comments,
+        "markdown": markdown,
+        "token_configured": token_configured,
+    }
+
+
 def _docker_simulation_identifier_set(row: dict[str, Any]) -> set[str]:
     values: set[str] = set()
     direct_keys = ("id", "short_id", "name", "service")
@@ -5565,6 +5911,142 @@ class WorldHandler(BaseHTTPRequestHandler):
     def _muse_manager(self) -> Any:
         return get_muse_runtime_manager()
 
+    def _muse_threat_radar_status(self) -> dict[str, Any]:
+        with _MUSE_THREAT_RADAR_LOCK:
+            state = dict(_MUSE_THREAT_RADAR_STATE)
+        return {
+            "enabled": bool(_MUSE_THREAT_RADAR_ENABLED),
+            "muse_id": _MUSE_THREAT_RADAR_MUSE_ID,
+            "label": _MUSE_THREAT_RADAR_LABEL,
+            "interval_seconds": round(_MUSE_THREAT_RADAR_INTERVAL_SECONDS, 3),
+            "token_budget": int(_MUSE_THREAT_RADAR_TOKEN_BUDGET),
+            "prompt": _MUSE_THREAT_RADAR_PROMPT,
+            "state": state,
+        }
+
+    def _muse_threat_radar_tick(
+        self,
+        *,
+        now_monotonic: float | None = None,
+        force: bool = False,
+        reason: str = "manual",
+    ) -> dict[str, Any]:
+        now_mono = (
+            max(0.0, _safe_float(now_monotonic, 0.0))
+            if now_monotonic is not None
+            else time.monotonic()
+        )
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        if not _MUSE_THREAT_RADAR_ENABLED:
+            with _MUSE_THREAT_RADAR_LOCK:
+                _MUSE_THREAT_RADAR_STATE["last_skipped_reason"] = "disabled"
+            return {
+                "ok": True,
+                "status": "disabled",
+                "runtime": self._muse_threat_radar_status(),
+            }
+
+        with _MUSE_THREAT_RADAR_LOCK:
+            next_due = max(
+                0.0,
+                _safe_float(
+                    _MUSE_THREAT_RADAR_STATE.get("next_run_monotonic", 0.0), 0.0
+                ),
+            )
+            if not force and now_mono < next_due:
+                _MUSE_THREAT_RADAR_STATE["last_skipped_reason"] = "interval_not_elapsed"
+                skipped = True
+            else:
+                skipped = False
+                _MUSE_THREAT_RADAR_STATE["next_run_monotonic"] = round(
+                    now_mono + _MUSE_THREAT_RADAR_INTERVAL_SECONDS,
+                    6,
+                )
+                _MUSE_THREAT_RADAR_STATE["last_run_monotonic"] = round(now_mono, 6)
+                _MUSE_THREAT_RADAR_STATE["last_run_at"] = now_iso
+                _MUSE_THREAT_RADAR_STATE["last_reason"] = str(reason or "manual")
+                _MUSE_THREAT_RADAR_STATE["last_skipped_reason"] = ""
+
+        if skipped:
+            return {
+                "ok": True,
+                "status": "skipped",
+                "reason": "interval_not_elapsed",
+                "runtime": self._muse_threat_radar_status(),
+            }
+
+        manager = self._muse_manager()
+        runtime = manager.snapshot()
+        muse_rows = runtime.get("muses", []) if isinstance(runtime, dict) else []
+        muse_ids = {
+            str(row.get("id", "")).strip()
+            for row in muse_rows
+            if isinstance(row, dict) and str(row.get("id", "")).strip()
+        }
+        if _MUSE_THREAT_RADAR_MUSE_ID not in muse_ids:
+            manager.create_muse(
+                muse_id=_MUSE_THREAT_RADAR_MUSE_ID,
+                label=_MUSE_THREAT_RADAR_LABEL,
+                anchor={"x": 0.82, "y": 0.5, "zoom": 1.0, "kind": "threat-radar"},
+                user_intent_id="runtime:threat-radar-bootstrap",
+            )
+
+        bucket = int(now_mono / max(1.0, _MUSE_THREAT_RADAR_INTERVAL_SECONDS))
+        idempotency_key = (
+            f"threat-radar:{bucket}"
+            if not force
+            else f"threat-radar:force:{time.time_ns()}"
+        )
+        try:
+            self._muse_tool_cache = {}
+            catalog = self._runtime_catalog_base()
+            graph_revision = str(catalog.get("generated_at", "") or "").strip()
+            payload = manager.send_message(
+                muse_id=_MUSE_THREAT_RADAR_MUSE_ID,
+                text=_MUSE_THREAT_RADAR_PROMPT,
+                mode="deterministic",
+                token_budget=_MUSE_THREAT_RADAR_TOKEN_BUDGET,
+                idempotency_key=idempotency_key,
+                graph_revision=graph_revision,
+                surrounding_nodes=[],
+                tool_callback=self._muse_tool_callback,
+                reply_builder=self._muse_reply_builder,
+                seed=f"threat-radar|{bucket}",
+            )
+        except Exception as exc:
+            error_text = f"{exc.__class__.__name__}:{exc}"
+            with _MUSE_THREAT_RADAR_LOCK:
+                _MUSE_THREAT_RADAR_STATE["last_status"] = "error"
+                _MUSE_THREAT_RADAR_STATE["last_turn_id"] = ""
+                _MUSE_THREAT_RADAR_STATE["last_error"] = error_text
+            return {
+                "ok": False,
+                "status": "error",
+                "error": error_text,
+                "runtime": self._muse_threat_radar_status(),
+            }
+
+        ok = bool(payload.get("ok", False)) if isinstance(payload, dict) else False
+        turn_id = (
+            str(payload.get("turn_id", "") or "") if isinstance(payload, dict) else ""
+        )
+        error = str(payload.get("error", "") or "") if isinstance(payload, dict) else ""
+
+        with _MUSE_THREAT_RADAR_LOCK:
+            _MUSE_THREAT_RADAR_STATE["last_status"] = "ok" if ok else "error"
+            _MUSE_THREAT_RADAR_STATE["last_turn_id"] = turn_id
+            _MUSE_THREAT_RADAR_STATE["last_error"] = error
+
+        return {
+            "ok": ok,
+            "status": "triggered" if ok else "error",
+            "muse_id": _MUSE_THREAT_RADAR_MUSE_ID,
+            "turn_id": turn_id,
+            "error": error,
+            "runtime": self._muse_threat_radar_status(),
+        }
+
     def _muse_tool_callback(self, *, tool_name: str) -> dict[str, Any]:
         clean_tool = str(tool_name or "").strip().lower()
         cache = getattr(self, "_muse_tool_cache", None)
@@ -5711,6 +6193,26 @@ class WorldHandler(BaseHTTPRequestHandler):
                     )
                 if len(parts) > 1:
                     query_args["limit"] = max(1, int(_safe_float(parts[1], 32.0)))
+            elif query_name == "github_threat_radar" and query_arg:
+                parts = [piece for piece in query_arg.split(" ") if piece]
+                if parts:
+                    if parts[0].isdigit():
+                        query_args["window_ticks"] = max(
+                            1,
+                            int(_safe_float(parts[0], 1440.0)),
+                        )
+                    else:
+                        query_args["repo"] = parts[0]
+                if len(parts) > 1:
+                    if parts[1].isdigit():
+                        query_args["limit"] = max(
+                            1,
+                            int(_safe_float(parts[1], 24.0)),
+                        )
+                    elif "repo" not in query_args:
+                        query_args["repo"] = parts[1]
+                if len(parts) > 2 and "repo" not in query_args:
+                    query_args["repo"] = parts[2]
             simulation = _cached_simulation()
             nexus_graph = (
                 simulation.get("nexus_graph", {})
@@ -6631,6 +7133,15 @@ class WorldHandler(BaseHTTPRequestHandler):
 
             if now_monotonic - last_muse_poll < _SIMULATION_WS_MUSE_POLL_SECONDS:
                 return
+
+            try:
+                self._muse_threat_radar_tick(
+                    now_monotonic=now_monotonic,
+                    force=False,
+                    reason="ws.poll",
+                )
+            except Exception:
+                pass
 
             previous_muse_seq = muse_event_seq
             muse_events = self._muse_manager().list_events(
@@ -8558,6 +9069,116 @@ class WorldHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "runtime": manager.snapshot()})
             return
 
+        if parsed.path == "/api/muse/threat-radar/status":
+            self._send_json(
+                {
+                    "ok": True,
+                    "record": "eta-mu.muse-threat-radar-status.v1",
+                    "runtime": self._muse_threat_radar_status(),
+                }
+            )
+            return
+
+        if parsed.path == "/api/muse/threat-radar/tick":
+            force = _safe_bool_query(
+                str(params.get("force", ["false"])[0] or "false"),
+                default=False,
+            )
+            payload = self._muse_threat_radar_tick(
+                force=force,
+                reason="api.tick",
+            )
+            status = (
+                HTTPStatus.OK
+                if bool(payload.get("ok", False))
+                else HTTPStatus.BAD_GATEWAY
+            )
+            self._send_json(payload, status=status)
+            return
+
+        if parsed.path == "/api/muse/threat-radar/report":
+            window_ticks = max(
+                1,
+                min(
+                    20_000,
+                    int(
+                        _safe_float(
+                            str(params.get("window_ticks", ["1440"])[0] or "1440"),
+                            1440.0,
+                        )
+                    ),
+                ),
+            )
+            limit = max(
+                1,
+                min(
+                    128,
+                    int(
+                        _safe_float(
+                            str(params.get("limit", ["24"])[0] or "24"),
+                            24.0,
+                        )
+                    ),
+                ),
+            )
+            repo = str(params.get("repo", [""])[0] or "").strip().lower()
+
+            catalog = self._runtime_catalog_base(
+                allow_inline_collect=False,
+                strict_collect=False,
+            )
+            file_graph = (
+                catalog.get("file_graph", {}) if isinstance(catalog, dict) else {}
+            )
+            crawler_graph = (
+                catalog.get("crawler_graph", {}) if isinstance(catalog, dict) else {}
+            )
+            logical_graph = (
+                catalog.get("logical_graph", {}) if isinstance(catalog, dict) else {}
+            )
+            nexus_graph = simulation_module._build_canonical_nexus_graph(
+                file_graph if isinstance(file_graph, dict) else None,
+                crawler_graph if isinstance(crawler_graph, dict) else None,
+                logical_graph if isinstance(logical_graph, dict) else None,
+                include_crawler=True,
+                include_logical=True,
+            )
+            if not isinstance(nexus_graph, dict):
+                nexus_graph = {"nodes": [], "edges": []}
+            simulation_payload: dict[str, Any] = {
+                "nexus_graph": nexus_graph,
+                "generated_at": str(
+                    catalog.get("generated_at", "") if isinstance(catalog, dict) else ""
+                ),
+            }
+            query_args: dict[str, Any] = {
+                "window_ticks": window_ticks,
+                "limit": limit,
+            }
+            if repo:
+                query_args["repo"] = repo
+            query_payload = run_named_graph_query(
+                nexus_graph,
+                "github_threat_radar",
+                args=query_args,
+                simulation=simulation_payload,
+            )
+            result = (
+                query_payload.get("result", {})
+                if isinstance(query_payload.get("result", {}), dict)
+                else {}
+            )
+            self._send_json(
+                {
+                    "ok": True,
+                    "record": "eta-mu.muse-threat-radar-report.v1",
+                    "snapshot_hash": str(query_payload.get("snapshot_hash", "")),
+                    "runtime": self._muse_threat_radar_status(),
+                    "result": result,
+                }
+            )
+            return
+
         if parsed.path == "/api/muse/events":
             manager = self._muse_manager()
             muse_id = str(params.get("muse_id", [""])[0] or "").strip()
@@ -8808,6 +9429,134 @@ class WorldHandler(BaseHTTPRequestHandler):
                     "runtime": runtime_snapshot,
                 }
             )
+            return
+
+        if parsed.path == "/api/github/conversation":
+            repo_raw = str(params.get("repo", [""])[0] or "").strip()
+            repo_parts = [
+                segment.strip() for segment in repo_raw.split("/") if segment.strip()
+            ]
+            if len(repo_parts) != 2:
+                self._send_json(
+                    {"ok": False, "error": "repo_query_param_must_be_owner_slash_repo"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            repo = f"{repo_parts[0]}/{repo_parts[1]}"
+
+            number = int(
+                _safe_float(
+                    str(params.get("number", ["0"])[0] or "0"),
+                    0.0,
+                )
+            )
+            if number <= 0:
+                self._send_json(
+                    {"ok": False, "error": "number_query_param_must_be_positive"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+
+            kind = (
+                str(params.get("kind", ["github:issue"])[0] or "github:issue")
+                .strip()
+                .lower()
+            )
+            max_comments = max(
+                1,
+                min(
+                    240,
+                    int(
+                        _safe_float(
+                            str(params.get("max_comments", ["120"])[0] or "120"),
+                            120.0,
+                        )
+                    ),
+                ),
+            )
+            max_root_body_chars = max(
+                120,
+                min(
+                    48000,
+                    int(
+                        _safe_float(
+                            str(
+                                params.get("max_root_body_chars", ["18000"])[0]
+                                or "18000"
+                            ),
+                            18000.0,
+                        )
+                    ),
+                ),
+            )
+            max_comment_body_chars = max(
+                120,
+                min(
+                    24000,
+                    int(
+                        _safe_float(
+                            str(
+                                params.get("max_comment_body_chars", ["8000"])[0]
+                                or "8000"
+                            ),
+                            8000.0,
+                        )
+                    ),
+                ),
+            )
+            max_markdown_chars = max(
+                4000,
+                min(
+                    240000,
+                    int(
+                        _safe_float(
+                            str(
+                                params.get("max_markdown_chars", ["160000"])[0]
+                                or "160000"
+                            ),
+                            160000.0,
+                        )
+                    ),
+                ),
+            )
+            include_review_comments = _safe_bool_query(
+                str(params.get("include_review_comments", ["true"])[0] or "true"),
+                default=True,
+            )
+            timeout_s = max(
+                2.0,
+                min(
+                    30.0,
+                    _safe_float(
+                        str(params.get("timeout_s", ["12"])[0] or "12"),
+                        12.0,
+                    ),
+                ),
+            )
+
+            payload = _github_conversation_payload(
+                repo=repo,
+                number=number,
+                kind=kind,
+                max_comments=max_comments,
+                max_root_body_chars=max_root_body_chars,
+                max_comment_body_chars=max_comment_body_chars,
+                max_markdown_chars=max_markdown_chars,
+                include_review_comments=include_review_comments,
+                timeout_s=timeout_s,
+            )
+            if bool(payload.get("ok", False)):
+                self._send_json(payload)
+                return
+
+            status_code = int(_safe_float(payload.get("status", 0), 0.0))
+            if status_code == 404:
+                status = HTTPStatus.NOT_FOUND
+            elif status_code == 400:
+                status = HTTPStatus.BAD_REQUEST
+            else:
+                status = HTTPStatus.BAD_GATEWAY
+            self._send_json(payload, status=status)
             return
 
         if parsed.path == "/api/named-fields":

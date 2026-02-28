@@ -89,6 +89,14 @@ interface GraphWorldscreenState {
   projectionGroupId?: string;
   projectionConsolidatedCount?: number;
   projectionMemberManifest?: string[];
+  githubKind?: string;
+  githubRepo?: string;
+  githubNumber?: number;
+  githubConversationMarkdown?: string;
+  githubConversationCount?: number;
+  githubConversationFetchedAt?: string;
+  githubConversationLoading?: boolean;
+  githubConversationError?: string;
 }
 
 type GraphNodeResourceKind =
@@ -104,7 +112,7 @@ type GraphNodeResourceKind =
 
 type GraphWebNodeRole = "" | "web:url" | "web:resource";
 
-type GraphWorldscreenView = "website" | "editor" | "video" | "metadata";
+type GraphWorldscreenView = "website" | "editor" | "video" | "metadata" | "markdown";
 type GraphWorldscreenMode = "overview" | "conversation" | "stats";
 
 interface EditorPreviewState {
@@ -1594,6 +1602,9 @@ function worldscreenViewForNode(
   nodeKind: "file" | "crawler" | "nexus",
   resourceKind: GraphNodeResourceKind,
 ): GraphWorldscreenView {
+  if (nodeKind === "crawler") {
+    return "markdown";
+  }
   if (nodeKind === "nexus") {
     return "metadata";
   }
@@ -1862,6 +1873,21 @@ function worldscreenMetadataRows(worldscreen: GraphWorldscreenState): Array<{ ke
     { key: "summary", value: String(worldscreen.summaryText ?? "") },
     { key: "tags", value: String(worldscreen.tagsText ?? "") },
     { key: "labels", value: String(worldscreen.labelsText ?? "") },
+    { key: "github-kind", value: String(worldscreen.githubKind ?? "") },
+    { key: "github-repo", value: String(worldscreen.githubRepo ?? "") },
+    {
+      key: "github-number",
+      value: worldscreen.githubNumber === undefined
+        ? ""
+        : String(Math.max(0, Math.floor(worldscreen.githubNumber))),
+    },
+    {
+      key: "conversation-comments",
+      value: worldscreen.githubConversationCount === undefined
+        ? ""
+        : String(Math.max(0, Math.floor(worldscreen.githubConversationCount))),
+    },
+    { key: "conversation-fetched", value: String(worldscreen.githubConversationFetchedAt ?? "") },
     { key: "projection-group", value: String(worldscreen.projectionGroupId ?? "") },
     {
       key: "bundle-members",
@@ -1872,6 +1898,115 @@ function worldscreenMetadataRows(worldscreen: GraphWorldscreenState): Array<{ ke
   ];
 
   return rows.filter((row) => row.value.trim().length > 0);
+}
+
+function _truncateWorldscreenMarkdown(text: string, limit: number): string {
+  const normalized = String(text || "").replace(/\r/g, "").trim();
+  if (!normalized) {
+    return "";
+  }
+  if (normalized.length <= limit) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
+}
+
+function _splitCsvTokens(value: string): string[] {
+  return value
+    .split(",")
+    .map((row) => row.trim())
+    .filter((row) => row.length > 0);
+}
+
+function isGithubConversationKind(kindText: string): boolean {
+  const normalized = String(kindText || "").trim().toLowerCase();
+  return normalized === "github:issue" || normalized === "github:pr";
+}
+
+function worldscreenMarkdownForCrawler(worldscreen: GraphWorldscreenState): string {
+  const title = String(worldscreen.titleText || worldscreen.label || "crawler resource").trim();
+  const githubKind = String(worldscreen.githubKind || "").trim().toLowerCase();
+  const hasGithubConversation = isGithubConversationKind(githubKind);
+  const lines: string[] = [
+    `# ${title}`,
+    "",
+    `- Resource: ${resourceKindLabel(worldscreen.resourceKind)}`,
+    `- Node kind: ${worldscreen.nodeKind}`,
+    `- Node role: ${String(worldscreen.nodeRoleText || "crawler").trim() || "crawler"}`,
+  ];
+
+  if (worldscreen.url) {
+    lines.push(`- URL: ${worldscreen.url}`);
+  }
+  if (worldscreen.sourceUrl) {
+    lines.push(`- Source: ${worldscreen.sourceUrl}`);
+  }
+  if (worldscreen.domain) {
+    lines.push(`- Domain: ${worldscreen.domain}`);
+  }
+  if (worldscreen.fetchedAt) {
+    lines.push(`- Fetched: ${worldscreen.fetchedAt}`);
+  }
+  if (worldscreen.encounteredAt) {
+    lines.push(`- Encountered: ${worldscreen.encounteredAt}`);
+  }
+
+  const summary = _truncateWorldscreenMarkdown(String(worldscreen.summaryText || ""), 3000);
+  if (summary) {
+    lines.push("", "## Summary", "", summary);
+  }
+
+  if (hasGithubConversation) {
+    const conversationMarkdown = _truncateWorldscreenMarkdown(
+      String(worldscreen.githubConversationMarkdown || ""),
+      120000,
+    );
+    if (conversationMarkdown) {
+      if (/^#{1,3}\s+/m.test(conversationMarkdown)) {
+        lines.push("", conversationMarkdown);
+      } else {
+        lines.push("", "## Conversation Chain", "", conversationMarkdown);
+      }
+    } else if (worldscreen.githubConversationLoading) {
+      lines.push("", "## Conversation Chain", "", "_loading full github conversation chain..._");
+    } else if (String(worldscreen.githubConversationError || "").trim()) {
+      lines.push(
+        "",
+        "## Conversation Chain",
+        "",
+        `- ${_truncateWorldscreenMarkdown(String(worldscreen.githubConversationError || ""), 800)}`,
+      );
+    } else {
+      lines.push("", "## Conversation Chain", "", "_conversation chain not loaded for this node yet._");
+    }
+  }
+
+  const tags = _splitCsvTokens(String(worldscreen.tagsText || ""));
+  if (tags.length > 0) {
+    lines.push("", "## Tags", "");
+    for (const tag of tags.slice(0, 48)) {
+      lines.push(`- ${tag}`);
+    }
+  }
+
+  const labels = _splitCsvTokens(String(worldscreen.labelsText || ""));
+  if (labels.length > 0) {
+    lines.push("", "## Labels", "");
+    for (const label of labels.slice(0, 48)) {
+      lines.push(`- ${label}`);
+    }
+  }
+
+  lines.push("", "## Metadata", "");
+  for (const row of worldscreenMetadataRows(worldscreen)) {
+    const value = _truncateWorldscreenMarkdown(row.value, 360);
+    if (!value) {
+      continue;
+    }
+    lines.push(`- **${row.key}**: ${value}`);
+  }
+
+  return `${lines.join("\n")}\n`;
 }
 
 function resolveWorldscreenPlacement(
@@ -2152,6 +2287,12 @@ export function SimulationCanvas({
   const [worldscreenAudioVizStatus, setWorldscreenAudioVizStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [worldscreenAudioVizError, setWorldscreenAudioVizError] = useState("");
   const [worldscreenAudioClockText, setWorldscreenAudioClockText] = useState("0:00 / 0:00");
+  const githubConversationCacheRef = useRef<Map<string, {
+    markdown: string;
+    commentCount: number;
+    fetchedAt: string;
+    error: string;
+  }>>(new Map());
   const [editorPreview, setEditorPreview] = useState<EditorPreviewState>({
     status: "idle",
     content: "",
@@ -2813,6 +2954,164 @@ export function SimulationCanvas({
           content: "",
           error: message,
           truncated: false,
+        });
+      });
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [worldscreen]);
+
+  useEffect(() => {
+    if (!worldscreen || worldscreen.nodeKind !== "crawler") {
+      return;
+    }
+    const githubKind = String(worldscreen.githubKind ?? "").trim().toLowerCase();
+    if (!isGithubConversationKind(githubKind)) {
+      return;
+    }
+    const githubRepo = String(worldscreen.githubRepo ?? "").trim();
+    const githubNumber = Math.max(0, Math.floor(Number(worldscreen.githubNumber ?? 0)));
+    if (!githubRepo || githubNumber <= 0) {
+      return;
+    }
+
+    const existingMarkdown = String(worldscreen.githubConversationMarkdown ?? "").trim();
+    if (existingMarkdown.length > 0) {
+      return;
+    }
+
+    const cacheKey = `${githubKind}|${githubRepo}|${githubNumber}`;
+    const cached = githubConversationCacheRef.current.get(cacheKey);
+    if (cached) {
+      setWorldscreen((current) => {
+        if (!current || current.nodeId !== worldscreen.nodeId) {
+          return current;
+        }
+        return {
+          ...current,
+          githubConversationMarkdown: cached.markdown,
+          githubConversationCount: cached.commentCount > 0 ? cached.commentCount : undefined,
+          githubConversationFetchedAt: cached.fetchedAt || undefined,
+          githubConversationLoading: false,
+          githubConversationError: cached.error,
+        };
+      });
+      return;
+    }
+
+    const controller = new AbortController();
+    let active = true;
+    setWorldscreen((current) => {
+      if (!current || current.nodeId !== worldscreen.nodeId) {
+        return current;
+      }
+      if (current.githubConversationLoading) {
+        return current;
+      }
+      return {
+        ...current,
+        githubConversationLoading: true,
+        githubConversationError: "",
+      };
+    });
+
+    const search = new URLSearchParams({
+      repo: githubRepo,
+      number: String(githubNumber),
+      kind: githubKind,
+    });
+    fetch(`/api/github/conversation?${search.toString()}`, {
+      method: "GET",
+      credentials: "same-origin",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        let payload: any = null;
+        try {
+          payload = await response.json();
+        } catch {
+          payload = {
+            ok: false,
+            error: `invalid_json_response:${response.status}`,
+          };
+        }
+        if (!active || controller.signal.aborted) {
+          return;
+        }
+        if (!response.ok || !payload || !payload.ok) {
+          const errorText = String(
+            payload?.error || `github_conversation_fetch_failed:${response.status}`,
+          ).trim();
+          const cacheRow = {
+            markdown: "",
+            commentCount: 0,
+            fetchedAt: "",
+            error: errorText,
+          };
+          githubConversationCacheRef.current.set(cacheKey, cacheRow);
+          setWorldscreen((current) => {
+            if (!current || current.nodeId !== worldscreen.nodeId) {
+              return current;
+            }
+            return {
+              ...current,
+              githubConversationLoading: false,
+              githubConversationError: errorText,
+            };
+          });
+          return;
+        }
+
+        const markdown = String(payload.markdown ?? "").trim();
+        const commentCount = Math.max(
+          0,
+          Math.floor(Number(payload.comment_count ?? payload.comments_count ?? 0)),
+        );
+        const fetchedAt = timestampLabel(payload.fetched_at ?? "");
+        const cacheRow = {
+          markdown,
+          commentCount,
+          fetchedAt,
+          error: "",
+        };
+        githubConversationCacheRef.current.set(cacheKey, cacheRow);
+        setWorldscreen((current) => {
+          if (!current || current.nodeId !== worldscreen.nodeId) {
+            return current;
+          }
+          return {
+            ...current,
+            githubConversationMarkdown: markdown,
+            githubConversationCount: commentCount > 0 ? commentCount : undefined,
+            githubConversationFetchedAt: fetchedAt || undefined,
+            githubConversationLoading: false,
+            githubConversationError: "",
+          };
+        });
+      })
+      .catch((error: unknown) => {
+        if (!active || controller.signal.aborted) {
+          return;
+        }
+        const errorText = errorMessage(error, "unable to fetch github conversation chain");
+        const cacheRow = {
+          markdown: "",
+          commentCount: 0,
+          fetchedAt: "",
+          error: errorText,
+        };
+        githubConversationCacheRef.current.set(cacheKey, cacheRow);
+        setWorldscreen((current) => {
+          if (!current || current.nodeId !== worldscreen.nodeId) {
+            return current;
+          }
+          return {
+            ...current,
+            githubConversationLoading: false,
+            githubConversationError: errorText,
+          };
         });
       });
 
@@ -4160,9 +4459,20 @@ export function SimulationCanvas({
         || graphNodeId,
       ).trim();
       const commentRef = nexusCommentRefForNode(node, nodeKind, worldscreenUrl) || imageRef;
+      const githubKind = String(node?.kind ?? "").trim().toLowerCase();
+      const githubRepo = String(node?.repo ?? "").trim();
+      const githubNumber = Math.max(0, Math.floor(Number(node?.number ?? 0)));
+      const preloadedConversationMarkdown = String(node?.conversation_markdown ?? "").trim();
+      const preloadedConversationCount = Math.max(
+        0,
+        Math.floor(Number(node?.conversation_count ?? node?.comment_count ?? 0)),
+      );
+      const preloadedConversationFetchedAt = timestampLabel(
+        node?.conversation_fetched_at ?? "",
+      );
       const pinnedCenter = {
-        x: clamp01(Number(glassCenterRatioRef.current?.x ?? xRatio)),
-        y: clamp01(Number(glassCenterRatioRef.current?.y ?? yRatio)),
+        x: clamp01(Number(xRatio)),
+        y: clamp01(Number(yRatio)),
       };
       setWorldscreenPinnedCenterRatio(pinnedCenter);
       setWorldscreenMode("overview");
@@ -4193,6 +4503,16 @@ export function SimulationCanvas({
         summaryText: String(node?.summary ?? node?.text_excerpt ?? "").trim(),
         tagsText: joinListValues(node?.tags),
         labelsText: joinListValues(node?.labels),
+        githubKind: githubKind || undefined,
+        githubRepo: githubRepo || undefined,
+        githubNumber: githubNumber > 0 ? githubNumber : undefined,
+        githubConversationMarkdown: preloadedConversationMarkdown,
+        githubConversationCount: preloadedConversationCount > 0
+          ? preloadedConversationCount
+          : undefined,
+        githubConversationFetchedAt: preloadedConversationFetchedAt || undefined,
+        githubConversationLoading: false,
+        githubConversationError: "",
         projectionGroupId: projectionBundle.groupId,
         projectionConsolidatedCount: Number(node?.consolidated_count ?? projectionBundle.members.length),
         projectionMemberManifest: projectionBundle.members,
@@ -4678,14 +4998,14 @@ export function SimulationCanvas({
           if (isTrueGraphNode) {
             if (isProjectionOverflowNode) {
               [r, g, b] = [0.98, 0.74, 0.36];
+            } else if (webNodeRole === "web:url") {
+              [r, g, b] = [0.16, 0.78, 1.0];
+            } else if (webNodeRole === "web:resource") {
+              [r, g, b] = [0.18, 0.98, 0.64];
             } else if (nodeKind === "crawler") {
               [r, g, b] = [0.44, 0.78, 0.9];
             } else if (nodeKind === "nexus") {
               [r, g, b] = [0.58, 0.9, 0.98];
-            } else if (webNodeRole === "web:url") {
-              [r, g, b] = [0.3, 0.9, 1.0];
-            } else if (webNodeRole === "web:resource") {
-              [r, g, b] = [0.36, 0.98, 0.76];
             } else {
               [r, g, b] = [0.5, 0.86, 0.95];
             }
@@ -4704,7 +5024,14 @@ export function SimulationCanvas({
           const spotlightDim = spotlightMusicNexus && !isMusicNode ? 0.22 : 1;
           const trueGraphNodeAlphaScale = isTrueGraphNode ? 0.78 : 1;
           const trueGraphNodeSizeScale = isTrueGraphNode ? 0.94 : 1;
-          const nodeAlpha = (isProjectionOverflowNode ? 0.96 : (nodeKind === "nexus" ? 0.72 : 0.82)) * spotlightDim * trueGraphNodeAlphaScale;
+          const nodeBaseAlpha = isProjectionOverflowNode
+            ? 0.96
+            : webNodeRole === "web:url"
+              ? 0.9
+              : webNodeRole === "web:resource"
+                ? 0.88
+                : (nodeKind === "nexus" ? 0.72 : 0.82);
+          const nodeAlpha = nodeBaseAlpha * spotlightDim * trueGraphNodeAlphaScale;
           const nodeScale = spotlightMusicNexus && isMusicNode ? 1.24 : (spotlightMusicNexus ? 0.82 : 1);
           addPoint(
             xRatio,
@@ -4729,15 +5056,27 @@ export function SimulationCanvas({
             addLine(xRatio - ring, yRatio + ring, xRatio - ring, yRatio - ring, r, g, b, 0.66);
           } else if (webNodeRole === "web:url") {
             const ring = clampValue(0.005 + importance * 0.01, 0.005, 0.016);
+            const halo = ring * 1.32;
             addLine(xRatio - ring, yRatio, xRatio + ring, yRatio, r, g, b, 0.58);
             addLine(xRatio, yRatio - ring, xRatio, yRatio + ring, r, g, b, 0.58);
+            addLine(xRatio, yRatio - halo, xRatio + halo, yRatio, r, g, b, 0.42);
+            addLine(xRatio + halo, yRatio, xRatio, yRatio + halo, r, g, b, 0.42);
+            addLine(xRatio, yRatio + halo, xRatio - halo, yRatio, r, g, b, 0.42);
+            addLine(xRatio - halo, yRatio, xRatio, yRatio - halo, r, g, b, 0.42);
           } else if (webNodeRole === "web:resource") {
             const ring = clampValue(0.006 + importance * 0.012, 0.006, 0.02);
             addLine(xRatio - ring, yRatio - ring, xRatio + ring, yRatio - ring, r, g, b, 0.52);
             addLine(xRatio + ring, yRatio - ring, xRatio + ring, yRatio + ring, r, g, b, 0.52);
             addLine(xRatio + ring, yRatio + ring, xRatio - ring, yRatio + ring, r, g, b, 0.52);
             addLine(xRatio - ring, yRatio + ring, xRatio - ring, yRatio - ring, r, g, b, 0.52);
+            addLine(xRatio - ring, yRatio - ring, xRatio + ring, yRatio + ring, r, g, b, 0.44);
+            addLine(xRatio + ring, yRatio - ring, xRatio - ring, yRatio + ring, r, g, b, 0.44);
           }
+          const hotspotRadius = webNodeRole === "web:url"
+            ? 0.026
+            : webNodeRole === "web:resource"
+              ? 0.028
+              : (nodeKind === "crawler" ? 0.022 : nodeKind === "nexus" ? 0.018 : 0.02);
           graphNodeLookup.set(nodeId, {
             x: xRatio,
             y: yRatio,
@@ -4758,8 +5097,8 @@ export function SimulationCanvas({
             label: isMusicNode ? `[music] ${nodeLabelText}` : nodeLabelText,
             x: xRatio,
             y: yRatio,
-            radius: nodeKind === "crawler" ? 0.022 : nodeKind === "nexus" ? 0.018 : 0.02,
-            radiusNorm: nodeKind === "crawler" ? 0.022 : nodeKind === "nexus" ? 0.018 : 0.02,
+            radius: hotspotRadius,
+            radiusNorm: hotspotRadius,
             isProjectionOverflow: isProjectionOverflowNode,
             isTrueGraph: isTrueGraphNode,
           });
@@ -5838,6 +6177,12 @@ export function SimulationCanvas({
       };
     });
   }, [worldscreen]);
+  const worldscreenCrawlerMarkdown = useMemo(() => {
+    if (!worldscreen || worldscreen.view !== "markdown") {
+      return "";
+    }
+    return worldscreenMarkdownForCrawler(worldscreen);
+  }, [worldscreen]);
   const flattenCommentsEnabled = worldscreenMode !== "overview";
   const flattenedImageComments = useMemo(
     () => (flattenCommentsEnabled ? flattenImageCommentThread(imageComments) : []),
@@ -6712,6 +7057,17 @@ export function SimulationCanvas({
                             </pre>
                           ) : null}
                         </div>
+                      ) : null}
+
+                      {worldscreen.view === "markdown" ? (
+                        <article className="min-h-[20rem] max-h-[56vh] overflow-auto rounded-md border border-[rgba(140,210,246,0.34)] bg-[rgba(4,12,22,0.86)] px-3 py-2">
+                          <p className="mb-2 text-[10px] uppercase tracking-[0.1em] text-[#9ed1ef]">
+                            crawler markdown projection
+                          </p>
+                          <pre className="whitespace-pre-wrap break-words text-[11px] leading-5 text-[#d7ebff]">
+                            {worldscreenCrawlerMarkdown}
+                          </pre>
+                        </article>
                       ) : null}
 
                       {worldscreen.view === "website" ? (

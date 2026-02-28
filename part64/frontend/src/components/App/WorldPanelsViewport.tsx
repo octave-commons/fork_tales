@@ -662,15 +662,24 @@ function WorldPanelsViewportInner({
       let summary = "job requested";
       if (panel.presenceRole === "crawl-routing") {
         await requestPresenceJob("/api/weaver/control", {
-          action: "resume",
-          seeds: [],
+          action: "start",
+          seeds: [
+            "https://opencode.ai/",
+            "https://openrouter.ai/",
+            "https://www.cisa.gov/known-exploited-vulnerabilities-catalog",
+            "https://www.cisa.gov/news-events/cybersecurity-advisories",
+            "https://nvd.nist.gov/vuln/search",
+            "https://attack.mitre.org/",
+            "https://blog.google/threat-analysis-group/",
+            "https://unit42.paloaltonetworks.com/",
+          ],
           max_depth: 2,
-          max_nodes: 120,
+          max_nodes: 5000,
           concurrency: 4,
           max_per_host: 2,
           entity_count: 12,
         });
-        summary = "web crawl resume requested";
+        summary = "web crawl start requested";
       } else if (panel.presenceRole === "file-analysis") {
         const payload = await requestPresenceJob("/api/eta-mu/sync", {});
         const syncStatus = String(payload?.sync_status ?? "ok");
