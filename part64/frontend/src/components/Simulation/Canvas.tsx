@@ -102,6 +102,8 @@ type GraphNodeResourceKind =
   | "video"
   | "unknown";
 
+type GraphWebNodeRole = "" | "web:url" | "web:resource";
+
 type GraphWorldscreenView = "website" | "editor" | "video" | "metadata";
 type GraphWorldscreenMode = "overview" | "conversation" | "stats";
 
@@ -1413,6 +1415,46 @@ function classifyCrawlerResourceKind(node: any): GraphNodeResourceKind {
     return "link";
   }
   return "unknown";
+}
+
+function webNodeRoleForNode(node: any): GraphWebNodeRole {
+  const explicitRole = String(node?.web_node_role ?? "").trim().toLowerCase();
+  if (explicitRole === "web:url" || explicitRole === "web:resource") {
+    return explicitRole;
+  }
+
+  const nodeType = String(node?.node_type ?? "").trim().toLowerCase();
+  if (nodeType === "web:url" || nodeType === "web:resource") {
+    return nodeType;
+  }
+
+  const crawlerKind = String(node?.crawler_kind ?? node?.kind ?? "").trim().toLowerCase();
+  const canonicalUrl = String(node?.canonical_url ?? node?.url ?? "").trim();
+  if (crawlerKind === "url" && canonicalUrl.length > 0) {
+    return "web:url";
+  }
+  if (crawlerKind === "resource" || crawlerKind === "content" || crawlerKind === "domain") {
+    return "web:resource";
+  }
+  return "";
+}
+
+function webEdgeRoleForNodes(
+  kind: string,
+  sourceRole: GraphWebNodeRole,
+  targetRole: GraphWebNodeRole,
+): "" | "web:links_to" | "web:url_to_resource" | "web:resource_mesh" {
+  const edgeKind = kind.trim().toLowerCase();
+  if (edgeKind === "web:links_to") {
+    return "web:links_to";
+  }
+  if (sourceRole === "web:url" && targetRole === "web:resource") {
+    return "web:url_to_resource";
+  }
+  if (sourceRole === "web:resource" && targetRole === "web:resource") {
+    return "web:resource_mesh";
+  }
+  return "";
 }
 
 function normalizeResourceKind(value: unknown): GraphNodeResourceKind | null {
@@ -3827,7 +3869,13 @@ export function SimulationCanvas({
       return [0.67, 0.74, 0.82];
     };
 
-    const edgeColorByKind = (kind: string): [number, number, number, number] => {
+    const edgeColorByKind = (
+      kind: string,
+      webEdgeRole: "" | "web:links_to" | "web:url_to_resource" | "web:resource_mesh",
+    ): [number, number, number, number] => {
+      if (webEdgeRole === "web:links_to") return [0.34, 0.96, 0.9, 0.34];
+      if (webEdgeRole === "web:url_to_resource") return [0.2, 0.82, 1.0, 0.27];
+      if (webEdgeRole === "web:resource_mesh") return [0.26, 0.86, 0.72, 0.24];
       if (kind === "citation") return [1.0, 0.72, 0.42, 0.28];
       if (kind === "cross_reference") return [0.96, 0.53, 0.86, 0.26];
       if (kind === "paper_pdf") return [0.54, 0.9, 0.96, 0.24];
@@ -3916,6 +3964,7 @@ export function SimulationCanvas({
         nodeKind: "file" | "crawler" | "nexus";
         nodeType: string;
         isProjectionOverflow: boolean;
+        webNodeRole?: GraphWebNodeRole;
       }
     >();
     const daimoiFlowLanes = new Map<
@@ -4598,6 +4647,7 @@ export function SimulationCanvas({
             ? `[bundle] ${nodeLabelTextBase}`
             : nodeLabelTextBase;
           const resourceKind = isProjectionOverflowNode ? "unknown" : resourceKindForNode(node);
+          const webNodeRole = isProjectionOverflowNode ? "" : webNodeRoleForNode(node);
           const isTrueGraphNode = lockGraphToStaticLayout && sourceLayer === "file";
           const isMusicNode = !isProjectionOverflowNode && isMusicNexusNode(node, resourceKind);
           if (isMusicNode) {
@@ -4620,6 +4670,10 @@ export function SimulationCanvas({
           }
           if (isMusicNode) {
             [r, g, b] = [0.42, 0.96, 1.0];
+          } else if (webNodeRole === "web:url") {
+            [r, g, b] = [0.24, 0.86, 1.0];
+          } else if (webNodeRole === "web:resource") {
+            [r, g, b] = [0.3, 0.96, 0.72];
           }
           if (isTrueGraphNode) {
             if (isProjectionOverflowNode) {
@@ -4628,12 +4682,20 @@ export function SimulationCanvas({
               [r, g, b] = [0.44, 0.78, 0.9];
             } else if (nodeKind === "nexus") {
               [r, g, b] = [0.58, 0.9, 0.98];
+            } else if (webNodeRole === "web:url") {
+              [r, g, b] = [0.3, 0.9, 1.0];
+            } else if (webNodeRole === "web:resource") {
+              [r, g, b] = [0.36, 0.98, 0.76];
             } else {
               [r, g, b] = [0.5, 0.86, 0.95];
             }
           }
           const nodeSize = isProjectionOverflowNode
             ? 7.2 + importance * 5.6
+            : webNodeRole === "web:url"
+              ? 4.4 + importance * 3.9
+              : webNodeRole === "web:resource"
+                ? 5.3 + importance * 4.6
             : nodeKind === "crawler"
               ? 4.2 + importance * 4.1
               : nodeKind === "nexus"
@@ -4665,6 +4727,16 @@ export function SimulationCanvas({
             addLine(xRatio + ring, yRatio - ring, xRatio + ring, yRatio + ring, r, g, b, 0.66);
             addLine(xRatio + ring, yRatio + ring, xRatio - ring, yRatio + ring, r, g, b, 0.66);
             addLine(xRatio - ring, yRatio + ring, xRatio - ring, yRatio - ring, r, g, b, 0.66);
+          } else if (webNodeRole === "web:url") {
+            const ring = clampValue(0.005 + importance * 0.01, 0.005, 0.016);
+            addLine(xRatio - ring, yRatio, xRatio + ring, yRatio, r, g, b, 0.58);
+            addLine(xRatio, yRatio - ring, xRatio, yRatio + ring, r, g, b, 0.58);
+          } else if (webNodeRole === "web:resource") {
+            const ring = clampValue(0.006 + importance * 0.012, 0.006, 0.02);
+            addLine(xRatio - ring, yRatio - ring, xRatio + ring, yRatio - ring, r, g, b, 0.52);
+            addLine(xRatio + ring, yRatio - ring, xRatio + ring, yRatio + ring, r, g, b, 0.52);
+            addLine(xRatio + ring, yRatio + ring, xRatio - ring, yRatio + ring, r, g, b, 0.52);
+            addLine(xRatio - ring, yRatio + ring, xRatio - ring, yRatio - ring, r, g, b, 0.52);
           }
           graphNodeLookup.set(nodeId, {
             x: xRatio,
@@ -4673,6 +4745,7 @@ export function SimulationCanvas({
             nodeKind,
             nodeType,
             isProjectionOverflow: isProjectionOverflowNode,
+            webNodeRole,
           });
           hotspots.push({
             id: nodeId,
@@ -4821,7 +4894,10 @@ export function SimulationCanvas({
             continue;
           }
           const kind = String(edge?.kind ?? "").trim().toLowerCase();
-          const [r, g, b, a] = edgeColorByKind(kind);
+          const sourceRole = source.webNodeRole ?? "";
+          const targetRole = target.webNodeRole ?? "";
+          const webEdgeRole = webEdgeRoleForNodes(kind, sourceRole, targetRole);
+          const [r, g, b, a] = edgeColorByKind(kind, webEdgeRole);
 
           const mix = trueGraphEdgeMode ? 0 : flowIntensity * strobe * 0.6;
           const fr = r * (1 - mix) + dr * mix;

@@ -152,6 +152,12 @@ def test_c_double_buffer_builder_emits_anti_clump_summary(monkeypatch: Any) -> N
     assert "fano_factor" in metrics
     assert "snr" in metrics
     assert "spawn" in scales
+    assert "friction_slip" in scales
+    assert "simplex_gain" in scales
+    assert "simplex_scale" in scales
+    assert 0.79 <= float(scales.get("friction_slip", 0.0)) <= 1.25
+    assert 0.71 <= float(scales.get("simplex_gain", 0.0)) <= 2.21
+    assert 0.81 <= float(scales.get("simplex_scale", 0.0)) <= 1.35
 
 
 def test_c_double_buffer_builder_tracks_graph_node_variability(

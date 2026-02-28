@@ -1592,8 +1592,11 @@ class MuseRuntimeManager:
             return []
         rows: list[dict[str, Any]] = []
         for tool_name in requested[:3]:
-            is_grounding_tool = tool_name == "facts_snapshot" or tool_name.startswith(
-                "graph:"
+            is_grounding_tool = (
+                tool_name == "facts_snapshot"
+                or tool_name.startswith("graph:")
+                or tool_name.startswith("graph_query:")
+                or tool_name == "graph_query"
             )
             if is_grounding_tool:
                 self._emit_event_locked(
@@ -1660,21 +1663,98 @@ class MuseRuntimeManager:
         return rows
 
     def _tool_requests(self, text: str) -> list[str]:
-        normalized = str(text or "").strip().lower()
+        raw_text = str(text or "").strip()
+        normalized = raw_text.lower()
         requested: list[str] = []
+
+        def _append_tool(name: str) -> None:
+            clean = str(name or "").strip()
+            if not clean:
+                return
+            if clean not in requested:
+                requested.append(clean)
+
         if not normalized:
             return requested
         if normalized.startswith("/facts") or " facts " in f" {normalized} ":
-            requested.append("facts_snapshot")
+            _append_tool("facts_snapshot")
         if "/graph" in normalized:
             graph_tail = str(normalized.split("/graph", 1)[1]).strip()
-            requested.append(f"graph:{graph_tail or 'overview'}")
+            _append_tool(f"graph_query:{graph_tail or 'overview'}")
+        else:
+            daimoi_id = ""
+            daimoi_match = re.search(r"\bdaimoi[:\s]+([a-z0-9._:-]+)", normalized)
+            if daimoi_match:
+                daimoi_id = str(daimoi_match.group(1) or "").strip()
+            if not daimoi_id:
+                for token in re.findall(r"[a-z0-9._:-]+", normalized):
+                    if token.startswith("field:") or token.startswith("daimoi:"):
+                        daimoi_id = token
+                        break
+
+            asks_why_daimoi = (
+                ("why" in normalized and "daimoi" in normalized)
+                or "explain daimoi" in normalized
+                or "daimoi die" in normalized
+                or "daimoi died" in normalized
+                or "daimoi death" in normalized
+            )
+            if asks_why_daimoi and daimoi_id:
+                _append_tool(f"graph_query:explain_daimoi {daimoi_id}")
+
+            asks_recent_outcomes = (
+                "recent outcomes" in normalized
+                or "recent outcome" in normalized
+                or ("food" in normalized and "death" in normalized)
+                or "wins and losses" in normalized
+            )
+            if asks_recent_outcomes:
+                _append_tool("graph_query:recent_outcomes 360 24")
+
+            asks_crawler_status = (
+                "crawler status" in normalized
+                or "crawler queue" in normalized
+                or "cooldown" in normalized
+            )
+            if asks_crawler_status:
+                _append_tool("graph_query:crawler_status")
+
+            asks_arxiv_papers = (
+                "arxiv" in normalized
+                and (
+                    "paper" in normalized
+                    or "crawl" in normalized
+                    or "crawled" in normalized
+                    or "fetched" in normalized
+                    or "fetch" in normalized
+                )
+            ) or ("papers" in normalized and "crawled" in normalized)
+            if asks_arxiv_papers:
+                _append_tool("graph_query:arxiv_papers 8")
+
+            asks_web_resource_summary = (
+                "crawler learn" in normalized
+                or "what got crawled" in normalized
+                or "web resource" in normalized
+            )
+            if asks_web_resource_summary:
+                target = ""
+                url_match = re.search(r"https?://\S+", raw_text)
+                if url_match:
+                    target = str(url_match.group(0) or "").strip()
+                if target:
+                    _append_tool(f"graph_query:web_resource_summary {target}")
+                else:
+                    _append_tool("graph_query:web_resource_summary")
+
+            if "graph summary" in normalized or "graph overview" in normalized:
+                _append_tool("graph_query:graph_summary all 12")
         if normalized.startswith("/study") or "stability" in normalized:
-            requested.append("study_snapshot")
+            _append_tool("study_snapshot")
         if normalized.startswith("/drift") or "drift" in normalized:
-            requested.append("drift_scan")
+            _append_tool("drift_scan")
         if "push truth" in normalized or "push-truth" in normalized:
-            requested.append("push_truth_dry_run")
+            _append_tool("push_truth_dry_run")
         return requested
 
     def _grounded_reply_from_tool_rows_locked(
@@ -1690,6 +1770,8 @@ class MuseRuntimeManager:
         graph_receipts: list[str] = []
         query_names: list[str] = []
         grounded = False
+        crawler_summary: dict[str, Any] = {}
+        arxiv_summary: dict[str, Any] = {}
 
         for row in tool_rows:
             if not isinstance(row, dict):
@@ -1704,32 +1786,151 @@ class MuseRuntimeManager:
                 facts_path = str(result.get("snapshot_path", "")).strip()
                 facts_nodes = max(0, _safe_int(result.get("node_count", 0), 0))
                 facts_edges = max(0, _safe_int(result.get("edge_count", 0), 0))
-            if tool_name.startswith("graph:") and bool(result.get("ok", False)):
+            if (
+                tool_name.startswith("graph:") or tool_name.startswith("graph_query:")
+            ) and bool(result.get("ok", False)):
                 grounded = True
                 query_name = str(result.get("query", "")).strip()
                 if query_name and query_name not in query_names:
                     query_names.append(query_name)
                 query_count = max(0, _safe_int(result.get("result_count", 0), 0))
                 graph_receipts.append(f"{query_name}:{query_count}")
+                query_payload = result.get("result", {})
+                if query_name == "crawler_status" and isinstance(query_payload, dict):
+                    crawler_summary = {
+                        "queue_length": max(
+                            0, _safe_int(query_payload.get("queue_length", 0), 0)
+                        ),
+                        "url_node_count": max(
+                            0, _safe_int(query_payload.get("url_node_count", 0), 0)
+                        ),
+                        "resource_node_count": max(
+                            0, _safe_int(query_payload.get("resource_node_count", 0), 0)
+                        ),
+                        "arxiv_abs_fetched": max(
+                            0, _safe_int(query_payload.get("arxiv_abs_fetched", 0), 0)
+                        ),
+                        "arxiv_recent_fetches": [
+                            str(item.get("canonical_url", "")).strip()
+                            for item in query_payload.get("arxiv_recent_fetches", [])
+                            if isinstance(item, dict)
+                            and str(item.get("canonical_url", "")).strip()
+                        ][:4],
+                    }
+                if query_name == "arxiv_papers" and isinstance(query_payload, dict):
+                    arxiv_summary = {
+                        "count_total": max(
+                            0, _safe_int(query_payload.get("count_total", 0), 0)
+                        ),
+                        "count_fetched": max(
+                            0, _safe_int(query_payload.get("count_fetched", 0), 0)
+                        ),
+                        "papers": [
+                            {
+                                "title": str(item.get("title", "")).strip(),
+                                "url": str(item.get("canonical_url", "")).strip(),
+                                "fetched": bool(item.get("fetched", False)),
+                                "status": str(item.get("last_status", "")).strip(),
+                            }
+                            for item in query_payload.get("papers", [])
+                            if isinstance(item, dict)
+                            and str(item.get("canonical_url", "")).strip()
+                        ],
+                    }
 
         if not grounded:
             return None
 
-        reply_parts: list[str] = []
+        facts_lines: list[str] = []
+        derivation_lines: list[str] = []
+        unknown_lines: list[str] = []
         if facts_hash:
-            reply = (
+            facts_line = (
                 f"Facts grounded at {facts_hash}. "
                 f"nodes={facts_nodes} edges={facts_edges}."
             )
             if facts_path:
-                reply += f" snapshot={facts_path}."
-            reply_parts.append(reply)
-        if graph_receipts:
-            reply_parts.append("Graph queries: " + ", ".join(graph_receipts[:6]) + ".")
-        if not reply_parts:
-            reply_parts.append(
+                facts_line += f" snapshot={facts_path}."
+            facts_lines.append(facts_line)
+        if arxiv_summary:
+            total = max(0, _safe_int(arxiv_summary.get("count_total", 0), 0))
+            fetched = max(0, _safe_int(arxiv_summary.get("count_fetched", 0), 0))
+            derivation_lines.append(
+                f"arXiv crawl currently tracks {fetched} fetched papers out of {total} discovered."
+            )
+            paper_lines: list[str] = []
+            for row in arxiv_summary.get("papers", []):
+                if not isinstance(row, dict):
+                    continue
+                url = str(row.get("url", "")).strip()
+                if not url:
+                    continue
+                title = str(row.get("title", "")).strip()
+                if title and title.lower() not in {"arxiv.org", "arxiv"}:
+                    paper_lines.append(f"{title} ({url})")
+                else:
+                    paper_lines.append(url)
+                if len(paper_lines) >= 4:
+                    break
+            if paper_lines:
+                derivation_lines.append(
+                    "Recent arXiv papers: " + "; ".join(paper_lines) + "."
+                )
+        elif crawler_summary:
+            queue_length = max(0, _safe_int(crawler_summary.get("queue_length", 0), 0))
+            url_node_count = max(
+                0, _safe_int(crawler_summary.get("url_node_count", 0), 0)
+            )
+            resource_node_count = max(
+                0, _safe_int(crawler_summary.get("resource_node_count", 0), 0)
+            )
+            arxiv_abs_fetched = max(
+                0, _safe_int(crawler_summary.get("arxiv_abs_fetched", 0), 0)
+            )
+            derivation_lines.append(
+                "Crawler status: "
+                + f"queue={queue_length}, url_nodes={url_node_count}, resources={resource_node_count}, "
+                + f"arXiv_fetched={arxiv_abs_fetched}."
+            )
+            recent_rows = [
+                str(row).strip()
+                for row in crawler_summary.get("arxiv_recent_fetches", [])
+                if str(row).strip()
+            ][:4]
+            if recent_rows:
+                derivation_lines.append(
+                    "Recent arXiv fetches: " + ", ".join(recent_rows) + "."
+                )
+        elif graph_receipts:
+            derivation_lines.append(
+                "Graph queries: " + ", ".join(graph_receipts[:6]) + "."
+            )
+        if not (facts_lines or derivation_lines):
+            unknown_lines.append(
                 "Grounding tools ran, but no resolvable facts were returned. unknown."
             )
+
+        reply_parts: list[str] = []
+        reply_parts.append("FACTS:")
+        reply_parts.extend(
+            facts_lines
+            if facts_lines
+            else ["No direct facts snapshot was available for this turn."]
+        )
+        reply_parts.append("DERIVATIONS:")
+        reply_parts.extend(
+            derivation_lines
+            if derivation_lines
+            else [
+                "No higher-level derivation could be computed from current tool output."
+            ]
+        )
+        reply_parts.append("UNKNOWN:")
+        reply_parts.extend(
+            unknown_lines
+            if unknown_lines
+            else ["No unresolved grounding gaps detected in this turn."]
+        )
 
         receipts = {
             "snapshot_hash": facts_hash,

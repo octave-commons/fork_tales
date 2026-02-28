@@ -3,11 +3,17 @@ const assert = require("node:assert/strict");
 
 const {
   extractArxivIdFromUrl,
+  isArxivSearchUrl,
+  parseArxivSearchSeed,
+  buildArxivApiQueryUrl,
+  extractArxivAbsUrlsFromApiFeed,
   canonicalArxivAbsUrlFromId,
   canonicalArxivPdfUrlFromId,
   canonicalWikipediaArticleUrl,
   extractSemanticReferences,
   classifyKnowledgeUrl,
+  parseAuthHeader,
+  llmAuthHeaders,
   WebGraphWeaver,
 } = require("../web_graph_weaver.js");
 
@@ -34,6 +40,38 @@ test("extractArxivIdFromUrl supports canonical and legacy IDs", () => {
     extractArxivIdFromUrl("https://example.com/abs/2401.12345"),
     "",
   );
+});
+
+test("arXiv search seed helpers normalize query into API query", () => {
+  const searchUrl = "https://arxiv.org/search/?query=graph+neural+network&searchtype=all&size=12&order=-announced_date_first";
+  assert.equal(isArxivSearchUrl(searchUrl), true);
+  const seed = parseArxivSearchSeed(searchUrl);
+  assert.ok(seed);
+  assert.equal(seed.searchQuery, "all:graph neural network");
+  assert.equal(seed.maxResults, 12);
+  assert.equal(seed.sortBy, "submittedDate");
+
+  const apiUrl = buildArxivApiQueryUrl(seed);
+  assert.ok(apiUrl.includes("export.arxiv.org/api/query"));
+  assert.ok(apiUrl.includes("search_query=all%3Agraph+neural+network"));
+});
+
+test("extractArxivAbsUrlsFromApiFeed parses canonical arXiv abs URLs", () => {
+  const feed = `
+    <feed>
+      <entry>
+        <id>http://arxiv.org/abs/2401.12345v2</id>
+      </entry>
+      <entry>
+        <id>http://arxiv.org/abs/cs/9901001v1</id>
+      </entry>
+    </feed>
+  `;
+  const rows = extractArxivAbsUrlsFromApiFeed(feed, 10);
+  assert.deepEqual(rows, [
+    "https://arxiv.org/abs/2401.12345",
+    "https://arxiv.org/abs/cs/9901001",
+  ]);
 });
 
 test("canonical URL helpers normalize arXiv and Wikipedia resources", () => {
@@ -162,6 +200,55 @@ test("classifyKnowledgeUrl recognizes arXiv and Wikipedia pages", () => {
   assert.equal(classifyKnowledgeUrl("https://example.com"), "other");
 });
 
+test("llm auth header helpers normalize auth env shapes", () => {
+  assert.deepEqual(parseAuthHeader("Authorization: Bearer abc"), {
+    Authorization: "Bearer abc",
+  });
+  assert.deepEqual(parseAuthHeader("Bearer xyz"), {
+    Authorization: "Bearer xyz",
+  });
+
+  const keys = [
+    "WEAVER_LLM_AUTH_HEADER",
+    "WEAVER_LLM_BEARER_TOKEN",
+    "WEAVER_LLM_API_KEY",
+    "WEAVER_LLM_API_KEY_HEADER",
+    "TEXT_GENERATION_AUTH_HEADER",
+    "TEXT_GENERATION_BEARER_TOKEN",
+    "TEXT_GENERATION_API_KEY",
+    "TEXT_GENERATION_API_KEY_HEADER",
+  ];
+  const restore = {};
+  for (const key of keys) {
+    restore[key] = process.env[key];
+    delete process.env[key];
+  }
+
+  try {
+    process.env.TEXT_GENERATION_API_KEY = "token-text";
+    assert.deepEqual(llmAuthHeaders(), { "X-API-Key": "token-text" });
+
+    process.env.TEXT_GENERATION_API_KEY_HEADER = "Authorization";
+    assert.deepEqual(llmAuthHeaders(), { Authorization: "token-text" });
+
+    process.env.WEAVER_LLM_BEARER_TOKEN = "bearer-local";
+    assert.deepEqual(llmAuthHeaders(), {
+      Authorization: "Bearer bearer-local",
+    });
+
+    process.env.WEAVER_LLM_AUTH_HEADER = "X-Token: weaver-direct";
+    assert.deepEqual(llmAuthHeaders(), { "X-Token": "weaver-direct" });
+  } finally {
+    for (const key of keys) {
+      if (restore[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = restore[key];
+      }
+    }
+  }
+});
+
 test("registerInteraction enqueues URL after activation threshold", () => {
   const weaver = new WebGraphWeaver();
   try {
@@ -221,6 +308,41 @@ test("_processItem respects per-host concurrency cap", async () => {
     assert.equal(weaver.stats.host_concurrency_waits >= 1, true);
     assert.equal(weaver.frontier.has(url), true);
   } finally {
+    weaver.shutdown();
+  }
+});
+
+test("_processItem handles arXiv search via API without crawling /search HTML", async () => {
+  const weaver = new WebGraphWeaver();
+  const originalFetch = global.fetch;
+  try {
+    global.fetch = async (url) => {
+      const target = String(url);
+      assert.ok(target.includes("export.arxiv.org/api/query"));
+      return {
+        ok: true,
+        status: 200,
+        text: async () => `
+          <feed>
+            <entry><id>http://arxiv.org/abs/2401.12345v2</id></entry>
+            <entry><id>http://arxiv.org/abs/2402.54321v1</id></entry>
+          </feed>
+        `,
+      };
+    };
+
+    await weaver._processItem({
+      url: "https://arxiv.org/search/?query=graph+learning&searchtype=all&size=5",
+      sourceUrl: null,
+      depth: 0,
+      readyAt: Date.now(),
+      priority: 1,
+    });
+
+    assert.equal(weaver.frontier.has("https://arxiv.org/abs/2401.12345"), true);
+    assert.equal(weaver.frontier.has("https://arxiv.org/abs/2402.54321"), true);
+  } finally {
+    global.fetch = originalFetch;
     weaver.shutdown();
   }
 });

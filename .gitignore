@@ -50,6 +50,7 @@ tmp/
 part64/world_state/*.json
 part64/world_state/*.jsonl
 part64/world_state/*.log
+part64/world_state/facts/
 part64/world_state/chroma_data/
 part64/world_state/tts_cache/
 

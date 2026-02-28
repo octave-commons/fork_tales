@@ -2,6 +2,7 @@ from __future__ import annotations
 import os
 import time
 import json
+import io
 import base64
 import hashlib
 import threading
@@ -2680,9 +2681,11 @@ def _eta_mu_detect_modality(
         ETA_MU_INGEST_INCLUDE_TEXT_MIME,
         ETA_MU_INGEST_INCLUDE_IMAGE_MIME,
         ETA_MU_INGEST_INCLUDE_AUDIO_MIME,
+        ETA_MU_INGEST_INCLUDE_PDF_MIME,
         ETA_MU_INGEST_INCLUDE_TEXT_EXT,
         ETA_MU_INGEST_INCLUDE_IMAGE_EXT,
         ETA_MU_INGEST_INCLUDE_AUDIO_EXT,
+        ETA_MU_INGEST_INCLUDE_PDF_EXT,
     )
 
     normalized_mime = str(mime or "").strip().lower()
@@ -2699,6 +2702,8 @@ def _eta_mu_detect_modality(
         or normalized_mime in ETA_MU_INGEST_INCLUDE_AUDIO_MIME
     ):
         return "audio", "mime-audio"
+    if normalized_mime in ETA_MU_INGEST_INCLUDE_PDF_MIME:
+        return "pdf", "mime-pdf"
 
     if suffix in ETA_MU_INGEST_INCLUDE_TEXT_EXT:
         return "text", "ext-text"
@@ -2706,6 +2711,8 @@ def _eta_mu_detect_modality(
         return "image", "ext-image"
     if suffix in ETA_MU_INGEST_INCLUDE_AUDIO_EXT:
         return "audio", "ext-audio"
+    if suffix in ETA_MU_INGEST_INCLUDE_PDF_EXT:
+        return "pdf", "ext-pdf"
 
     return None, "unsupported-modality"
 
@@ -2731,6 +2738,8 @@ def _eta_mu_guess_mime(path: Path, raw: bytes) -> str:
         return "audio/ogg"
     if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WAVE":
         return "audio/wav"
+    if raw.startswith(b"%PDF-"):
+        return "application/pdf"
     if _is_probably_text_bytes(raw[:8192]):
         return "text/plain"
     return "application/octet-stream"
@@ -3163,6 +3172,176 @@ def _eta_mu_image_derive_segment(
     return segment
 
 
+def _eta_mu_pdf_extract_pages_text(pdf_bytes: bytes) -> list[str]:
+    try:
+        from pypdf import PdfReader  # type: ignore
+    except Exception:
+        return []
+
+    try:
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+    except Exception:
+        return []
+
+    output: list[str] = []
+    for page in list(getattr(reader, "pages", [])):
+        try:
+            text_value = str(page.extract_text() or "")
+        except Exception:
+            text_value = ""
+        cleaned = " ".join(text_value.split()).strip()
+        output.append(cleaned)
+    return output
+
+
+def _eta_mu_pdf_render_page_pngs(
+    pdf_bytes: bytes,
+    *,
+    max_pages: int,
+) -> list[dict[str, Any]]:
+    page_limit = max(0, int(max_pages))
+    if page_limit <= 0:
+        return []
+
+    try:
+        import fitz  # type: ignore
+    except Exception:
+        return []
+
+    output: list[dict[str, Any]] = []
+    doc = None
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        total = min(page_limit, int(getattr(doc, "page_count", 0) or 0))
+        for idx in range(total):
+            page = doc.load_page(idx)
+            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+            output.append(
+                {
+                    "page": idx + 1,
+                    "mime": "image/png",
+                    "bytes": pix.tobytes("png"),
+                }
+            )
+    except Exception:
+        return []
+    finally:
+        if doc is not None:
+            try:
+                doc.close()
+            except Exception:
+                pass
+    return output
+
+
+def _eta_mu_pdf_derive_segments(
+    *,
+    source_hash: str,
+    source_bytes: int,
+    source_rel_path: str,
+    mime: str,
+    pdf_bytes: bytes,
+) -> list[dict[str, Any]]:
+    max_pages_raw = str(os.getenv("ETA_MU_PDF_MAX_PAGES", "8") or "8")
+    vision_pages_raw = str(os.getenv("ETA_MU_PDF_VISION_MAX_PAGES", "2") or "2")
+    try:
+        max_pages = max(1, min(64, int(max_pages_raw)))
+    except (TypeError, ValueError):
+        max_pages = 8
+    try:
+        max_vision_pages = max(0, min(8, int(vision_pages_raw)))
+    except (TypeError, ValueError):
+        max_vision_pages = 2
+
+    extract_spec = {
+        "type": "pdf",
+        "source_hash": source_hash,
+        "source_bytes": source_bytes,
+        "text_extract": "pypdf",
+        "vision": "fitz->vllm",
+        "max_pages": max_pages,
+        "vision_pages": max_vision_pages,
+        "mime": mime,
+    }
+    extract_hash = _eta_mu_json_sha256(extract_spec)
+
+    page_text = _eta_mu_pdf_extract_pages_text(pdf_bytes)
+    page_images = _eta_mu_pdf_render_page_pngs(pdf_bytes, max_pages=max_vision_pages)
+
+    segments: list[dict[str, Any]] = []
+    page_count = min(max_pages, max(len(page_text), len(page_images)))
+    for page_idx in range(page_count):
+        page_number = page_idx + 1
+        text_value = page_text[page_idx] if page_idx < len(page_text) else ""
+        vision_caption = ""
+        vision_model = ""
+        vision_backend = ""
+        vision_error = ""
+        image_payload = next(
+            (row for row in page_images if int(row.get("page", 0)) == page_number), None
+        )
+        if image_payload is not None:
+            vision = _eta_mu_image_vllm_caption_for_embedding(
+                image_bytes=bytes(image_payload.get("bytes", b"")),
+                mime=str(image_payload.get("mime", "image/png") or "image/png"),
+                source_rel_path=f"{source_rel_path}#page={page_number}",
+            )
+            vision_caption = str(vision.get("caption", "")).strip()
+            vision_model = str(vision.get("model", "")).strip()
+            vision_backend = str(vision.get("backend", "")).strip()
+            vision_error = str(vision.get("error", "")).strip()
+
+        descriptor = f"pdf page {page_number} source={source_rel_path} extract_hash={extract_hash}"
+        if text_value:
+            descriptor = f"{descriptor} text={text_value}"
+        if vision_caption:
+            descriptor = f"{descriptor} vision-caption={vision_caption}"
+        if len(descriptor) > 3200:
+            descriptor = descriptor[:3200].rstrip()
+
+        if not text_value and not vision_caption and not vision_error:
+            continue
+
+        segment: dict[str, Any] = {
+            "id": f"pdf-{page_number:04d}",
+            "start": page_number,
+            "end": page_number,
+            "unit": "page",
+            "text": descriptor,
+            "extract_spec": extract_spec,
+            "extract_hash": extract_hash,
+        }
+        if vision_backend:
+            segment["vision_backend"] = vision_backend
+        if vision_model:
+            segment["vision_model"] = vision_model
+        if vision_caption:
+            segment["vision_caption"] = vision_caption
+        if vision_error:
+            segment["vision_error"] = vision_error
+        segments.append(segment)
+
+    if segments:
+        return segments
+
+    return [
+        {
+            "id": "pdf-0000",
+            "start": 0,
+            "end": 0,
+            "unit": "page",
+            "text": (
+                "pdf artifact "
+                + f"mime={mime} source={source_rel_path} source_hash={source_hash} "
+                + f"source_bytes={source_bytes} extract_hash={extract_hash}"
+            ),
+            "extract_spec": extract_spec,
+            "extract_hash": extract_hash,
+            "vision_error": "pdf_text_and_vision_unavailable",
+        }
+    ]
+
+
 def _eta_mu_registry_reference_key(
     *,
     source_hash: str,
@@ -3280,6 +3459,8 @@ def _eta_mu_embed_vector_for_segment(
     if modality == "text":
         remote_vector = _embed_text(segment_text, model=model)
     elif modality == "image":
+        remote_vector = _embed_text(segment_text, model=model)
+    elif modality == "pdf":
         remote_vector = _embed_text(segment_text, model=model)
 
     fallback_used = False

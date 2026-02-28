@@ -192,7 +192,7 @@ def test_muse_tool_request_parses_facts_and_graph_commands() -> None:
                 "node_count": 3,
                 "edge_count": 2,
             }
-        if tool_name.startswith("graph:"):
+        if tool_name.startswith("graph_query:"):
             return {
                 "ok": True,
                 "summary": "graph query generated",
@@ -216,8 +216,11 @@ def test_muse_tool_request_parses_facts_and_graph_commands() -> None:
     )
     assert payload["ok"] is True
     assert "facts_snapshot" in tool_calls
-    assert "graph:overview" in tool_calls
-    assert str(payload.get("reply", "")).startswith("Facts grounded at")
+    assert "graph_query:overview" in tool_calls
+    reply = str(payload.get("reply", ""))
+    assert "FACTS:" in reply
+    assert "DERIVATIONS:" in reply
+    assert "UNKNOWN:" in reply
     receipts = payload.get("grounded_receipts", {})
     assert receipts.get("snapshot_hash") == "f" * 64
     assert "overview" in receipts.get("queries_used", [])
@@ -244,7 +247,126 @@ def test_muse_graph_neighbors_command_carries_argument_tail() -> None:
         seed="seed-neighbors",
     )
     assert payload["ok"] is True
-    assert "graph:neighbors url:aaaa" in tool_calls
+    assert "graph_query:neighbors url:aaaa" in tool_calls
+
+
+def test_muse_tool_request_maps_natural_language_crawler_queries() -> None:
+    manager = _manager()
+    tool_calls: list[str] = []
+
+    def _tool_callback(*, tool_name: str) -> dict[str, Any]:
+        tool_calls.append(tool_name)
+        if tool_name.startswith("graph_query:"):
+            return {
+                "ok": True,
+                "summary": "graph query generated",
+                "query": tool_name.split(":", 1)[1].split(" ", 1)[0],
+                "snapshot_hash": "g" * 64,
+                "result_count": 1,
+            }
+        return {"ok": True, "summary": f"ran:{tool_name}"}
+
+    payload = manager.send_message(
+        muse_id=DEFAULT_MUSE_ID,
+        text="what did the crawler learn from https://example.org/a and what is crawler status?",
+        mode="deterministic",
+        token_budget=900,
+        idempotency_key="crawler-natural-1",
+        graph_revision="graph:v-crawler-natural",
+        surrounding_nodes=[],
+        tool_callback=_tool_callback,
+        reply_builder=_reply_builder,
+        seed="seed-crawler-natural",
+    )
+    assert payload["ok"] is True
+    assert any(call.startswith("graph_query:crawler_status") for call in tool_calls)
+    assert any(
+        call.startswith("graph_query:web_resource_summary https://example.org/a")
+        for call in tool_calls
+    )
+
+
+def test_muse_tool_request_maps_natural_language_arxiv_paper_query() -> None:
+    manager = _manager()
+    tool_calls: list[str] = []
+
+    def _tool_callback(*, tool_name: str) -> dict[str, Any]:
+        tool_calls.append(tool_name)
+        if tool_name.startswith("graph_query:"):
+            return {
+                "ok": True,
+                "summary": "graph query generated",
+                "query": tool_name.split(":", 1)[1].split(" ", 1)[0],
+                "snapshot_hash": "g" * 64,
+                "result_count": 2,
+                "result": {
+                    "count_total": 3,
+                    "count_fetched": 2,
+                    "papers": [
+                        {
+                            "title": "[2602.23342] Sample Paper",
+                            "canonical_url": "https://arxiv.org/abs/2602.23342",
+                            "last_status": "ok",
+                            "fetched": True,
+                        }
+                    ],
+                },
+            }
+        return {"ok": True, "summary": f"ran:{tool_name}"}
+
+    payload = manager.send_message(
+        muse_id=DEFAULT_MUSE_ID,
+        text="what arxiv papers have we crawled so far?",
+        mode="deterministic",
+        token_budget=900,
+        idempotency_key="arxiv-natural-1",
+        graph_revision="graph:v-arxiv-natural",
+        surrounding_nodes=[],
+        tool_callback=_tool_callback,
+        reply_builder=_reply_builder,
+        seed="seed-arxiv-natural",
+    )
+    assert payload["ok"] is True
+    assert any(call.startswith("graph_query:arxiv_papers") for call in tool_calls)
+    reply = str(payload.get("reply", ""))
+    assert "arXiv crawl currently tracks" in reply
+    assert "https://arxiv.org/abs/2602.23342" in reply
+
+
+def test_muse_tool_request_maps_natural_language_daimoi_outcome_queries() -> None:
+    manager = _manager()
+    tool_calls: list[str] = []
+
+    def _tool_callback(*, tool_name: str) -> dict[str, Any]:
+        tool_calls.append(tool_name)
+        if tool_name.startswith("graph_query:"):
+            return {
+                "ok": True,
+                "summary": "graph query generated",
+                "query": tool_name.split(":", 1)[1].split(" ", 1)[0],
+                "snapshot_hash": "g" * 64,
+                "result_count": 2,
+            }
+        return {"ok": True, "summary": f"ran:{tool_name}"}
+
+    payload = manager.send_message(
+        muse_id=DEFAULT_MUSE_ID,
+        text="why did daimoi field:witness_thread:001 die? show recent outcomes",
+        mode="deterministic",
+        token_budget=900,
+        idempotency_key="daimoi-natural-1",
+        graph_revision="graph:v-daimoi-natural",
+        surrounding_nodes=[],
+        tool_callback=_tool_callback,
+        reply_builder=_reply_builder,
+        seed="seed-daimoi-natural",
+    )
+    assert payload["ok"] is True
+    assert any(
+        call.startswith("graph_query:explain_daimoi field:witness_thread:001")
+        for call in tool_calls
+    )
+    assert any(call.startswith("graph_query:recent_outcomes") for call in tool_calls)
 
 
 def test_bootstrap_fixed_muses_are_present_and_typed() -> None:

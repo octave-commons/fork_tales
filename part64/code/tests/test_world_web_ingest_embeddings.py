@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import code.world_web as world_web_module
+import code.world_web.ai as ai_module
 
 from code.world_web import build_simulation_state, collect_catalog
 
@@ -144,6 +145,68 @@ def test_eta_mu_inbox_is_ingested_and_graphed() -> None:
         )
         assert isinstance(note_node.get("concept_presence_id", ""), str)
         assert note_node.get("organized_by") == "file_organizer"
+
+
+def test_eta_mu_detect_modality_supports_pdf() -> None:
+    modality, reason = ai_module._eta_mu_detect_modality(
+        path=Path("/tmp/sample.pdf"),
+        mime="application/pdf",
+    )
+    assert modality == "pdf"
+    assert reason == "mime-pdf"
+
+
+def test_eta_mu_inbox_pdf_is_ingested_with_text_embedding(monkeypatch: Any) -> None:
+    monkeypatch.setattr(world_web_module, "ETA_MU_INBOX_DEBOUNCE_SECONDS", 0.0)
+
+    from code.world_web import catalog as catalog_module
+
+    monkeypatch.setattr(
+        catalog_module,
+        "_eta_mu_pdf_derive_segments",
+        lambda **kwargs: [
+            {
+                "id": "pdf-0001",
+                "start": 1,
+                "end": 1,
+                "unit": "page",
+                "text": f"pdf page 1 text from {kwargs.get('source_rel_path', '')}",
+            }
+        ],
+    )
+
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+        part = vault / "ημ_op_mf_part_64"
+        part.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        inbox = vault / ".ημ"
+        inbox.mkdir(parents=True)
+        (inbox / "paper.pdf").write_bytes(b"%PDF-1.4\n%stub\n")
+
+        catalog = collect_catalog(part, vault)
+        inbox_state = catalog.get("eta_mu_inbox", {})
+        assert inbox_state.get("processed_count", 0) >= 1
+
+        index_path = vault / ".opencode" / "runtime" / "eta_mu_knowledge.v1.jsonl"
+        entries = [
+            json.loads(line)
+            for line in index_path.read_text("utf-8").splitlines()
+            if line.strip()
+        ]
+        pdf_entry = next(row for row in entries if row.get("name") == "paper.pdf")
+        assert pdf_entry.get("kind") == "pdf"
+        assert "pdf page 1 text" in str(pdf_entry.get("text_excerpt", "")).lower()
+
+        file_graph = catalog.get("file_graph", {})
+        pdf_node = next(
+            node
+            for node in file_graph.get("file_nodes", [])
+            if node.get("name") == "paper.pdf"
+        )
+        assert pdf_node.get("resource_kind") == "pdf"
+        assert pdf_node.get("modality") == "text"
 
 
 def test_docmeta_tags_create_first_class_tag_nodes(monkeypatch: Any) -> None:

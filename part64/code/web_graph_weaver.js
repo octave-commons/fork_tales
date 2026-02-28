@@ -22,6 +22,17 @@ const FETCH_TIMEOUT_MS = Number.parseInt(
   process.env.WEAVER_FETCH_TIMEOUT_MS || "12000",
   10,
 );
+const ARXIV_API_QUERY_URL = String(
+  process.env.WEAVER_ARXIV_API_QUERY_URL || "http://export.arxiv.org/api/query",
+).trim();
+const ARXIV_API_MIN_DELAY_MS = Number.parseInt(
+  process.env.WEAVER_ARXIV_API_MIN_DELAY_MS || "3100",
+  10,
+);
+const ARXIV_API_MAX_RESULTS = Number.parseInt(
+  process.env.WEAVER_ARXIV_API_MAX_RESULTS || "25",
+  10,
+);
 const ROBOTS_CACHE_TTL_MS = Number.parseInt(
   process.env.WEAVER_ROBOTS_CACHE_TTL_MS || String(60 * 60 * 1000),
   10,
@@ -102,6 +113,65 @@ const LLM_TEXT_MAX_CHARS = Number.parseInt(
   process.env.WEAVER_LLM_TEXT_MAX_CHARS || "7000",
   10,
 );
+
+function parseAuthHeader(rawHeader) {
+  const header = String(rawHeader || "").trim();
+  if (!header) {
+    return {};
+  }
+  if (header.includes(":")) {
+    const [key, ...rest] = header.split(":");
+    const normalizedKey = String(key || "").trim();
+    const normalizedValue = String(rest.join(":") || "").trim();
+    if (normalizedKey && normalizedValue) {
+      return {
+        [normalizedKey]: normalizedValue,
+      };
+    }
+  }
+  return {
+    Authorization: header,
+  };
+}
+
+function llmAuthHeaders() {
+  const weaverRawHeader = String(process.env.WEAVER_LLM_AUTH_HEADER || "").trim();
+  if (weaverRawHeader) {
+    return parseAuthHeader(weaverRawHeader);
+  }
+  const textGenerationRawHeader = String(process.env.TEXT_GENERATION_AUTH_HEADER || "").trim();
+  if (textGenerationRawHeader) {
+    return parseAuthHeader(textGenerationRawHeader);
+  }
+
+  const bearerToken =
+    String(process.env.WEAVER_LLM_BEARER_TOKEN || "").trim() ||
+    String(process.env.TEXT_GENERATION_BEARER_TOKEN || "").trim();
+  if (bearerToken) {
+    return {
+      Authorization: `Bearer ${bearerToken}`,
+    };
+  }
+
+  const apiKey =
+    String(process.env.WEAVER_LLM_API_KEY || "").trim() ||
+    String(process.env.TEXT_GENERATION_API_KEY || "").trim();
+  if (apiKey) {
+    const headerName = String(
+      process.env.WEAVER_LLM_API_KEY_HEADER ||
+        process.env.TEXT_GENERATION_API_KEY_HEADER ||
+        "X-API-Key",
+    ).trim();
+    return {
+      [headerName || "X-API-Key"]: apiKey,
+    };
+  }
+
+  return {};
+}
+
+const LLM_AUTH_HEADERS = llmAuthHeaders();
+const LLM_AUTH_CONFIGURED = Object.keys(LLM_AUTH_HEADERS).length > 0;
 const USER_AGENT =
   process.env.WEAVER_USER_AGENT ||
   `WebGraphWeaver/0.1 (+http://${HOST}:${PORT}/api/weaver/opt-out)`;
@@ -281,6 +351,116 @@ function isArxivPdfUrl(rawUrl) {
   } catch (_err) {
     return false;
   }
+}
+
+function isArxivSearchUrl(rawUrl) {
+  try {
+    const parsed = new URL(rawUrl);
+    return isArxivHost(parsed.hostname) && /^\/search\/?$/i.test(parsed.pathname || "");
+  } catch (_err) {
+    return false;
+  }
+}
+
+function parseArxivSearchSeed(rawUrl) {
+  try {
+    const parsed = new URL(rawUrl);
+    if (!isArxivHost(parsed.hostname) || !/^\/search\/?$/i.test(parsed.pathname || "")) {
+      return null;
+    }
+
+    const query = String(
+      parsed.searchParams.get("query") || parsed.searchParams.get("search_query") || "",
+    ).trim();
+    if (!query) {
+      return null;
+    }
+
+    const searchType = String(parsed.searchParams.get("searchtype") || "all").trim().toLowerCase();
+    const prefixByType = {
+      all: "all",
+      title: "ti",
+      author: "au",
+      abstract: "abs",
+      comments: "co",
+      journal_ref: "jr",
+      cat: "cat",
+    };
+    const fieldPrefix = prefixByType[searchType] || "all";
+    const compactQuery = query.replace(/\s+/g, " ").trim();
+    const searchQuery = /^[a-z_]+\s*:/i.test(compactQuery)
+      ? compactQuery
+      : `${fieldPrefix}:${compactQuery}`;
+
+    const sortByRaw = String(parsed.searchParams.get("order") || "").trim().toLowerCase();
+    let sortBy = "relevance";
+    if (sortByRaw === "-announced_date_first") {
+      sortBy = "submittedDate";
+    } else if (sortByRaw === "-last_updated_date") {
+      sortBy = "lastUpdatedDate";
+    }
+
+    const startRaw = Number.parseInt(String(parsed.searchParams.get("start") || "0"), 10);
+    const sizeRaw = Number.parseInt(
+      String(parsed.searchParams.get("size") || parsed.searchParams.get("max_results") || "25"),
+      10,
+    );
+    const start = Number.isFinite(startRaw) ? Math.max(0, startRaw) : 0;
+    const maxResults = clamp(
+      Number.isFinite(sizeRaw) && sizeRaw > 0 ? sizeRaw : 25,
+      1,
+      Math.max(1, ARXIV_API_MAX_RESULTS),
+    );
+
+    return {
+      searchQuery,
+      start,
+      maxResults,
+      sortBy,
+      sortOrder: "descending",
+    };
+  } catch (_err) {
+    return null;
+  }
+}
+
+function buildArxivApiQueryUrl(seed) {
+  const parsed = seed || {};
+  const apiUrl = new URL(ARXIV_API_QUERY_URL);
+  apiUrl.searchParams.set("search_query", String(parsed.searchQuery || "all:all"));
+  apiUrl.searchParams.set("start", String(Math.max(0, Number(parsed.start || 0))));
+  apiUrl.searchParams.set(
+    "max_results",
+    String(clamp(Number(parsed.maxResults || 25), 1, Math.max(1, ARXIV_API_MAX_RESULTS))),
+  );
+  apiUrl.searchParams.set("sortBy", String(parsed.sortBy || "relevance"));
+  apiUrl.searchParams.set("sortOrder", String(parsed.sortOrder || "descending"));
+  return apiUrl.toString();
+}
+
+function extractArxivAbsUrlsFromApiFeed(feedXml, maxItems = ARXIV_API_MAX_RESULTS) {
+  const xml = String(feedXml || "");
+  const entries = xml.match(/<entry\b[\s\S]*?<\/entry>/gi) || [];
+  const output = [];
+  const seen = new Set();
+  for (const entry of entries) {
+    const idMatch = /<id[^>]*>\s*([^<]+)\s*<\/id>/i.exec(entry);
+    const idUrl = String(idMatch?.[1] || "").trim();
+    const arxivId = extractArxivIdFromUrl(idUrl);
+    if (!arxivId) {
+      continue;
+    }
+    const canonical = canonicalArxivAbsUrlFromId(arxivId);
+    if (!canonical || seen.has(canonical)) {
+      continue;
+    }
+    seen.add(canonical);
+    output.push(canonical);
+    if (output.length >= maxItems) {
+      break;
+    }
+  }
+  return output;
 }
 
 function canonicalWikipediaArticleUrl(rawUrl) {
@@ -1174,6 +1354,10 @@ class WebGraphWeaver {
 
     this.domainState = new Map();
     this.maxDomainStateEntries = DOMAIN_STATE_MAX;
+    this.arxivApiState = {
+      active: 0,
+      nextAllowedAt: 0,
+    };
 
     this.broadcast = () => {};
     this.scheduler = setInterval(() => {
@@ -1610,6 +1794,7 @@ class WebGraphWeaver {
           const response = await fetch(endpoint, {
             method: "POST",
             headers: {
+              ...LLM_AUTH_HEADERS,
               "Content-Type": "application/json",
             },
             body: JSON.stringify({
@@ -1769,6 +1954,7 @@ class WebGraphWeaver {
         enabled: LLM_ENABLED,
         base_url: LLM_BASE_URL,
         model: LLM_MODEL,
+        auth_configured: LLM_AUTH_CONFIGURED,
       },
       entities: this._entitySnapshot(),
     };
@@ -2179,6 +2365,11 @@ class WebGraphWeaver {
       return;
     }
 
+    if (isArxivSearchUrl(item.url)) {
+      await this._processArxivSearchItem(item, domainState, startedAt);
+      return;
+    }
+
     const policy = await this._policyFor(urlObj);
     const policyDelay = policy.crawlDelayMs;
     const delayMs = policyDelay !== null ? Math.max(this.defaultDelayMs, policyDelay) : this.defaultDelayMs;
@@ -2476,6 +2667,173 @@ class WebGraphWeaver {
     }
   }
 
+  async _processArxivSearchItem(item, domainState, startedAt) {
+    const seed = parseArxivSearchSeed(item.url);
+    if (!seed) {
+      this.stats.skipped += 1;
+      this._emit("fetch_skipped", {
+        url: item.url,
+        depth: item.depth,
+        reason: "arxiv_search_seed_invalid",
+      });
+      return;
+    }
+
+    const now = nowMs();
+    if (this.arxivApiState.active >= 1) {
+      const retryAt = now + 350;
+      this.frontier.push({ ...item, readyAt: retryAt });
+      this.stats.skipped += 1;
+      this._emit("fetch_skipped", {
+        url: item.url,
+        depth: item.depth,
+        reason: "arxiv_api_single_connection_wait",
+        retry_in_ms: retryAt - now,
+      });
+      return;
+    }
+    if (this.arxivApiState.nextAllowedAt > now) {
+      const retryAt = this.arxivApiState.nextAllowedAt;
+      this.frontier.push({ ...item, readyAt: retryAt });
+      this.stats.skipped += 1;
+      this._emit("fetch_skipped", {
+        url: item.url,
+        depth: item.depth,
+        reason: "arxiv_api_delay_wait",
+        retry_in_ms: retryAt - now,
+      });
+      return;
+    }
+
+    const apiUrl = buildArxivApiQueryUrl(seed);
+    this.inFlightUrls.add(item.url);
+    domainState.active += 1;
+    const enforcedDelayMs = Math.max(this.defaultDelayMs, ARXIV_API_MIN_DELAY_MS, domainState.backoffMs);
+    domainState.nextAllowedAt = nowMs() + enforcedDelayMs;
+    this.arxivApiState.active += 1;
+    this.arxivApiState.nextAllowedAt = nowMs() + Math.max(ARXIV_API_MIN_DELAY_MS, domainState.backoffMs);
+
+    this.graph.setUrlStatus(item.url, {
+      status: "fetching",
+      last_requested_at: nowMs(),
+      cooldown_until: nowMs() + this.nodeCooldownMs,
+      compliance: "arxiv_api",
+      arxiv_api_query: seed.searchQuery,
+    });
+    this._emit("fetch_started", {
+      url: item.url,
+      depth: item.depth,
+      domain: "arxiv.org",
+      mode: "arxiv_api",
+      api_url: apiUrl,
+    });
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    try {
+      const response = await fetch(apiUrl, {
+        method: "GET",
+        redirect: "follow",
+        headers: {
+          "User-Agent": USER_AGENT,
+          Accept: "application/atom+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.5",
+        },
+        signal: controller.signal,
+      });
+
+      if (response.status === 429 || response.status === 503) {
+        domainState.backoffMs = clamp(
+          Math.max(ARXIV_API_MIN_DELAY_MS, domainState.backoffMs > 0 ? domainState.backoffMs * 2 : 6000),
+          ARXIV_API_MIN_DELAY_MS,
+          180000,
+        );
+      } else {
+        domainState.backoffMs = Math.floor(domainState.backoffMs * 0.5);
+      }
+
+      if (!response.ok) {
+        this.stats.skipped += 1;
+        this.graph.setUrlStatus(item.url, {
+          status: "skipped",
+          compliance: "arxiv_api_http_skip",
+          fetched_at: nowMs(),
+        });
+        this._emit("fetch_skipped", {
+          url: item.url,
+          depth: item.depth,
+          reason: "http_status",
+          status: response.status,
+          mode: "arxiv_api",
+        });
+        return;
+      }
+
+      const bodyText = (await response.text()).slice(0, 1_000_000);
+      const discovered = extractArxivAbsUrlsFromApiFeed(bodyText, seed.maxResults);
+      let outboundCount = 0;
+      for (const target of discovered) {
+        if (item.depth + 1 > this.currentMaxDepth) {
+          break;
+        }
+        const outcome = this.enqueueUrl(target, item.url, item.depth + 1, "arxiv_api_discovered");
+        if (outcome.ok) {
+          outboundCount += 1;
+        }
+      }
+
+      this.graph.setUrlStatus(item.url, {
+        status: "fetched",
+        compliance: "arxiv_api",
+        fetched_at: nowMs(),
+        content_type: "application/atom+xml",
+        title: `arXiv API query: ${seed.searchQuery}`,
+        text_excerpt: `arXiv API query ${seed.searchQuery} start=${seed.start} max_results=${seed.maxResults}`,
+        text_excerpt_hash: hashText(`${seed.searchQuery}|${seed.start}|${seed.maxResults}`),
+        last_visited_at: nowMs(),
+        cooldown_until: nowMs() + this.nodeCooldownMs,
+      });
+
+      this.stats.fetched += 1;
+      this.stats.total_fetch_time_ms += nowMs() - startedAt;
+      domainState.lastFetchedAt = nowMs();
+      this._emit("fetch_completed", {
+        url: item.url,
+        depth: item.depth,
+        status: response.status,
+        content_type: "application/atom+xml",
+        outbound_count: outboundCount,
+        discovered_count: discovered.length,
+        mode: "arxiv_api",
+        duration_ms: nowMs() - startedAt,
+      });
+    } catch (err) {
+      this.stats.errors += 1;
+      this.graph.setUrlStatus(item.url, {
+        status: "error",
+        compliance: "error",
+        error: String(err.message || err),
+      });
+      domainState.backoffMs = clamp(
+        Math.max(ARXIV_API_MIN_DELAY_MS, domainState.backoffMs > 0 ? domainState.backoffMs * 2 : 6000),
+        ARXIV_API_MIN_DELAY_MS,
+        180000,
+      );
+      this._emit("fetch_skipped", {
+        url: item.url,
+        depth: item.depth,
+        reason: "fetch_error",
+        mode: "arxiv_api",
+        error: String(err.message || err),
+      });
+    } finally {
+      clearTimeout(timeoutId);
+      this.inFlightUrls.delete(item.url);
+      domainState.active = Math.max(0, domainState.active - 1);
+      this.arxivApiState.active = Math.max(0, this.arxivApiState.active - 1);
+      this._persistSnapshot();
+    }
+  }
+
   tick() {
     if (!this.running || this.paused) {
       return;
@@ -2764,6 +3122,7 @@ class WebGraphWeaver {
         enabled: LLM_ENABLED,
         base_url: LLM_BASE_URL,
         model: LLM_MODEL,
+        auth_configured: LLM_AUTH_CONFIGURED,
       },
       event_count: this.recentEvents.length,
       opt_out_endpoint: `/api/weaver/opt-out`,
@@ -3116,11 +3475,17 @@ if (require.main === module) {
 module.exports = {
   normalizeUrl,
   extractArxivIdFromUrl,
+  isArxivSearchUrl,
+  parseArxivSearchSeed,
+  buildArxivApiQueryUrl,
+  extractArxivAbsUrlsFromApiFeed,
   canonicalArxivAbsUrlFromId,
   canonicalArxivPdfUrlFromId,
   canonicalWikipediaArticleUrl,
   extractSemanticReferences,
   classifyKnowledgeUrl,
+  parseAuthHeader,
+  llmAuthHeaders,
   FrontierQueue,
   GraphStore,
   WebGraphWeaver,

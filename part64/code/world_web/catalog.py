@@ -46,14 +46,17 @@ from .constants import (
     ETA_MU_INGEST_INCLUDE_TEXT_MIME,
     ETA_MU_INGEST_INCLUDE_IMAGE_MIME,
     ETA_MU_INGEST_INCLUDE_AUDIO_MIME,
+    ETA_MU_INGEST_INCLUDE_PDF_MIME,
     ETA_MU_INGEST_INCLUDE_TEXT_EXT,
     ETA_MU_INGEST_INCLUDE_IMAGE_EXT,
     ETA_MU_INGEST_INCLUDE_AUDIO_EXT,
+    ETA_MU_INGEST_INCLUDE_PDF_EXT,
     ETA_MU_INGEST_EXCLUDE_REL_PATHS,
     ETA_MU_INGEST_EXCLUDE_GLOBS,
     ETA_MU_INGEST_MAX_TEXT_BYTES,
     ETA_MU_INGEST_MAX_IMAGE_BYTES,
     ETA_MU_INGEST_MAX_AUDIO_BYTES,
+    ETA_MU_INGEST_MAX_PDF_BYTES,
     ETA_MU_INGEST_MAX_SCAN_FILES,
     ETA_MU_INGEST_MAX_SCAN_DEPTH,
     ETA_MU_INGEST_SAFE_MODE,
@@ -133,6 +136,7 @@ from .ai import (
     _eta_mu_registry_idempotence_key,
     _eta_mu_emit_packet,
     _eta_mu_image_derive_segment,
+    _eta_mu_pdf_derive_segments,
     _eta_mu_registry_reference_key,
     _eta_mu_json_sha256,
     _eta_mu_model_key,
@@ -265,6 +269,7 @@ def _graph_resource_kind_from_entry(entry: dict[str, Any]) -> str:
         "text",
         "image",
         "audio",
+        "pdf",
         "video",
         "archive",
         "blob",
@@ -282,6 +287,8 @@ def _graph_resource_kind_from_entry(entry: dict[str, Any]) -> str:
         return "image"
     if content_type.startswith("audio/"):
         return "audio"
+    if content_type == "application/pdf":
+        return "pdf"
     if content_type.startswith("video/"):
         return "video"
     if content_type.startswith("text/"):
@@ -312,6 +319,8 @@ def _graph_resource_kind_from_entry(entry: dict[str, Any]) -> str:
         return "image"
     if suffix in AUDIO_SUFFIXES:
         return "audio"
+    if suffix == ".pdf":
+        return "pdf"
     if suffix in VIDEO_SUFFIXES:
         return "video"
     if suffix in ETA_MU_TEXT_SUFFIXES:
@@ -326,6 +335,8 @@ def _graph_resource_kind_from_entry(entry: dict[str, Any]) -> str:
 
 def _graph_modality_from_resource_kind(resource_kind: str) -> str:
     normalized = str(resource_kind or "").strip().lower()
+    if normalized == "pdf":
+        return "text"
     if normalized in {"text", "image", "audio", "video"}:
         return normalized
     if normalized in {"website", "link"}:
@@ -910,7 +921,7 @@ def sync_eta_mu_inbox(vault_root: Path) -> dict[str, Any]:
         vecstore_call_ms,
         packets,
         manifest_sources,
-    ) = [], "", {"text": 0, "image": 0, "audio": 0}, [], [], [], []
+    ) = [], "", {"text": 0, "image": 0, "audio": 0, "pdf": 0}, [], [], [], []
     registry_entries = _load_eta_mu_registry_entries(vault_root)
     registry_known, registry_known_idempotence = (
         _eta_mu_registry_known_entries(registry_entries),
@@ -1012,6 +1023,7 @@ def sync_eta_mu_inbox(vault_root: Path) -> dict[str, Any]:
             (modality == "text" and source_bytes > ETA_MU_INGEST_MAX_TEXT_BYTES)
             or (modality == "image" and source_bytes > ETA_MU_INGEST_MAX_IMAGE_BYTES)
             or (modality == "audio" and source_bytes > ETA_MU_INGEST_MAX_AUDIO_BYTES)
+            or (modality == "pdf" and source_bytes > ETA_MU_INGEST_MAX_PDF_BYTES)
         ):
             rejected_count += 1
             rejected_at = datetime.now(timezone.utc).isoformat()
@@ -1071,6 +1083,16 @@ def sync_eta_mu_inbox(vault_root: Path) -> dict[str, Any]:
             ]
             excerpt = f"Audio file: {file_path.name}"
             space = spaces["audio"]
+        elif modality == "pdf":
+            segments = _eta_mu_pdf_derive_segments(
+                source_hash=source_hash,
+                source_bytes=source_bytes,
+                source_rel_path=rel_source,
+                mime=mime,
+                pdf_bytes=raw,
+            )
+            excerpt = str(segments[0].get("text", ""))[:1599] if segments else ""
+            space = spaces["text"]
         else:
             # Fallback for unexpected modality
             segments = []
@@ -1381,6 +1403,8 @@ def sync_eta_mu_inbox(vault_root: Path) -> dict[str, Any]:
         "counts": {
             "text": int(modality_counts.get("text", 0)),
             "image": int(modality_counts.get("image", 0)),
+            "audio": int(modality_counts.get("audio", 0)),
+            "pdf": int(modality_counts.get("pdf", 0)),
             "processed": processed_count,
             "skipped": skipped_count,
             "rejected": rejected_count,
@@ -2784,6 +2808,10 @@ def collect_catalog(
         _materialize_heat_values,
         build_named_field_overlays,
     )
+    from .github_presence import (
+        merge_crawler_graph_with_github,
+        run_github_presence_tick,
+    )
     from .chamber import (
         collect_promptdb_packets,
         build_truth_binding_state,
@@ -2969,6 +2997,12 @@ def collect_catalog(
     _emit_progress("world_log_done")
 
     _emit_progress("catalog_assemble_start")
+    base_crawler_graph = build_weaver_field_graph(part_root, vault_root)
+    github_crawler_graph = run_github_presence_tick(part_root)
+    merged_crawler_graph = merge_crawler_graph_with_github(
+        base_crawler_graph,
+        github_crawler_graph,
+    )
     catalog = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "part_roots": [str(p) for p in roots],
@@ -2981,7 +3015,7 @@ def collect_catalog(
         "cover_fields": cover_fields,
         "eta_mu_inbox": inbox_snapshot,
         "file_graph": file_graph,
-        "crawler_graph": build_weaver_field_graph(part_root, vault_root),
+        "crawler_graph": merged_crawler_graph,
         "truth_state": build_truth_binding_state(
             part_root, vault_root, promptdb_index=promptdb_index
         ),

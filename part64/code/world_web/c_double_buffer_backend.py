@@ -507,13 +507,15 @@ def _simplex_motion_delta(
     now: float,
     seed: int,
     amplitude: float,
+    space_scale: float = 4.4,
+    phase_scale: float = 0.28,
 ) -> tuple[float, float]:
     amp = max(0.0, _safe_float(amplitude, 0.0))
     if amp <= 1e-10:
         return (0.0, 0.0)
 
-    scale = 4.4
-    phase = _safe_float(now, 0.0) * 0.28
+    scale = max(0.25, _safe_float(space_scale, 4.4))
+    phase = _safe_float(now, 0.0) * max(0.01, _safe_float(phase_scale, 0.28))
     seed_value = int(seed)
     noise_x = _simplex_noise_2d(
         (x * scale) + phase,
@@ -4886,6 +4888,18 @@ def build_double_buffer_field_particles(
         0.8,
         min(1.8, _safe_float(anti_clump_scale_map.get("tangent", 1.0), 1.0)),
     )
+    anti_clump_friction_slip = max(
+        0.8,
+        min(1.24, _safe_float(anti_clump_scale_map.get("friction_slip", 1.0), 1.0)),
+    )
+    anti_clump_simplex_gain = max(
+        0.72,
+        min(2.2, _safe_float(anti_clump_scale_map.get("simplex_gain", 1.0), 1.0)),
+    )
+    anti_clump_simplex_scale = max(
+        0.82,
+        min(1.34, _safe_float(anti_clump_scale_map.get("simplex_scale", 1.0), 1.0)),
+    )
     anti_clump_tangent_scale = anti_clump_tangent_scale_base
     graph_variability_score = 0.0
     graph_variability_raw_score = 0.0
@@ -5758,14 +5772,18 @@ def build_double_buffer_field_particles(
             ^ ((owner_id + 1) * 2246822519)
         ) & 0xFFFFFFFF
         simplex_amp = (
-            0.0009 if is_nexus else (0.0026 if is_chaos else 0.0018)
-        ) * anti_clump_tangent_scale
+            (0.0009 if is_nexus else (0.0026 if is_chaos else 0.0018))
+            * anti_clump_tangent_scale
+            * anti_clump_simplex_gain
+        )
         simplex_dx, simplex_dy = _simplex_motion_delta(
             x=x_norm,
             y=y_norm,
             now=now,
             seed=simplex_seed,
             amplitude=simplex_amp,
+            space_scale=4.4 * anti_clump_simplex_scale,
+            phase_scale=0.28 * anti_clump_simplex_scale,
         )
         x_norm = _clamp01(x_norm + simplex_dx)
         y_norm = _clamp01(y_norm + simplex_dy)
@@ -5776,8 +5794,16 @@ def build_double_buffer_field_particles(
                 0.42,
                 min(0.78, 0.62 - (semantic_payload_signal_value * 0.08)),
             )
+            if anti_clump_friction_slip > 1.0:
+                nexus_motion_damping = min(
+                    0.9,
+                    nexus_motion_damping * anti_clump_friction_slip,
+                )
             motion_vx *= nexus_motion_damping
             motion_vy *= nexus_motion_damping
+        else:
+            motion_vx *= anti_clump_friction_slip
+            motion_vy *= anti_clump_friction_slip
 
         gravity_signal = _clamp01(gravity_potential / graph_gravity_max)
         price_signal = _clamp01((local_price - 1.0) / 4.0)
@@ -5961,6 +5987,9 @@ def build_double_buffer_field_particles(
         "anchor": anti_clump_scale_snapshot.get("anchor", 1.0),
         "spawn": anti_clump_scale_snapshot.get("spawn", 1.0),
         "tangent": anti_clump_scale_snapshot.get("tangent", 1.0),
+        "friction_slip": anti_clump_scale_snapshot.get("friction_slip", 1.0),
+        "simplex_gain": anti_clump_scale_snapshot.get("simplex_gain", 1.0),
+        "simplex_scale": anti_clump_scale_snapshot.get("simplex_scale", 1.0),
         "tangent_base": anti_clump_tangent_scale_base,
         "tangent_effective": anti_clump_tangent_scale,
         "noise_gain": graph_noise_gain,
@@ -5977,6 +6006,9 @@ def build_double_buffer_field_particles(
             "anchor",
             "spawn",
             "tangent",
+            "friction_slip",
+            "simplex_gain",
+            "simplex_scale",
             "tangent_base",
             "tangent_effective",
             "noise_gain",

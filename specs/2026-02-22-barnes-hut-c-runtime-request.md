@@ -5,6 +5,7 @@ category: "implementation"
 created_at: "2026-02-22T12:24:49"
 original_filename: "2026.02.22.12.24.49.md"
 original_relpath: "docs/notes/implementation/2026.02.22.12.24.49.md"
+status: done
 tags:
   - implementation
   - barnes-hut

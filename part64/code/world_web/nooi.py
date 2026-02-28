@@ -96,6 +96,9 @@ class NooiField:
         reason: str,
         graph_node_id: str,
         ts: str,
+        daimoi_id: str = "",
+        tick: int = 0,
+        trail_steps: int = 0,
     ) -> None:
         clean_outcome = str(outcome or "").strip().lower()
         if clean_outcome not in {"food", "death"}:
@@ -112,8 +115,11 @@ class NooiField:
             "vy": round(float(vy), 6),
             "intensity": round(max(0.0, float(intensity)), 6),
             "presence_id": str(presence_id or "").strip(),
+            "daimoi_id": str(daimoi_id or "").strip(),
             "graph_node_id": str(graph_node_id or "").strip(),
             "reason": str(reason or "").strip(),
+            "tick": max(0, int(tick)),
+            "trail_steps": max(0, int(trail_steps)),
             "ts": str(ts or "").strip(),
         }
         self._trail_rows.append(row)

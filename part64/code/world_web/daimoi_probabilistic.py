@@ -1580,6 +1580,170 @@ def _file_edge_rows(file_graph: dict[str, Any] | None) -> list[dict[str, Any]]:
     return rows
 
 
+def _web_node_role_from_graph_node(node: dict[str, Any]) -> str:
+    web_node_role = str(node.get("web_node_role", "")).strip().lower()
+    if web_node_role in {"web:url", "web:resource"}:
+        return web_node_role
+
+    node_type = str(node.get("node_type", "")).strip().lower()
+    if node_type in {"web:url", "web:resource"}:
+        return node_type
+
+    crawler_kind = str(node.get("crawler_kind", node.get("kind", ""))).strip().lower()
+    canonical_url = str(node.get("canonical_url", node.get("url", ""))).strip()
+    resource_kind = str(node.get("resource_kind", "")).strip().lower()
+
+    if crawler_kind == "url" and canonical_url:
+        return "web:url"
+    if crawler_kind in {"resource", "content", "domain"}:
+        return "web:resource"
+    if resource_kind == "link" and canonical_url:
+        return "web:url"
+    if resource_kind in {"website", "text", "image", "audio", "video", "archive"} and (
+        canonical_url or str(node.get("source_url_id", "")).strip()
+    ):
+        return "web:resource"
+    return ""
+
+
+def _web_objective_profile_from_nodes(
+    file_nodes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    total_nodes = len(file_nodes)
+    web_url_count = 0
+    web_resource_count = 0
+    web_weight_by_node_id: dict[str, float] = {}
+    web_role_by_node_id: dict[str, str] = {}
+
+    for row in file_nodes:
+        if not isinstance(row, dict):
+            continue
+        node_id = str(row.get("id", "")).strip()
+        if not node_id:
+            continue
+        web_role = _web_node_role_from_graph_node(row)
+        if not web_role:
+            continue
+
+        importance = _clamp01(_safe_float(row.get("importance", 0.28), 0.28))
+        if web_role == "web:url":
+            web_url_count += 1
+            base_weight = 0.64 + (importance * 0.28)
+        else:
+            web_resource_count += 1
+            base_weight = 0.78 + (importance * 0.34)
+        web_weight_by_node_id[node_id] = _clamp01(base_weight)
+        web_role_by_node_id[node_id] = web_role
+
+    web_node_count = web_url_count + web_resource_count
+    web_density = _clamp01((web_node_count / float(max(1, total_nodes))) * 3.0)
+    web_resource_ratio = _clamp01(web_resource_count / float(max(1, web_node_count)))
+    return {
+        "total_nodes": int(max(0, total_nodes)),
+        "web_nodes": int(max(0, web_node_count)),
+        "web_url_nodes": int(max(0, web_url_count)),
+        "web_resource_nodes": int(max(0, web_resource_count)),
+        "web_density": web_density,
+        "web_resource_ratio": web_resource_ratio,
+        "web_weight_by_node_id": web_weight_by_node_id,
+        "web_role_by_node_id": web_role_by_node_id,
+    }
+
+
+def _job_probabilities_with_crawl_objective(
+    job_probs: dict[str, float],
+    *,
+    crawl_objective_gain: float,
+) -> dict[str, float]:
+    objective_gain = _clamp01(_safe_float(crawl_objective_gain, 0.0))
+    if objective_gain <= 1e-8:
+        return dict(job_probs)
+
+    adjusted = {
+        str(key): _clamp01(_safe_float(value, 0.0)) for key, value in job_probs.items()
+    }
+    crawl_prob = _clamp01(_safe_float(adjusted.get("invoke_graph_crawl", 0.0), 0.0))
+    crawl_boost = objective_gain * 0.34
+    adjusted["invoke_graph_crawl"] = _clamp01(
+        crawl_prob + ((1.0 - crawl_prob) * crawl_boost)
+    )
+
+    keep_jobs = {
+        "invoke_graph_crawl",
+        "invoke_anchor_register",
+        "invoke_file_organize",
+        "deliver_message",
+    }
+    total = 0.0
+    for key, value in adjusted.items():
+        if key in keep_jobs:
+            adjusted[key] = max(1e-8, value)
+        else:
+            adjusted[key] = max(1e-8, value * (1.0 - (objective_gain * 0.14)))
+        total += adjusted[key]
+
+    if total <= 1e-12:
+        return _dirichlet_probabilities(
+            {key: DAIMOI_ALPHA_BASELINE for key in DAIMOI_JOB_KEYS},
+            keys=DAIMOI_JOB_KEYS_SORTED,
+        )
+    for key in list(adjusted.keys()):
+        adjusted[key] = adjusted[key] / total
+    return adjusted
+
+
+def _web_objective_gain_for_state(
+    state: dict[str, Any],
+    *,
+    owner_id: str,
+    profile: dict[str, Any],
+    web_focus_by_presence: dict[str, float],
+    queue_pressure: float,
+    compute_pressure: float,
+) -> tuple[float, str]:
+    web_nodes = max(0, _safe_int(profile.get("web_nodes", 0), 0))
+    if web_nodes <= 0:
+        return 0.0, ""
+
+    node_id = (
+        str(state.get("graph_node_id", "")).strip()
+        or str(state.get("source_node_id", "")).strip()
+    )
+    role_by_id = profile.get("web_role_by_node_id", {})
+    weight_by_id = profile.get("web_weight_by_node_id", {})
+    role = ""
+    node_weight = 0.0
+    if isinstance(role_by_id, dict):
+        role = str(role_by_id.get(node_id, "")).strip().lower()
+    if isinstance(weight_by_id, dict):
+        node_weight = _clamp01(_safe_float(weight_by_id.get(node_id, 0.0), 0.0))
+
+    presence_focus = _clamp01(
+        _safe_float(web_focus_by_presence.get(owner_id, 0.0), 0.0)
+    )
+    web_density = _clamp01(_safe_float(profile.get("web_density", 0.0), 0.0))
+    resource_ratio = _clamp01(_safe_float(profile.get("web_resource_ratio", 0.0), 0.0))
+    workload_headroom = _clamp01(
+        1.0 - max(_clamp01(queue_pressure), _clamp01(compute_pressure))
+    )
+
+    role_boost = 0.0
+    if role == "web:resource":
+        role_boost = 0.22
+    elif role == "web:url":
+        role_boost = 0.15
+
+    raw_gain = (
+        (web_density * 0.18)
+        + (resource_ratio * 0.14)
+        + (presence_focus * 0.42)
+        + (node_weight * 0.36)
+        + role_boost
+    )
+    gain = _clamp01(raw_gain * (0.52 + (workload_headroom * 0.48)))
+    return gain, role
+
+
 def _build_nexus_adjacency(
     *,
     file_nodes: list[dict[str, Any]],
@@ -2348,10 +2512,40 @@ def build_probabilistic_daimoi_particles(
         if isinstance(row.get("vector", []), list)
     }
     file_edge_rows = _file_edge_rows(file_graph)
+    web_objective_profile = _web_objective_profile_from_nodes(file_nodes)
     nexus_adjacency_by_node = _build_nexus_adjacency(
         file_nodes=file_nodes,
         edge_rows=file_edge_rows,
     )
+    web_focus_by_presence: dict[str, float] = {}
+    web_weight_by_node_id = web_objective_profile.get("web_weight_by_node_id", {})
+    if isinstance(web_weight_by_node_id, dict):
+        focus_total_by_presence: dict[str, float] = {}
+        focus_count_by_presence: dict[str, int] = {}
+        for row in file_nodes:
+            if not isinstance(row, dict):
+                continue
+            node_id = str(row.get("id", "")).strip()
+            if not node_id:
+                continue
+            owner_presence = str(row.get("dominant_presence", "")).strip()
+            if not owner_presence:
+                continue
+            node_weight = _clamp01(
+                _safe_float(web_weight_by_node_id.get(node_id, 0.0), 0.0)
+            )
+            if node_weight <= 1e-8:
+                continue
+            focus_total_by_presence[owner_presence] = (
+                _safe_float(focus_total_by_presence.get(owner_presence, 0.0), 0.0)
+                + node_weight
+            )
+            focus_count_by_presence[owner_presence] = (
+                _safe_int(focus_count_by_presence.get(owner_presence, 0), 0) + 1
+            )
+        for presence_id, total in focus_total_by_presence.items():
+            count = max(1, _safe_int(focus_count_by_presence.get(presence_id, 0), 0))
+            web_focus_by_presence[presence_id] = _clamp01(total / float(count))
     local_density_map = {
         presence_id: _presence_density(anchors[presence_id], file_nodes, presence_id)
         for presence_id in presence_ids
@@ -2506,6 +2700,21 @@ def build_probabilistic_daimoi_particles(
         anti_clump_tangent_scale = _safe_float(
             anti_clump_scale_map.get("tangent", 1.0),
             1.0,
+        )
+        anti_clump_friction_slip = _clamp_range(
+            _safe_float(anti_clump_scale_map.get("friction_slip", 1.0), 1.0),
+            0.8,
+            1.24,
+        )
+        anti_clump_simplex_gain = _clamp_range(
+            _safe_float(anti_clump_scale_map.get("simplex_gain", 1.0), 1.0),
+            0.72,
+            2.2,
+        )
+        anti_clump_simplex_scale = _clamp_range(
+            _safe_float(anti_clump_scale_map.get("simplex_scale", 1.0), 1.0),
+            0.82,
+            1.34,
         )
         anti_clump_density_drive = max(0.0, anti_clump_drive)
         anti_clump_density_multiplier = max(
@@ -3082,6 +3291,18 @@ def build_probabilistic_daimoi_particles(
                             _clamp01(_safe_float(fallback_meta.get("y", 0.5), 0.5)),
                             6,
                         )
+                crawl_objective_gain, crawl_objective_role = (
+                    _web_objective_gain_for_state(
+                        state,
+                        owner_id=owner_id,
+                        profile=web_objective_profile,
+                        web_focus_by_presence=web_focus_by_presence,
+                        queue_pressure=queue_pressure,
+                        compute_pressure=compute_pressure,
+                    )
+                )
+                state["crawl_objective_gain"] = round(crawl_objective_gain, 6)
+                state["crawl_objective_role"] = crawl_objective_role
 
             if is_nexus:
                 fx = 0.0
@@ -3214,14 +3435,18 @@ def build_probabilistic_daimoi_particles(
                 pref_y = _clamp01(_safe_float(state.get("preferred_y", py), py))
                 fx += (pref_x - px) * NEXUS_PREF_RETURN_GAIN
                 fy += (pref_y - py) * NEXUS_PREF_RETURN_GAIN
-                simplex_phase = now_seconds * 0.23
+                simplex_phase = now_seconds * (0.23 * anti_clump_simplex_scale)
+                nexus_simplex_gain = NEXUS_SIMPLEX_GAIN * max(
+                    0.6,
+                    min(1.5, anti_clump_simplex_gain),
+                )
                 fx += (
                     _simplex_noise_2d(
                         (px * 4.2) + simplex_phase,
                         (py * 4.2) + (simplex_phase * 0.67),
                         seed=31,
                     )
-                    * NEXUS_SIMPLEX_GAIN
+                    * nexus_simplex_gain
                 )
                 fy += (
                     _simplex_noise_2d(
@@ -3229,7 +3454,7 @@ def build_probabilistic_daimoi_particles(
                         (py * 4.2) + 7.0 + simplex_phase,
                         seed=43,
                     )
-                    * NEXUS_SIMPLEX_GAIN
+                    * nexus_simplex_gain
                 )
                 route_signal = _clamp01(
                     _safe_float(state.get("route_probability", 0.0), 0.0)
@@ -3351,8 +3576,10 @@ def build_probabilistic_daimoi_particles(
                     0.0002
                     + (msg_prob * 0.00042)
                     + ((1.0 - resource_pressure) * 0.00012)
+                ) * anti_clump_simplex_gain
+                simplex_phase = (
+                    now_seconds * (0.29 + (msg_prob * 0.22)) * anti_clump_simplex_scale
                 )
-                simplex_phase = now_seconds * (0.29 + (msg_prob * 0.22))
                 simplex_seed_base = int(age + (len(owner_id) * 17))
                 fx += (
                     _simplex_noise_2d(
@@ -3371,6 +3598,7 @@ def build_probabilistic_daimoi_particles(
                     * simplex_amp
                 )
                 damping = max(0.74, 0.92 - (resource_pressure * 0.16))
+                damping = min(0.995, damping * anti_clump_friction_slip)
                 speed_cap = (
                     0.0052 + ((1.0 - resource_pressure) * 0.0026) + (msg_prob * 0.0014)
                 )
@@ -4035,6 +4263,13 @@ def build_probabilistic_daimoi_particles(
 
             surface = _surface_state(surfaces, best_presence)
             job_probs = _job_probabilities(state)
+            job_probs = _job_probabilities_with_crawl_objective(
+                job_probs,
+                crawl_objective_gain=_safe_float(
+                    state.get("crawl_objective_gain", 0.0),
+                    0.0,
+                ),
+            )
             message_prob = _message_probability(state)
             action_probs = _action_probabilities(job_probs, message_prob)
             state_collision_signal = _clamp01(
@@ -4410,6 +4645,13 @@ def build_probabilistic_daimoi_particles(
             else:
                 message_prob = _message_probability(state)
                 job_probs = _job_probabilities(state)
+                job_probs = _job_probabilities_with_crawl_objective(
+                    job_probs,
+                    crawl_objective_gain=_safe_float(
+                        state.get("crawl_objective_gain", 0.0),
+                        0.0,
+                    ),
+                )
                 action_probs = _action_probabilities(job_probs, message_prob)
 
             if is_nexus:
@@ -4582,6 +4824,13 @@ def build_probabilistic_daimoi_particles(
                     _clamp01(_safe_float(state.get("route_probability", 0.0), 0.0)),
                     6,
                 ),
+                "crawl_objective_gain": round(
+                    _clamp01(_safe_float(state.get("crawl_objective_gain", 0.0), 0.0)),
+                    6,
+                ),
+                "crawl_objective_role": str(
+                    state.get("crawl_objective_role", "")
+                ).strip(),
                 "presence_role": role,
                 "particle_mode": mode,
                 "is_nexus": is_nexus,
@@ -4734,6 +4983,33 @@ def build_probabilistic_daimoi_particles(
         "compute_availability": round(compute_availability, 6),
         "availability_scale": round(availability_scale, 6),
         "decompression_hint": bool(decompression_hint),
+        "web_objective": {
+            "web_nodes": max(
+                0, _safe_int(web_objective_profile.get("web_nodes", 0), 0)
+            ),
+            "web_url_nodes": max(
+                0,
+                _safe_int(web_objective_profile.get("web_url_nodes", 0), 0),
+            ),
+            "web_resource_nodes": max(
+                0,
+                _safe_int(web_objective_profile.get("web_resource_nodes", 0), 0),
+            ),
+            "web_density": round(
+                _clamp01(
+                    _safe_float(web_objective_profile.get("web_density", 0.0), 0.0)
+                ),
+                6,
+            ),
+            "web_resource_ratio": round(
+                _clamp01(
+                    _safe_float(
+                        web_objective_profile.get("web_resource_ratio", 0.0), 0.0
+                    )
+                ),
+                6,
+            ),
+        },
         "clump_score": anti_clump_summary["clump_score"],
         "anti_clump_drive": anti_clump_summary["drive"],
         "snr": anti_clump_summary["snr"],

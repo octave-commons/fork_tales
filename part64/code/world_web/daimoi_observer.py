@@ -112,6 +112,9 @@ DEFAULT_ANTI_CLUMP_SCALE_ORDER = (
     "anchor",
     "spawn",
     "tangent",
+    "friction_slip",
+    "simplex_gain",
+    "simplex_scale",
 )
 
 
@@ -445,6 +448,9 @@ def anti_clump_scales(drive: float) -> dict[str, float]:
         "anchor": _clamp_range(math.exp(-0.7 * limited_drive), 0.45, 1.1),
         "spawn": _clamp_range(math.exp(-0.5 * limited_drive), 0.5, 1.05),
         "tangent": _clamp_range(math.exp(0.5 * limited_drive), 0.8, 1.8),
+        "friction_slip": _clamp_range(math.exp(0.45 * limited_drive), 0.8, 1.24),
+        "simplex_gain": _clamp_range(math.exp(0.62 * limited_drive), 0.72, 2.2),
+        "simplex_scale": _clamp_range(math.exp(0.24 * limited_drive), 0.82, 1.34),
     }
 
 

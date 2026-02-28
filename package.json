@@ -13,6 +13,8 @@
   },
   "bin": {
     "frame-firewall": "./cli/frame-firewall.mjs",
-    "live-choir": "./cli/live-choir.mjs"
+    "live-choir": "./cli/live-choir.mjs",
+    "ralph-loop": "./cli/ralph-loop.mjs",
+    "ulw-loop": "./cli/ulw-loop.mjs"
   }
 }

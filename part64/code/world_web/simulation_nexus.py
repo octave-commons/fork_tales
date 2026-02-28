@@ -89,6 +89,8 @@ def _graph_resource_kind_from_crawler_node(node: dict[str, Any]) -> str:
         return "image"
     if content_type.startswith("audio/") or suffix in _GRAPH_AUDIO_SUFFIXES:
         return "audio"
+    if content_type == "application/pdf" or suffix == ".pdf":
+        return "pdf"
     if content_type.startswith("video/") or suffix in _GRAPH_VIDEO_SUFFIXES:
         return "video"
     if "zip" in content_type or suffix in _GRAPH_ARCHIVE_SUFFIXES:
@@ -104,6 +106,8 @@ def _graph_resource_kind_from_crawler_node(node: dict[str, Any]) -> str:
 
 def _graph_modality_from_resource_kind(resource_kind: str) -> str:
     normalized = str(resource_kind or "").strip().lower()
+    if normalized == "pdf":
+        return "text"
     if normalized in {"text", "image", "audio", "video"}:
         return normalized
     if normalized in {"website", "link"}:
@@ -484,6 +488,7 @@ def _build_canonical_nexus_node(
             "fail_count",
             "last_fetch_ts",
             "last_status",
+            "source_hint",
         ):
             if legacy_node.get(key) is not None:
                 extension[key] = legacy_node[key]
@@ -497,6 +502,19 @@ def _build_canonical_nexus_node(
             "source_url_id",
             "resource_kind",
             "modality",
+            "kind",
+            "repo",
+            "number",
+            "labels",
+            "authors",
+            "updated_at",
+            "importance_score",
+            "atoms",
+            "filenames_touched",
+            "diff_keyword_hits",
+            "api_endpoint",
+            "state",
+            "merged_at",
         ):
             if legacy_node.get(key) is not None:
                 extension[key] = legacy_node[key]

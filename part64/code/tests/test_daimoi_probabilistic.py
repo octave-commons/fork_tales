@@ -108,6 +108,9 @@ def test_probabilistic_builder_emits_job_distribution_and_actions() -> None:
     assert 0.0 <= float(model_summary.get("compute_availability", 0.0)) <= 1.0
     assert float(model_summary.get("availability_scale", 0.0)) >= 0.72
     assert model_summary.get("decompression_hint") is True
+    web_objective = model_summary.get("web_objective", {})
+    assert isinstance(web_objective, dict)
+    assert int(web_objective.get("web_nodes", 0)) == 0
 
 
 def test_probabilistic_builder_emits_anti_clump_summary() -> None:
@@ -169,6 +172,9 @@ def test_probabilistic_builder_emits_anti_clump_summary() -> None:
     assert 0.44 <= float(scales.get("anchor", 0.0)) <= 1.11
     assert 0.49 <= float(scales.get("spawn", 0.0)) <= 1.06
     assert 0.79 <= float(scales.get("tangent", 0.0)) <= 1.81
+    assert 0.79 <= float(scales.get("friction_slip", 0.0)) <= 1.25
+    assert 0.71 <= float(scales.get("simplex_gain", 0.0)) <= 2.21
+    assert 0.81 <= float(scales.get("simplex_scale", 0.0)) <= 1.35
 
 
 def test_anti_clump_metrics_score_cluster_higher_than_spread() -> None:
@@ -271,6 +277,85 @@ def test_anti_clump_controller_uses_snr_band_gaps_for_drive() -> None:
     assert float(low_state.get("snr_low_gap", 0.0)) > 0.0
     assert float(high_state.get("drive", 0.0)) > 0.0
     assert float(low_state.get("drive", 0.0)) > 0.0
+
+
+def test_anti_clump_scales_raise_slip_and_simplex_for_positive_drive() -> None:
+    low = daimoi_module._anti_clump_scales(-0.8)
+    neutral = daimoi_module._anti_clump_scales(0.0)
+    high = daimoi_module._anti_clump_scales(0.8)
+
+    assert float(high.get("friction_slip", 1.0)) > float(
+        neutral.get("friction_slip", 1.0)
+    )
+    assert float(neutral.get("friction_slip", 1.0)) > float(
+        low.get("friction_slip", 1.0)
+    )
+    assert float(high.get("simplex_gain", 1.0)) > float(
+        neutral.get("simplex_gain", 1.0)
+    )
+    assert float(neutral.get("simplex_gain", 1.0)) > float(low.get("simplex_gain", 1.0))
+    assert float(high.get("simplex_scale", 1.0)) > float(
+        neutral.get("simplex_scale", 1.0)
+    )
+    assert float(neutral.get("simplex_scale", 1.0)) > float(
+        low.get("simplex_scale", 1.0)
+    )
+
+
+def test_web_objective_profile_recognizes_url_and_resource_nodes() -> None:
+    profile = daimoi_module._web_objective_profile_from_nodes(
+        [
+            {
+                "id": "web:url:1",
+                "node_type": "web:url",
+                "canonical_url": "https://example.com",
+                "importance": 0.44,
+            },
+            {
+                "id": "web:resource:1",
+                "web_node_role": "web:resource",
+                "canonical_url": "https://example.com/about",
+                "importance": 0.61,
+            },
+            {
+                "id": "file:1",
+                "node_type": "file",
+                "importance": 0.33,
+            },
+        ]
+    )
+
+    assert int(profile.get("total_nodes", 0)) == 3
+    assert int(profile.get("web_nodes", 0)) == 2
+    assert int(profile.get("web_url_nodes", 0)) == 1
+    assert int(profile.get("web_resource_nodes", 0)) == 1
+    assert 0.0 <= float(profile.get("web_density", 0.0)) <= 1.0
+    assert 0.0 <= float(profile.get("web_resource_ratio", 0.0)) <= 1.0
+
+
+def test_job_probabilities_with_crawl_objective_boosts_crawl() -> None:
+    baseline = {
+        "deliver_message": 0.22,
+        "invoke_graph_crawl": 0.15,
+        "invoke_anchor_register": 0.18,
+        "invoke_file_organize": 0.16,
+        "invoke_diffuse_field": 0.14,
+        "invoke_truth_gate": 0.15,
+    }
+    adjusted = daimoi_module._job_probabilities_with_crawl_objective(
+        baseline,
+        crawl_objective_gain=0.92,
+    )
+
+    assert float(adjusted.get("invoke_graph_crawl", 0.0)) > float(
+        baseline.get("invoke_graph_crawl", 0.0)
+    )
+    assert math.isclose(
+        sum(float(value) for value in adjusted.values()),
+        1.0,
+        rel_tol=0.0,
+        abs_tol=1e-6,
+    )
 
 
 def test_absorb_sampler_emits_component_logits_and_gumbel_scores() -> None:
@@ -1455,6 +1540,226 @@ def test_nooi_field_is_influenced_only_by_non_nexus_daimoi(
     )
     assert isinstance(nooi_daimoi, list)
     assert len(nooi_daimoi) > 0
+
+
+def test_nooi_outcome_trail_records_daimoi_id_tick_and_trail_steps() -> None:
+    simulation_module._reset_nooi_field_state()
+
+    for tick_index in (1, 2, 3):
+        blocked = tick_index == 3
+        simulation_module._apply_nooi_from_particles(
+            [
+                {
+                    "id": "field:test:trail-001",
+                    "presence_id": "presence.alpha",
+                    "x": 0.2 + (tick_index * 0.03),
+                    "y": 0.42,
+                    "vx": 0.01,
+                    "vy": 0.0,
+                    "is_nexus": False,
+                    "resource_action_blocked": blocked,
+                    "age": tick_index,
+                }
+            ],
+            dt_seconds=0.08,
+            tick=tick_index,
+        )
+
+    trails = simulation_module._NOOI_FIELD.outcome_trails(limit=8)
+    assert trails
+    last = trails[-1]
+    assert str(last.get("daimoi_id", "")) == "field:test:trail-001"
+    assert str(last.get("outcome", "")) == "death"
+    assert int(last.get("tick", 0)) == 3
+    assert int(last.get("trail_steps", 0)) >= 3
+
+
+def test_daimoi_motion_trail_history_is_bounded_by_configured_steps() -> None:
+    simulation_module._reset_nooi_field_state()
+    trail_limit = int(simulation_module._DAIMOI_TRAIL_STEPS)
+    history: list[dict[str, Any]] = []
+
+    for tick in range(trail_limit + 9):
+        _, history = simulation_module._record_daimoi_motion_trail(
+            {
+                "id": "field:test:bounded-001",
+                "x": 0.2,
+                "y": 0.3,
+                "vx": 0.01,
+                "vy": 0.0,
+            },
+            tick=tick,
+        )
+
+    assert len(history) == trail_limit
+    assert int(history[0].get("tick", -1)) == (trail_limit + 9) - trail_limit
+    assert int(history[-1].get("tick", -1)) == (trail_limit + 9) - 1
+
+
+def test_crawler_interaction_triggers_apply_rate_limit_and_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    simulation_module._reset_nooi_field_state()
+
+    monkeypatch.setattr(
+        simulation_module, "_SIMULATION_WEAVER_INTERACTION_PER_TICK_CAP", 1
+    )
+    monkeypatch.setattr(simulation_module, "_SIMULATION_CRAWLER_SEARCH_TTL_TICKS", 2)
+    monkeypatch.setattr(
+        simulation_module,
+        "_SIMULATION_WEAVER_INTERACTION_LOCAL_COOLDOWN_SECONDS",
+        0.5,
+    )
+    interaction_log_path = tmp_path / "crawler_interactions.jsonl"
+    monkeypatch.setattr(
+        simulation_module,
+        "_SIMULATION_WEAVER_INTERACTION_LOG_PATH",
+        interaction_log_path,
+    )
+
+    calls: list[tuple[str, float, str]] = []
+
+    def _fake_ready(_now: float) -> bool:
+        return True
+
+    def _fake_post(url: str, *, delta: float, source: str) -> dict[str, Any]:
+        calls.append((url, delta, source))
+        return {
+            "ok": True,
+            "interaction": {
+                "ok": True,
+                "url": url,
+                "enqueued": True,
+                "enqueue_reason": "activation_enqueued",
+                "cooldown_remaining_ms": 0,
+            },
+        }
+
+    monkeypatch.setattr(
+        simulation_module,
+        "_weaver_interaction_service_ready",
+        _fake_ready,
+    )
+    monkeypatch.setattr(
+        simulation_module,
+        "_post_weaver_entity_interaction",
+        _fake_post,
+    )
+
+    with simulation_module._WEAVER_INTERACTION_STATE_LOCK:
+        simulation_module._DAIMOI_CRAWL_SEARCH_STATE["field:crawl-ttl"] = {
+            "target": "url:gamma|https://example.org/gamma",
+            "start_tick": 1,
+            "last_seen_monotonic": 0.0,
+        }
+
+    rows: list[dict[str, Any]] = [
+        {
+            "id": "field:crawl-win",
+            "presence_id": "witness_thread",
+            "top_job": "invoke_graph_crawl",
+            "graph_node_id": "url:alpha",
+            "route_node_id": "url:alpha",
+            "collision_count": 2,
+            "message_probability": 0.91,
+            "route_probability": 0.88,
+            "resource_action_blocked": False,
+            "resource_consume_amount": 0.0,
+            "x": 0.22,
+            "y": 0.41,
+            "vx": 0.01,
+            "vy": 0.0,
+            "age": 8,
+        },
+        {
+            "id": "field:crawl-limited",
+            "presence_id": "witness_thread",
+            "top_job": "invoke_graph_crawl",
+            "graph_node_id": "url:beta",
+            "route_node_id": "url:beta",
+            "collision_count": 0,
+            "message_probability": 0.72,
+            "route_probability": 0.82,
+            "resource_action_blocked": False,
+            "resource_consume_amount": 0.0,
+            "x": 0.28,
+            "y": 0.45,
+            "vx": 0.01,
+            "vy": 0.0,
+            "age": 8,
+        },
+        {
+            "id": "field:crawl-ttl",
+            "presence_id": "witness_thread",
+            "top_job": "invoke_graph_crawl",
+            "graph_node_id": "url:gamma",
+            "route_node_id": "url:gamma",
+            "collision_count": 0,
+            "message_probability": 0.77,
+            "route_probability": 0.86,
+            "resource_action_blocked": False,
+            "resource_consume_amount": 0.0,
+            "x": 0.31,
+            "y": 0.47,
+            "vx": 0.01,
+            "vy": 0.0,
+            "age": 10,
+        },
+    ]
+    crawler_graph = {
+        "crawler_nodes": [
+            {
+                "id": "url:alpha",
+                "web_node_role": "web:url",
+                "canonical_url": "https://example.org/alpha",
+            },
+            {
+                "id": "url:beta",
+                "web_node_role": "web:url",
+                "canonical_url": "https://example.org/beta",
+            },
+            {
+                "id": "url:gamma",
+                "web_node_role": "web:url",
+                "canonical_url": "https://example.org/gamma",
+            },
+        ]
+    }
+
+    interaction_summary = simulation_module._apply_crawler_weaver_interaction_triggers(
+        field_particles=rows,
+        crawler_graph=crawler_graph,
+        now_seconds=1000.0,
+    )
+
+    assert int(interaction_summary.get("attempted", 0)) == 1
+    assert int(interaction_summary.get("accepted", 0)) == 1
+    assert int(interaction_summary.get("rate_limited", 0)) == 1
+    assert int(interaction_summary.get("deadline_losses", 0)) == 1
+
+    assert rows[0].get("crawler_interaction_status") == "accepted"
+    assert rows[1].get("crawler_interaction_status") == "rate_limited"
+    assert rows[2].get("crawler_interaction_status") == "deadline_expired"
+    assert bool(rows[2].get("crawler_recycled", False)) is True
+    assert calls
+    assert calls[0][0] == "https://example.org/alpha"
+
+    _, outcome_summary = simulation_module._apply_nooi_from_particles(
+        rows,
+        dt_seconds=0.08,
+        tick=10,
+    )
+    assert int(outcome_summary.get("food", 0)) >= 1
+    assert int(outcome_summary.get("death", 0)) >= 1
+    reasons = {
+        str(row.get("reason", "")).strip()
+        for row in simulation_module._NOOI_FIELD.outcome_trails(limit=16)
+        if isinstance(row, dict)
+    }
+    assert "crawler_interaction_accepted" in reasons
+    assert "crawler_deadline_exceeded" in reasons
+    assert interaction_log_path.exists()
 
 
 def test_advance_simulation_field_particles_applies_policy_tick_signals_and_cap() -> (

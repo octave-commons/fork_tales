@@ -452,6 +452,10 @@ _SIMULATION_STREAM_FRICTION_LEGACY = _safe_float(
     os.getenv("SIMULATION_WS_STREAM_FRICTION", "0.997") or "0.997",
     0.997,
 )
+_SIMULATION_STREAM_DAIMOI_FRICTION_DEFAULT = _safe_float(
+    os.getenv("SIMULATION_WS_STREAM_FRICTION", "0.998") or "0.998",
+    0.998,
+)
 SIMULATION_STREAM_DAIMOI_FRICTION = max(
     0.0,
     min(
@@ -459,10 +463,10 @@ SIMULATION_STREAM_DAIMOI_FRICTION = max(
         _safe_float(
             os.getenv(
                 "SIMULATION_WS_STREAM_DAIMOI_FRICTION",
-                str(_SIMULATION_STREAM_FRICTION_LEGACY),
+                str(_SIMULATION_STREAM_DAIMOI_FRICTION_DEFAULT),
             )
-            or str(_SIMULATION_STREAM_FRICTION_LEGACY),
-            _SIMULATION_STREAM_FRICTION_LEGACY,
+            or str(_SIMULATION_STREAM_DAIMOI_FRICTION_DEFAULT),
+            _SIMULATION_STREAM_DAIMOI_FRICTION_DEFAULT,
         ),
     ),
 )
@@ -886,12 +890,128 @@ _SIMULATION_LAYOUT_CACHE: dict[str, Any] = {
 _NOOI_FIELD = NooiField()
 _NOOI_RANDOM_BOOT_LOCK = threading.Lock()
 _NOOI_RANDOM_BOOT_APPLIED = False
+_DAIMOI_TRAIL_STEPS = max(
+    2,
+    min(
+        128,
+        _safe_int(os.getenv("SIMULATION_DAIMOI_TRAIL_STEPS", "24") or "24", 24),
+    ),
+)
+_DAIMOI_MOTION_HISTORY_LOCK = threading.Lock()
+_DAIMOI_MOTION_HISTORY: dict[str, list[dict[str, Any]]] = {}
+_SIMULATION_WEAVER_INTERACTION_DELTA = max(
+    0.05,
+    min(
+        2.0,
+        _safe_float(
+            os.getenv("SIMULATION_WEAVER_INTERACTION_DELTA", "0.35") or "0.35",
+            0.35,
+        ),
+    ),
+)
+_SIMULATION_WEAVER_INTERACTION_PER_TICK_CAP = max(
+    0,
+    min(
+        32,
+        _safe_int(
+            os.getenv("SIMULATION_WEAVER_INTERACTION_PER_TICK_CAP", "6") or "6",
+            6,
+        ),
+    ),
+)
+_SIMULATION_WEAVER_INTERACTION_LOCAL_COOLDOWN_SECONDS = max(
+    0.2,
+    min(
+        120.0,
+        _safe_float(
+            os.getenv("SIMULATION_WEAVER_INTERACTION_LOCAL_COOLDOWN_SECONDS", "8")
+            or "8",
+            8.0,
+        ),
+    ),
+)
+_SIMULATION_WEAVER_INTERACTION_TIMEOUT_SECONDS = max(
+    0.1,
+    min(
+        5.0,
+        _safe_float(
+            os.getenv("SIMULATION_WEAVER_INTERACTION_TIMEOUT_SECONDS", "0.6") or "0.6",
+            0.6,
+        ),
+    ),
+)
+_SIMULATION_CRAWLER_SEARCH_TTL_TICKS = max(
+    8,
+    min(
+        4096,
+        _safe_int(
+            os.getenv("SIMULATION_CRAWLER_SEARCH_TTL_TICKS", "120") or "120",
+            120,
+        ),
+    ),
+)
+_SIMULATION_WEAVER_INTERACTION_LOG_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "world_state"
+    / "daimoi_crawler_interactions.jsonl"
+)
+_WEAVER_INTERACTION_STATE_LOCK = threading.Lock()
+_WEAVER_INTERACTION_COOLDOWN_UNTIL: dict[str, float] = {}
+_WEAVER_INTERACTION_HEALTH: dict[str, float | bool] = {
+    "checked_monotonic": 0.0,
+    "healthy": False,
+}
+_DAIMOI_CRAWL_SEARCH_STATE: dict[str, dict[str, Any]] = {}
 
 
 def _reset_nooi_field_state() -> None:
-    global _NOOI_FIELD, _NOOI_RANDOM_BOOT_APPLIED
+    global _NOOI_FIELD, _NOOI_RANDOM_BOOT_APPLIED, _DAIMOI_MOTION_HISTORY
+    global _WEAVER_INTERACTION_COOLDOWN_UNTIL, _WEAVER_INTERACTION_HEALTH
+    global _DAIMOI_CRAWL_SEARCH_STATE
     _NOOI_FIELD = NooiField()
     _NOOI_RANDOM_BOOT_APPLIED = False
+    with _DAIMOI_MOTION_HISTORY_LOCK:
+        _DAIMOI_MOTION_HISTORY = {}
+    with _WEAVER_INTERACTION_STATE_LOCK:
+        _WEAVER_INTERACTION_COOLDOWN_UNTIL = {}
+        _WEAVER_INTERACTION_HEALTH = {
+            "checked_monotonic": 0.0,
+            "healthy": False,
+        }
+        _DAIMOI_CRAWL_SEARCH_STATE = {}
+
+
+def _record_daimoi_motion_trail(
+    row: dict[str, Any], *, tick: int
+) -> tuple[str, list[dict[str, Any]]]:
+    daimoi_id = str(row.get("id", "") or "").strip()
+    if not daimoi_id:
+        return "", []
+    sample = {
+        "x": _clamp01(_safe_float(row.get("x", 0.5), 0.5)),
+        "y": _clamp01(_safe_float(row.get("y", 0.5), 0.5)),
+        "vx": _safe_float(row.get("vx", 0.0), 0.0),
+        "vy": _safe_float(row.get("vy", 0.0), 0.0),
+        "tick": max(0, _safe_int(tick, 0)),
+    }
+    with _DAIMOI_MOTION_HISTORY_LOCK:
+        history = list(_DAIMOI_MOTION_HISTORY.get(daimoi_id, []))
+        history.append(sample)
+        if len(history) > _DAIMOI_TRAIL_STEPS:
+            history = history[-_DAIMOI_TRAIL_STEPS:]
+        _DAIMOI_MOTION_HISTORY[daimoi_id] = history
+        return daimoi_id, [dict(step) for step in history]
+
+
+def _prune_daimoi_motion_history(active_ids: set[str]) -> None:
+    with _DAIMOI_MOTION_HISTORY_LOCK:
+        stale_ids = [
+            daimoi_id
+            for daimoi_id in list(_DAIMOI_MOTION_HISTORY.keys())
+            if daimoi_id not in active_ids
+        ]
+        for daimoi_id in stale_ids:
+            _DAIMOI_MOTION_HISTORY.pop(daimoi_id, None)
 
 
 def _maybe_seed_random_nooi_field_vectors(*, force: bool = False) -> None:
@@ -940,6 +1060,35 @@ def _nooi_flow_at(x_value: float, y_value: float) -> tuple[float, float, float]:
 
 
 def _nooi_outcome_from_particle(row: dict[str, Any]) -> dict[str, Any] | None:
+    interaction_status = (
+        str(row.get("crawler_interaction_status", "") or "").strip().lower()
+    )
+    if interaction_status == "accepted":
+        return {
+            "outcome": "food",
+            "intensity": min(
+                1.0,
+                0.45
+                + max(
+                    0.0,
+                    _safe_float(row.get("message_probability", 0.0), 0.0) * 0.4,
+                ),
+            ),
+            "reason": "crawler_interaction_accepted",
+        }
+    if interaction_status == "deadline_expired":
+        return {
+            "outcome": "death",
+            "intensity": 0.78,
+            "reason": "crawler_deadline_exceeded",
+        }
+    if interaction_status in {
+        "cooldown_blocked",
+        "rate_limited",
+        "unreachable",
+    }:
+        return None
+
     consumed = max(0.0, _safe_float(row.get("resource_consume_amount", 0.0), 0.0))
     blocked = bool(row.get("resource_action_blocked", False))
     collisions = max(0, _safe_int(row.get("collision_count", 0), 0))
@@ -959,7 +1108,7 @@ def _nooi_outcome_from_particle(row: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _apply_nooi_from_particles(
-    particles: list[dict[str, Any]], *, dt_seconds: float
+    particles: list[dict[str, Any]], *, dt_seconds: float, tick: int = 0
 ) -> tuple[dict[str, Any], dict[str, int]]:
     nooi_rows = [
         row
@@ -969,11 +1118,16 @@ def _apply_nooi_from_particles(
     summary = {"food": 0, "death": 0, "total": 0}
     _NOOI_FIELD.decay(dt_seconds)
     now_iso = datetime.now(timezone.utc).isoformat()
+    active_ids: set[str] = set()
     for row in nooi_rows:
         x_value = _safe_float(row.get("x", 0.5), 0.5)
         y_value = _safe_float(row.get("y", 0.5), 0.5)
         vx_value = _safe_float(row.get("vx", 0.0), 0.0)
         vy_value = _safe_float(row.get("vy", 0.0), 0.0)
+        row_tick = max(0, _safe_int(row.get("age", tick), tick))
+        daimoi_id, motion_trail = _record_daimoi_motion_trail(row, tick=row_tick)
+        if daimoi_id:
+            active_ids.add(daimoi_id)
         _NOOI_FIELD.deposit(x_value, y_value, vx_value, vy_value)
 
         outcome = _nooi_outcome_from_particle(row)
@@ -984,23 +1138,51 @@ def _apply_nooi_from_particles(
             continue
         intensity = max(0.05, _safe_float(outcome.get("intensity", 0.2), 0.2))
         direction_scale = 1.0 if outcome_kind == "food" else -1.0
-        layer_weights = [
-            intensity,
-            intensity * 0.85,
-            intensity * 0.72,
-            intensity * 0.58,
-            intensity * 0.46,
-            intensity * 0.35,
-            intensity * 0.24,
-            intensity * 0.16,
+        trail_rows = motion_trail or [
+            {
+                "x": _clamp01(x_value),
+                "y": _clamp01(y_value),
+                "vx": vx_value,
+                "vy": vy_value,
+                "tick": row_tick,
+            }
         ]
-        _NOOI_FIELD.deposit(
-            x_value,
-            y_value,
-            vx_value * direction_scale,
-            vy_value * direction_scale,
-            layer_weights=layer_weights,
-        )
+        step_count = max(1, len(trail_rows))
+        for step_index, step in enumerate(trail_rows):
+            weight_scale = 0.45 + (((step_index + 1) / float(step_count)) * 0.55)
+            step_intensity = max(
+                0.05,
+                intensity
+                * weight_scale
+                * min(
+                    1.0,
+                    max(
+                        0.35,
+                        math.hypot(
+                            _safe_float(step.get("vx", 0.0), 0.0),
+                            _safe_float(step.get("vy", 0.0), 0.0),
+                        )
+                        * 160.0,
+                    ),
+                ),
+            )
+            layer_weights = [
+                step_intensity,
+                step_intensity * 0.85,
+                step_intensity * 0.72,
+                step_intensity * 0.58,
+                step_intensity * 0.46,
+                step_intensity * 0.35,
+                step_intensity * 0.24,
+                step_intensity * 0.16,
+            ]
+            _NOOI_FIELD.deposit(
+                _safe_float(step.get("x", x_value), x_value),
+                _safe_float(step.get("y", y_value), y_value),
+                _safe_float(step.get("vx", vx_value), vx_value) * direction_scale,
+                _safe_float(step.get("vy", vy_value), vy_value) * direction_scale,
+                layer_weights=layer_weights,
+            )
         _NOOI_FIELD.append_outcome_trail(
             outcome=outcome_kind,
             x=x_value,
@@ -1009,12 +1191,16 @@ def _apply_nooi_from_particles(
             vy=vy_value,
             intensity=intensity,
             presence_id=str(row.get("presence_id", row.get("owner", "")) or ""),
+            daimoi_id=daimoi_id,
             reason=str(outcome.get("reason", "") or ""),
             graph_node_id=str(row.get("graph_node_id", "") or ""),
+            tick=row_tick,
+            trail_steps=step_count,
             ts=now_iso,
         )
         summary[outcome_kind] = summary.get(outcome_kind, 0) + 1
         summary["total"] = summary.get("total", 0) + 1
+    _prune_daimoi_motion_history(active_ids)
     return _NOOI_FIELD.get_grid_snapshot(nooi_rows), summary
 
 
@@ -5618,6 +5804,481 @@ def _weaver_service_base_url() -> str:
     from .constants import WEAVER_HOST_ENV, WEAVER_PORT
 
     return f"http://{_weaver_probe_host(WEAVER_HOST_ENV or '127.0.0.1')}:{WEAVER_PORT}"
+
+
+def _append_weaver_interaction_event(event_row: dict[str, Any]) -> None:
+    if not isinstance(event_row, dict):
+        return
+    try:
+        _SIMULATION_WEAVER_INTERACTION_LOG_PATH.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+        with _SIMULATION_WEAVER_INTERACTION_LOG_PATH.open(
+            "a",
+            encoding="utf-8",
+        ) as handle:
+            handle.write(
+                json.dumps(event_row, ensure_ascii=False, sort_keys=True) + "\n"
+            )
+    except Exception:
+        return
+
+
+def _weaver_interaction_service_ready(now_monotonic: float) -> bool:
+    cache_ttl_seconds = 1.5
+    with _WEAVER_INTERACTION_STATE_LOCK:
+        checked = _safe_float(
+            _WEAVER_INTERACTION_HEALTH.get("checked_monotonic", 0.0), 0.0
+        )
+        healthy = bool(_WEAVER_INTERACTION_HEALTH.get("healthy", False))
+    if (now_monotonic - checked) <= cache_ttl_seconds:
+        return healthy
+
+    base = _weaver_service_base_url()
+    parsed = urlparse(base)
+    host = parsed.hostname or "127.0.0.1"
+    healthy = _weaver_health_check(
+        host,
+        WEAVER_PORT,
+        timeout_s=min(0.5, _SIMULATION_WEAVER_INTERACTION_TIMEOUT_SECONDS),
+    )
+    with _WEAVER_INTERACTION_STATE_LOCK:
+        _WEAVER_INTERACTION_HEALTH["checked_monotonic"] = float(now_monotonic)
+        _WEAVER_INTERACTION_HEALTH["healthy"] = bool(healthy)
+    return bool(healthy)
+
+
+def _post_weaver_entity_interaction(
+    canonical_url: str,
+    *,
+    delta: float,
+    source: str,
+) -> dict[str, Any]:
+    clean_url = str(canonical_url or "").strip()
+    if not clean_url:
+        return {"ok": False, "error": "missing_url"}
+    body = {
+        "url": clean_url,
+        "delta": round(max(0.05, _safe_float(delta, 0.35)), 4),
+        "source": str(source or "simulation").strip() or "simulation",
+    }
+    payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    request = Request(
+        f"{_weaver_service_base_url()}/api/weaver/entities/interact",
+        data=payload,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urlopen(
+            request,
+            timeout=_SIMULATION_WEAVER_INTERACTION_TIMEOUT_SECONDS,
+        ) as response:
+            decoded = json.loads(response.read().decode("utf-8", errors="ignore"))
+    except URLError as exc:
+        return {"ok": False, "error": f"weaver_unreachable:{exc.__class__.__name__}"}
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"weaver_interaction_failed:{exc.__class__.__name__}",
+        }
+    return (
+        decoded
+        if isinstance(decoded, dict)
+        else {"ok": False, "error": "invalid_response"}
+    )
+
+
+def _crawler_url_lookup(crawler_graph: dict[str, Any] | None) -> dict[str, str]:
+    graph = crawler_graph if isinstance(crawler_graph, dict) else {}
+    lookup: dict[str, str] = {}
+    source_rows = graph.get("crawler_nodes", [])
+    if not isinstance(source_rows, list):
+        source_rows = (
+            graph.get("nodes", []) if isinstance(graph.get("nodes", []), list) else []
+        )
+    for row in source_rows:
+        if not isinstance(row, dict):
+            continue
+        node_id = str(row.get("id", "") or "").strip()
+        if not node_id:
+            continue
+        web_role = str(row.get("web_node_role", "") or "").strip().lower()
+        node_type = str(row.get("node_type", "") or "").strip().lower()
+        if web_role != "web:url" and node_type != "web:url":
+            continue
+        canonical_url = _graph_canonical_url(
+            row.get("canonical_url", row.get("url", ""))
+        )
+        if not canonical_url:
+            continue
+        lookup[node_id] = canonical_url
+    return lookup
+
+
+def _trim_weaver_interaction_state(
+    *,
+    active_daimoi_ids: set[str],
+    now_monotonic: float,
+) -> None:
+    with _WEAVER_INTERACTION_STATE_LOCK:
+        stale_urls = [
+            key
+            for key, until in _WEAVER_INTERACTION_COOLDOWN_UNTIL.items()
+            if _safe_float(until, 0.0) <= now_monotonic
+        ]
+        for key in stale_urls:
+            _WEAVER_INTERACTION_COOLDOWN_UNTIL.pop(key, None)
+
+        stale_daimoi = []
+        for daimoi_id, state in _DAIMOI_CRAWL_SEARCH_STATE.items():
+            if daimoi_id in active_daimoi_ids:
+                continue
+            age = now_monotonic - _safe_float(
+                state.get("last_seen_monotonic", 0.0), 0.0
+            )
+            if age > 180.0:
+                stale_daimoi.append(daimoi_id)
+        for daimoi_id in stale_daimoi:
+            _DAIMOI_CRAWL_SEARCH_STATE.pop(daimoi_id, None)
+
+
+def _apply_crawler_weaver_interaction_triggers(
+    *,
+    field_particles: list[dict[str, Any]],
+    crawler_graph: dict[str, Any] | None,
+    now_seconds: float,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "record": "eta-mu.crawler-interactions.v1",
+        "schema_version": "crawler.interactions.v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "attempted": 0,
+        "accepted": 0,
+        "enqueued": 0,
+        "cooldown_blocked": 0,
+        "rate_limited": 0,
+        "deadline_losses": 0,
+        "errors": 0,
+        "events": [],
+    }
+    if not isinstance(field_particles, list):
+        return summary
+    if _SIMULATION_WEAVER_INTERACTION_PER_TICK_CAP <= 0:
+        return summary
+
+    url_lookup = _crawler_url_lookup(crawler_graph)
+    if not url_lookup:
+        return summary
+
+    now_monotonic = time.monotonic()
+    active_daimoi_ids: set[str] = set()
+    candidate_rows: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
+
+    def _event(
+        *,
+        outcome: str,
+        reason: str,
+        row: dict[str, Any],
+        url_id: str,
+        canonical_url: str,
+        tick: int,
+        attempted: bool,
+        enqueued: bool,
+    ) -> dict[str, Any]:
+        event_row = {
+            "record": "eta-mu.crawler-interaction-event.v1",
+            "schema_version": "crawler.interaction.event.v1",
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "outcome": str(outcome or "").strip().lower(),
+            "reason": str(reason or "").strip().lower(),
+            "daimoi_id": str(row.get("id", "") or "").strip(),
+            "presence_id": str(row.get("presence_id", "") or "").strip(),
+            "url_id": str(url_id or "").strip(),
+            "canonical_url": str(canonical_url or "").strip(),
+            "tick": max(0, _safe_int(tick, 0)),
+            "attempted": bool(attempted),
+            "enqueued": bool(enqueued),
+        }
+        events.append(event_row)
+        _append_weaver_interaction_event(event_row)
+        return event_row
+
+    for row in field_particles:
+        if not isinstance(row, dict) or bool(row.get("is_nexus", False)):
+            continue
+        top_job = str(row.get("top_job", "") or "").strip().lower()
+        if top_job != "invoke_graph_crawl":
+            continue
+        daimoi_id = str(row.get("id", "") or "").strip()
+        if not daimoi_id:
+            continue
+        active_daimoi_ids.add(daimoi_id)
+
+        route_node_id = str(row.get("route_node_id", "") or "").strip()
+        graph_node_id = str(row.get("graph_node_id", "") or "").strip()
+        url_id = route_node_id if route_node_id in url_lookup else graph_node_id
+        canonical_url = str(url_lookup.get(url_id, "")).strip()
+        if not canonical_url:
+            continue
+
+        tick = max(0, _safe_int(row.get("age", 0), 0))
+        state_key = f"{url_id}|{canonical_url}"
+        with _WEAVER_INTERACTION_STATE_LOCK:
+            state = dict(_DAIMOI_CRAWL_SEARCH_STATE.get(daimoi_id, {}))
+            previous_target = str(state.get("target", "")).strip()
+            start_tick = max(0, _safe_int(state.get("start_tick", tick), tick))
+            if previous_target != state_key:
+                start_tick = tick
+            state["target"] = state_key
+            state["start_tick"] = int(start_tick)
+            state["last_seen_monotonic"] = float(now_monotonic)
+            _DAIMOI_CRAWL_SEARCH_STATE[daimoi_id] = state
+
+        deadline_tick = start_tick + _SIMULATION_CRAWLER_SEARCH_TTL_TICKS
+        row["crawler_search_start_tick"] = int(start_tick)
+        row["crawler_search_deadline_tick"] = int(deadline_tick)
+        row["crawler_search_ttl_ticks"] = int(_SIMULATION_CRAWLER_SEARCH_TTL_TICKS)
+
+        if tick >= deadline_tick:
+            row["crawler_interaction_status"] = "deadline_expired"
+            row["crawler_interaction_reason"] = "crawler_deadline_exceeded"
+            row["crawler_interaction_url"] = canonical_url
+            row["crawler_interaction_url_id"] = url_id
+            row["resource_action_blocked"] = True
+            row["resource_block_reason"] = "crawler_deadline_exceeded"
+            row["crawler_recycled"] = True
+            with _WEAVER_INTERACTION_STATE_LOCK:
+                state = dict(_DAIMOI_CRAWL_SEARCH_STATE.get(daimoi_id, {}))
+                state["start_tick"] = int(tick)
+                state["last_seen_monotonic"] = float(now_monotonic)
+                _DAIMOI_CRAWL_SEARCH_STATE[daimoi_id] = state
+            summary["deadline_losses"] = int(summary.get("deadline_losses", 0)) + 1
+            _event(
+                outcome="loss",
+                reason="crawler_deadline_exceeded",
+                row=row,
+                url_id=url_id,
+                canonical_url=canonical_url,
+                tick=tick,
+                attempted=False,
+                enqueued=False,
+            )
+            continue
+
+        collision_count = max(
+            0,
+            _safe_int(row.get("collision_count", row.get("collisions", 0)), 0),
+        )
+        route_probability = _clamp01(
+            _safe_float(row.get("route_probability", 0.0), 0.0)
+        )
+        message_probability = _clamp01(
+            _safe_float(row.get("message_probability", 0.0), 0.0)
+        )
+        if (
+            collision_count <= 0
+            and message_probability < 0.42
+            and route_probability < 0.62
+        ):
+            continue
+
+        candidate_rows.append(
+            {
+                "row": row,
+                "daimoi_id": daimoi_id,
+                "url_id": url_id,
+                "canonical_url": canonical_url,
+                "tick": int(tick),
+                "priority": (
+                    collision_count,
+                    round(message_probability, 6),
+                    round(route_probability, 6),
+                ),
+            }
+        )
+
+    best_by_url: dict[str, dict[str, Any]] = {}
+    for item in candidate_rows:
+        canonical_url = str(item.get("canonical_url", "")).strip()
+        if not canonical_url:
+            continue
+        existing = best_by_url.get(canonical_url)
+        if existing is None or tuple(item.get("priority", ())) > tuple(
+            existing.get("priority", ())
+        ):
+            best_by_url[canonical_url] = item
+
+    ordered = sorted(
+        best_by_url.values(),
+        key=lambda row: tuple(row.get("priority", (0, 0.0, 0.0))),
+        reverse=True,
+    )
+    service_ready = _weaver_interaction_service_ready(now_monotonic)
+    attempted_count = 0
+
+    for item in ordered:
+        row = item.get("row", {})
+        if not isinstance(row, dict):
+            continue
+        url_id = str(item.get("url_id", "")).strip()
+        canonical_url = str(item.get("canonical_url", "")).strip()
+        tick = max(0, _safe_int(item.get("tick", 0), 0))
+        if not canonical_url:
+            continue
+
+        row["crawler_interaction_url"] = canonical_url
+        row["crawler_interaction_url_id"] = url_id
+
+        if attempted_count >= _SIMULATION_WEAVER_INTERACTION_PER_TICK_CAP:
+            row["crawler_interaction_status"] = "rate_limited"
+            row["crawler_interaction_reason"] = "per_tick_cap"
+            summary["rate_limited"] = int(summary.get("rate_limited", 0)) + 1
+            _event(
+                outcome="blocked",
+                reason="per_tick_cap",
+                row=row,
+                url_id=url_id,
+                canonical_url=canonical_url,
+                tick=tick,
+                attempted=False,
+                enqueued=False,
+            )
+            continue
+
+        with _WEAVER_INTERACTION_STATE_LOCK:
+            local_cooldown_until = _safe_float(
+                _WEAVER_INTERACTION_COOLDOWN_UNTIL.get(canonical_url, 0.0),
+                0.0,
+            )
+        if local_cooldown_until > now_monotonic:
+            row["crawler_interaction_status"] = "cooldown_blocked"
+            row["crawler_interaction_reason"] = "local_cooldown"
+            summary["cooldown_blocked"] = int(summary.get("cooldown_blocked", 0)) + 1
+            _event(
+                outcome="blocked",
+                reason="local_cooldown",
+                row=row,
+                url_id=url_id,
+                canonical_url=canonical_url,
+                tick=tick,
+                attempted=False,
+                enqueued=False,
+            )
+            continue
+
+        if not service_ready:
+            row["crawler_interaction_status"] = "unreachable"
+            row["crawler_interaction_reason"] = "weaver_unreachable"
+            summary["errors"] = int(summary.get("errors", 0)) + 1
+            _event(
+                outcome="error",
+                reason="weaver_unreachable",
+                row=row,
+                url_id=url_id,
+                canonical_url=canonical_url,
+                tick=tick,
+                attempted=False,
+                enqueued=False,
+            )
+            continue
+
+        attempted_count += 1
+        summary["attempted"] = int(summary.get("attempted", 0)) + 1
+        row["crawler_interaction_attempted"] = True
+        interaction_result = _post_weaver_entity_interaction(
+            canonical_url,
+            delta=_SIMULATION_WEAVER_INTERACTION_DELTA,
+            source="simulation.daimoi",
+        )
+        if not bool(interaction_result.get("ok", False)):
+            error_reason = str(interaction_result.get("error", "interaction_failed"))
+            row["crawler_interaction_status"] = "error"
+            row["crawler_interaction_reason"] = error_reason
+            summary["errors"] = int(summary.get("errors", 0)) + 1
+            _event(
+                outcome="error",
+                reason=error_reason,
+                row=row,
+                url_id=url_id,
+                canonical_url=canonical_url,
+                tick=tick,
+                attempted=True,
+                enqueued=False,
+            )
+            continue
+
+        interaction = (
+            interaction_result.get("interaction", {})
+            if isinstance(interaction_result.get("interaction", {}), dict)
+            else {}
+        )
+        enqueue_reason = (
+            str(interaction.get("enqueue_reason", "accepted")).strip().lower()
+        )
+        if not enqueue_reason:
+            enqueue_reason = "accepted"
+        enqueued = bool(interaction.get("enqueued", False))
+        cooldown_remaining_ms = max(
+            0,
+            _safe_int(interaction.get("cooldown_remaining_ms", 0), 0),
+        )
+        accepted = enqueue_reason not in {"cooldown_active"}
+
+        local_cooldown_seconds = max(
+            _SIMULATION_WEAVER_INTERACTION_LOCAL_COOLDOWN_SECONDS,
+            cooldown_remaining_ms / 1000.0,
+        )
+        with _WEAVER_INTERACTION_STATE_LOCK:
+            _WEAVER_INTERACTION_COOLDOWN_UNTIL[canonical_url] = (
+                now_monotonic + local_cooldown_seconds
+            )
+
+        if accepted:
+            row["crawler_interaction_status"] = "accepted"
+            row["crawler_interaction_reason"] = enqueue_reason
+            row["resource_action_blocked"] = False
+            row["resource_consume_amount"] = round(
+                max(0.05, _safe_float(row.get("resource_consume_amount", 0.0), 0.0)),
+                6,
+            )
+            row["resource_consume_reason"] = "crawler_interaction_accepted"
+            summary["accepted"] = int(summary.get("accepted", 0)) + 1
+            if enqueued:
+                summary["enqueued"] = int(summary.get("enqueued", 0)) + 1
+            _event(
+                outcome="win",
+                reason=enqueue_reason,
+                row=row,
+                url_id=url_id,
+                canonical_url=canonical_url,
+                tick=tick,
+                attempted=True,
+                enqueued=enqueued,
+            )
+        else:
+            row["crawler_interaction_status"] = "cooldown_blocked"
+            row["crawler_interaction_reason"] = enqueue_reason
+            summary["cooldown_blocked"] = int(summary.get("cooldown_blocked", 0)) + 1
+            _event(
+                outcome="blocked",
+                reason=enqueue_reason,
+                row=row,
+                url_id=url_id,
+                canonical_url=canonical_url,
+                tick=tick,
+                attempted=True,
+                enqueued=enqueued,
+            )
+
+    _trim_weaver_interaction_state(
+        active_daimoi_ids=active_daimoi_ids,
+        now_monotonic=now_monotonic,
+    )
+    summary["events"] = events[-24:]
+    return summary
 
 
 def _read_weaver_snapshot_file(part_root: Path) -> dict[str, Any] | None:
@@ -11305,7 +11966,10 @@ def advance_simulation_field_particles(
         0.0,
         min(
             2.0,
-            _safe_float(SIMULATION_STREAM_DAIMOI_FRICTION, 0.997),
+            _safe_float(
+                SIMULATION_STREAM_DAIMOI_FRICTION,
+                _SIMULATION_STREAM_DAIMOI_FRICTION_DEFAULT,
+            ),
         ),
     )
     nexus_friction_base = max(
@@ -12089,6 +12753,17 @@ def advance_simulation_field_particles(
                             next_y = _clamp01(next_y + (dy / mag * 0.03))
 
     _resolve_semantic_particle_collisions(rows)
+
+    crawler_interactions = _apply_crawler_weaver_interaction_triggers(
+        field_particles=[row for row in rows if isinstance(row, dict)],
+        crawler_graph=(
+            simulation.get("crawler_graph", {})
+            if isinstance(simulation.get("crawler_graph", {}), dict)
+            else {}
+        ),
+        now_seconds=now_value,
+    )
+    presence_dynamics["crawler_interactions"] = crawler_interactions
 
     # Remove absorbed
     field_particles = [r for r in rows if not r.get("_absorbed")]

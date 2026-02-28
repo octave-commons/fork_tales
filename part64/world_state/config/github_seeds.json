@@ -1,0 +1,8 @@
+{
+  "repos": ["fork_tales/part64", "promethean/runtime"],
+  "keywords": ["xml", "xxe", "cve-", "oauth", "token", "auth", "security", "exploit", "leak"],
+  "file_patterns": ["package.json", "pnpm-lock.yaml", "requirements.txt", "Cargo.lock"],
+  "max_repos": 10,
+  "max_items_per_repo": 5,
+  "sweep_interval_seconds": 3600
+}

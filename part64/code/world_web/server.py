@@ -3178,6 +3178,18 @@ def _simulation_ws_ensure_daimoi_summary(
         "semantic": max(0.0, _safe_float(scales.get("semantic", 1.0), 1.0)),
         "edge": max(0.0, _safe_float(scales.get("edge", 1.0), 1.0)),
         "tangent": max(0.0, _safe_float(scales.get("tangent", 1.0), 1.0)),
+        "friction_slip": max(
+            0.0,
+            _safe_float(scales.get("friction_slip", 1.0), 1.0),
+        ),
+        "simplex_gain": max(
+            0.0,
+            _safe_float(scales.get("simplex_gain", 1.0), 1.0),
+        ),
+        "simplex_scale": max(
+            0.0,
+            _safe_float(scales.get("simplex_scale", 1.0), 1.0),
+        ),
         "noise_gain": round(noise_gain, 6),
         "route_damp": round(route_damp, 6),
     }
@@ -5555,9 +5567,27 @@ class WorldHandler(BaseHTTPRequestHandler):
 
     def _muse_tool_callback(self, *, tool_name: str) -> dict[str, Any]:
         clean_tool = str(tool_name or "").strip().lower()
+        cache = getattr(self, "_muse_tool_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            setattr(self, "_muse_tool_cache", cache)
+
+        def _cached_simulation() -> dict[str, Any]:
+            cached = cache.get("simulation")
+            if isinstance(cached, dict):
+                return cached
+            simulation_payload = build_simulation_state(self._collect_catalog_fast())
+            cache["simulation"] = simulation_payload
+            return simulation_payload
+
         if clean_tool == "facts_snapshot":
-            simulation = build_simulation_state(self._collect_catalog_fast())
-            payload = build_facts_snapshot(simulation, part_root=self.part_root)
+            payload = cache.get("facts_snapshot")
+            if not isinstance(payload, dict):
+                payload = build_facts_snapshot(
+                    _cached_simulation(),
+                    part_root=self.part_root,
+                )
+                cache["facts_snapshot"] = payload
             counts = payload.get("counts", {}) if isinstance(payload, dict) else {}
             node_count = max(
                 0,
@@ -5600,10 +5630,18 @@ class WorldHandler(BaseHTTPRequestHandler):
                 "node_count": node_count,
                 "edge_count": edge_count,
             }
-        if clean_tool.startswith("graph:"):
-            graph_tail = str(
-                clean_tool.split(":", 1)[1] if ":" in clean_tool else ""
-            ).strip()
+        if (
+            clean_tool.startswith("graph:")
+            or clean_tool.startswith("graph_query:")
+            or clean_tool == "graph_query"
+        ):
+            graph_tail = ""
+            if clean_tool in {"graph", "graph_query"}:
+                graph_tail = "overview"
+            elif clean_tool.startswith("graph_query:"):
+                graph_tail = str(clean_tool.split(":", 1)[1]).strip()
+            elif clean_tool.startswith("graph:"):
+                graph_tail = str(clean_tool.split(":", 1)[1]).strip()
             tail_parts = [piece for piece in graph_tail.split(" ") if piece]
             query_name = str(tail_parts[0] if tail_parts else "").strip().lower()
             query_arg = " ".join(tail_parts[1:]).strip()
@@ -5620,13 +5658,71 @@ class WorldHandler(BaseHTTPRequestHandler):
                 query_args["limit"] = max(1, int(_safe_float(query_arg, 24.0)))
             elif query_name == "role_slice" and query_arg:
                 query_args["role"] = query_arg
-            simulation = build_simulation_state(self._collect_catalog_fast())
+            elif query_name == "explain_daimoi" and query_arg:
+                query_args["daimoi_id"] = query_arg
+            elif query_name == "recent_outcomes":
+                if query_arg:
+                    parts = [piece for piece in query_arg.split(" ") if piece]
+                    if parts:
+                        query_args["window_ticks"] = max(
+                            1,
+                            int(_safe_float(parts[0], 360.0)),
+                        )
+                    if len(parts) > 1:
+                        query_args["limit"] = max(
+                            1,
+                            int(_safe_float(parts[1], 48.0)),
+                        )
+            elif query_name in {"web_resource_summary", "graph_summary"} and query_arg:
+                if query_name == "web_resource_summary":
+                    query_args["target"] = query_arg
+                else:
+                    parts = [piece for piece in query_arg.split(" ") if piece]
+                    if parts:
+                        query_args["scope"] = parts[0]
+                    if len(parts) > 1:
+                        query_args["n"] = max(
+                            1,
+                            int(_safe_float(parts[1], 12.0)),
+                        )
+            elif query_name == "arxiv_papers" and query_arg:
+                parts = [piece for piece in query_arg.split(" ") if piece]
+                if parts:
+                    query_args["limit"] = max(
+                        1,
+                        int(_safe_float(parts[0], 8.0)),
+                    )
+            elif query_name == "github_repo_summary" and query_arg:
+                query_args["repo"] = query_arg
+            elif query_name == "github_find" and query_arg:
+                parts = [piece for piece in query_arg.split(" ") if piece]
+                if parts:
+                    query_args["term"] = parts[0]
+                if len(parts) > 1:
+                    query_args["repo"] = parts[1]
+                if len(parts) > 2:
+                    query_args["limit"] = max(1, int(_safe_float(parts[2], 24.0)))
+            elif query_name == "github_recent_changes" and query_arg:
+                parts = [piece for piece in query_arg.split(" ") if piece]
+                if parts:
+                    query_args["window_ticks"] = max(
+                        1,
+                        int(_safe_float(parts[0], 360.0)),
+                    )
+                if len(parts) > 1:
+                    query_args["limit"] = max(1, int(_safe_float(parts[1], 32.0)))
+            simulation = _cached_simulation()
             nexus_graph = (
                 simulation.get("nexus_graph", {})
                 if isinstance(simulation.get("nexus_graph", {}), dict)
                 else {}
             )
-            payload = run_named_graph_query(nexus_graph, query_name, args=query_args)
+            payload = run_named_graph_query(
+                nexus_graph,
+                query_name,
+                args=query_args,
+                simulation=simulation,
+            )
             result = payload.get("result", {})
             if isinstance(result, dict) and result.get("error"):
                 return {
@@ -10619,6 +10715,7 @@ class WorldHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/muse/message":
             req = self._read_json_body() or {}
             manager = self._muse_manager()
+            self._muse_tool_cache = {}
             catalog = self._runtime_catalog_base()
             graph_revision = str(
                 req.get("graph_revision", catalog.get("generated_at", ""))

@@ -445,6 +445,9 @@ ETA_MU_INGEST_INCLUDE_AUDIO_MIME = {
     "audio/x-m4a",
     "audio/x-ms-wma",
 }
+ETA_MU_INGEST_INCLUDE_PDF_MIME = {
+    "application/pdf",
+}
 ETA_MU_INGEST_INCLUDE_TEXT_EXT = {
     ".bash",
     ".c",
@@ -512,6 +515,9 @@ ETA_MU_INGEST_INCLUDE_AUDIO_EXT = {
     ".wav",
     ".wma",
 }
+ETA_MU_INGEST_INCLUDE_PDF_EXT = {
+    ".pdf",
+}
 ETA_MU_INGEST_EXCLUDE_REL_PATHS = {
     "__pycache__",
     ".cache",
@@ -556,6 +562,10 @@ ETA_MU_INGEST_MAX_IMAGE_BYTES = max(
 ETA_MU_INGEST_MAX_AUDIO_BYTES = max(
     4096,
     int(os.getenv("ETA_MU_INGEST_MAX_AUDIO_BYTES", "100000000") or "100000000"),
+)
+ETA_MU_INGEST_MAX_PDF_BYTES = max(
+    4096,
+    int(os.getenv("ETA_MU_INGEST_MAX_PDF_BYTES", "50000000") or "50000000"),
 )
 ETA_MU_INGEST_MAX_SCAN_FILES = max(
     1,
@@ -638,7 +648,7 @@ ETA_MU_INGEST_STABILITY = str(
 ETA_MU_INGEST_SAFE_MODE = (
     ETA_MU_INGEST_HEALTH != "活" or ETA_MU_INGEST_STABILITY != "安"
 )
-ETA_MU_INGEST_CONTRACT_ID = "ημ.ingest.text+image+audio.v1"
+ETA_MU_INGEST_CONTRACT_ID = "ημ.ingest.text+image+audio+pdf.v2"
 ETA_MU_INGEST_PACKET_RECORD = "ημ.packet.v1"
 ETA_MU_INGEST_MANIFEST_PREFIX = "ημ_ingest_manifest_"
 ETA_MU_INGEST_STATS_PREFIX = "ημ_ingest_stats_"
