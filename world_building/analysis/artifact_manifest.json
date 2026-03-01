@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "created_at": "2026-02-13T00:00:00Z",
+  "item_count": 7,
+  "items": [
+    {
+      "path": "LICENSES/CC-BY-SA-4.0-NOTICE.txt",
+      "sha256": "3e7d98d0e4db7e33eecbbef7bcd992fe9bc7148202611e179987453a87cb55d0",
+      "size": 302
+    },
+    {
+      "path": "audio/\u03b7\u03bc_lullaby_part45_78bpm.mp3",
+      "sha256": "bc7fae9f7e6c984b64eb051f2eab7053e2c3853b3dc4f2f0cd0f200419600b15",
+      "size": 994397
+    },
+    {
+      "path": "audio/\u03b7\u03bc_lullaby_part45_78bpm.wav",
+      "sha256": "8a3f42dcc6b58e98cae4440a3559387a990d70056ad1ba541360438959f4d898",
+      "size": 8684348
+    },
+    {
+      "path": "handoff/session_handoff.md",
+      "sha256": "f5392b4ec4cd78dffb650e81eff114e4c3d08480f4e0ffda1cf78c19a71c64ec",
+      "size": 918
+    },
+    {
+      "path": "lore/The_Ledger_Doesnt_Burn.md",
+      "sha256": "31ddd12e1564d142c0913299f4119ef45ea041537313bcb879565555468e4cab",
+      "size": 707
+    },
+    {
+      "path": "songs/Anchor_Tax_Lullaby_78.md",
+      "sha256": "3fdd08466fc589fb0a6c25c6e68c2c27d1f14a8ca188b78dfd047a869e17ae42",
+      "size": 1153
+    },
+    {
+      "path": "art/Gates_of_Truth_License_Gate_\u03b7\u03bc_part45.png",
+      "sha256": "f934bca7e08fcef2ad5ed02175343358de22030490e8853db181cbd4b340e929",
+      "size": 100836
+    }
+  ]
+}

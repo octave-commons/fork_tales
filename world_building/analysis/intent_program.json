@@ -1,0 +1,25 @@
+{
+  "name": "GatesOfTruth: Forkgate + Refrain",
+  "version": 1,
+  "constraints": {
+    "no_network": true,
+    "no_side_effects": true,
+    "require_s3_anchors": true
+  },
+  "program": [
+    {
+      "op": "emit_report_pointer",
+      "args": {
+        "path": "analysis/gates_of_truth_forks_box/timeline_forks.md"
+      },
+      "anchor_claim_id": "pack_anchor:forkgate_pointer"
+    },
+    {
+      "op": "emit_report_pointer",
+      "args": {
+        "path": "analysis/gates_of_truth_intent_dense_box/micro_refrains.md"
+      },
+      "anchor_claim_id": "pack_anchor:refrains_pointer"
+    }
+  ]
+}

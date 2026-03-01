@@ -1,0 +1,66 @@
+{
+  "meta": {
+    "run_id": "20260213_244615_seed3721599636",
+    "seed": 3721599636,
+    "date": "2026-02-13",
+    "note": "Incremental graph growth (ημ_op_mf_part_25) from 15 deterministic rolls."
+  },
+  "nodes": [
+    {
+      "id": "Rule:ReceiptLintV2",
+      "desc": "Receipts must list inputs/outputs + one-step repro."
+    },
+    {
+      "id": "Rule:ForkBudgetTight",
+      "desc": "Fork budget per cycle = 3."
+    },
+    {
+      "id": "Gate:DateWindowGate",
+      "desc": "Absolute date windows required (America/Phoenix)."
+    },
+    {
+      "id": "Rule:Hysteresis",
+      "desc": "Demoted → μ requires 2 receipts."
+    },
+    {
+      "id": "Rule:QuietAnchors",
+      "desc": "Untested anchors decay after 1 loops."
+    },
+    {
+      "id": "Protocol:FreshnessThreshold",
+      "desc": "High-volatility sources must be within 60 days."
+    }
+  ],
+  "edges": [
+    {
+      "from": "Rule:ReceiptLintV2",
+      "verb": "lints",
+      "to": "Artifact:TaxReceipt"
+    },
+    {
+      "from": "Rule:ForkBudgetTight",
+      "verb": "budgets",
+      "to": "Gate:Forkgate"
+    },
+    {
+      "from": "Gate:DateWindowGate",
+      "verb": "windows",
+      "to": "Protocol:DeepResearchSwitch"
+    },
+    {
+      "from": "Protocol:FreshnessThreshold",
+      "verb": "locks",
+      "to": "Gate:AuditorsLantern"
+    },
+    {
+      "from": "Rule:Hysteresis",
+      "verb": "promotes",
+      "to": "Concept:#μ"
+    },
+    {
+      "from": "Rule:QuietAnchors",
+      "verb": "whispers",
+      "to": "Protocol:EvidenceTone"
+    }
+  ]
+}

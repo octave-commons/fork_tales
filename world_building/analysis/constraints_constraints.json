@@ -1,0 +1,15 @@
+{
+  "max_world_docs": 12,
+  "consolidation_enabled": true,
+  "forgetting_policy": "never_forgotten_less_remembered",
+  "artifact_manifest_required": true,
+  "anchor_chain_algo": "sha256",
+  "license": "CC-BY-SA-4.0",
+  "share_alike_required": true,
+  "procedural_image_enabled": true,
+  "procedural_image_format": "ppm",
+  "ecs_particle_snapshot_enabled": true,
+  "procedural_fractal_enabled": true,
+  "creative_freedom_enabled": true,
+  "constraints_disabled": []
+}

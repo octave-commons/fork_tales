@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "created_at": "2026-02-13T00:00:00Z",
+  "item_count": 14,
+  "items": [
+    {
+      "path": "LICENSES/CC-BY-SA-4.0-NOTICE.txt",
+      "sha256": "8861f53e72d3f66286b43af054c7236914ed6fcb54a376fbb780fd994c881b03",
+      "size": 229
+    },
+    {
+      "path": "analysis/world/creative_plan.json",
+      "sha256": "1cbc90477aa5dc256534b598dfc76d21f23c4b9e95e32d3134df4a2e4f9f9476",
+      "size": 737
+    },
+    {
+      "path": "art/Fork_Tax_Lullaby_cover_\u03b7\u03bc_part47.png",
+      "sha256": "f110883e143ae96d1b43e45207a6e2fbe26060b29e1dbed8179142ea5746bae2",
+      "size": 260961
+    },
+    {
+      "path": "art/\u03b7\u03bc_fractal_veil_part47.png",
+      "sha256": "b6cad42623dca91f04060eeb0ae7d4c0ab1217cc578de73a0fbbb3df06040cee",
+      "size": 156245
+    },
+    {
+      "path": "art/\u03b7\u03bc_storyboard_part47.png",
+      "sha256": "8ece8d5ac1fd852d0ca65d361c2df97d654f917fe3e8a202cec368dc8dcb03a9",
+      "size": 118411
+    },
+    {
+      "path": "audio/\u03b7\u03bc_lullaby_part47_78bpm.mp3",
+      "sha256": "c6ceb0e16a0e7adfe5e6ca1e10350a831955a316401c35aff399a1de80537afb",
+      "size": 862851
+    },
+    {
+      "path": "audio/\u03b7\u03bc_lullaby_part47_78bpm.wav",
+      "sha256": "8b1de2eb55c256283afb96d4a944ad24b28acb5ee22838f37cdf985f815d2d07",
+      "size": 6513272
+    },
+    {
+      "path": "handoff/gates_of_truth_announcement.md",
+      "sha256": "b450346c63521b90d1736ecbff43a97ba7e1a5d158444e56641b8bfe0d522560",
+      "size": 468
+    },
+    {
+      "path": "handoff/session_handoff.md",
+      "sha256": "4ea401eae848e2a8498fb243530d56ef645497b12f1cb3a7f614abb8abfab950",
+      "size": 995
+    },
+    {
+      "path": "lore/Creative_Freedom_Gate.md",
+      "sha256": "27443a52026747007dd7ff9d12a23aac831f70e9b25e703528d4844d75ab7180",
+      "size": 580
+    },
+    {
+      "path": "songs/Fork_Tax_Lullaby_Veil_Gate_78.md",
+      "sha256": "1672379fb4e5291163b76d97c3f4cd4336ebd9dc9e53ebc4f385ecf0ee9c6960",
+      "size": 1044
+    },
+    {
+      "path": "story_artifacts/Fork_Tax_Receipt_part47.md",
+      "sha256": "5214ade0096f0293bb0a76e58193727bd55e6051075a09e1c404639a8481c5f6",
+      "size": 318
+    },
+    {
+      "path": "story_artifacts/Proof_Seal_part47.md",
+      "sha256": "bbe859c564f894ec26a016a90baccd187cc0dc56f2d3dcd32d4e5a5241bc3593",
+      "size": 614
+    },
+    {
+      "path": "story_artifacts/dialog_part47.md",
+      "sha256": "5ed97d3648cf04580d11a67b53755225f709cbc9e12108fccb288626e3e1a088",
+      "size": 216
+    }
+  ]
+}

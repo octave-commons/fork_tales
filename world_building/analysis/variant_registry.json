@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "created_at": "2026-02-13T00:00:00Z",
+  "artifacts": {
+    "\u03b7\u03bc_lullaby": {
+      "canon": "audio/\u03b7\u03bc_lullaby_part43_78bpm.mp3",
+      "variants": [
+        {
+          "path": "audio/\u03b7\u03bc_lullaby_part43_78bpm.mp3",
+          "integration": 0.38,
+          "registered_at": "2026-02-13T00:00:00Z"
+        }
+      ],
+      "over_limit": 1
+    }
+  }
+}

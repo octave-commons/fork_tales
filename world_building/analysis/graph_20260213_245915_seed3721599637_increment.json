@@ -1,0 +1,66 @@
+{
+  "meta": {
+    "run_id": "20260213_245915_seed3721599637",
+    "seed": 3721599637,
+    "date": "2026-02-13",
+    "note": "Incremental graph growth (ημ_op_mf_part_26) from 15 deterministic rolls."
+  },
+  "nodes": [
+    {
+      "id": "Rule:ReceiptLintV2_1",
+      "desc": "Receipts must specify inputs/outputs; step cap=2; over cap demotes to η."
+    },
+    {
+      "id": "Rule:ForkBudget",
+      "desc": "Fork budget per cycle=2; spend creates semitone debt until merge."
+    },
+    {
+      "id": "Protocol:LanternDualChannel",
+      "desc": "μ requires both freshness (≤42d) and quote-alignment."
+    },
+    {
+      "id": "Gate:DateWindowGate",
+      "desc": "Requires absolute event window + America/Phoenix; stamps event vs publish dates."
+    },
+    {
+      "id": "Rule:HysteresisDiverse",
+      "desc": "Demoted claims need 2 receipts from different proof modes."
+    },
+    {
+      "id": "Rule:QuietAnchors",
+      "desc": "Untested anchors decay after 1 loops; whisper can spread."
+    }
+  ],
+  "edges": [
+    {
+      "from": "Rule:ReceiptLintV2_1",
+      "verb": "lints",
+      "to": "Artifact:TaxReceipt"
+    },
+    {
+      "from": "Protocol:LanternDualChannel",
+      "verb": "locks",
+      "to": "Gate:AuditorsLantern"
+    },
+    {
+      "from": "Gate:DateWindowGate",
+      "verb": "routes",
+      "to": "Protocol:DeepResearchSwitch"
+    },
+    {
+      "from": "Rule:ForkBudget",
+      "verb": "budgets",
+      "to": "Gate:Forkgate"
+    },
+    {
+      "from": "Rule:HysteresisDiverse",
+      "verb": "promotes",
+      "to": "Concept:#μ"
+    },
+    {
+      "from": "Rule:QuietAnchors",
+      "verb": "whispers",
+      "to": "Protocol:EvidenceTone"
+    }
+  ]
+}

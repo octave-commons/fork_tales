@@ -1,0 +1,13 @@
+{
+  "max_world_docs": 12,
+  "consolidation_enabled": true,
+  "forgetting_policy": "never_forgotten_less_remembered",
+  "anchor_chain_algo": "sha256",
+  "artifact_manifest_required": true,
+  "overlay_compactor_enabled": true,
+  "overlay_target_dir": "analysis/world/overlays",
+  "overlay_max_chars_per_doc": 360,
+  "license": "CC-BY-SA-4.0",
+  "share_alike_required": true,
+  "constraints_disabled": []
+}

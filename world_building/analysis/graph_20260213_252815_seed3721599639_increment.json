@@ -1,0 +1,39 @@
+{
+  "meta": {
+    "run_id": "20260213_252815_seed3721599639",
+    "seed": 3721599639,
+    "date": "2026-02-13",
+    "note": "Incremental graph growth (ημ_op_mf_part_28) from 15 deterministic rolls."
+  },
+  "nodes": [
+    {
+      "id": "Rule:Quorum",
+      "desc": "μ requires 3 independent receipts (different proof modes) plus echo."
+    },
+    {
+      "id": "Rule:InputSeal",
+      "desc": "Receipt inputs are hashed; input change invalidates receipts automatically."
+    },
+    {
+      "id": "Rule:WindowNarrowing",
+      "desc": "Echo failures halve the event window until testable."
+    }
+  ],
+  "edges": [
+    {
+      "from": "Rule:Quorum",
+      "verb": "promotes",
+      "to": "Concept:#μ"
+    },
+    {
+      "from": "Rule:WindowNarrowing",
+      "verb": "windows",
+      "to": "Gate:DateWindowGate"
+    },
+    {
+      "from": "Rule:InputSeal",
+      "verb": "lints",
+      "to": "Artifact:TaxReceipt"
+    }
+  ]
+}

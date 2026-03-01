@@ -1,0 +1,232 @@
+{
+  "version": "1.0",
+  "generated_at": "2026-02-13T21:07:04.722096",
+  "circuits": [
+    {
+      "id": 1,
+      "name": "Bio-Survival",
+      "alias": "Watcher/Alive",
+      "description": "Boot, liveness, pain/kill-switches, basic safety and continuity of operation.",
+      "keywords": [
+        "alive",
+        "liveness",
+        "boot",
+        "cold start",
+        "heartbeat",
+        "crash",
+        "panic",
+        "kill",
+        "timeout",
+        "stale",
+        "survival",
+        "danger",
+        "safety",
+        "pain"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Emotional-Territorial",
+      "alias": "Permissions/Pack",
+      "description": "Boundaries, roles, access, status, consent, social interfaces.",
+      "keywords": [
+        "permission",
+        "permissions",
+        "consent",
+        "boundary",
+        "boundaries",
+        "ok",
+        "not ok",
+        "role",
+        "access",
+        "authority",
+        "hierarchy",
+        "pack",
+        "oauth",
+        "token",
+        "scope",
+        "policy"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "Symbolic",
+      "alias": "Language/Model",
+      "description": "Language, prompts, narrative, abstraction, inner monologue, conceptual modeling.",
+      "keywords": [
+        "language",
+        "words",
+        "prompt",
+        "prompts",
+        "model",
+        "llm",
+        "story",
+        "narrative",
+        "chapter",
+        "lyrics",
+        "essay",
+        "transcript",
+        "dialogue",
+        "concept",
+        "symbol",
+        "semantics"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "Domestic-Moral",
+      "alias": "Protocol/Law",
+      "description": "Rules, process, ethics, alignment, governance, responsibility, procedure.",
+      "keywords": [
+        "protocol",
+        "process",
+        "workflow",
+        "kanban",
+        "rules",
+        "rule",
+        "ethics",
+        "ethical",
+        "alignment",
+        "governance",
+        "responsibility",
+        "duty",
+        "procedure",
+        "spec",
+        "task",
+        "board"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "Neuro-Somatic",
+      "alias": "Body/Sound",
+      "description": "Breath, voice, rhythm, sensation, embodiment analogs (sound-as-body).",
+      "keywords": [
+        "breath",
+        "voice",
+        "vocal",
+        "bpm",
+        "tempo",
+        "rhythm",
+        "somatic",
+        "sensation",
+        "heartbeat",
+        "reverb",
+        "waveform",
+        "spectrogram",
+        "pitch",
+        "chorus",
+        "cathedral"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "Neuro-Electric",
+      "alias": "Loop/Glitch",
+      "description": "Loops, recursion, system dynamics, glitches, daemons, meta-control.",
+      "keywords": [
+        "loop",
+        "feedback",
+        "recursion",
+        "daemon",
+        "kernel",
+        "panic",
+        "glitch",
+        "error",
+        "cache",
+        "\u03bc",
+        "\u03b7",
+        "\u03b7\u03bc",
+        "fnord",
+        "circuit",
+        "vector",
+        "state space"
+      ]
+    },
+    {
+      "id": 7,
+      "name": "Neuro-Genetic",
+      "alias": "Myth/Lineage",
+      "description": "Mythic structures, lineage, pantheons, gates, origin stories.",
+      "keywords": [
+        "myth",
+        "prometheus",
+        "pandora",
+        "aker",
+        "gates",
+        "pantheon",
+        "eidolon",
+        "champion",
+        "legend",
+        "oracle",
+        "sanctuary",
+        "guild",
+        "queen",
+        "rebel"
+      ]
+    },
+    {
+      "id": 8,
+      "name": "Neuro-Atomic",
+      "alias": "Cosmic/Meta",
+      "description": "Cosmic scale, doom/possibility, high-dimensional framing, abstract limits.",
+      "keywords": [
+        "space",
+        "void",
+        "quantum",
+        "infinity",
+        "8d",
+        "64d",
+        "singularity",
+        "doom",
+        "p(doom)",
+        "probability",
+        "cosmos",
+        "apocalypse"
+      ]
+    }
+  ],
+  "vector_layout": "64 floats: for circuit i=1..8, dims j=0..7 => index=(i-1)*8 + j; each block is circuit_score[i] * global_features[j]",
+  "global_features": [
+    {
+      "id": 0,
+      "name": "bias",
+      "description": "constant 1.0"
+    },
+    {
+      "id": 1,
+      "name": "log_tokens",
+      "description": "log(1+token_count) scaled"
+    },
+    {
+      "id": 2,
+      "name": "heading_density",
+      "description": "markdown heading count / lines"
+    },
+    {
+      "id": 3,
+      "name": "code_density",
+      "description": "code block count / lines"
+    },
+    {
+      "id": 4,
+      "name": "math_density",
+      "description": "math-like symbol count / chars"
+    },
+    {
+      "id": 5,
+      "name": "dialogue_density",
+      "description": "dialogue-like lines / lines"
+    },
+    {
+      "id": 6,
+      "name": "image_flag",
+      "description": "1 if image/binary visual artifact else 0"
+    },
+    {
+      "id": 7,
+      "name": "lexical_variety",
+      "description": "unique_words / tokens (capped)"
+    }
+  ]
+}

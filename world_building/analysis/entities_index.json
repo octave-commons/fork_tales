@@ -1,0 +1,123 @@
+{
+  "source": "content/gates_of_truth/01_Manuscript/*.md (excluding MANUSCRIPT_FULL.md)",
+  "entities": [
+    {
+      "id": 0,
+      "name": "Axiom_01"
+    },
+    {
+      "id": 1,
+      "name": "Cephalon"
+    },
+    {
+      "id": 2,
+      "name": "Duck"
+    },
+    {
+      "id": 3,
+      "name": "Duct"
+    },
+    {
+      "id": 4,
+      "name": "Eidolon"
+    },
+    {
+      "id": 5,
+      "name": "Gate"
+    },
+    {
+      "id": 6,
+      "name": "Guild"
+    },
+    {
+      "id": 7,
+      "name": "Nexus"
+    },
+    {
+      "id": 8,
+      "name": "Null"
+    },
+    {
+      "id": 9,
+      "name": "Pantheon"
+    },
+    {
+      "id": 10,
+      "name": "Patch"
+    },
+    {
+      "id": 11,
+      "name": "Promethean"
+    },
+    {
+      "id": 12,
+      "name": "Queen"
+    },
+    {
+      "id": 13,
+      "name": "Rebel"
+    },
+    {
+      "id": 14,
+      "name": "Rin"
+    },
+    {
+      "id": 15,
+      "name": "Ritsu"
+    },
+    {
+      "id": 16,
+      "name": "Sei"
+    },
+    {
+      "id": 17,
+      "name": "Truth"
+    }
+  ],
+  "intent_types": [
+    {
+      "code": 0,
+      "name": "VOW"
+    },
+    {
+      "code": 1,
+      "name": "REFUSAL"
+    },
+    {
+      "code": 2,
+      "name": "COMMAND"
+    },
+    {
+      "code": 3,
+      "name": "NEED"
+    },
+    {
+      "code": 4,
+      "name": "CHOICE"
+    },
+    {
+      "code": 5,
+      "name": "PLAN"
+    },
+    {
+      "code": 6,
+      "name": "THREAT"
+    },
+    {
+      "code": 7,
+      "name": "ALLIANCE"
+    },
+    {
+      "code": 8,
+      "name": "BETRAYAL"
+    },
+    {
+      "code": 9,
+      "name": "DECLARATION"
+    }
+  ],
+  "binary_record": {
+    "endianness": "big",
+    "size_bytes": 16
+  }
+}

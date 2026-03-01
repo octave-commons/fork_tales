@@ -1,0 +1,12 @@
+{
+  "part": 38,
+  "seed": 3721599788,
+  "pack_hash16": "374f7318bb0abbff",
+  "files": {
+    "analysis/world/world_state.json": "a221886100a54d206420919e9b9e91ece29dcf7a192d82cd6cb2f65aeeac6c5a",
+    "analysis/world/world_state_ledger.jsonl": "bc8bf6eee605f187ab436d9b8c44ac62fdaba83b25e5d9ca03a6265541408185",
+    "handoff/handoff_manifest.json": "e1cb34226914bac40925cd0ad1a7b581fbd21ed3add78bf5d5d72904426d5d70",
+    "handoff/context_pack.json": "f3795fc37bb3d831fbf96a6b129e0065734ed54077e2e0c873c2977d2d050f16",
+    "handoff/handoff_summary.md": "fdde816ce4e576c99cff619724d4c69c1acab2293ba02f35d6c7cf4d0d1984d0"
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "seed": 47047,
+  "loop": "P\u2192R\u2192N\u2192\u03a0\u2192A\u2192(feedback)\u2192P",
+  "tag": "#\u03b7\u03bc",
+  "gates": [
+    "PROCEDURAL_IMAGE_GATE",
+    "FRACTAL_VEIL_GATE",
+    "CREATIVE_FREEDOM_GATE"
+  ],
+  "palette_hint": "glitch-choir lullaby",
+  "artifacts": [
+    {
+      "type": "audio",
+      "bpm": 78,
+      "style": "glitch-choir lullaby",
+      "stutterWords": [
+        "anchor",
+        "tax"
+      ]
+    },
+    {
+      "type": "image",
+      "method": "fractal+particles",
+      "deterministic": true
+    },
+    {
+      "type": "doc",
+      "kind": "lore",
+      "title": "Procedural Freedom is Reproducible"
+    },
+    {
+      "type": "doc",
+      "kind": "receipt",
+      "title": "Fork Tax Receipt"
+    }
+  ]
+}

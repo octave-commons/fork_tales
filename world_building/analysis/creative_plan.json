@@ -1,0 +1,51 @@
+{
+  "seed": 48048,
+  "loop": "P\u2192R\u2192N\u2192\u03a0\u2192A\u2192(feedback)\u2192P",
+  "tag": "#\u03b7\u03bc",
+  "gates": [
+    "CREATIVE_FREEDOM_GATE",
+    "CATHEDRAL_OF_VARIANTS_GATE",
+    "PROCEDURAL_SCORE_GATE",
+    "EUCLIDEAN_RHYTHM_GATE"
+  ],
+  "palette_hint": "mythic glitch epic",
+  "artifacts": [
+    {
+      "type": "score",
+      "bpm": 84,
+      "bars": 16,
+      "stutterWords": [
+        "\u03b7",
+        "\u03bc",
+        "anchor",
+        "fork"
+      ]
+    },
+    {
+      "type": "audio",
+      "bpm": 84,
+      "style": "mythic glitch epic",
+      "stutterWords": [
+        "\u03b7",
+        "\u03bc",
+        "anchor",
+        "fork"
+      ]
+    },
+    {
+      "type": "image",
+      "method": "fractal+particles",
+      "deterministic": true
+    },
+    {
+      "type": "doc",
+      "kind": "lore",
+      "title": "The Cathedral Stores the Forks"
+    },
+    {
+      "type": "doc",
+      "kind": "receipt",
+      "title": "Fork Tax Receipt"
+    }
+  ]
+}

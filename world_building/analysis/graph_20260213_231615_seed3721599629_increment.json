@@ -1,0 +1,113 @@
+{
+  "meta": {
+    "run_id": "20260213_231615_seed3721599629",
+    "seed": 3721599629,
+    "date": "2026-02-13",
+    "note": "Incremental graph growth (part18) from deterministic dice."
+  },
+  "nodes": [
+    {
+      "id": "Artifact:TaxReceipt",
+      "desc": "A minimal reproducibility harness attached to a claim; proof you paid the fork tax."
+    },
+    {
+      "id": "Artifact:AnchorLedger",
+      "desc": "Ledger of anchors: claim, source, test, status."
+    },
+    {
+      "id": "Gate:Forkgate",
+      "desc": "Gate that ranks and throttles forks using evidence-weight."
+    },
+    {
+      "id": "Gate:AuditorsLantern",
+      "desc": "Verification lamp that lights only for reproducible μ."
+    },
+    {
+      "id": "Concept:ForkTax",
+      "desc": "Cost for branching reality without evidence; prevents fork-spam."
+    },
+    {
+      "id": "Concept:#η",
+      "desc": "Unseen constraint/influence inferred from effects."
+    },
+    {
+      "id": "Concept:#μ",
+      "desc": "Action-proof, reproducible evidence."
+    },
+    {
+      "id": "Concept:#ημ",
+      "desc": "The hinge: unseen constraints meet action-proof."
+    },
+    {
+      "id": "Protocol:VolatilityTags",
+      "desc": "Tagging scheme for how quickly facts can change."
+    }
+  ],
+  "edges": [
+    {
+      "from": "Artifact:TaxReceipt",
+      "verb": "anchors",
+      "to": "Artifact:AnchorLedger"
+    },
+    {
+      "from": "Artifact:AnchorLedger",
+      "verb": "constrains",
+      "to": "Gate:Forkgate"
+    },
+    {
+      "from": "Gate:Forkgate",
+      "verb": "taxes",
+      "to": "Gate:AuditorsLantern"
+    },
+    {
+      "from": "Gate:AuditorsLantern",
+      "verb": "routes",
+      "to": "Concept:ForkTax"
+    },
+    {
+      "from": "Concept:ForkTax",
+      "verb": "reveals",
+      "to": "Concept:#η"
+    },
+    {
+      "from": "Concept:#η",
+      "verb": "routes",
+      "to": "Concept:#μ"
+    },
+    {
+      "from": "Concept:#μ",
+      "verb": "anchors",
+      "to": "Concept:#ημ"
+    },
+    {
+      "from": "Concept:#ημ",
+      "verb": "verifies",
+      "to": "Protocol:VolatilityTags"
+    },
+    {
+      "from": "Artifact:TaxReceipt",
+      "verb": "pays",
+      "to": "Concept:ForkTax"
+    },
+    {
+      "from": "Gate:Forkgate",
+      "verb": "demands",
+      "to": "Artifact:TaxReceipt"
+    },
+    {
+      "from": "Artifact:AnchorLedger",
+      "verb": "expires",
+      "to": "Concept:#η"
+    },
+    {
+      "from": "Gate:AuditorsLantern",
+      "verb": "verifies",
+      "to": "Concept:#μ"
+    },
+    {
+      "from": "Concept:#ημ",
+      "verb": "routes",
+      "to": "Protocol:DeepResearchSwitch"
+    }
+  ]
+}

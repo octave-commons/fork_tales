@@ -1,0 +1,133 @@
+{
+  "source": "Gates_of_Truth_Production_Bundle_v1.zip",
+  "entities": [
+    {
+      "id": 0,
+      "name": "Ritsu"
+    },
+    {
+      "id": 1,
+      "name": "Duct"
+    },
+    {
+      "id": 2,
+      "name": "Null"
+    },
+    {
+      "id": 3,
+      "name": "Patch"
+    },
+    {
+      "id": 4,
+      "name": "Sei"
+    },
+    {
+      "id": 5,
+      "name": "Rin"
+    },
+    {
+      "id": 6,
+      "name": "Axiom_01"
+    },
+    {
+      "id": 7,
+      "name": "Truth"
+    },
+    {
+      "id": 8,
+      "name": "Stability First"
+    }
+  ],
+  "intent_types": [
+    {
+      "code": 0,
+      "name": "VOW"
+    },
+    {
+      "code": 1,
+      "name": "REFUSAL"
+    },
+    {
+      "code": 2,
+      "name": "COMMAND"
+    },
+    {
+      "code": 3,
+      "name": "NEED"
+    },
+    {
+      "code": 4,
+      "name": "CHOICE"
+    },
+    {
+      "code": 5,
+      "name": "PLAN"
+    },
+    {
+      "code": 6,
+      "name": "THREAT"
+    },
+    {
+      "code": 7,
+      "name": "ALLIANCE"
+    },
+    {
+      "code": 8,
+      "name": "BETRAYAL"
+    },
+    {
+      "code": 9,
+      "name": "DECLARATION"
+    }
+  ],
+  "binary_record": {
+    "endianness": "big",
+    "size_bytes": 16,
+    "fields": [
+      [
+        "chapter_idx",
+        "uint16"
+      ],
+      [
+        "scene_idx",
+        "uint16"
+      ],
+      [
+        "event_idx",
+        "uint16"
+      ],
+      [
+        "actor_id",
+        "uint8 (255=none)"
+      ],
+      [
+        "target_id",
+        "uint8 (255=none)"
+      ],
+      [
+        "intent_type",
+        "uint8"
+      ],
+      [
+        "polarity",
+        "int8 (-1/0/+1)"
+      ],
+      [
+        "strength",
+        "uint8 (0..255)"
+      ],
+      [
+        "top_circuit",
+        "uint8 (0..7)"
+      ],
+      [
+        "snippet_hash16",
+        "uint16"
+      ],
+      [
+        "pad",
+        "uint16"
+      ]
+    ]
+  }
+}

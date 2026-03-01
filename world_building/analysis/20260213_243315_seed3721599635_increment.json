@@ -1,0 +1,168 @@
+{
+  "meta": {
+    "run_id": "20260213_243315_seed3721599635",
+    "seed": 3721599635,
+    "date": "2026-02-13",
+    "note": "Incremental graph growth (ημ_op_mf_part_24) from deterministic dice."
+  },
+  "nodes": [
+    {
+      "id": "Rule:ReceiptLint",
+      "desc": "Receipts must be minimal and reproducible; bulky proofs rejected as theater."
+    },
+    {
+      "id": "Rule:Hysteresis",
+      "desc": "Demoted claims require two clean receipts to regain μ."
+    },
+    {
+      "id": "Rule:QuietAnchors",
+      "desc": "Untested anchors fade (whisper-tone) and cannot spawn forks."
+    },
+    {
+      "id": "Rule:TimezoneClause",
+      "desc": "Date windows must be absolute dates with timezone; no relative time words."
+    },
+    {
+      "id": "Rule:ForkBudget",
+      "desc": "Each cycle has limited fork credits; when spent, only merges allowed."
+    },
+    {
+      "id": "Protocol:EvidenceTone",
+      "desc": "Brightness maps to an audible tone; whisper-tone indicates untested anchors."
+    },
+    {
+      "id": "Gate:DateWindowGate",
+      "desc": "Claims must declare an event date window before entering research routes."
+    },
+    {
+      "id": "Gate:Forkgate",
+      "desc": "Gate that ranks/throttles forks using evidence and receipts."
+    },
+    {
+      "id": "Gate:AuditorsLantern",
+      "desc": "Verification lamp that lights only for reproducible μ."
+    },
+    {
+      "id": "Artifact:TaxReceipt",
+      "desc": "Minimal harness attached to a claim; proof you paid fork tax."
+    },
+    {
+      "id": "Artifact:AnchorLedger",
+      "desc": "Ledger of anchors (claim+source+test+status) with expiry."
+    },
+    {
+      "id": "Artifact:ChorusChecksum",
+      "desc": "Refrain encoding ledger state + next cheapest test + fork budget."
+    },
+    {
+      "id": "Concept:#η",
+      "desc": "Unseen constraint/influence inferred from effects."
+    },
+    {
+      "id": "Concept:#μ",
+      "desc": "Action-proof, reproducible evidence."
+    }
+  ],
+  "edges": [
+    {
+      "from": "Rule:ReceiptLint",
+      "verb": "reveals",
+      "to": "Rule:Hysteresis"
+    },
+    {
+      "from": "Rule:Hysteresis",
+      "verb": "anchors",
+      "to": "Rule:QuietAnchors"
+    },
+    {
+      "from": "Rule:QuietAnchors",
+      "verb": "anchors",
+      "to": "Rule:TimezoneClause"
+    },
+    {
+      "from": "Rule:TimezoneClause",
+      "verb": "anchors",
+      "to": "Rule:ForkBudget"
+    },
+    {
+      "from": "Rule:ForkBudget",
+      "verb": "constrains",
+      "to": "Protocol:EvidenceTone"
+    },
+    {
+      "from": "Protocol:EvidenceTone",
+      "verb": "reveals",
+      "to": "Gate:DateWindowGate"
+    },
+    {
+      "from": "Gate:DateWindowGate",
+      "verb": "anchors",
+      "to": "Gate:Forkgate"
+    },
+    {
+      "from": "Gate:Forkgate",
+      "verb": "verifies",
+      "to": "Gate:AuditorsLantern"
+    },
+    {
+      "from": "Gate:AuditorsLantern",
+      "verb": "taxes",
+      "to": "Artifact:TaxReceipt"
+    },
+    {
+      "from": "Artifact:TaxReceipt",
+      "verb": "reveals",
+      "to": "Artifact:AnchorLedger"
+    },
+    {
+      "from": "Artifact:AnchorLedger",
+      "verb": "routes",
+      "to": "Artifact:ChorusChecksum"
+    },
+    {
+      "from": "Artifact:ChorusChecksum",
+      "verb": "taxes",
+      "to": "Concept:#η"
+    },
+    {
+      "from": "Concept:#η",
+      "verb": "routes",
+      "to": "Concept:#μ"
+    },
+    {
+      "from": "Rule:ReceiptLint",
+      "verb": "lints",
+      "to": "Artifact:TaxReceipt"
+    },
+    {
+      "from": "Rule:Hysteresis",
+      "verb": "demotes",
+      "to": "Concept:#η"
+    },
+    {
+      "from": "Rule:Hysteresis",
+      "verb": "promotes",
+      "to": "Concept:#μ"
+    },
+    {
+      "from": "Rule:QuietAnchors",
+      "verb": "whispers",
+      "to": "Protocol:EvidenceTone"
+    },
+    {
+      "from": "Rule:TimezoneClause",
+      "verb": "windows",
+      "to": "Gate:DateWindowGate"
+    },
+    {
+      "from": "Rule:ForkBudget",
+      "verb": "budgets",
+      "to": "Gate:Forkgate"
+    },
+    {
+      "from": "Concept:#ημ",
+      "verb": "routes",
+      "to": "Protocol:DeepResearchSwitch"
+    }
+  ]
+}

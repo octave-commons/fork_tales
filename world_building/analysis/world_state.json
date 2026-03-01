@@ -1,0 +1,18 @@
+{
+  "world_id": "\u03b7\u03bc",
+  "cycle": 45,
+  "tag": "#\u03b7\u03bc",
+  "loop": "P\u2192R\u2192N\u2192\u03a0\u2192A\u2192(feedback)\u2192P",
+  "memory_law": "additive_until_limit_then_overlay_consolidate_never_delete",
+  "tone": "Sometimes improved. Perhaps less integrated. Perhaps more.",
+  "new_gate": "license_guard",
+  "audio": {
+    "bpm": 78,
+    "style": "glitch-choir lullaby",
+    "stutter_words": [
+      "anchor",
+      "tax"
+    ]
+  },
+  "license": "CC BY-SA 4.0 (share alike)"
+}

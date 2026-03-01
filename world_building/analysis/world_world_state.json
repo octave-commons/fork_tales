@@ -1,0 +1,21 @@
+{
+  "last_id": "20260214_024848_seed3721599788",
+  "seed": 3721599788,
+  "merged": {
+    "max_dice_rolls": "15",
+    "lullaby_bpm": "78",
+    "epic_bpm": "84",
+    "audio_palette": "soft_sub_bass,tape_warble,minimal_piano,cathedral_reverb,heartbeat_sub",
+    "stutter_on": "anchor,tax,η,μ,fork",
+    "vocal_style": "whisper_lead,jp_call_response,jp_harmony_last_word",
+    "cycle_model": "P→R→N→Π→A→(feedback)→P",
+    "sigil": "#ημ",
+    "proof_rule": "constraints_gate + two_echoes + golden_registry",
+    "part": "38",
+    "seed": "3721599788",
+    "stutter_words": "anchor,tax,η,μ,fork",
+    "fork_tax_paid": "true",
+    "gate_stack": "constraints_gate -> two_echo_gate -> golden_registry",
+    "canonical_json": "true"
+  }
+}

@@ -1,0 +1,94 @@
+{
+  "meta": {
+    "run_id": "20260213_230415_seed3721599628",
+    "seed": 3721599628,
+    "date": "2026-02-13",
+    "note": "Incremental graph growth from deterministic dice."
+  },
+  "nodes": [
+    {
+      "id": "Concept:ForkTax",
+      "desc": "A cost for branching reality without evidence; prevents fork-spam."
+    },
+    {
+      "id": "Artifact:AnchorLedger",
+      "desc": "Ledger of anchors: claim, source, test, status."
+    },
+    {
+      "id": "Gate:Forkgate",
+      "desc": "Gate that ranks and throttles forks using evidence-weight."
+    },
+    {
+      "id": "Gate:AuditorsLantern",
+      "desc": "Verification lamp that lights only for reproducible μ."
+    },
+    {
+      "id": "Concept:#η",
+      "desc": "Unseen constraint/influence inferred from effects."
+    },
+    {
+      "id": "Concept:#μ",
+      "desc": "Action-proof, reproducible evidence."
+    },
+    {
+      "id": "Concept:#ημ",
+      "desc": "The hinge: unseen constraints meet action-proof."
+    },
+    {
+      "id": "Loop:P→R→N→Π→A",
+      "desc": "Perceive/Retrieve/Normalize/Plan/Act loop."
+    }
+  ],
+  "edges": [
+    {
+      "from": "Concept:ForkTax",
+      "verb": "routes",
+      "to": "Artifact:AnchorLedger"
+    },
+    {
+      "from": "Artifact:AnchorLedger",
+      "verb": "anchors",
+      "to": "Gate:Forkgate"
+    },
+    {
+      "from": "Gate:Forkgate",
+      "verb": "verifies",
+      "to": "Gate:AuditorsLantern"
+    },
+    {
+      "from": "Gate:AuditorsLantern",
+      "verb": "routes",
+      "to": "Concept:#η"
+    },
+    {
+      "from": "Concept:#η",
+      "verb": "routes",
+      "to": "Concept:#μ"
+    },
+    {
+      "from": "Concept:#μ",
+      "verb": "anchors",
+      "to": "Concept:#ημ"
+    },
+    {
+      "from": "Concept:#ημ",
+      "verb": "taxes",
+      "to": "Loop:P→R→N→Π→A"
+    },
+    {
+      "from": "Concept:#ημ",
+      "verb": "binds",
+      "to": "Concept:ForkTax"
+    },
+    {
+      "from": "Concept:ForkTax",
+      "verb": "guards",
+      "to": "Gate:Forkgate"
+    },
+    {
+      "from": "Gate:AuditorsLantern",
+      "verb": "lights",
+      "to": "Artifact:AnchorLedger"
+    }
+  ]
+}

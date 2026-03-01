@@ -1,0 +1,164 @@
+{
+  "meta": {
+    "run_id": "20260213_242015_seed3721599634",
+    "seed": 3721599634,
+    "date": "2026-02-13",
+    "note": "Incremental graph growth (part23) from deterministic dice."
+  },
+  "nodes": [
+    {
+      "id": "Rule:FreshnessLock",
+      "desc": "High-volatility claims cannot be promoted without recent primary sources."
+    },
+    {
+      "id": "Rule:MergeWarrant",
+      "desc": "Merge warrants are emitted from checksum drift; duplicates collapse into canon."
+    },
+    {
+      "id": "Protocol:EvidenceTone",
+      "desc": "Map brightness to an audible tone for anchors; drift becomes audible."
+    },
+    {
+      "id": "Gate:DateWindowGate",
+      "desc": "Claims must declare an event date window before entering research routes."
+    },
+    {
+      "id": "Artifact:ChorusChecksum",
+      "desc": "Machine-readable refrain encoding ledger/synonym state + next cheapest test."
+    },
+    {
+      "id": "Artifact:MergeCandidates",
+      "desc": "Daily emitted candidate merges from SynonymIndex."
+    },
+    {
+      "id": "Artifact:SynonymIndex",
+      "desc": "Alias mapping to prevent duplicate forks via renaming."
+    },
+    {
+      "id": "Artifact:AnchorLedger",
+      "desc": "Ledger of anchors (claim+source+test+status) with expiry."
+    },
+    {
+      "id": "Artifact:TaxReceipt",
+      "desc": "Minimal harness attached to a claim; proof you paid fork tax."
+    },
+    {
+      "id": "Gate:Forkgate",
+      "desc": "Gate that ranks/throttles forks using evidence and receipts."
+    },
+    {
+      "id": "Gate:AuditorsLantern",
+      "desc": "Verification lamp that lights only for reproducible μ."
+    },
+    {
+      "id": "Concept:ForkTax",
+      "desc": "Cost for branching reality without evidence."
+    },
+    {
+      "id": "Concept:#η",
+      "desc": "Unseen constraint/influence inferred from effects."
+    }
+  ],
+  "edges": [
+    {
+      "from": "Rule:FreshnessLock",
+      "verb": "constrains",
+      "to": "Rule:MergeWarrant"
+    },
+    {
+      "from": "Rule:MergeWarrant",
+      "verb": "reveals",
+      "to": "Protocol:EvidenceTone"
+    },
+    {
+      "from": "Protocol:EvidenceTone",
+      "verb": "taxes",
+      "to": "Gate:DateWindowGate"
+    },
+    {
+      "from": "Gate:DateWindowGate",
+      "verb": "verifies",
+      "to": "Artifact:ChorusChecksum"
+    },
+    {
+      "from": "Artifact:ChorusChecksum",
+      "verb": "verifies",
+      "to": "Artifact:MergeCandidates"
+    },
+    {
+      "from": "Artifact:MergeCandidates",
+      "verb": "verifies",
+      "to": "Artifact:SynonymIndex"
+    },
+    {
+      "from": "Artifact:SynonymIndex",
+      "verb": "anchors",
+      "to": "Artifact:AnchorLedger"
+    },
+    {
+      "from": "Artifact:AnchorLedger",
+      "verb": "anchors",
+      "to": "Artifact:TaxReceipt"
+    },
+    {
+      "from": "Artifact:TaxReceipt",
+      "verb": "reveals",
+      "to": "Gate:Forkgate"
+    },
+    {
+      "from": "Gate:Forkgate",
+      "verb": "routes",
+      "to": "Gate:AuditorsLantern"
+    },
+    {
+      "from": "Gate:AuditorsLantern",
+      "verb": "anchors",
+      "to": "Concept:ForkTax"
+    },
+    {
+      "from": "Concept:ForkTax",
+      "verb": "constrains",
+      "to": "Concept:#η"
+    },
+    {
+      "from": "Rule:FreshnessLock",
+      "verb": "locks",
+      "to": "Gate:AuditorsLantern"
+    },
+    {
+      "from": "Rule:MergeWarrant",
+      "verb": "warrants",
+      "to": "Artifact:MergeCandidates"
+    },
+    {
+      "from": "Protocol:EvidenceTone",
+      "verb": "sings",
+      "to": "Artifact:AnchorLedger"
+    },
+    {
+      "from": "Gate:DateWindowGate",
+      "verb": "windows",
+      "to": "Protocol:DeepResearchSwitch"
+    },
+    {
+      "from": "Artifact:ChorusChecksum",
+      "verb": "decodes",
+      "to": "Artifact:SynonymIndex"
+    },
+    {
+      "from": "Artifact:MergeCandidates",
+      "verb": "emits",
+      "to": "Gate:Forkgate"
+    },
+    {
+      "from": "Protocol:FreshnessThreshold",
+      "verb": "thresholds",
+      "to": "Rule:FreshnessLock"
+    },
+    {
+      "from": "Concept:#ημ",
+      "verb": "routes",
+      "to": "Protocol:DeepResearchSwitch"
+    }
+  ]
+}

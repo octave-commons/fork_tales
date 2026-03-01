@@ -1,0 +1,159 @@
+{
+  "meta": {
+    "run_id": "20260213_240715_seed3721599633",
+    "seed": 3721599633,
+    "date": "2026-02-13",
+    "note": "Incremental graph growth (part22) from deterministic dice."
+  },
+  "nodes": [
+    {
+      "id": "Rule:GraceWindow",
+      "desc": "Attach a Tax Receipt within one loop to forgive interest; speeds convergence."
+    },
+    {
+      "id": "Protocol:BrightnessCurve",
+      "desc": "Maps volatility tags + date windows to evidence brightness (freshness strictness)."
+    },
+    {
+      "id": "Rule:BoundaryInheritance",
+      "desc": "Child nodes inherit boundary-anchors (non-claims) unless overridden by μ."
+    },
+    {
+      "id": "Artifact:ChorusChecksum",
+      "desc": "A machine-readable refrain encoding ledger/synonym state."
+    },
+    {
+      "id": "Artifact:MergeCandidates",
+      "desc": "Daily emitted candidate merges from SynonymIndex."
+    },
+    {
+      "id": "Artifact:SynonymIndex",
+      "desc": "Alias mapping to prevent duplicate forks via renaming."
+    },
+    {
+      "id": "Artifact:AnchorLedger",
+      "desc": "Ledger of anchors (claim+source+test+status) with expiry."
+    },
+    {
+      "id": "Artifact:TaxReceipt",
+      "desc": "Minimal harness attached to a claim; proof you paid fork tax."
+    },
+    {
+      "id": "Gate:Forkgate",
+      "desc": "Gate that ranks/throttles forks using evidence and receipts."
+    },
+    {
+      "id": "Gate:AuditorsLantern",
+      "desc": "Verification lamp that lights only for reproducible μ."
+    },
+    {
+      "id": "Concept:ForkTax",
+      "desc": "Cost for branching reality without evidence."
+    },
+    {
+      "id": "Concept:#η",
+      "desc": "Unseen constraint/influence inferred from effects."
+    },
+    {
+      "id": "Concept:#μ",
+      "desc": "Action-proof, reproducible evidence."
+    }
+  ],
+  "edges": [
+    {
+      "from": "Rule:GraceWindow",
+      "verb": "verifies",
+      "to": "Protocol:BrightnessCurve"
+    },
+    {
+      "from": "Protocol:BrightnessCurve",
+      "verb": "verifies",
+      "to": "Rule:BoundaryInheritance"
+    },
+    {
+      "from": "Rule:BoundaryInheritance",
+      "verb": "taxes",
+      "to": "Artifact:ChorusChecksum"
+    },
+    {
+      "from": "Artifact:ChorusChecksum",
+      "verb": "verifies",
+      "to": "Artifact:MergeCandidates"
+    },
+    {
+      "from": "Artifact:MergeCandidates",
+      "verb": "reveals",
+      "to": "Artifact:SynonymIndex"
+    },
+    {
+      "from": "Artifact:SynonymIndex",
+      "verb": "anchors",
+      "to": "Artifact:AnchorLedger"
+    },
+    {
+      "from": "Artifact:AnchorLedger",
+      "verb": "constrains",
+      "to": "Artifact:TaxReceipt"
+    },
+    {
+      "from": "Artifact:TaxReceipt",
+      "verb": "verifies",
+      "to": "Gate:Forkgate"
+    },
+    {
+      "from": "Gate:Forkgate",
+      "verb": "reveals",
+      "to": "Gate:AuditorsLantern"
+    },
+    {
+      "from": "Gate:AuditorsLantern",
+      "verb": "routes",
+      "to": "Concept:ForkTax"
+    },
+    {
+      "from": "Concept:ForkTax",
+      "verb": "routes",
+      "to": "Concept:#η"
+    },
+    {
+      "from": "Concept:#η",
+      "verb": "reveals",
+      "to": "Concept:#μ"
+    },
+    {
+      "from": "Rule:GraceWindow",
+      "verb": "forgives",
+      "to": "Concept:ForkTax"
+    },
+    {
+      "from": "Protocol:BrightnessCurve",
+      "verb": "brightens",
+      "to": "Gate:AuditorsLantern"
+    },
+    {
+      "from": "Rule:BoundaryInheritance",
+      "verb": "inherits",
+      "to": "Concept:BoundaryAnchor"
+    },
+    {
+      "from": "Artifact:ChorusChecksum",
+      "verb": "decodes",
+      "to": "Artifact:AnchorLedger"
+    },
+    {
+      "from": "Artifact:MergeCandidates",
+      "verb": "emits",
+      "to": "Gate:Forkgate"
+    },
+    {
+      "from": "Protocol:FreshnessThreshold",
+      "verb": "thresholds",
+      "to": "Protocol:DeepResearchSwitch"
+    },
+    {
+      "from": "Concept:#ημ",
+      "verb": "routes",
+      "to": "Protocol:DeepResearchSwitch"
+    }
+  ]
+}

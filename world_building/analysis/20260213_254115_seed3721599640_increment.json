@@ -1,0 +1,48 @@
+{
+  "meta": {
+    "run_id": "20260213_254115_seed3721599640",
+    "seed": 3721599640,
+    "date": "2026-02-13",
+    "note": "Incremental graph growth (ημ_op_mf_part_29) from 15 deterministic rolls."
+  },
+  "nodes": [
+    {
+      "id": "Rule:SpendMapping",
+      "desc": "Each fork must declare the question it buys; unnamed forks are void."
+    },
+    {
+      "id": "Rule:InputSeal",
+      "desc": "Receipt includes input_hash; changed inputs invalidate prior receipts."
+    },
+    {
+      "id": "Rule:WindowNarrowing",
+      "desc": "Echo failures halve window until testable."
+    },
+    {
+      "id": "Role:Cartographer",
+      "desc": "Tracks fork spend mapping as navigable roads; collapses unnamed roads."
+    }
+  ],
+  "edges": [
+    {
+      "from": "Rule:SpendMapping",
+      "verb": "budgets",
+      "to": "Gate:Forkgate"
+    },
+    {
+      "from": "Rule:InputSeal",
+      "verb": "lints",
+      "to": "Artifact:TaxReceipt"
+    },
+    {
+      "from": "Rule:WindowNarrowing",
+      "verb": "windows",
+      "to": "Gate:DateWindowGate"
+    },
+    {
+      "from": "Role:Cartographer",
+      "verb": "audits",
+      "to": "Rule:SpendMapping"
+    }
+  ]
+}

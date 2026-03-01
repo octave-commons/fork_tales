@@ -1,0 +1,140 @@
+{
+  "meta": {
+    "run_id": "20260213_235415_seed3721599632",
+    "seed": 3721599632,
+    "date": "2026-02-13",
+    "note": "Incremental graph growth (part21) from deterministic dice."
+  },
+  "nodes": [
+    {
+      "id": "Rule:ForkCooldown",
+      "desc": "New forks are rate-limited until receipts are verified; prevents fork storms."
+    },
+    {
+      "id": "Rule:AutoBoundary",
+      "desc": "Failed tests automatically mint boundary-anchors from observed constraints."
+    },
+    {
+      "id": "Protocol:VolatilityBrightness",
+      "desc": "Volatility tags control required freshness and evidence brightness."
+    },
+    {
+      "id": "Artifact:SynonymIndex",
+      "desc": "Alias mapping to prevent duplicate forks via renaming."
+    },
+    {
+      "id": "Artifact:AnchorLedger",
+      "desc": "Ledger of anchors (claim+source+test+status) with expiry."
+    },
+    {
+      "id": "Artifact:TaxReceipt",
+      "desc": "Minimal harness attached to a claim; proof you paid fork tax."
+    },
+    {
+      "id": "Gate:Forkgate",
+      "desc": "Gate that ranks/throttles forks using evidence and receipts."
+    },
+    {
+      "id": "Gate:AuditorsLantern",
+      "desc": "Verification lamp that lights only for reproducible μ."
+    },
+    {
+      "id": "Concept:ForkTax",
+      "desc": "Cost for branching reality without evidence."
+    },
+    {
+      "id": "Concept:BoundaryAnchor",
+      "desc": "Anchor type that binds a claim's boundary (non-claims)."
+    },
+    {
+      "id": "Concept:#η",
+      "desc": "Unseen constraint/influence inferred from effects."
+    },
+    {
+      "id": "Concept:#μ",
+      "desc": "Action-proof, reproducible evidence."
+    }
+  ],
+  "edges": [
+    {
+      "from": "Rule:ForkCooldown",
+      "verb": "verifies",
+      "to": "Rule:AutoBoundary"
+    },
+    {
+      "from": "Rule:AutoBoundary",
+      "verb": "taxes",
+      "to": "Protocol:VolatilityBrightness"
+    },
+    {
+      "from": "Protocol:VolatilityBrightness",
+      "verb": "taxes",
+      "to": "Artifact:SynonymIndex"
+    },
+    {
+      "from": "Artifact:SynonymIndex",
+      "verb": "verifies",
+      "to": "Artifact:AnchorLedger"
+    },
+    {
+      "from": "Artifact:AnchorLedger",
+      "verb": "verifies",
+      "to": "Artifact:TaxReceipt"
+    },
+    {
+      "from": "Artifact:TaxReceipt",
+      "verb": "routes",
+      "to": "Gate:Forkgate"
+    },
+    {
+      "from": "Gate:Forkgate",
+      "verb": "taxes",
+      "to": "Gate:AuditorsLantern"
+    },
+    {
+      "from": "Gate:AuditorsLantern",
+      "verb": "constrains",
+      "to": "Concept:ForkTax"
+    },
+    {
+      "from": "Concept:ForkTax",
+      "verb": "verifies",
+      "to": "Concept:BoundaryAnchor"
+    },
+    {
+      "from": "Concept:BoundaryAnchor",
+      "verb": "taxes",
+      "to": "Concept:#η"
+    },
+    {
+      "from": "Concept:#η",
+      "verb": "constrains",
+      "to": "Concept:#μ"
+    },
+    {
+      "from": "Rule:ForkCooldown",
+      "verb": "rate_limits",
+      "to": "Gate:Forkgate"
+    },
+    {
+      "from": "Rule:AutoBoundary",
+      "verb": "mints",
+      "to": "Concept:BoundaryAnchor"
+    },
+    {
+      "from": "Protocol:VolatilityBrightness",
+      "verb": "brightens",
+      "to": "Gate:AuditorsLantern"
+    },
+    {
+      "from": "Protocol:DateWindow",
+      "verb": "windows",
+      "to": "Protocol:DeepResearchSwitch"
+    },
+    {
+      "from": "Concept:#ημ",
+      "verb": "routes",
+      "to": "Protocol:DeepResearchSwitch"
+    }
+  ]
+}

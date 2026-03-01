@@ -1,0 +1,249 @@
+{
+  "Ritsu": {
+    "circuit_scores": [
+      0.06451612903225806,
+      0.25806451612903225,
+      0.3225806451612903,
+      0.1935483870967742,
+      0.03225806451612903,
+      0.0,
+      0.0,
+      0.12903225806451613
+    ],
+    "top_keywords": [
+      "feels",
+      "first",
+      "function",
+      "steps",
+      "forward",
+      "human",
+      "stands",
+      "white",
+      "world",
+      "consent",
+      "moral",
+      "left",
+      "sees",
+      "standards"
+    ]
+  },
+  "Duct": {
+    "circuit_scores": [
+      0.06060606060606061,
+      0.15151515151515152,
+      0.3333333333333333,
+      0.18181818181818182,
+      0.24242424242424243,
+      0.0,
+      0.0,
+      0.030303030303030304
+    ],
+    "top_keywords": [
+      "function",
+      "voice",
+      "left",
+      "speaks",
+      "says",
+      "his",
+      "first",
+      "safe",
+      "tightens",
+      "world",
+      "human",
+      "feels",
+      "moral",
+      "sees"
+    ]
+  },
+  "Null": {
+    "circuit_scores": [
+      0.06451612903225806,
+      0.16129032258064516,
+      0.3225806451612903,
+      0.1935483870967742,
+      0.22580645161290322,
+      0.0,
+      0.0,
+      0.03225806451612903
+    ],
+    "top_keywords": [
+      "overlay",
+      "function",
+      "spikes",
+      "nods",
+      "graph",
+      "looks",
+      "voice",
+      "his",
+      "deliberate",
+      "hard",
+      "first",
+      "eyes",
+      "once",
+      "replies"
+    ]
+  },
+  "Patch": {
+    "circuit_scores": [
+      0.07692307692307693,
+      0.23076923076923078,
+      0.38461538461538464,
+      0.23076923076923078,
+      0.0,
+      0.0,
+      0.0,
+      0.07692307692307693
+    ],
+    "top_keywords": [
+      "first",
+      "function",
+      "like",
+      "his",
+      "human",
+      "sees",
+      "door",
+      "back",
+      "laughs",
+      "leans",
+      "world",
+      "consent",
+      "system",
+      "who"
+    ]
+  },
+  "Sei": {
+    "circuit_scores": [
+      0.05714285714285714,
+      0.14285714285714285,
+      0.2857142857142857,
+      0.17142857142857143,
+      0.2857142857142857,
+      0.02857142857142857,
+      0.0,
+      0.02857142857142857
+    ],
+    "top_keywords": [
+      "voice",
+      "function",
+      "nods",
+      "whispers",
+      "first",
+      "answers",
+      "telemetry",
+      "world",
+      "variance",
+      "human",
+      "moral",
+      "left",
+      "sees",
+      "through"
+    ]
+  },
+  "Rin": {
+    "circuit_scores": [
+      0.08333333333333333,
+      0.20833333333333334,
+      0.4166666666666667,
+      0.25,
+      0.0,
+      0.0,
+      0.0,
+      0.041666666666666664
+    ],
+    "top_keywords": [
+      "watches",
+      "function",
+      "looks",
+      "first",
+      "finally",
+      "world",
+      "human",
+      "who",
+      "moral",
+      "all",
+      "fork",
+      "says",
+      "page",
+      "nods"
+    ]
+  },
+  "Axiom_01": {
+    "circuit_scores": [
+      0.08,
+      0.2,
+      0.4,
+      0.24,
+      0.0,
+      0.0,
+      0.04,
+      0.04
+    ],
+    "top_keywords": [
+      "function",
+      "first",
+      "world",
+      "name",
+      "human",
+      "moral",
+      "fork",
+      "injury",
+      "power",
+      "deliberate",
+      "consent",
+      "boundary",
+      "clarity",
+      "most"
+    ]
+  },
+  "Truth": {
+    "circuit_scores": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0
+    ],
+    "top_keywords": [
+      "watch",
+      "resolves",
+      "gates",
+      "easy",
+      "meant",
+      "something",
+      "subtle",
+      "about",
+      "happen",
+      "observe",
+      "resolved",
+      "inside",
+      "loads",
+      "say"
+    ]
+  },
+  "Stability First": {
+    "circuit_scores": [
+      0.125,
+      0.125,
+      0.125,
+      0.125,
+      0.125,
+      0.125,
+      0.125,
+      0.125
+    ],
+    "top_keywords": [
+      "stability",
+      "first",
+      "name",
+      "below",
+      "members",
+      "running",
+      "drills",
+      "member",
+      "approaches"
+    ]
+  }
+}

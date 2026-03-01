@@ -1,0 +1,132 @@
+{
+  "meta": {
+    "run_id": "20260213_232815_seed3721599630",
+    "seed": 3721599630,
+    "date": "2026-02-13",
+    "note": "Incremental graph growth (part19) from deterministic dice."
+  },
+  "nodes": [
+    {
+      "id": "Artifact:TaxReceipt",
+      "desc": "Minimal harness attached to a claim; proof you paid fork tax."
+    },
+    {
+      "id": "Artifact:AnchorLedger",
+      "desc": "Ledger of anchors (claim+source+test+status) with expiry."
+    },
+    {
+      "id": "Artifact:SynonymIndex",
+      "desc": "Index of alias/synonym mappings to prevent duplicate nodes."
+    },
+    {
+      "id": "Concept:BoundaryAnchor",
+      "desc": "Anchor type that binds a claim's boundary (non-claims)."
+    },
+    {
+      "id": "Gate:Forkgate",
+      "desc": "Gate that ranks/throttles forks using evidence and receipts."
+    },
+    {
+      "id": "Gate:AuditorsLantern",
+      "desc": "Verification lamp that lights only for reproducible μ."
+    },
+    {
+      "id": "Concept:ForkTax",
+      "desc": "Cost for branching reality without evidence."
+    },
+    {
+      "id": "Concept:#η",
+      "desc": "Unseen constraint/influence inferred from effects."
+    },
+    {
+      "id": "Concept:#μ",
+      "desc": "Action-proof, reproducible evidence."
+    },
+    {
+      "id": "Concept:#ημ",
+      "desc": "Hinge: unseen constraints meet action-proof."
+    }
+  ],
+  "edges": [
+    {
+      "from": "Artifact:TaxReceipt",
+      "verb": "anchors",
+      "to": "Artifact:AnchorLedger"
+    },
+    {
+      "from": "Artifact:AnchorLedger",
+      "verb": "anchors",
+      "to": "Artifact:SynonymIndex"
+    },
+    {
+      "from": "Artifact:SynonymIndex",
+      "verb": "reveals",
+      "to": "Concept:BoundaryAnchor"
+    },
+    {
+      "from": "Concept:BoundaryAnchor",
+      "verb": "anchors",
+      "to": "Gate:Forkgate"
+    },
+    {
+      "from": "Gate:Forkgate",
+      "verb": "verifies",
+      "to": "Gate:AuditorsLantern"
+    },
+    {
+      "from": "Gate:AuditorsLantern",
+      "verb": "routes",
+      "to": "Concept:ForkTax"
+    },
+    {
+      "from": "Concept:ForkTax",
+      "verb": "anchors",
+      "to": "Concept:#η"
+    },
+    {
+      "from": "Concept:#η",
+      "verb": "constrains",
+      "to": "Concept:#μ"
+    },
+    {
+      "from": "Concept:#μ",
+      "verb": "routes",
+      "to": "Concept:#ημ"
+    },
+    {
+      "from": "Artifact:SynonymIndex",
+      "verb": "aliases",
+      "to": "Artifact:AnchorLedger"
+    },
+    {
+      "from": "Concept:BoundaryAnchor",
+      "verb": "anchors",
+      "to": "Concept:#η"
+    },
+    {
+      "from": "Artifact:TaxReceipt",
+      "verb": "pays",
+      "to": "Concept:ForkTax"
+    },
+    {
+      "from": "Gate:Forkgate",
+      "verb": "demands",
+      "to": "Artifact:TaxReceipt"
+    },
+    {
+      "from": "Gate:AuditorsLantern",
+      "verb": "verifies",
+      "to": "Concept:#μ"
+    },
+    {
+      "from": "Protocol:VolatilityTags",
+      "verb": "routes",
+      "to": "Protocol:DeepResearchSwitch"
+    },
+    {
+      "from": "Concept:#ημ",
+      "verb": "anchors",
+      "to": "Concept:BoundaryAnchor"
+    }
+  ]
+}

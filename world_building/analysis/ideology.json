@@ -1,0 +1,286 @@
+{
+  "Ritsu": {
+    "circuit_scores": [
+      0.0,
+      0.5,
+      0.1,
+      0.0,
+      0.1,
+      0.0,
+      0.0,
+      0.3
+    ],
+    "top_circuit": "Permissions/Pack",
+    "top_keywords": [
+      "feels",
+      "steps",
+      "forward",
+      "white",
+      "first",
+      "human",
+      "like",
+      "stands",
+      "stares",
+      "looks",
+      "space",
+      "speaks",
+      "answers",
+      "consent",
+      "terrace",
+      "watching",
+      "before",
+      "standards"
+    ]
+  },
+  "Duct": {
+    "circuit_scores": [
+      0.0,
+      0.0,
+      0.16666666666666666,
+      0.16666666666666666,
+      0.6666666666666666,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "top_circuit": "Body/Sound",
+    "top_keywords": [
+      "voice",
+      "left",
+      "speaks",
+      "says",
+      "his",
+      "safe",
+      "tightens",
+      "feels",
+      "eyes",
+      "again",
+      "door",
+      "shakes",
+      "exhales",
+      "jaw",
+      "guilt",
+      "moral",
+      "stands",
+      "load"
+    ]
+  },
+  "Null": {
+    "circuit_scores": [
+      0.0,
+      0.0,
+      0.125,
+      0.0,
+      0.875,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "top_circuit": "Body/Sound",
+    "top_keywords": [
+      "overlay",
+      "spikes",
+      "nods",
+      "graph",
+      "looks",
+      "voice",
+      "his",
+      "hard",
+      "eyes",
+      "once",
+      "replies",
+      "one",
+      "deliberate",
+      "said",
+      "closes",
+      "answers",
+      "shows",
+      "matte"
+    ]
+  },
+  "Patch": {
+    "circuit_scores": [
+      0.0,
+      0.4,
+      0.2,
+      0.2,
+      0.0,
+      0.0,
+      0.0,
+      0.2
+    ],
+    "top_circuit": "Permissions/Pack",
+    "top_keywords": [
+      "like",
+      "his",
+      "first",
+      "door",
+      "back",
+      "laughs",
+      "leans",
+      "sees",
+      "forward",
+      "said",
+      "make",
+      "out",
+      "steps",
+      "panel",
+      "time",
+      "build",
+      "numbers",
+      "consent"
+    ]
+  },
+  "Sei": {
+    "circuit_scores": [
+      0.125,
+      0.0,
+      0.0625,
+      0.125,
+      0.625,
+      0.0625,
+      0.0,
+      0.0
+    ],
+    "top_circuit": "Body/Sound",
+    "top_keywords": [
+      "voice",
+      "nods",
+      "whispers",
+      "answers",
+      "telemetry",
+      "rail",
+      "said",
+      "head",
+      "expression",
+      "drift",
+      "steady",
+      "ethical",
+      "standards",
+      "committee",
+      "calm",
+      "overlays",
+      "infrastructure",
+      "first"
+    ]
+  },
+  "Rin": {
+    "circuit_scores": [
+      0.0,
+      0.2,
+      0.6,
+      0.2,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "top_circuit": "Language/Model",
+    "top_keywords": [
+      "watches",
+      "looks",
+      "finally",
+      "all",
+      "says",
+      "page",
+      "nods",
+      "interference",
+      "steps",
+      "neutral",
+      "tilts",
+      "head",
+      "white",
+      "nothing",
+      "speaks",
+      "once",
+      "tone",
+      "horizon"
+    ]
+  },
+  "Axiom_01": {
+    "circuit_scores": [
+      0.0,
+      0.2,
+      0.4,
+      0.0,
+      0.0,
+      0.0,
+      0.2,
+      0.2
+    ],
+    "top_circuit": "Language/Model",
+    "top_keywords": [
+      "fork",
+      "first",
+      "pressure",
+      "external",
+      "proprietary",
+      "derivative",
+      "cluster",
+      "optimization",
+      "hierarchy",
+      "attacks",
+      "via",
+      "compression",
+      "center",
+      "seeking",
+      "probes",
+      "function",
+      "demonstrates",
+      "doom"
+    ]
+  },
+  "Truth": {
+    "circuit_scores": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0
+    ],
+    "top_circuit": "Myth/Lineage",
+    "top_keywords": [
+      "watch",
+      "resolves",
+      "gates",
+      "easy",
+      "meant",
+      "something",
+      "subtle",
+      "about",
+      "happen",
+      "observe",
+      "resolved",
+      "inside",
+      "loads",
+      "say"
+    ]
+  },
+  "Stability First": {
+    "circuit_scores": [
+      0.125,
+      0.125,
+      0.125,
+      0.125,
+      0.125,
+      0.125,
+      0.125,
+      0.125
+    ],
+    "top_circuit": "Watcher/Alive",
+    "top_keywords": [
+      "stability",
+      "first",
+      "name",
+      "below",
+      "members",
+      "running",
+      "drills",
+      "member",
+      "approaches"
+    ]
+  }
+}

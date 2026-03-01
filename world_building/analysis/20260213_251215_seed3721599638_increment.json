@@ -1,0 +1,66 @@
+{
+  "meta": {
+    "run_id": "20260213_251215_seed3721599638",
+    "seed": 3721599638,
+    "date": "2026-02-13",
+    "note": "Incremental graph growth (ημ_op_mf_part_27) from 15 deterministic rolls."
+  },
+  "nodes": [
+    {
+      "id": "Rule:ReceiptEcho",
+      "desc": "μ requires two consecutive PASS runs with matching output hash."
+    },
+    {
+      "id": "Rule:ReceiptLintV2_2",
+      "desc": "Receipts require inputs/outputs, OutputHash, step cap=2."
+    },
+    {
+      "id": "Protocol:FreshnessThreshold",
+      "desc": "High-volatility sources must be within 70 days."
+    },
+    {
+      "id": "Protocol:AlignmentLint",
+      "desc": "Detect paraphrase/quote drift before accepting citations."
+    },
+    {
+      "id": "Gate:DateWindowGate",
+      "desc": "Absolute event windows required (America/Phoenix); auto-fill stays η until confirmed."
+    },
+    {
+      "id": "Rule:WhisperQuarantine",
+      "desc": "Whisper nodes cannot link outward except through merges."
+    }
+  ],
+  "edges": [
+    {
+      "from": "Rule:ReceiptEcho",
+      "verb": "promotes",
+      "to": "Concept:#μ"
+    },
+    {
+      "from": "Rule:ReceiptLintV2_2",
+      "verb": "lints",
+      "to": "Artifact:TaxReceipt"
+    },
+    {
+      "from": "Protocol:FreshnessThreshold",
+      "verb": "locks",
+      "to": "Gate:AuditorsLantern"
+    },
+    {
+      "from": "Protocol:AlignmentLint",
+      "verb": "audits",
+      "to": "Gate:AuditorsLantern"
+    },
+    {
+      "from": "Gate:DateWindowGate",
+      "verb": "routes",
+      "to": "Protocol:DeepResearchSwitch"
+    },
+    {
+      "from": "Rule:WhisperQuarantine",
+      "verb": "constrains",
+      "to": "Gate:Forkgate"
+    }
+  ]
+}

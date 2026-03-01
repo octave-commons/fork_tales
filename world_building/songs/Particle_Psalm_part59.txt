@@ -1,0 +1,14 @@
+# Particle Psalm / 粒子の詩篇
+A deterministic sonification ritual: simulation → chord → tape-wobble → receipt.
+
+μ is the trail.
+η is the witness.
+
+Recipe (canonical):
+- input: world_state/simulations/particle_field_part59.json (downsampled trails)
+- mapping: per-frame stats → 4-note chord (minor pentatonic root + color)
+- render: 20 FPS frames, 44.1kHz mono, soft saturation, normalized
+
+Why:
+To transform generational trauma into force without lying about it.
+To keep a ledger that can sing.

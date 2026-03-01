@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Operation Mindfuck Constraints",
+  "type": "object",
+  "required": [
+    "lullaby_bpm",
+    "epic_bpm",
+    "stutter_on",
+    "vocal_style",
+    "cycle_model",
+    "sigil"
+  ],
+  "properties": {
+    "lullaby_bpm": {
+      "type": "integer",
+      "minimum": 40,
+      "maximum": 200
+    },
+    "epic_bpm": {
+      "type": "integer",
+      "minimum": 40,
+      "maximum": 200
+    },
+    "stutter_on": {
+      "type": "string"
+    },
+    "vocal_style": {
+      "type": "string"
+    },
+    "audio_palette": {
+      "type": "string"
+    },
+    "cycle_model": {
+      "type": "string"
+    },
+    "sigil": {
+      "type": "string"
+    },
+    "max_dice_rolls": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 99
+    },
+    "proof_rule": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true
+}

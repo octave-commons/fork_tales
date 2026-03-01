@@ -1,0 +1,27 @@
+{
+  "meta": {
+    "run_id": "20260213_255315_seed3721599641"
+  },
+  "nodes": [
+    {
+      "id": "Role:Archivist",
+      "desc": "Persistent steward required for μ promotions."
+    },
+    {
+      "id": "Rule:RoleSignature",
+      "desc": "Promotion to μ requires role signature hash."
+    }
+  ],
+  "edges": [
+    {
+      "from": "Rule:RoleSignature",
+      "verb": "guards",
+      "to": "Concept:#μ"
+    },
+    {
+      "from": "Role:Archivist",
+      "verb": "signs",
+      "to": "Artifact:TaxReceipt"
+    }
+  ]
+}
