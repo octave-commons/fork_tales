@@ -1,6 +1,7 @@
 import { type AutopilotActionEvent } from "../autopilot";
 import type {
   Catalog,
+  MuseEvent,
   MuseWorkspaceContext,
   SimulationState,
   UIProjectionBundle,
@@ -19,6 +20,11 @@ export interface UseAppPanelConfigsArgs {
   deferredCoreSimulationTuning: CoreSimulationTuning;
   deferredPanelsReady: boolean;
   flyCameraToAnchor: (anchor: WorldAnchorTarget) => void;
+  handleOpenSimulationNexusFromWebGraph: (payload: {
+    nodeId: string;
+    nodeUrl?: string;
+    label: string;
+  }) => void;
   handleMuseWorkspaceBindingsChange: (presenceId: string, fileNodeIds: string[]) => void;
   handleMuseWorkspaceContextChange: (presenceId: string, workspace: MuseWorkspaceContext) => void;
   handleMuseWorkspaceSend: (text: string, musePresenceId: string, workspace: MuseWorkspaceContext) => void;
@@ -28,10 +34,12 @@ export interface UseAppPanelConfigsArgs {
   handleUserPresenceInput: (payload: UserPresenceInputPayload) => void;
   handleWorldInteract: (personId: string, action: "speak" | "pray" | "sing") => Promise<void>;
   interactingPersonId: string | null;
+  isConnected: boolean;
   isRecording: boolean;
   isThinking: boolean;
   museWorkspaceBindings: Record<string, string[]>;
   museWorkspaceContexts: Record<string, MuseWorkspaceContext>;
+  museEvents: MuseEvent[];
   projectionStateByElement: Map<string, UIProjectionElementState>;
   setActiveMusePresenceId: (presenceId: string) => void;
   simulation: SimulationState | null;

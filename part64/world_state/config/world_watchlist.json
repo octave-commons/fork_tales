@@ -1,0 +1,67 @@
+{
+  "record": "eta-mu.world-watchlist.v1",
+  "schema_version": "world.watchlist.v1",
+  "enabled": true,
+  "domains": [
+    {
+      "id": "hormuz",
+      "label": "Hormuz Risk Watch",
+      "seed_urls": [
+        {
+          "url": "https://www.ukmto.org/-/media/ukmto/products/20260301-ukmto_advisory_003-26-update_002.pdf?rev=1d162c1339274c538a9b209c92dc4f0a",
+          "kind": "maritime:ukmto_advisory",
+          "title": "UKMTO Advisory 003-26 Update 002",
+          "source_type": "website"
+        },
+        {
+          "url": "https://www.ukmto.org/advisory/003-26",
+          "kind": "maritime:ukmto_advisory",
+          "title": "UKMTO Advisory 003-26",
+          "source_type": "website"
+        },
+        {
+          "url": "https://www.maritime.dot.gov/msci/2026-001-persian-gulf-strait-hormuz-and-gulf-oman-iranian-illegal-boarding-detention-seizure",
+          "kind": "maritime:marad_advisory",
+          "title": "MARAD MSCI 2026-001",
+          "source_type": "website"
+        },
+        {
+          "url": "https://www.maritime.dot.gov/msci",
+          "kind": "maritime:marad_advisory",
+          "title": "MARAD Maritime Security Communications with Industry",
+          "source_type": "website"
+        },
+        {
+          "url": "https://api.gdeltproject.org/api/v2/doc/doc?format=json&maxrecords=50&mode=ArtList&query=%22Strait%20of%20Hormuz%22",
+          "kind": "maritime:dataset",
+          "title": "GDELT Document API - Strait of Hormuz",
+          "source_type": "dataset"
+        },
+        {
+          "url": "https://acleddata.com/conflict-data/",
+          "kind": "maritime:dataset",
+          "title": "ACLED Conflict Data",
+          "source_type": "dataset"
+        }
+      ]
+    },
+    {
+      "id": "hacker_news",
+      "label": "Hacker News Feed Watch",
+      "seed_urls": [
+        {
+          "url": "https://hnrss.org/frontpage",
+          "kind": "feed:rss",
+          "title": "Hacker News Frontpage RSS",
+          "source_type": "rss"
+        },
+        {
+          "url": "https://hnrss.org/newest?q=security",
+          "kind": "feed:rss",
+          "title": "Hacker News Newest RSS (security query)",
+          "source_type": "rss"
+        }
+      ]
+    }
+  ]
+}

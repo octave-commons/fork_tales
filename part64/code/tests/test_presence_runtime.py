@@ -678,6 +678,156 @@ def test_simulation_exposes_truth_and_view_graph_contracts() -> None:
         assert int(view_semantics.get("projection_bundle_node_count", 0)) >= 1
 
 
+def test_view_graph_contract_counts_crawler_nodes_from_unified_graph() -> None:
+    graph = _synthetic_file_graph(file_count=96, edges_per_file=2)
+    crawler_graph = {
+        "record": "eta-mu.crawler-graph.v1",
+        "generated_at": "2026-01-01T00:00:00+00:00",
+        "field_nodes": [],
+        "crawler_nodes": [
+            {
+                "id": "crawler:atlas",
+                "node_id": "crawler:atlas",
+                "node_type": "crawler",
+                "crawler_kind": "url",
+                "url": "https://example.org/atlas",
+                "x": 0.72,
+                "y": 0.28,
+            },
+            {
+                "id": "crawler:ledger",
+                "node_id": "crawler:ledger",
+                "node_type": "crawler",
+                "crawler_kind": "content",
+                "url": "https://example.org/ledger",
+                "x": 0.76,
+                "y": 0.36,
+            },
+        ],
+        "edges": [
+            {
+                "id": "crawler-edge:atlas-ledger",
+                "source": "crawler:atlas",
+                "target": "crawler:ledger",
+                "kind": "hyperlink",
+                "weight": 0.42,
+            }
+        ],
+        "stats": {"field_count": 0, "crawler_count": 2, "edge_count": 1},
+    }
+
+    simulation = build_simulation_state(
+        {
+            "items": [],
+            "counts": {"audio": 0, "image": 0, "video": 0},
+            "file_graph": graph,
+            "crawler_graph": crawler_graph,
+        },
+        influence_snapshot={"clicks_45s": 0, "file_changes_120s": 0},
+        queue_snapshot={"pending_count": 0, "event_count": 0},
+    )
+
+    truth_graph = simulation.get("truth_graph", {})
+    view_graph = simulation.get("view_graph", {})
+    truth_counts = truth_graph.get("node_type_counts", {})
+    view_counts = view_graph.get("node_type_counts", {})
+
+    assert int(truth_counts.get("crawler", 0)) == 0
+    assert int(view_counts.get("crawler", 0)) >= 2
+
+
+def test_compact_lite_particles_cover_crawler_and_projection_bundle_nodes() -> None:
+    graph = _synthetic_file_graph(file_count=240, edges_per_file=3)
+    _retarget_graph_to_mage_hub(graph)
+
+    crawler_nodes = [
+        {
+            "id": f"crawler:node:{index:02d}",
+            "node_id": f"crawler:node:{index:02d}",
+            "node_type": "crawler",
+            "crawler_kind": "url",
+            "url": f"https://example.org/page/{index:02d}",
+            "x": round(0.6 + ((index % 8) * 0.03), 4),
+            "y": round(0.2 + ((index // 8) * 0.05), 4),
+        }
+        for index in range(24)
+    ]
+    crawler_edges = [
+        {
+            "id": f"crawler-edge:chain:{index:02d}",
+            "source": crawler_nodes[index]["id"],
+            "target": crawler_nodes[(index + 1) % len(crawler_nodes)]["id"],
+            "kind": "hyperlink",
+            "weight": 0.31,
+        }
+        for index in range(len(crawler_nodes))
+    ]
+    crawler_graph = {
+        "record": "eta-mu.crawler-graph.v1",
+        "generated_at": "2026-01-01T00:00:00+00:00",
+        "field_nodes": [],
+        "crawler_nodes": crawler_nodes,
+        "edges": crawler_edges,
+        "stats": {
+            "field_count": 0,
+            "crawler_count": len(crawler_nodes),
+            "edge_count": len(crawler_edges),
+        },
+    }
+
+    simulation = build_simulation_state(
+        {
+            "items": [
+                {
+                    "rel_path": f"docs/projection_input_{index:04d}.md",
+                    "part": "part64",
+                    "kind": "text",
+                }
+                for index in range(48)
+            ],
+            "counts": {"audio": 0, "image": 0, "video": 0},
+            "file_graph": graph,
+            "crawler_graph": crawler_graph,
+        },
+        include_particle_dynamics=False,
+        influence_snapshot={
+            "clicks_45s": 0,
+            "file_changes_120s": 0,
+            "recent_file_paths": ["docs/node_0001.md", "docs/node_0002.md"],
+        },
+        queue_snapshot={"pending_count": 0, "event_count": 0},
+    )
+
+    dynamics = simulation.get("presence_dynamics", {})
+    assert dynamics.get("daimoi_probabilistic", {}).get("backend") == "compact-lite"
+
+    field_particles = dynamics.get("field_particles", [])
+    assigned_graph_node_ids = {
+        str(row.get("graph_node_id", "")).strip()
+        for row in field_particles
+        if isinstance(row, dict) and str(row.get("graph_node_id", "")).strip()
+    }
+    assert assigned_graph_node_ids
+
+    output_graph = simulation.get("file_graph", {})
+    crawler_ids = {
+        str(row.get("id", "")).strip()
+        for row in output_graph.get("crawler_nodes", [])
+        if isinstance(row, dict) and str(row.get("id", "")).strip()
+    }
+    bundle_ids = {
+        str(row.get("id", "")).strip()
+        for row in output_graph.get("nodes", [])
+        if isinstance(row, dict)
+        and bool(row.get("projection_overflow", False))
+        and str(row.get("id", "")).strip()
+    }
+
+    assert bundle_ids
+    assert assigned_graph_node_ids.intersection(crawler_ids)
+    assert assigned_graph_node_ids.intersection(bundle_ids)
+
+
 def test_simulation_projection_is_deterministic_for_same_input() -> None:
     graph = _synthetic_file_graph(file_count=180, edges_per_file=2)
     _retarget_graph_to_mage_hub(graph)

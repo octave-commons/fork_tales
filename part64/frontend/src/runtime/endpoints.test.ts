@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  isLikelyViteDevPort,
   runtimeApiUrl,
   runtimeBaseUrl,
   runtimeWeaverBaseCandidates,
@@ -56,5 +57,14 @@ describe("runtime endpoint helpers", () => {
     expect(candidates).toContain(weaverPrefixed);
     expect(candidates.filter((value) => value === weaverPrefixed)).toHaveLength(1);
     expect(candidates).toContain("http://localhost:8793");
+  });
+
+  it("detects likely vite local dev ports", () => {
+    expect(isLikelyViteDevPort("5173")).toBe(true);
+    expect(isLikelyViteDevPort("5175")).toBe(true);
+    expect(isLikelyViteDevPort("5199")).toBe(true);
+    expect(isLikelyViteDevPort("5200")).toBe(false);
+    expect(isLikelyViteDevPort("8787")).toBe(false);
+    expect(isLikelyViteDevPort("")).toBe(false);
   });
 });

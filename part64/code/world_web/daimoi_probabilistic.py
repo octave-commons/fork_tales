@@ -31,7 +31,18 @@ from .metrics import _clamp01, _safe_float, _safe_int, _stable_ratio
 DAIMOI_PROBABILISTIC_RECORD = "ημ.daimoi-probabilistic.v1"
 DAIMOI_PROBABILISTIC_SCHEMA = "daimoi.probabilistic.v1"
 DAIMOI_BEHAVIOR_DEFAULTS = ("deflect", "diffuse")
-DAIMOI_EMBED_DIMS = 24
+_DAIMOI_ALLOWED_EMBED_DIMS = (24, 32, 64, 128, 256, 512, 768)
+_DAIMOI_EMBED_DIMS_DEFAULT = 32
+_DAIMOI_EMBED_DIMS_ENV = _safe_int(
+    os.getenv("DAIMOI_EMBED_DIMS", str(_DAIMOI_EMBED_DIMS_DEFAULT))
+    or str(_DAIMOI_EMBED_DIMS_DEFAULT),
+    _DAIMOI_EMBED_DIMS_DEFAULT,
+)
+DAIMOI_EMBED_DIMS = (
+    _DAIMOI_EMBED_DIMS_ENV
+    if _DAIMOI_EMBED_DIMS_ENV in _DAIMOI_ALLOWED_EMBED_DIMS
+    else _DAIMOI_EMBED_DIMS_DEFAULT
+)
 DAIMOI_SURFACE_RADIUS = 0.03
 DAIMOI_IMPULSE_REFERENCE = 0.022
 DAIMOI_SIZE_BIAS_BETA = 1.15
@@ -161,6 +172,34 @@ _SEMANTIC_EMBED_OFFLINE_UNTIL = 0.0
 _SEMANTIC_EMBED_FAIL_STREAK = 0
 _SEMANTIC_EMBED_OLLAMA_PROBE_UNTIL = 0.0
 _SEMANTIC_EMBED_OLLAMA_PROBE_OK = False
+_CRAWLER_EMBED_TEXT_LIMIT = max(
+    4_000,
+    min(
+        96_000,
+        _safe_int(os.getenv("CRAWLER_EMBED_TEXT_LIMIT", "24000") or "24000", 24_000),
+    ),
+)
+_CRAWLER_EMBED_CHUNK_CHARS = max(
+    240,
+    min(
+        2_400,
+        _safe_int(os.getenv("CRAWLER_EMBED_CHUNK_CHARS", "920") or "920", 920),
+    ),
+)
+_CRAWLER_EMBED_CHUNK_OVERLAP = max(
+    0,
+    min(
+        _CRAWLER_EMBED_CHUNK_CHARS - 32,
+        _safe_int(os.getenv("CRAWLER_EMBED_CHUNK_OVERLAP", "180") or "180", 180),
+    ),
+)
+_CRAWLER_EMBED_MAX_CHUNKS = max(
+    1,
+    min(
+        32,
+        _safe_int(os.getenv("CRAWLER_EMBED_MAX_CHUNKS", "10") or "10", 10),
+    ),
+)
 
 _ABSORB_BETA_WEIGHTS = (0.62, 0.42, 0.36, 0.28, 0.22, 0.18)
 _ABSORB_TEMP_WEIGHTS = (0.44, 0.34, 0.24, 0.48, 0.29, -0.2)
@@ -758,13 +797,244 @@ def _tokenize(text: str) -> list[str]:
     return [token for token in re.split(r"[^\w]+", str(text).lower()) if token]
 
 
-def _embedding_from_text(text: str, *, dims: int = DAIMOI_EMBED_DIMS) -> list[float]:
+def _clean_embedding_text(value: Any, *, limit: int) -> str:
+    text = str(value or "").replace("\r", "\n")
+    text = re.sub(r"[\t ]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = text.strip()
+    bounded_limit = max(64, int(limit))
+    if len(text) <= bounded_limit:
+        return text
+    return text[:bounded_limit].rstrip()
+
+
+def _chunk_embedding_text(
+    value: Any,
+    *,
+    chunk_chars: int,
+    overlap_chars: int,
+    max_chunks: int,
+    limit: int,
+) -> list[str]:
+    clean = _clean_embedding_text(value, limit=limit)
+    if not clean:
+        return []
+
+    chunk_size = max(128, int(chunk_chars))
+    overlap = max(0, min(chunk_size - 32, int(overlap_chars)))
+    step = max(64, chunk_size - overlap)
+    max_rows = max(1, int(max_chunks))
+
+    chunks: list[str] = []
+    seen_keys: set[str] = set()
+    text_len = len(clean)
+    start = 0
+    while start < text_len and len(chunks) < max_rows:
+        piece = clean[start : start + chunk_size]
+        if start > 0 and len(piece) > 96:
+            left_break = piece.find("\n")
+            if 0 < left_break < 64:
+                piece = piece[left_break + 1 :]
+            elif 0 < piece.find(" ") < 40:
+                piece = piece[piece.find(" ") + 1 :]
+        if start + chunk_size < text_len and len(piece) > 96:
+            right_break = piece.rfind("\n")
+            if len(piece) - right_break < 56 and right_break > 64:
+                piece = piece[:right_break]
+            else:
+                right_space = piece.rfind(" ")
+                if len(piece) - right_space < 32 and right_space > 64:
+                    piece = piece[:right_space]
+        normalized = piece.strip()
+        if normalized:
+            key = normalized.lower()[:256]
+            if key not in seen_keys:
+                seen_keys.add(key)
+                chunks.append(normalized)
+        start += step
+
+    return chunks
+
+
+def _is_chunked_crawler_embedding_candidate(node: dict[str, Any]) -> bool:
+    kind = str(node.get("kind", "")).strip().lower()
+    web_role = str(node.get("web_node_role", "")).strip().lower()
+    if kind.startswith("github:"):
+        return True
+    if web_role == "web:resource":
+        for key in (
+            "summary",
+            "text_excerpt",
+            "analysis_summary",
+            "conversation_markdown",
+        ):
+            if str(node.get(key, "")).strip():
+                return True
+    return False
+
+
+def _crawler_chunk_embedding_model(node: dict[str, Any]) -> str | None:
+    kind = str(node.get("kind", "")).strip().lower()
+    if kind.startswith("github:"):
+        github_model = str(os.getenv("GITHUB_CRAWLER_EMBED_MODEL", "") or "").strip()
+        if github_model:
+            return github_model
+    model = str(os.getenv("CRAWLER_CHUNK_EMBED_MODEL", "") or "").strip()
+    return model or None
+
+
+def _chunked_crawler_semantic_vector(node: dict[str, Any]) -> list[float]:
+    chunk_rows: list[tuple[str, str, float]] = []
+
+    title = _clean_embedding_text(
+        node.get("title", node.get("name", node.get("label", ""))), limit=320
+    )
+    summary = _clean_embedding_text(node.get("summary", ""), limit=1_600)
+    state = _clean_embedding_text(node.get("state", ""), limit=64)
+    repo = _clean_embedding_text(node.get("repo", ""), limit=180)
+    number = _safe_int(node.get("number", 0), 0)
+    kind = _clean_embedding_text(node.get("kind", ""), limit=64)
+
+    summary_parts: list[str] = []
+    if title:
+        summary_parts.append(f"title: {title}")
+    if summary:
+        summary_parts.append(f"summary: {summary}")
+    if kind:
+        summary_parts.append(f"kind: {kind}")
+    if repo:
+        summary_parts.append(f"repo: {repo}")
+    if number > 0:
+        summary_parts.append(f"number: {number}")
+    if state:
+        summary_parts.append(f"state: {state}")
+    if summary_parts:
+        chunk_rows.append(("Summary Chunk", "\n".join(summary_parts), 2.4))
+
+    excerpt_chunks = _chunk_embedding_text(
+        node.get("text_excerpt", ""),
+        chunk_chars=max(280, min(_CRAWLER_EMBED_CHUNK_CHARS, 800)),
+        overlap_chars=max(48, min(_CRAWLER_EMBED_CHUNK_OVERLAP, 140)),
+        max_chunks=max(1, min(_CRAWLER_EMBED_MAX_CHUNKS // 2, 4)),
+        limit=_CRAWLER_EMBED_TEXT_LIMIT,
+    )
+    for index, chunk in enumerate(excerpt_chunks):
+        chunk_rows.append(("Excerpt Chunk", chunk, max(0.6, 1.6 - (index * 0.18))))
+
+    conversation_chunks = _chunk_embedding_text(
+        node.get("conversation_markdown", ""),
+        chunk_chars=_CRAWLER_EMBED_CHUNK_CHARS,
+        overlap_chars=_CRAWLER_EMBED_CHUNK_OVERLAP,
+        max_chunks=max(1, _CRAWLER_EMBED_MAX_CHUNKS),
+        limit=_CRAWLER_EMBED_TEXT_LIMIT,
+    )
+    for index, chunk in enumerate(conversation_chunks):
+        chunk_rows.append(
+            ("Conversation Chunk", chunk, max(0.45, 1.35 - (index * 0.09)))
+        )
+
+    analysis_summary = _clean_embedding_text(
+        node.get("analysis_summary", ""), limit=2_000
+    )
+    if analysis_summary:
+        chunk_rows.append(("Analysis Chunk", analysis_summary, 1.2))
+
+    commit_rows = (
+        node.get("commit_rows", [])
+        if isinstance(node.get("commit_rows", []), list)
+        else []
+    )
+    commit_lines: list[str] = []
+    for row in commit_rows[:64]:
+        if not isinstance(row, dict):
+            continue
+        sha = _clean_embedding_text(row.get("sha", ""), limit=16)
+        author = _clean_embedding_text(row.get("author", ""), limit=120)
+        message = _clean_embedding_text(row.get("message", ""), limit=500)
+        if message:
+            prefix = " ".join(part for part in [sha, author] if part)
+            commit_lines.append(f"{prefix}: {message}" if prefix else message)
+    if commit_lines:
+        commit_text = "\n".join(commit_lines)
+        commit_chunks = _chunk_embedding_text(
+            commit_text,
+            chunk_chars=max(240, min(_CRAWLER_EMBED_CHUNK_CHARS, 700)),
+            overlap_chars=max(32, min(_CRAWLER_EMBED_CHUNK_OVERLAP, 96)),
+            max_chunks=3,
+            limit=max(2_000, _CRAWLER_EMBED_TEXT_LIMIT // 3),
+        )
+        for chunk in commit_chunks:
+            chunk_rows.append(("Commit Chunk", chunk, 1.05))
+
+    diff_rows = (
+        node.get("diff_keyword_hits", [])
+        if isinstance(node.get("diff_keyword_hits", []), list)
+        else []
+    )
+    diff_lines: list[str] = []
+    for row in diff_rows[:80]:
+        if not isinstance(row, dict):
+            continue
+        path = _clean_embedding_text(row.get("file", ""), limit=240)
+        term = _clean_embedding_text(row.get("term", ""), limit=120)
+        if path and term:
+            diff_lines.append(f"{path} matched {term}")
+    if diff_lines:
+        chunk_rows.append(("Diff Chunk", "\n".join(diff_lines), 0.96))
+
+    touched_files = (
+        node.get("filenames_touched", [])
+        if isinstance(node.get("filenames_touched", []), list)
+        else []
+    )
+    file_lines = [
+        _clean_embedding_text(path, limit=240)
+        for path in touched_files[:96]
+        if str(path).strip()
+    ]
+    if file_lines:
+        chunk_rows.append(("Files Chunk", "\n".join(file_lines), 0.88))
+
+    if not chunk_rows:
+        return []
+
+    model = _crawler_chunk_embedding_model(node)
+    vector_sum = [0.0 for _ in range(DAIMOI_EMBED_DIMS)]
+    weight_sum = 0.0
+    for label, text, weight in chunk_rows:
+        if weight <= 0.0:
+            continue
+        payload = _clean_embedding_text(
+            f"{label}\n{text}", limit=_CRAWLER_EMBED_TEXT_LIMIT
+        )
+        if not payload:
+            continue
+        vector = _embedding_from_text(payload, model=model)
+        if not vector:
+            continue
+        vector_unit = _normalize_vector(list(vector), dims=DAIMOI_EMBED_DIMS)
+        for axis in range(min(len(vector_sum), len(vector_unit))):
+            vector_sum[axis] += vector_unit[axis] * float(weight)
+        weight_sum += float(weight)
+
+    if weight_sum <= 1e-12:
+        return []
+    return _normalize_vector(vector_sum, dims=DAIMOI_EMBED_DIMS)
+
+
+def _embedding_from_text(
+    text: str,
+    *,
+    dims: int = DAIMOI_EMBED_DIMS,
+    model: str | None = None,
+) -> list[float]:
     normalized_dims = max(1, int(dims))
+    model_name = str(model or "").strip()
 
     # Attempt semantic embedding via AI runtime if available (e.g. Nomic on NPU)
     try:
         # Use cached wrapper to avoid hitting inference on every tick
-        vector_tuple = _semantic_embedding_cached(str(text))
+        vector_tuple = _semantic_embedding_cached(str(text), model_name)
         if vector_tuple:
             vector = list(vector_tuple)
             # Matryoshka Representation Learning (MRL) support:
@@ -819,7 +1089,7 @@ def _semantic_embed_ollama_reachable() -> bool:
 
 
 @lru_cache(maxsize=4096)
-def _semantic_embedding_cached(text: str) -> tuple[float, ...] | None:
+def _semantic_embedding_cached(text: str, model: str = "") -> tuple[float, ...] | None:
     global _SEMANTIC_EMBED_OFFLINE_UNTIL
     global _SEMANTIC_EMBED_FAIL_STREAK
 
@@ -841,7 +1111,8 @@ def _semantic_embedding_cached(text: str) -> tuple[float, ...] | None:
 
         vec: Any = None
         # _embed_text handles backend selection (NPU/OpenVINO/Torch auto routing)
-        vec = _embed_text(text)
+        chosen_model = str(model or "").strip() or None
+        vec = _embed_text(text, model=chosen_model)
         if vec:
             with _SEMANTIC_EMBED_GUARD_LOCK:
                 _SEMANTIC_EMBED_FAIL_STREAK = 0
@@ -1448,6 +1719,11 @@ def _presence_anchor_map(
 
 
 def _node_semantic_vector(node: dict[str, Any]) -> list[float]:
+    if _is_chunked_crawler_embedding_candidate(node):
+        chunked_vector = _chunked_crawler_semantic_vector(node)
+        if chunked_vector:
+            return chunked_vector
+
     text_parts = [
         str(node.get("name", "")),
         str(node.get("summary", "")),

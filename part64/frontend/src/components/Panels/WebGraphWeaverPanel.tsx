@@ -171,6 +171,79 @@ const MAX_RENDER_NODES = 1300;
 const MAX_RENDER_EDGES = 2400;
 const FRAME_INTERVAL_NORMAL_MS = 33;
 const FRAME_INTERVAL_DENSE_MS = 50;
+const CACHE_KEY = "fork_tales.web_graph_weaver.panel.cache.v1";
+const CACHE_GRAPH_NODE_LIMIT = 1400;
+const CACHE_GRAPH_EDGE_LIMIT = 2600;
+const CACHE_EVENT_LIMIT = 120;
+
+interface WeaverPanelCache {
+  status?: WeaverStatus | null;
+  graph?: WeaverGraph | null;
+  events?: WeaverEvent[];
+  entityState?: WeaverEntityStateEnvelope | null;
+  activeWeaverBase?: string;
+}
+
+interface WebGraphWeaverPanelProps {
+  onOpenSimulationNexus?: (payload: {
+    nodeId: string;
+    nodeUrl?: string;
+    label: string;
+  }) => void;
+}
+
+function hasGraphData(graph: WeaverGraph | null | undefined): boolean {
+  if (!graph || typeof graph !== "object") {
+    return false;
+  }
+  return graph.nodes.length > 0 || graph.edges.length > 0;
+}
+
+function compactGraphForCache(graph: WeaverGraph): WeaverGraph {
+  const sampledNodes = sampleByStride(graph.nodes, CACHE_GRAPH_NODE_LIMIT);
+  const sampledNodeIds = new Set(sampledNodes.map((node) => node.id));
+  const sampledEdges = sampleByStride(
+    graph.edges.filter(
+      (edge) => sampledNodeIds.has(edge.source) && sampledNodeIds.has(edge.target),
+    ),
+    CACHE_GRAPH_EDGE_LIMIT,
+  );
+  return {
+    nodes: sampledNodes,
+    edges: sampledEdges,
+    counts: graph.counts,
+  };
+}
+
+function readWeaverPanelCache(): WeaverPanelCache {
+  if (typeof window === "undefined") {
+    return {};
+  }
+  try {
+    const raw = window.localStorage.getItem(CACHE_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw) as WeaverPanelCache;
+    if (!parsed || typeof parsed !== "object") {
+      return {};
+    }
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
+function writeWeaverPanelCache(cache: WeaverPanelCache): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+  } catch {
+    // ignore storage quota or serialization issues
+  }
+}
 
 function uniqueStrings(values: string[]): string[] {
   const seen = new Set<string>();
@@ -512,7 +585,8 @@ function useGraphLayout(nodes: WeaverNode[], edges: WeaverEdge[]) {
   }, [edges, nodes]);
 }
 
-export function WebGraphWeaverPanel() {
+export function WebGraphWeaverPanel({ onOpenSimulationNexus }: WebGraphWeaverPanelProps = {}) {
+  const cachedState = useMemo(() => readWeaverPanelCache(), []);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const dragRef = useRef<{
     active: boolean;
@@ -530,12 +604,15 @@ export function WebGraphWeaverPanel() {
 
   const statusRefreshRef = useRef(0);
   const reconnectTimerRef = useRef<number | null>(null);
+  const reconnectBackoffMsRef = useRef(1200);
   const wsCandidateIndexRef = useRef(0);
   const wsRef = useRef<WebSocket | null>(null);
 
-  const [status, setStatus] = useState<WeaverStatus | null>(null);
-  const [graph, setGraph] = useState<WeaverGraph>({ nodes: [], edges: [] });
-  const [events, setEvents] = useState<WeaverEvent[]>([]);
+  const [status, setStatus] = useState<WeaverStatus | null>(cachedState.status || null);
+  const [graph, setGraph] = useState<WeaverGraph>(cachedState.graph || { nodes: [], edges: [] });
+  const [events, setEvents] = useState<WeaverEvent[]>(
+    Array.isArray(cachedState.events) ? cachedState.events.slice(-PANEL_EVENT_LIMIT) : [],
+  );
   const [connection, setConnection] = useState<"connecting" | "online" | "offline">("connecting");
   const [seedInput, setSeedInput] = useState(
     "https://opencode.ai/\nhttps://openrouter.ai/\nhttps://www.cisa.gov/known-exploited-vulnerabilities-catalog\nhttps://www.cisa.gov/news-events/cybersecurity-advisories\nhttps://nvd.nist.gov/vuln/search\nhttps://attack.mitre.org/\nhttps://blog.google/threat-analysis-group/\nhttps://unit42.paloaltonetworks.com/",
@@ -549,14 +626,20 @@ export function WebGraphWeaverPanel() {
   const [optOutInput, setOptOutInput] = useState("");
   const [domainFilter, setDomainFilter] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [activeWeaverBase, setActiveWeaverBase] = useState<string>(
-    () => weaverHttpCandidates()[0] || "http://127.0.0.1:8793",
-  );
+  const [activeWeaverBase, setActiveWeaverBase] = useState<string>(() => {
+    const fromCache = String(cachedState.activeWeaverBase || "").trim();
+    if (fromCache) {
+      return fromCache;
+    }
+    return weaverHttpCandidates()[0] || "http://127.0.0.1:8793";
+  });
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [viewScale, setViewScale] = useState(1);
   const [viewOffsetX, setViewOffsetX] = useState(0);
   const [viewOffsetY, setViewOffsetY] = useState(0);
-  const [entityState, setEntityState] = useState<WeaverEntityStateEnvelope | null>(null);
+  const [entityState, setEntityState] = useState<WeaverEntityStateEnvelope | null>(
+    cachedState.entityState || null,
+  );
 
   const visibleGraph = useMemo(() => {
     if (!domainFilter) {
@@ -747,7 +830,13 @@ export function WebGraphWeaverPanel() {
         throw new Error(`graph request failed (${response.status})`);
       }
       const payload = (await response.json()) as { ok: boolean; graph: WeaverGraph };
-      setGraph(payload.graph || { nodes: [], edges: [] });
+      const nextGraph = payload.graph || { nodes: [], edges: [] };
+      setGraph((prev) => {
+        if (!nextDomainFilter && !hasGraphData(nextGraph) && hasGraphData(prev)) {
+          return prev;
+        }
+        return nextGraph;
+      });
     },
     [requestWeaver],
   );
@@ -923,6 +1012,7 @@ export function WebGraphWeaverPanel() {
         if (cancelled) {
           return;
         }
+        reconnectBackoffMsRef.current = 1200;
         wsCandidateIndexRef.current = 0;
         setConnection("online");
       };
@@ -953,7 +1043,12 @@ export function WebGraphWeaverPanel() {
               setEntityState(payload.entities);
             }
             if (payload.graph) {
-              setGraph(payload.graph);
+              setGraph((prev) => {
+                if (!hasGraphData(payload.graph) && hasGraphData(prev)) {
+                  return prev;
+                }
+                return payload.graph as WeaverGraph;
+              });
             }
             if (Array.isArray(payload.recent_events)) {
               setEvents(payload.recent_events);
@@ -998,7 +1093,9 @@ export function WebGraphWeaverPanel() {
         }
         setConnection("offline");
         wsCandidateIndexRef.current += 1;
-        reconnectTimerRef.current = window.setTimeout(connect, 2200);
+        const retryDelayMs = reconnectBackoffMsRef.current;
+        reconnectBackoffMsRef.current = Math.min(15000, Math.round(retryDelayMs * 1.7));
+        reconnectTimerRef.current = window.setTimeout(connect, retryDelayMs);
       };
 
       ws.onerror = () => {
@@ -1026,6 +1123,16 @@ export function WebGraphWeaverPanel() {
       setErrorMessage(message);
     });
   }, [domainFilter, refreshGraph]);
+
+  useEffect(() => {
+    writeWeaverPanelCache({
+      status,
+      graph: compactGraphForCache(graph),
+      events: events.slice(-CACHE_EVENT_LIMIT),
+      entityState,
+      activeWeaverBase,
+    });
+  }, [activeWeaverBase, entityState, events, graph, status]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1517,7 +1624,7 @@ export function WebGraphWeaverPanel() {
         baseOffsetX: viewOffsetX,
         baseOffsetY: viewOffsetY,
       };
-      canvas.setPointerCapture(event.pointerId);
+      canvas.setPointerCapture?.(event.pointerId);
     };
 
     const onPointerMove = (event: PointerEvent) => {
@@ -1532,10 +1639,14 @@ export function WebGraphWeaverPanel() {
 
     const onPointerUp = (event: PointerEvent) => {
       const wasDragging = dragRef.current.active;
+      const movedDistance = Math.hypot(
+        event.clientX - dragRef.current.startX,
+        event.clientY - dragRef.current.startY,
+      );
       dragRef.current.active = false;
-      canvas.releasePointerCapture(event.pointerId);
+      canvas.releasePointerCapture?.(event.pointerId);
 
-      if (!wasDragging) {
+      if (!wasDragging || movedDistance > 8) {
         return;
       }
 
@@ -1562,8 +1673,16 @@ export function WebGraphWeaverPanel() {
         }
       }
 
-      if (bestDistance <= 16) {
+      if (bestDistance <= 16 && bestId) {
         setSelectedNodeId(bestId);
+        const node = renderGraph.nodes.find((row) => row.id === bestId);
+        if (onOpenSimulationNexus && node) {
+          onOpenSimulationNexus({
+            nodeId: node.id,
+            nodeUrl: node.url,
+            label: node.label || node.url || node.id,
+          });
+        }
       }
     };
 
@@ -1578,7 +1697,7 @@ export function WebGraphWeaverPanel() {
       canvas.removeEventListener("pointermove", onPointerMove);
       canvas.removeEventListener("pointerup", onPointerUp);
     };
-  }, [layout, renderGraph.nodes, viewOffsetX, viewOffsetY, viewScale]);
+  }, [layout, onOpenSimulationNexus, renderGraph.nodes, viewOffsetX, viewOffsetY, viewScale]);
 
   const domainOptions = useMemo(() => {
     const fromStatus = Object.keys(status?.domain_distribution || {});
@@ -1588,13 +1707,16 @@ export function WebGraphWeaverPanel() {
   return (
     <section className="card relative overflow-hidden">
       <div className="absolute top-0 left-0 w-1 h-full bg-orange-400 opacity-70" />
-      <h2 className="text-3xl font-bold mb-1">Web Graph Weaver / Web Graph Weaver</h2>
-      <p className="text-muted mb-5 text-sm">
+      <h2 className="mb-1 border-0 pb-0 text-[clamp(1.35rem,1.7vw,1.95rem)] font-bold leading-tight">Web Graph Weaver / Web Graph Weaver</h2>
+      <p className="mb-4 max-w-[74ch] text-muted text-sm leading-snug">
         Ethical crawl instrumentation: discover, validate, fetch, parse, and map relationship growth.
         Includes citation + PDF edges for arXiv and reference cross-links for Wikipedia.
       </p>
 
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5 mb-4">
+      <div
+        className="mb-4 grid gap-2.5"
+        style={{ gridTemplateColumns: "repeat(auto-fit, minmax(9.4rem, 1fr))" }}
+      >
         <div className="mindfuck-card">
           <p className="mindfuck-k">crawl state</p>
           <p className="mindfuck-v capitalize">{status?.state || "stopped"}</p>
@@ -1622,11 +1744,14 @@ export function WebGraphWeaverPanel() {
         </div>
       </div>
 
-      <div className="grid gap-3 xl:grid-cols-[1.7fr_1fr]">
+      <div
+        className="grid gap-3"
+        style={{ gridTemplateColumns: "repeat(auto-fit, minmax(23rem, 1fr))" }}
+      >
         <div className="space-y-3">
           <article className="mindfuck-panel">
-            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-8">
-              <label className="md:col-span-2 xl:col-span-3">
+            <div className="grid gap-2.5">
+              <label>
                 <span className="mindfuck-k">Seed URLs (one per line or comma)</span>
                 <textarea
                   value={seedInput}
@@ -1635,99 +1760,107 @@ export function WebGraphWeaverPanel() {
                 />
               </label>
 
-              <label>
-                <span className="mindfuck-k">max depth</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={8}
-                  value={maxDepth}
-                  onChange={(event) => setMaxDepth(Number(event.target.value || 0))}
-                  className="mindfuck-input mt-1"
-                />
-              </label>
+              <div
+                className="grid gap-2"
+                style={{ gridTemplateColumns: "repeat(auto-fit, minmax(8.2rem, 1fr))" }}
+              >
+                <label>
+                  <span className="mindfuck-k">max depth</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={8}
+                    value={maxDepth}
+                    onChange={(event) => setMaxDepth(Number(event.target.value || 0))}
+                    className="mindfuck-input mt-1"
+                  />
+                </label>
 
-              <label>
-                <span className="mindfuck-k">max nodes</span>
-                <input
-                  type="number"
-                  min={100}
-                  max={50000}
-                  value={maxNodes}
-                  onChange={(event) => setMaxNodes(Number(event.target.value || 100))}
-                  className="mindfuck-input mt-1"
-                />
-              </label>
+                <label>
+                  <span className="mindfuck-k">max nodes</span>
+                  <input
+                    type="number"
+                    min={100}
+                    max={50000}
+                    value={maxNodes}
+                    onChange={(event) => setMaxNodes(Number(event.target.value || 100))}
+                    className="mindfuck-input mt-1"
+                  />
+                </label>
 
-              <label>
-                <span className="mindfuck-k">parallel fetchers</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={24}
-                  value={concurrency}
-                  onChange={(event) => setConcurrency(Number(event.target.value || 1))}
-                  className="mindfuck-input mt-1"
-                />
-              </label>
+                <label>
+                  <span className="mindfuck-k">parallel fetchers</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={24}
+                    value={concurrency}
+                    onChange={(event) => setConcurrency(Number(event.target.value || 1))}
+                    className="mindfuck-input mt-1"
+                  />
+                </label>
 
-              <label>
-                <span className="mindfuck-k">max per host</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={12}
-                  value={maxPerHost}
-                  onChange={(event) => setMaxPerHost(Number(event.target.value || 1))}
-                  className="mindfuck-input mt-1"
-                />
-              </label>
+                <label>
+                  <span className="mindfuck-k">max per host</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={12}
+                    value={maxPerHost}
+                    onChange={(event) => setMaxPerHost(Number(event.target.value || 1))}
+                    className="mindfuck-input mt-1"
+                  />
+                </label>
 
-              <label>
-                <span className="mindfuck-k">entity walkers</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={24}
-                  value={entityCount}
-                  onChange={(event) => setEntityCount(Number(event.target.value || 0))}
-                  className="mindfuck-input mt-1"
-                />
-              </label>
+                <label>
+                  <span className="mindfuck-k">entity walkers</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={24}
+                    value={entityCount}
+                    onChange={(event) => setEntityCount(Number(event.target.value || 0))}
+                    className="mindfuck-input mt-1"
+                  />
+                </label>
+              </div>
             </div>
 
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button type="button" className="mindfuck-action-btn" onClick={() => postControl("start").catch((err) => setFriendlyError(err))}>
+            <div
+              className="mt-3 grid gap-2"
+              style={{ gridTemplateColumns: "repeat(auto-fit, minmax(9.5rem, 1fr))" }}
+            >
+              <button type="button" className="mindfuck-action-btn w-full" onClick={() => postControl("start").catch((err) => setFriendlyError(err))}>
                 Start Crawl
               </button>
-              <button type="button" className="mindfuck-action-btn" onClick={() => postControl("pause").catch((err) => setFriendlyError(err))}>
+              <button type="button" className="mindfuck-action-btn w-full" onClick={() => postControl("pause").catch((err) => setFriendlyError(err))}>
                 Pause
               </button>
-              <button type="button" className="mindfuck-action-btn" onClick={() => postControl("resume").catch((err) => setFriendlyError(err))}>
+              <button type="button" className="mindfuck-action-btn w-full" onClick={() => postControl("resume").catch((err) => setFriendlyError(err))}>
                 Resume
               </button>
-              <button type="button" className="mindfuck-action-btn" onClick={() => postControl("stop").catch((err) => setFriendlyError(err))}>
+              <button type="button" className="mindfuck-action-btn w-full" onClick={() => postControl("stop").catch((err) => setFriendlyError(err))}>
                 Stop
               </button>
-              <button type="button" className="mindfuck-action-btn" onClick={() => bootstrap().catch((err) => setFriendlyError(err))}>
+              <button type="button" className="mindfuck-action-btn w-full" onClick={() => bootstrap().catch((err) => setFriendlyError(err))}>
                 Refresh
               </button>
-              <button type="button" className="mindfuck-action-btn" onClick={() => postEntityControl("start").catch((err) => setFriendlyError(err))}>
+              <button type="button" className="mindfuck-action-btn w-full" onClick={() => postEntityControl("start").catch((err) => setFriendlyError(err))}>
                 Start Entities
               </button>
-              <button type="button" className="mindfuck-action-btn" onClick={() => postEntityControl("pause").catch((err) => setFriendlyError(err))}>
+              <button type="button" className="mindfuck-action-btn w-full" onClick={() => postEntityControl("pause").catch((err) => setFriendlyError(err))}>
                 Pause Entities
               </button>
-              <button type="button" className="mindfuck-action-btn" onClick={() => postEntityControl("resume").catch((err) => setFriendlyError(err))}>
+              <button type="button" className="mindfuck-action-btn w-full" onClick={() => postEntityControl("resume").catch((err) => setFriendlyError(err))}>
                 Resume Entities
               </button>
-              <button type="button" className="mindfuck-action-btn" onClick={() => postEntityControl("configure").catch((err) => setFriendlyError(err))}>
+              <button type="button" className="mindfuck-action-btn w-full" onClick={() => postEntityControl("configure").catch((err) => setFriendlyError(err))}>
                 Apply Entity Config
               </button>
             </div>
 
-            <div className="mt-3 grid gap-2 md:grid-cols-[1fr_auto]">
-              <div>
+            <div className="mt-3 flex flex-wrap items-end gap-2">
+              <div className="min-w-[12rem] flex-[1_1_15rem]">
                 <span className="mindfuck-k">Opt-out domain</span>
                 <input
                   value={optOutInput}
@@ -1738,15 +1871,15 @@ export function WebGraphWeaverPanel() {
               </div>
               <button
                 type="button"
-                className="mindfuck-action-btn self-end"
+                className="mindfuck-action-btn shrink-0"
                 onClick={() => addOptOutDomain().catch((err) => setFriendlyError(err))}
               >
                 Add Opt-Out
               </button>
             </div>
 
-            <div className="mt-3 grid gap-2 md:grid-cols-[1fr_auto]">
-              <div>
+            <div className="mt-3 flex flex-wrap items-end gap-2">
+              <div className="min-w-[10rem] flex-[1_1_12rem]">
                 <span className="mindfuck-k">interaction delta</span>
                 <input
                   type="number"
@@ -1760,7 +1893,7 @@ export function WebGraphWeaverPanel() {
               </div>
               <button
                 type="button"
-                className="mindfuck-action-btn self-end"
+                className="mindfuck-action-btn shrink-0"
                 onClick={() => selectedNode?.url && interactWithNode(selectedNode.url).catch((err) => setFriendlyError(err))}
                 disabled={!selectedNode?.url}
               >
@@ -1796,7 +1929,7 @@ export function WebGraphWeaverPanel() {
             <div className="relative rounded-xl overflow-hidden border border-[rgba(102,217,239,0.38)] bg-[rgba(24,25,20,0.96)]">
               <canvas ref={canvasRef} className="block w-full h-[420px]" />
               <div className="absolute top-2 left-2 text-[10px] text-[#66d9ef] bg-[rgba(31,32,29,0.78)] px-2 py-1 rounded">
-                wheel = zoom, drag = pan, click node = highlight path
+                wheel = zoom, drag = pan, click url node = highlight path + open simulation nexus
               </div>
             </div>
 
@@ -1822,6 +1955,22 @@ export function WebGraphWeaverPanel() {
                       {shortText(selectedNode.analysis_summary, 240)}
                     </p>
                   )}
+                  <div className="pt-1">
+                    <button
+                      type="button"
+                      className="mindfuck-action-btn"
+                      onClick={() => {
+                        onOpenSimulationNexus?.({
+                          nodeId: selectedNode.id,
+                          nodeUrl: selectedNode.url,
+                          label: selectedNode.label || selectedNode.url || selectedNode.id,
+                        });
+                      }}
+                      disabled={!onOpenSimulationNexus}
+                    >
+                      Open In Simulation
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -1859,7 +2008,10 @@ export function WebGraphWeaverPanel() {
 
           <article className="mindfuck-panel">
             <h3 className="mindfuck-subhead">Crawl Status</h3>
-            <ul className="space-y-1.5 text-xs text-ink">
+            <ul
+              className="grid gap-x-3 gap-y-1 text-xs text-ink"
+              style={{ gridTemplateColumns: "repeat(auto-fit, minmax(10.8rem, 1fr))" }}
+            >
               <li>- discovered: {status?.metrics?.discovered ?? 0}</li>
               <li>- fetched: {status?.metrics?.fetched ?? 0}</li>
               <li>- skipped: {status?.metrics?.skipped ?? 0}</li>

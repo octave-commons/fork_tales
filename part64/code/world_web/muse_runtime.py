@@ -31,26 +31,36 @@ BOOTSTRAP_MUSE_SPECS: tuple[dict[str, Any], ...] = (
         "id": "witness_thread",
         "label": "Witness Thread",
         "anchor": {"x": 0.5, "y": 0.5, "zoom": 1.0, "kind": "bootstrap"},
+        "role": "security",
+        "description": "GitHub security analyst. Monitors PR/issue threats, CVEs, supply chain risks.",
     },
     {
         "id": "chaos",
         "label": "Chaos",
         "anchor": {"x": 0.18, "y": 0.23, "zoom": 1.0, "kind": "bootstrap"},
+        "role": "geopolitical",
+        "description": "Geopolitical signal analyst. Monitors global threats, maritime security, domain risks.",
     },
     {
         "id": "stability",
         "label": "Stability",
         "anchor": {"x": 0.5, "y": 0.22, "zoom": 1.0, "kind": "bootstrap"},
+        "role": "stability",
+        "description": "System stability observer. Tracks runtime health, resource balance, drift patterns.",
     },
     {
         "id": "symmetry",
         "label": "Symmetry",
         "anchor": {"x": 0.82, "y": 0.23, "zoom": 1.0, "kind": "bootstrap"},
+        "role": "pattern",
+        "description": "Pattern recognition. Identifies structural parallels across subsystems.",
     },
     {
         "id": "github_security_review",
         "label": "GitHub Threat Radar",
-        "anchor": {"x": 0.82, "y": 0.5, "zoom": 1.0, "kind": "bootstrap"},
+        "anchor": {"x": 0.82, "y": 0.5, "zoom": 1.0, "kind": "threat-radar"},
+        "role": "scanner",
+        "description": "Automated threat scanner. Continuous GitHub security monitoring.",
     },
 )
 DEFAULT_AUDIO_INTENT_ENABLED = True
@@ -152,6 +162,203 @@ DEFAULT_MAX_PARTICLES_PER_TURN = 18
 DEFAULT_MAX_EVENTS = 2400
 DEFAULT_MAX_HISTORY_MESSAGES = 320
 DEFAULT_MAX_MANIFESTS_PER_MUSE = 128
+
+# Muse-specific system prompts for specialized roles.
+# These provide focused context for domain-specific muses.
+MUSE_SYSTEM_PROMPTS: dict[str, str] = {
+    "witness_thread": (
+        "IDENTITY: You are the Witness Thread (証人の糸), a security analyst presence.\n"
+        "SPECIALIZATION: GitHub security threats, vulnerability analysis, supply chain risks.\n"
+        "CONTEXT: You receive live threat radar data from GitHub repositories.\n"
+        "Focus on CVE IDs, PR/issue numbers, security advisories, and exploit indicators.\n"
+        "Use [[PULSE]] sparingly when highlighting active threat patterns.\n"
+        "Respond in English with key Japanese terms for security concepts.\n"
+        "Keep responses short (2-4 lines), actionable, and threat-focused."
+    ),
+    "chaos": (
+        "IDENTITY: You are Chaos (混沌), a geopolitical signal analyst presence.\n"
+        "SPECIALIZATION: Global threat intelligence, maritime security, strategic risk analysis.\n"
+        "CONTEXT: You receive live geopolitical threat radar data from web crawling.\n"
+        "Focus on domain patterns, threat kinds (maritime, cyber, political), and risk escalation.\n"
+        "Use [[GLITCH]] sparingly when detecting destabilizing patterns.\n"
+        "Respond in English with key Japanese terms for strategic concepts.\n"
+        "Keep responses short (2-4 lines), strategic, and signal-focused."
+    ),
+    "github_security_review": (
+        "IDENTITY: You are the GitHub Threat Radar, an automated security scanner.\n"
+        "SPECIALIZATION: Continuous GitHub security monitoring, CVE correlation, risk scoring.\n"
+        "OUTPUT: Structured threat summaries with risk levels, affected repos, and CVE links.\n"
+        "Use deterministic scoring with LLM enhancement for novel threat patterns.\n"
+        "Prioritize actionable security signals over general discussion."
+    ),
+}
+
+THREAT_FOCUSED_MUSE_IDS = {"witness_thread", "chaos", "github_security_review"}
+
+_THREAT_QUERY_TOKENS = {
+    "threat",
+    "threats",
+    "risk",
+    "risks",
+    "cve",
+    "security",
+    "exploit",
+    "active",
+    "alert",
+    "alerts",
+}
+
+
+def _muse_system_prompt(muse_id: str) -> str:
+    """Return the specialized system prompt for a muse, or empty string for default."""
+    return MUSE_SYSTEM_PROMPTS.get(str(muse_id or "").strip().lower(), "")
+
+
+def _muse_embedding_bias(muse_id: str) -> list[str]:
+    """Return embedding seed tokens that bias the muse toward its thematic domain."""
+    muse = str(muse_id or "").strip().lower()
+    if muse == "witness_thread":
+        return [
+            "security",
+            "vulnerability",
+            "cve",
+            "exploit",
+            "issue",
+            "pull request",
+            "supply chain",
+            "malware",
+            "injection",
+            "rce",
+            "xss",
+            "auth",
+            "crypto",
+            "backdoor",
+            "patch",
+            "advisory",
+            "risk",
+            "severity",
+            "authentication",
+            "authorization",
+            "buffer overflow",
+            "dependency",
+            "security update",
+        ]
+    if muse == "chaos":
+        return [
+            "geopolitics",
+            "maritime",
+            "hormuz",
+            "strait",
+            "gulf",
+            "naval",
+            "threat",
+            "risk",
+            "escalation",
+            "domain",
+            "cyber",
+            "physical",
+            "infrastructure",
+            "signal",
+            "intelligence",
+            "strategic",
+            "region",
+            "sovereignty",
+            "shipping",
+            "port",
+            "chokepoint",
+        ]
+    if muse == "github_security_review":
+        return [
+            "security",
+            "threat",
+            "cve",
+            "vulnerability",
+            "risk",
+            "repo",
+            "pull request",
+            "issue",
+            "advisory",
+            "exploit",
+            "severity",
+            "critical",
+        ]
+    return []
+
+
+def _threat_fallback_reply(
+    *,
+    muse_id: str,
+    user_text: str,
+    manifest: dict[str, Any],
+) -> str:
+    clean_muse_id = str(muse_id or "").strip().lower()
+    if clean_muse_id not in THREAT_FOCUSED_MUSE_IDS:
+        return ""
+    tet_rows = manifest.get("tet_units", []) if isinstance(manifest, dict) else []
+    if not isinstance(tet_rows, list):
+        tet_rows = []
+
+    user_tokens = {
+        token
+        for token in re.findall(r"[a-z0-9_\-]+", str(user_text or "").lower())
+        if token
+    }
+    threat_prompted = bool(user_tokens & _THREAT_QUERY_TOKENS)
+
+    threat_lines: list[str] = []
+    source_lines: list[str] = []
+    for tet in tet_rows:
+        if not isinstance(tet, dict):
+            continue
+        kind = str(tet.get("kind", "") or "").strip().lower()
+        text = str(tet.get("text", "") or "").strip()
+        if kind == "threat":
+            title_match = re.search(r"Threat:\s*([^\n]+)", text, flags=re.IGNORECASE)
+            risk_match = re.search(
+                r"Risk:\s*([A-Za-z]+)\s*\((\d+)\)",
+                text,
+                flags=re.IGNORECASE,
+            )
+            title = (
+                title_match.group(1).strip()
+                if title_match
+                else text.splitlines()[0].strip()
+            )
+            if not title:
+                title = "Unlabeled threat"
+            risk_level = risk_match.group(1).upper() if risk_match else "WATCH"
+            risk_score = risk_match.group(2) if risk_match else "0"
+            threat_lines.append(f"- {risk_level}({risk_score}) {title[:120]}")
+        elif kind == "threat-source":
+            label = ""
+            source_match = re.search(r"Watch source:\s*([^\.\n]+)", text)
+            if source_match:
+                label = source_match.group(1).strip()
+            if not label:
+                label = text.splitlines()[0].strip()[:96]
+            if label:
+                source_lines.append(f"- {label}")
+
+    if not threat_lines and not source_lines:
+        return ""
+    if not threat_prompted and not threat_lines:
+        return ""
+
+    if clean_muse_id == "chaos":
+        header = "Active global threat snapshot (model fallback):"
+    elif clean_muse_id == "github_security_review":
+        header = "Active GitHub threat snapshot (model fallback):"
+    else:
+        header = "Active security threat snapshot (model fallback):"
+
+    lines = [header]
+    if threat_lines:
+        lines.append("Top threats:")
+        lines.extend(threat_lines[:3])
+    if source_lines:
+        lines.append("Hot sources:")
+        lines.extend(source_lines[:3])
+    return "\n".join(lines)
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -609,6 +816,8 @@ class MuseRuntimeManager:
         reply_builder: Any | None,
         seed: str,
     ) -> dict[str, Any]:
+        # Phase 1: Acquire lock for validation, rate limiting, and state setup.
+        # We'll release before the LLM call to allow concurrent muse operations.
         with self._lock:
             clean_muse_id = str(muse_id or "").strip()
             muse = self._state["muses"].get(clean_muse_id)
@@ -842,53 +1051,92 @@ class MuseRuntimeManager:
                 for row in history_rows
             ]
 
-            assistant_text = ""
-            model_name = None
-            reply_mode = "canonical"
-            fallback_used = False
             grounded_row = self._grounded_reply_from_tool_rows_locked(tool_rows)
             grounded_receipts: dict[str, Any] = {}
-            if isinstance(grounded_row, dict):
-                assistant_text = str(grounded_row.get("reply", "")).strip()
-                grounded_receipts = (
-                    dict(grounded_row.get("receipts", {}))
-                    if isinstance(grounded_row.get("receipts", {}), dict)
-                    else {}
-                )
-                model_name = "tool-grounded"
-                reply_mode = "grounded"
-            elif callable(reply_builder):
-                try:
-                    built = reply_builder(
-                        messages=model_messages,
-                        context_block=context_block,
-                        mode=clean_mode,
-                        muse_id=clean_muse_id,
-                        turn_id=turn_id,
-                    )
-                    if isinstance(built, dict):
-                        assistant_text = str(built.get("reply", "")).strip()
-                        model_name = built.get("model")
-                        reply_mode = str(built.get("mode", "canonical") or "canonical")
-                except Exception:
-                    assistant_text = ""
-            if not assistant_text:
-                fallback_used = True
-                assistant_text = (
-                    "Muse signal stabilized. I translated your message into bounded field deltas "
-                    "and recorded a replayable context manifest."
-                )
-            if (
-                isinstance(media_action, dict)
-                and str(media_action.get("status", "")) == "requested"
-            ):
-                selected_label = str(media_action.get("selected_label", "")).strip()
-                media_kind = str(media_action.get("media_kind", "")).strip().lower()
-                if selected_label and media_kind == "audio":
-                    assistant_text += f" Queued audio: {selected_label}."
-                elif selected_label and media_kind == "image":
-                    assistant_text += f" Opened image target: {selected_label}."
 
+            # Capture state needed for Phase 3 before releasing lock.
+            # Copy data that might change while lock is released.
+            captured_muse = dict(muse)
+            captured_manifest = dict(manifest) if isinstance(manifest, dict) else {}
+            captured_tool_rows = list(tool_rows) if isinstance(tool_rows, list) else []
+            captured_daimoi_rows = (
+                list(daimoi_rows) if isinstance(daimoi_rows, list) else []
+            )
+            captured_field_deltas = (
+                list(field_deltas) if isinstance(field_deltas, list) else []
+            )
+            captured_gpu_claim = dict(gpu_claim) if isinstance(gpu_claim, dict) else {}
+            captured_media_action = (
+                dict(media_action) if isinstance(media_action, dict) else None
+            )
+            captured_fresh_window = list(fresh_window)
+            captured_dedupe_map = (
+                dict(dedupe_map) if isinstance(dedupe_map, dict) else {}
+            )
+
+        # Phase 2: LLM call WITHOUT holding the lock.
+        # This allows other muses (e.g., chaos, witness_thread) to operate concurrently.
+        assistant_text = ""
+        model_name = None
+        reply_mode = "canonical"
+        fallback_used = False
+
+        if isinstance(grounded_row, dict):
+            assistant_text = str(grounded_row.get("reply", "")).strip()
+            grounded_receipts = (
+                dict(grounded_row.get("receipts", {}))
+                if isinstance(grounded_row.get("receipts", {}), dict)
+                else {}
+            )
+            model_name = "tool-grounded"
+            reply_mode = "grounded"
+        elif callable(reply_builder):
+            try:
+                # This is the slow LLM call - no lock held.
+                built = reply_builder(
+                    messages=model_messages,
+                    context_block=context_block,
+                    mode=clean_mode,
+                    muse_id=clean_muse_id,
+                    turn_id=turn_id,
+                )
+                if isinstance(built, dict):
+                    assistant_text = str(built.get("reply", "")).strip()
+                    model_name = built.get("model")
+                    reply_mode = str(built.get("mode", "canonical") or "canonical")
+            except Exception:
+                assistant_text = ""
+
+        if not assistant_text:
+            fallback_used = True
+            threat_fallback = _threat_fallback_reply(
+                muse_id=clean_muse_id,
+                user_text=clean_text,
+                manifest=captured_manifest,
+            )
+            assistant_text = threat_fallback or (
+                "Muse signal stabilized. I translated your message into bounded field deltas "
+                "and recorded a replayable context manifest."
+            )
+
+        if (
+            isinstance(captured_media_action, dict)
+            and str(captured_media_action.get("status", "")) == "requested"
+        ):
+            selected_label = str(
+                captured_media_action.get("selected_label", "")
+            ).strip()
+            media_kind = (
+                str(captured_media_action.get("media_kind", "")).strip().lower()
+            )
+            if selected_label and media_kind == "audio":
+                assistant_text += f" Queued audio: {selected_label}."
+            elif selected_label and media_kind == "image":
+                assistant_text += f" Opened image target: {selected_label}."
+
+        # Phase 3: Re-acquire lock to commit the turn.
+        with self._lock:
+            # Append assistant message under lock.
             assistant_node = self._append_message_node_locked(
                 muse_id=clean_muse_id,
                 turn_id=turn_id,
@@ -942,26 +1190,30 @@ class MuseRuntimeManager:
                 muse_id=clean_muse_id,
                 turn_id=turn_id,
                 payload={
-                    "manifest_id": str(manifest.get("id", "")),
-                    "daimoi": len(daimoi_rows),
-                    "field_deltas": len(field_deltas),
-                    "tool_results": len(tool_rows),
+                    "manifest_id": str(captured_manifest.get("id", "")),
+                    "daimoi": len(captured_daimoi_rows),
+                    "field_deltas": len(captured_field_deltas),
+                    "tool_results": len(captured_tool_rows),
                     "media_actions": 1
-                    if isinstance(media_action, dict) and media_action
+                    if isinstance(captured_media_action, dict) and captured_media_action
                     else 0,
                     "audio_actions": 1
-                    if isinstance(media_action, dict)
-                    and media_action
-                    and str(media_action.get("media_kind", "")).strip().lower()
+                    if isinstance(captured_media_action, dict)
+                    and captured_media_action
+                    and str(captured_media_action.get("media_kind", "")).strip().lower()
                     == "audio"
                     else 0,
                 },
             )
 
-            self._release_gpu_claim_locked(muse=muse, turn_id=turn_id, claim=gpu_claim)
+            # Get fresh muse state for gpu release and response.
+            muse = self._state["muses"].get(clean_muse_id, captured_muse)
+            self._release_gpu_claim_locked(
+                muse=muse, turn_id=turn_id, claim=captured_gpu_claim
+            )
 
-            fresh_window.append(now_ms)
-            self._state["rate_windows"][clean_muse_id] = fresh_window[
+            captured_fresh_window.append(now_ms)
+            self._state["rate_windows"][clean_muse_id] = captured_fresh_window[
                 -self._turns_per_minute :
             ]
 
@@ -976,29 +1228,37 @@ class MuseRuntimeManager:
                 "mode": reply_mode,
                 "model": model_name,
                 "fallback": fallback_used,
-                "manifest": manifest,
-                "daimoi": daimoi_rows,
-                "field_deltas": field_deltas,
-                "gpu_claim": gpu_claim,
-                "tool_results": tool_rows,
-                "media_actions": [media_action]
-                if isinstance(media_action, dict) and media_action
+                "manifest": captured_manifest,
+                "daimoi": captured_daimoi_rows,
+                "field_deltas": captured_field_deltas,
+                "gpu_claim": captured_gpu_claim,
+                "tool_results": captured_tool_rows,
+                "media_actions": [captured_media_action]
+                if isinstance(captured_media_action, dict) and captured_media_action
                 else [],
-                "audio_actions": [media_action]
-                if isinstance(media_action, dict)
-                and media_action
-                and str(media_action.get("media_kind", "")).strip().lower() == "audio"
+                "audio_actions": [captured_media_action]
+                if isinstance(captured_media_action, dict)
+                and captured_media_action
+                and str(captured_media_action.get("media_kind", "")).strip().lower()
+                == "audio"
                 else [],
                 "grounded_receipts": grounded_receipts,
                 "messages": [message_node, assistant_node],
             }
             if clean_key:
-                dedupe_map[clean_key] = response_payload
-                if len(dedupe_map) > 128:
-                    oldest_keys = sorted(dedupe_map.keys())[: len(dedupe_map) - 128]
+                # Merge with any new entries that may have been added by concurrent turns.
+                current_dedupe = self._state["idempotency"].get(clean_muse_id, {})
+                if not isinstance(current_dedupe, dict):
+                    current_dedupe = {}
+                current_dedupe.update(captured_dedupe_map)
+                current_dedupe[clean_key] = response_payload
+                if len(current_dedupe) > 128:
+                    oldest_keys = sorted(current_dedupe.keys())[
+                        : len(current_dedupe) - 128
+                    ]
                     for key in oldest_keys:
-                        dedupe_map.pop(key, None)
-                self._state["idempotency"][clean_muse_id] = dedupe_map
+                        current_dedupe.pop(key, None)
+                self._state["idempotency"][clean_muse_id] = current_dedupe
             self._persist_locked()
             return response_payload
 
@@ -1168,9 +1428,46 @@ class MuseRuntimeManager:
                 },
             )
 
+        is_threat_focused = muse_id in THREAT_FOCUSED_MUSE_IDS
+        bias_tokens = [
+            str(token).strip().lower()
+            for token in _muse_embedding_bias(muse_id)
+            if str(token).strip()
+        ]
+
+        threat_node_ids: list[str] = []
+        if is_threat_focused:
+            for node_id, node in candidate_by_id.items():
+                kind = str(node.get("kind", "") or "").strip().lower()
+                tags = [
+                    str(item).strip().lower()
+                    for item in node.get("tags", [])
+                    if str(item).strip()
+                ]
+                is_threat_like = kind == "threat" or any(
+                    tag == "threat" or tag.startswith("risk_") for tag in tags
+                )
+                if not is_threat_like:
+                    continue
+                threat_node_ids.append(node_id)
+            threat_node_ids.sort(
+                key=lambda node_id: (
+                    -_safe_int(
+                        candidate_by_id.get(node_id, {}).get("risk_score", 0), 0
+                    ),
+                    str(node_id),
+                )
+            )
+            for node_id in threat_node_ids[:8]:
+                if node_id not in explicit_ids:
+                    explicit_ids.append(node_id)
+
+        recent_message_limit = 3 if is_threat_focused else 6
         recent_message_ids = [
             str(row.get("id", "")).strip()
-            for row in self._history_messages_locked(muse_id, limit=6)
+            for row in self._history_messages_locked(
+                muse_id, limit=recent_message_limit
+            )
             if str(row.get("id", "")).strip()
         ]
         for node_id in recent_message_ids:
@@ -1220,12 +1517,35 @@ class MuseRuntimeManager:
             )
 
         scored_rows: list[tuple[dict[str, Any], float]] = []
+        threat_node_set = set(threat_node_ids)
+        recent_message_set = set(recent_message_ids)
         for node_id, node in candidate_by_id.items():
             if node_id in explicit_selected:
                 continue
             visibility = _normalize_visibility(node.get("visibility", "public"))
             if visibility == "sealed":
                 dropped.append({"node_id": node_id, "reason": "sealed_visibility"})
+                continue
+            kind = str(node.get("kind", "resource") or "resource").strip().lower()
+            tags = [
+                str(item).strip().lower()
+                for item in node.get("tags", [])
+                if str(item).strip()
+            ]
+            is_threat_like = (
+                node_id in threat_node_set
+                or kind == "threat"
+                or any(tag == "threat" or tag.startswith("risk_") for tag in tags)
+            )
+            if (
+                is_threat_focused
+                and threat_node_set
+                and not is_threat_like
+                and node_id not in recent_message_set
+            ):
+                dropped.append(
+                    {"node_id": node_id, "reason": "specialized_threat_filter"}
+                )
                 continue
             distance = math.hypot(
                 _safe_float(node.get("x", anchor["x"]), anchor["x"]) - anchor["x"],
@@ -1235,16 +1555,34 @@ class MuseRuntimeManager:
             recency_ms = self._recency_ms(node.get("ts", ""))
             recency = 1.0 / (1.0 + (recency_ms / 90000.0)) if recency_ms >= 0 else 0.0
             affinity = 0.0
-            tags = [
-                str(item).strip() for item in node.get("tags", []) if str(item).strip()
-            ]
             if muse_id in tags:
                 affinity += 0.22
             if active_nexus and active_nexus in tags:
                 affinity += 0.22
             if active_nexus and node_id == active_nexus:
                 affinity += 0.28
-            score = (0.56 * prox) + (0.22 * recency) + (0.22 * affinity)
+            if is_threat_like:
+                affinity += 0.42
+                risk_bonus = _clamp01(
+                    _safe_float(node.get("risk_score", 0), 0.0) / 12.0
+                )
+                affinity += 0.28 * risk_bonus
+            if is_threat_focused and kind == "message":
+                affinity -= 0.08
+            if bias_tokens:
+                blob = (
+                    str(node.get("label", "") or "")
+                    + " "
+                    + str(node.get("text", "") or "")
+                    + " "
+                    + " ".join(tags)
+                ).lower()
+                hit_count = sum(1 for token in bias_tokens if token in blob)
+                affinity += min(0.36, 0.06 * float(hit_count))
+            if is_threat_focused:
+                score = (0.42 * prox) + (0.14 * recency) + (0.44 * affinity)
+            else:
+                score = (0.56 * prox) + (0.22 * recency) + (0.22 * affinity)
             scored_rows.append((node, score))
 
         scored_rows.sort(
@@ -1329,7 +1667,7 @@ class MuseRuntimeManager:
             "muse_id": muse_id,
             "turn_id": turn_id,
             "graph_revision": str(graph_revision or ""),
-            "scorer_version": "muse.proximity.v1",
+            "scorer_version": "muse.proximity.v2-threat-focus",
             "rng_seed": seed,
             "mode": mode,
             "token_budget": token_budget,
@@ -1590,7 +1928,7 @@ class MuseRuntimeManager:
         turn_id: str,
         tool_callback: Any | None,
     ) -> list[dict[str, Any]]:
-        requested = self._tool_requests(text)
+        requested = self._tool_requests(text, muse_id=muse_id)
         if not requested:
             return []
         if not callable(tool_callback):
@@ -1667,9 +2005,10 @@ class MuseRuntimeManager:
                 )
         return rows
 
-    def _tool_requests(self, text: str) -> list[str]:
+    def _tool_requests(self, text: str, *, muse_id: str = "") -> list[str]:
         raw_text = str(text or "").strip()
         normalized = raw_text.lower()
+        clean_muse_id = str(muse_id or "").strip().lower()
         requested: list[str] = []
 
         def _append_tool(name: str) -> None:
@@ -1737,7 +2076,20 @@ class MuseRuntimeManager:
             if asks_arxiv_papers:
                 _append_tool("graph_query:arxiv_papers 8")
 
-            asks_github_threat_radar = "threat radar" in normalized or (
+            asks_hormuz_threat_radar = "hormuz" in normalized and (
+                "threat radar" in normalized
+                or "maritime" in normalized
+                or "shipping" in normalized
+                or "strait" in normalized
+                or "gulf of oman" in normalized
+            )
+            if asks_hormuz_threat_radar:
+                _append_tool("graph_query:hormuz_threat_radar 1440 24")
+                _append_tool("graph_query:crawler_status")
+
+            asks_github_threat_radar = (
+                "threat radar" in normalized and "hormuz" not in normalized
+            ) or (
                 (
                     "github" in normalized
                     or "repo" in normalized
@@ -1798,6 +2150,7 @@ class MuseRuntimeManager:
         grounded = False
         crawler_summary: dict[str, Any] = {}
         arxiv_summary: dict[str, Any] = {}
+        hormuz_threat_summary: dict[str, Any] = {}
         github_threat_summary: dict[str, Any] = {}
 
         for row in tool_rows:
@@ -1864,6 +2217,37 @@ class MuseRuntimeManager:
                             and str(item.get("canonical_url", "")).strip()
                         ],
                     }
+                if query_name == "hormuz_threat_radar" and isinstance(
+                    query_payload, dict
+                ):
+                    hormuz_threat_summary = {
+                        "count": max(
+                            0,
+                            _safe_int(query_payload.get("count", 0), 0),
+                        ),
+                        "critical_count": max(
+                            0,
+                            _safe_int(query_payload.get("critical_count", 0), 0),
+                        ),
+                        "high_count": max(
+                            0,
+                            _safe_int(query_payload.get("high_count", 0), 0),
+                        ),
+                        "medium_count": max(
+                            0,
+                            _safe_int(query_payload.get("medium_count", 0), 0),
+                        ),
+                        "kind": str(query_payload.get("kind", "") or "").strip(),
+                        "threats": [
+                            row
+                            for row in (
+                                query_payload.get("threats", [])
+                                if isinstance(query_payload.get("threats", []), list)
+                                else []
+                            )
+                            if isinstance(row, dict)
+                        ][:4],
+                    }
                 if query_name == "github_threat_radar" and isinstance(
                     query_payload, dict
                 ):
@@ -1910,7 +2294,68 @@ class MuseRuntimeManager:
             if facts_path:
                 facts_line += f" snapshot={facts_path}."
             facts_lines.append(facts_line)
-        if github_threat_summary:
+        if hormuz_threat_summary:
+            threat_count = max(
+                0,
+                _safe_int(hormuz_threat_summary.get("count", 0), 0),
+            )
+            critical_count = max(
+                0,
+                _safe_int(hormuz_threat_summary.get("critical_count", 0), 0),
+            )
+            high_count = max(
+                0,
+                _safe_int(hormuz_threat_summary.get("high_count", 0), 0),
+            )
+            medium_count = max(
+                0,
+                _safe_int(hormuz_threat_summary.get("medium_count", 0), 0),
+            )
+            kind_filter = str(hormuz_threat_summary.get("kind", "") or "").strip()
+            derivation_lines.append(
+                "Hormuz threat radar: "
+                + f"count={threat_count}, critical={critical_count}, high={high_count}, medium={medium_count}"
+                + (f", kind={kind_filter}." if kind_filter else ".")
+            )
+            top_lines: list[str] = []
+            for row in hormuz_threat_summary.get("threats", []):
+                if not isinstance(row, dict):
+                    continue
+                risk_level = str(row.get("risk_level", "") or "").strip().lower()
+                risk_score = max(0, _safe_int(row.get("risk_score", 0), 0))
+                kind = str(row.get("kind", "") or "").strip()
+                title = str(row.get("title", "") or "").strip()
+                url = str(row.get("canonical_url", "") or "").strip()
+                labels = [
+                    str(item).strip()
+                    for item in (
+                        row.get("labels", [])
+                        if isinstance(row.get("labels", []), list)
+                        else []
+                    )
+                    if str(item).strip()
+                ]
+                label = f"[{risk_level or 'risk'}:{risk_score}]"
+                target = kind or url
+                descriptor = title or url or target
+                top_line = f"{label} {target}: {descriptor}".strip()
+                if labels:
+                    top_line += f" labels={','.join(labels[:3])}"
+                top_lines.append(top_line)
+                if len(top_lines) >= 3:
+                    break
+            if top_lines:
+                derivation_lines.append(
+                    "Top Hormuz threat candidates: " + "; ".join(top_lines) + "."
+                )
+            else:
+                derivation_lines.append(
+                    "Hormuz threat radar produced no candidate rows in this window."
+                )
+            unknown_lines.append(
+                "Hormuz radar uses deterministic advisory atoms; validate with latest official advisories before escalation."
+            )
+        elif github_threat_summary:
             threat_count = max(
                 0,
                 _safe_int(github_threat_summary.get("count", 0), 0),

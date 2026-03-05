@@ -118,6 +118,18 @@ export const PANEL_ANCHOR_PRESETS: Record<string, PanelAnchorPreset> = {
     pinnedByDefault: true,
     anchorId: "witness_thread",
   },
+  "nexus.ui.muse_radar.witness_thread": {
+    kind: "node",
+    worldSize: "m",
+    pinnedByDefault: true,
+    anchorId: "witness_thread",
+  },
+  "nexus.ui.muse_radar.chaos": {
+    kind: "node",
+    worldSize: "m",
+    pinnedByDefault: true,
+    anchorId: "chaos",
+  },
   "nexus.ui.inspiration_atlas": {
     kind: "cluster",
     worldSize: "m",

@@ -341,9 +341,12 @@ function WorldPanelsViewportInner({
   const [paneLocks, setPaneLocks] = useState<
     Partial<Record<"primary" | "secondary" | "tertiary", string>>
   >({});
-  const [paneCountPreference, setPaneCountPreference] = useState<1 | 2 | 3>(3);
+  const [paneCountPreference, setPaneCountPreference] = useState<1 | 2 | 3>(1);
   const [detailsPanelId, setDetailsPanelId] = useState<string | null>(null);
-  const [isPresenceRailCollapsed, setIsPresenceRailCollapsed] = useState(() => viewportWidth < 1180);
+  const [isPresenceRailCollapsed, setIsPresenceRailCollapsed] = useState(true);
+  const [showToolbarTools, setShowToolbarTools] = useState(false);
+  const [showRailFilters, setShowRailFilters] = useState(false);
+  const [showRailStacks, setShowRailStacks] = useState(false);
   const [presenceQuery, setPresenceQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<OperationalState | "all">("all");
   const [seamDrag, setSeamDrag] = useState<null | {
@@ -376,12 +379,30 @@ function WorldPanelsViewportInner({
   const hoveredTrayIconIndexRef = useRef<number | null>(null);
   const hoveredTrayIconTargetRef = useRef<number | null>(null);
   const hoveredTrayIconFrameRef = useRef<number | null>(null);
+  const railCollapseTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (viewportWidth < 1120 && !isPresenceRailCollapsed) {
       setIsPresenceRailCollapsed(true);
     }
   }, [isPresenceRailCollapsed, viewportWidth]);
+
+  useEffect(() => {
+    if (!isPresenceRailCollapsed) {
+      return;
+    }
+    setShowToolbarTools(false);
+    setShowRailFilters(false);
+    setShowRailStacks(false);
+  }, [isPresenceRailCollapsed]);
+
+  useEffect(() => {
+    return () => {
+      if (railCollapseTimerRef.current !== null) {
+        window.clearTimeout(railCollapseTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     seamDragRef.current = seamDrag;
@@ -1358,6 +1379,28 @@ function WorldPanelsViewportInner({
     applyTrayPanelScaleDelta(previousTrayId, trayPanelId);
   }, [applyTrayPanelScaleDelta, trayPanelId]);
 
+  const clearRailCollapseTimer = useCallback(() => {
+    if (railCollapseTimerRef.current !== null) {
+      window.clearTimeout(railCollapseTimerRef.current);
+      railCollapseTimerRef.current = null;
+    }
+  }, []);
+
+  const openPresenceRail = useCallback((options?: { showStacks?: boolean }) => {
+    clearRailCollapseTimer();
+    setIsPresenceRailCollapsed(false);
+    if (options?.showStacks) {
+      setShowRailStacks(true);
+    }
+  }, [clearRailCollapseTimer]);
+
+  const schedulePresenceRailCollapse = useCallback((delayMs = 760) => {
+    clearRailCollapseTimer();
+    railCollapseTimerRef.current = window.setTimeout(() => {
+      setIsPresenceRailCollapsed(true);
+    }, delayMs);
+  }, [clearRailCollapseTimer]);
+
   const movePanelToTray = useCallback((panelId: string) => {
     if (trayPanelId === panelId) {
       setTrayPanelId(null);
@@ -1672,7 +1715,7 @@ function WorldPanelsViewportInner({
                 title="show situational controls"
                 onClick={() => setDetailsPanelId(panelId)}
               >
-                more
+                controls
               </button>
             </>
           ) : (
@@ -1691,18 +1734,10 @@ function WorldPanelsViewportInner({
               <button
                 type="button"
                 className="world-focus-action"
-                title="raise rank priority"
-                onClick={() => onAdjustPanelCouncilRank(panelId, 1)}
+                title="guide camera toward this panel anchor"
+                onClick={() => guidePanelThroughGlass(panel, anchor)}
               >
-                +rank
-              </button>
-              <button
-                type="button"
-                className="world-focus-action"
-                title="lower rank priority"
-                onClick={() => onAdjustPanelCouncilRank(panelId, -1)}
-              >
-                -rank
+                cue
               </button>
               <button
                 type="button"
@@ -1721,8 +1756,29 @@ function WorldPanelsViewportInner({
                 title={detailsOpen ? "hide situational controls" : "show situational controls"}
                 onClick={() => setDetailsPanelId((prev) => (prev === panelId ? null : panelId))}
               >
-                {detailsOpen ? "less" : "more"}
+                {detailsOpen ? "hide" : "controls"}
               </button>
+
+              {detailsOpen ? (
+                <button
+                  type="button"
+                  className="world-focus-action"
+                  title="raise rank priority"
+                  onClick={() => onAdjustPanelCouncilRank(panelId, 1)}
+                >
+                  +rank
+                </button>
+              ) : null}
+              {detailsOpen ? (
+                <button
+                  type="button"
+                  className="world-focus-action"
+                  title="lower rank priority"
+                  onClick={() => onAdjustPanelCouncilRank(panelId, -1)}
+                >
+                  -rank
+                </button>
+              ) : null}
 
               {detailsOpen ? (
                 <button
@@ -1769,16 +1825,6 @@ function WorldPanelsViewportInner({
                   {panel.id === GLASS_VIEWPORT_PANEL_ID
                     ? "always"
                     : isPinned ? "unpin" : "pin"}
-                </button>
-              ) : null}
-              {detailsOpen ? (
-                <button
-                  type="button"
-                  className="world-focus-action"
-                  title="guide camera toward this panel anchor"
-                  onClick={() => guidePanelThroughGlass(panel, anchor)}
-                >
-                  guide
                 </button>
               ) : null}
               {detailsOpen && anchor ? (
@@ -1966,15 +2012,11 @@ function WorldPanelsViewportInner({
 
         <div className="world-smart-card-actions" data-panel-interactive="true">
           <button type="button" onClick={focusTrayPanel}>focus primary</button>
-          <button type="button" onClick={() => onAdjustPanelCouncilRank(panelId, 1)}>move up</button>
-          <button type="button" onClick={() => onAdjustPanelCouncilRank(panelId, -1)}>move down</button>
           <button
             type="button"
-            onClick={() => togglePanelGlassMode(panel, anchor)}
+            onClick={() => guidePanelThroughGlass(panel, anchor)}
           >
-            {panel.id === GLASS_VIEWPORT_PANEL_ID
-              ? "glass fixed"
-              : paneMode === "glass" ? "panel" : "glass"}
+            cue
           </button>
           <button
             type="button"
@@ -1985,20 +2027,6 @@ function WorldPanelsViewportInner({
           >
             {jobBusy ? "running" : "job"}
           </button>
-          <button
-            type="button"
-            onClick={() => guidePanelThroughGlass(panel, anchor)}
-          >
-            guide
-          </button>
-          {anchor ? (
-            <button
-              type="button"
-              onClick={() => onFlyCameraToAnchor(anchor)}
-            >
-              inspect
-            </button>
-          ) : null}
           <button type="button" onClick={dismissTrayPanel}>hide</button>
         </div>
 
@@ -2052,6 +2080,7 @@ function WorldPanelsViewportInner({
     const panelState = panelWindowStateById[panelId] ?? { open: true, minimized: false };
     const panelStateLabel = panelState.open ? (panelState.minimized ? "min" : "open") : "closed";
     const anchor = anchorByPanelId.get(panelId) ?? null;
+    const jobBusy = Boolean(jobBusyByPanelId[panelId]);
     const operationalMeta = operationalMetaByPanelId.get(panelId);
     const operationalState = operationalMeta?.state ?? "running";
     const operationalReason = operationalMeta?.reason ?? "no detail";
@@ -2082,15 +2111,26 @@ function WorldPanelsViewportInner({
           >
             focus
           </button>
-          <button type="button" title="raise rank" onClick={() => onAdjustPanelCouncilRank(panelId, 1)}>+rank</button>
-          <button type="button" title="lower rank" onClick={() => onAdjustPanelCouncilRank(panelId, -1)}>-rank</button>
-          <button type="button" title="open as tray card" onClick={() => movePanelToTray(panelId)}>tray</button>
-          <button type="button" title="remove pin" onClick={() => onTogglePanelPin(panelId)}>unpin</button>
           {anchor ? (
-            <button type="button" title="guide camera" onDoubleClick={() => guidePanelThroughGlass(panel, anchor)} onClick={() => onFlyCameraToAnchor(anchor)}>
-              look
+            <button
+              type="button"
+              title="guide camera"
+              onClick={() => guidePanelThroughGlass(panel, anchor)}
+            >
+              cue
             </button>
           ) : null}
+          <button
+            type="button"
+            title="run presence job"
+            onClick={() => {
+              void runPresenceJob(panel);
+            }}
+            disabled={jobBusy}
+          >
+            {jobBusy ? "..." : "job"}
+          </button>
+          <button type="button" title="remove pin" onClick={() => onTogglePanelPin(panelId)}>unpin</button>
         </div>
       </article>
     );
@@ -2102,6 +2142,7 @@ function WorldPanelsViewportInner({
     const panelState = panelWindowStateById[panelId] ?? { open: true, minimized: false };
     const panelStateLabel = panelState.open ? (panelState.minimized ? "min" : "open") : "closed";
     const anchor = anchorByPanelId.get(panelId) ?? null;
+    const jobBusy = Boolean(jobBusyByPanelId[panelId]);
     const operationalMeta = operationalMetaByPanelId.get(panelId);
     const operationalState = operationalMeta?.state ?? "running";
     const operationalReason = operationalMeta?.reason ?? "no detail";
@@ -2133,15 +2174,26 @@ function WorldPanelsViewportInner({
           >
             focus
           </button>
-          <button type="button" title="raise rank" onClick={() => onAdjustPanelCouncilRank(panelId, 1)}>+rank</button>
-          <button type="button" title="lower rank" onClick={() => onAdjustPanelCouncilRank(panelId, -1)}>-rank</button>
-          <button type="button" title="pin to tertiary lane" onClick={() => onPinPanelToTertiary(panelId)}>ter</button>
-          <button type="button" title="open as tray card" onClick={() => movePanelToTray(panelId)}>tray</button>
           {anchor ? (
-            <button type="button" title="guide camera" onDoubleClick={() => guidePanelThroughGlass(panel, anchor)} onClick={() => onFlyCameraToAnchor(anchor)}>
-              look
+            <button
+              type="button"
+              title="guide camera"
+              onClick={() => guidePanelThroughGlass(panel, anchor)}
+            >
+              cue
             </button>
           ) : null}
+          <button
+            type="button"
+            title="run presence job"
+            onClick={() => {
+              void runPresenceJob(panel);
+            }}
+            disabled={jobBusy}
+          >
+            {jobBusy ? "..." : "job"}
+          </button>
+          <button type="button" title="pin to tertiary lane" onClick={() => onPinPanelToTertiary(panelId)}>ter</button>
         </div>
       </article>
     );
@@ -2150,12 +2202,6 @@ function WorldPanelsViewportInner({
   return (
     <section className="world-council-root" aria-label="council ranked window manager">
       <header className="world-council-toolbar">
-        <div>
-          <p className="world-council-kicker">presence operating rail</p>
-          <p className="world-council-title">
-            one card per presence · drag vertical seams to resize lanes · double click seams to collapse
-          </p>
-        </div>
         <div className="world-council-toolbar-actions" data-panel-interactive="true">
           <div className="world-council-pane-toggle-group">
             {([1, 2, 3] as const).map((count) => (
@@ -2171,27 +2217,37 @@ function WorldPanelsViewportInner({
               </button>
             ))}
           </div>
-          {runtimeConfigPanelVisible ? (
+          <button
+            type="button"
+            onClick={() => setShowToolbarTools((prev) => !prev)}
+            className={`world-council-edit-btn ${showToolbarTools ? "world-council-edit-btn-on" : ""}`}
+            title="toggle toolbar tools"
+          >
+            {showToolbarTools ? "hide" : "tools"}
+          </button>
+          {runtimeConfigPanelVisible && showToolbarTools ? (
             <button
               type="button"
               onClick={focusRuntimeConfigPanel}
               className={`world-council-edit-btn ${selectedPanelId === RUNTIME_CONFIG_PANEL_ID ? "world-council-edit-btn-on" : ""}`}
               title="open runtime config panel"
             >
-              config
+              cfg
             </button>
           ) : null}
-          <button
-            type="button"
-            onClick={onToggleEditMode}
-            className={`world-council-edit-btn ${isEditMode ? "world-council-edit-btn-on" : ""}`}
-          >
-            {isEditMode ? "editing rank" : "edit rank"}
-          </button>
+          {showToolbarTools ? (
+            <button
+              type="button"
+              onClick={onToggleEditMode}
+              className={`world-council-edit-btn ${isEditMode ? "world-council-edit-btn-on" : ""}`}
+            >
+              {isEditMode ? "rank on" : "rank"}
+            </button>
+          ) : null}
         </div>
       </header>
 
-      <div className="world-council-shell">
+      <div className={`world-council-shell ${isPresenceRailCollapsed ? "world-council-shell-rail-collapsed" : "world-council-shell-rail-expanded"}`}>
         <div
           className={`world-council-grid ${primaryExpanded ? "world-council-grid-primary-expanded" : ""} ${primarySolo ? "world-council-grid-primary-solo" : ""}`}
           style={viewportWidth >= 1100 ? { gridTemplateColumns } : undefined}
@@ -2240,22 +2296,69 @@ function WorldPanelsViewportInner({
         <aside
           className={`world-unity-sidebar ${isPresenceRailCollapsed ? "world-unity-sidebar-collapsed" : ""}`}
           aria-label="presence task tray sidebar"
+          onMouseEnter={() => openPresenceRail({ showStacks: true })}
+          onMouseLeave={() => schedulePresenceRailCollapse()}
+          onFocusCapture={() => openPresenceRail({ showStacks: true })}
+          onBlurCapture={(event) => {
+            const nextTarget = event.relatedTarget;
+            if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) {
+              schedulePresenceRailCollapse();
+            }
+          }}
+          onPointerDownCapture={() => openPresenceRail({ showStacks: true })}
         >
           <header className="world-unity-sidebar-header">
-            <div>
-              <p>presence rail</p>
-              <p>{iconPanels.length} shown · {sortedPanels.length} total</p>
-            </div>
-            <button
-              type="button"
-              className="world-unity-sidebar-toggle"
-              onClick={() => setIsPresenceRailCollapsed((prev) => !prev)}
-            >
-              {isPresenceRailCollapsed ? "expand" : "collapse"}
-            </button>
+            {isPresenceRailCollapsed ? (
+              <div className="world-unity-sidebar-header-collapsed" data-panel-interactive="true">
+                <button
+                  type="button"
+                  className="world-unity-sidebar-toggle"
+                  aria-label="expand rail"
+                  onClick={() => openPresenceRail({ showStacks: true })}
+                >
+                  {">"}
+                </button>
+              </div>
+            ) : (
+              <>
+                <div>
+                  <p>presence rail</p>
+                  <p>{iconPanels.length}/{sortedPanels.length}</p>
+                </div>
+                <div className="world-unity-sidebar-header-actions" data-panel-interactive="true">
+                  <button
+                    type="button"
+                    className="world-unity-sidebar-toggle"
+                    aria-label="filters"
+                    onClick={() => setShowRailFilters((prev) => !prev)}
+                  >
+                    {showRailFilters ? "hide filters" : "filters"}
+                  </button>
+                  <button
+                    type="button"
+                    className="world-unity-sidebar-toggle"
+                    aria-label="stacks"
+                    onClick={() => setShowRailStacks((prev) => !prev)}
+                  >
+                    {showRailStacks ? "hide stacks" : "stacks"}
+                  </button>
+                  <button
+                    type="button"
+                    className="world-unity-sidebar-toggle"
+                    aria-label="collapse rail"
+                    onClick={() => {
+                      clearRailCollapseTimer();
+                      setIsPresenceRailCollapsed(true);
+                    }}
+                  >
+                    x
+                  </button>
+                </div>
+              </>
+            )}
           </header>
 
-          {!isPresenceRailCollapsed ? (
+          {!isPresenceRailCollapsed && showRailFilters ? (
             <div className="world-unity-sidebar-filters" data-panel-interactive="true">
               <label className="world-unity-search-wrap">
                 <span>find</span>
@@ -2285,15 +2388,17 @@ function WorldPanelsViewportInner({
                 ))}
               </div>
             </div>
-          ) : (
+          ) : null}
+
+          {!isPresenceRailCollapsed && !showRailFilters ? (
             <div className="world-unity-sidebar-mini-summary">
               <span>run {panelStatusCounts.running}</span>
               <span>pause {panelStatusCounts.paused}</span>
               <span>block {panelStatusCounts.blocked}</span>
             </div>
-          )}
+          ) : null}
 
-          {!isPresenceRailCollapsed ? (
+          {!isPresenceRailCollapsed && showRailStacks ? (
             <section className="world-pinned-pile" aria-label="pinned panel deck">
               <header className="world-pinned-pile-header">
                 <p>pinned deck</p>
@@ -2313,7 +2418,7 @@ function WorldPanelsViewportInner({
             </section>
           ) : null}
 
-          {!isPresenceRailCollapsed ? (
+          {!isPresenceRailCollapsed && showRailStacks ? (
             <section className="world-smart-pile" aria-label="smart card pile">
               <header className="world-smart-pile-header">
                 <p>smart card pile</p>
@@ -2359,11 +2464,17 @@ function WorldPanelsViewportInner({
                     type="button"
                     className={`world-unity-icon ${trayOpen ? "world-unity-icon-active" : ""} ${isPresenceRailCollapsed ? "world-unity-icon-collapsed" : ""}`}
                     style={style}
+                    aria-label={panel.presenceLabel}
                     onMouseEnter={() => scheduleHoveredTrayIconIndex(index)}
                     onMouseLeave={() => scheduleHoveredTrayIconIndex(null)}
                     onFocus={() => scheduleHoveredTrayIconIndex(index)}
                     onBlur={() => scheduleHoveredTrayIconIndex(null)}
-                    onClick={() => movePanelToTray(panel.id)}
+                    onClick={() => {
+                      if (isPresenceRailCollapsed) {
+                        openPresenceRail({ showStacks: true });
+                      }
+                      movePanelToTray(panel.id);
+                    }}
                     onDoubleClick={() => guidePanelThroughGlass(panel, anchor)}
                     title={`${panel.presenceLabel} · ${operationalState} · rank ${rank} · ${operationalReason}`}
                   >

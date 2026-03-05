@@ -208,20 +208,97 @@ function buildWebGraphWeaverPanel(args: BuildPanelConfigsArgs): PanelConfig {
   return {
     id: "nexus.ui.web_graph_weaver",
     fallbackSpan: 6,
-    render: () => renderDeferredPanel(args.deferredPanelsReady, "Web Graph Weaver", <WebGraphWeaverPanel />),
+    render: () => renderDeferredPanel(
+      args.deferredPanelsReady,
+      "Web Graph Weaver",
+      <WebGraphWeaverPanel onOpenSimulationNexus={args.handleOpenSimulationNexusFromWebGraph} />,
+    ),
   };
 }
 
-function buildThreatRadarPanel(args: BuildPanelConfigsArgs): PanelConfig {
-  return {
-    id: "nexus.ui.threat_radar",
-    fallbackSpan: 6,
-    anchorKind: "node",
-    anchorId: "witness_thread",
-    worldSize: "l",
-    pinnedByDefault: true,
-    render: () => renderDeferredPanel(args.deferredPanelsReady, "Threat Radar", <ThreatRadarPanel />),
+function buildThreatRadarMusePanels(args: BuildPanelConfigsArgs): PanelConfig[] {
+  const assignedMuseByMode = {
+    local: "witness_thread",
+    global: "chaos",
+  } as const;
+
+  const buildRadarMuseWorkspacePanel = (
+    musePresenceId: string,
+    chatPanelId: string,
+  ) => {
+    const bindingKey = normalizeMusePresenceId(musePresenceId);
+    const panelState = args.projectionStateByElement.get(chatPanelId) ?? null;
+    const panelSession =
+      args.activeProjection?.chat_sessions?.find(
+        (session) => normalizeMusePresenceId(String(session.presence ?? "")) === bindingKey,
+      )
+      ?? null;
+
+    return (
+      <MusePresencePanel
+        museId={musePresenceId}
+        onSend={args.handleMuseWorkspaceSend}
+        onRecord={args.handleRecord}
+        onTranscribe={args.handleTranscribe}
+        onSendVoice={args.handleSendVoice}
+        isRecording={args.isRecording}
+        isThinking={args.isThinking}
+        voiceInputMeta={args.voiceInputMeta}
+        catalog={args.catalog}
+        simulation={args.simulation}
+        workspaceContext={args.museWorkspaceContexts[bindingKey] ?? null}
+        onWorkspaceContextChange={args.handleMuseWorkspaceContextChange}
+        onWorkspaceBindingsChange={args.handleMuseWorkspaceBindingsChange}
+        chatLensState={panelState}
+        activeChatSession={panelSession}
+        activeMusePresenceId={args.activeMusePresenceId}
+        onMusePresenceChange={args.setActiveMusePresenceId}
+      />
+    );
   };
+
+  return [
+    {
+      id: "nexus.ui.muse_radar.witness_thread",
+      fallbackSpan: 4,
+      anchorKind: "node",
+      anchorId: "witness_thread",
+      worldSize: "m",
+      pinnedByDefault: true,
+      render: () => renderDeferredPanel(
+        args.deferredPanelsReady,
+        "Witness Thread Radar Muse",
+        <ThreatRadarPanel
+          fixedRadarMode="local"
+          assignedMuseByMode={assignedMuseByMode}
+          museEvents={args.museEvents}
+          simulation={args.simulation}
+          isConnected={args.isConnected}
+          museChatPanel={buildRadarMuseWorkspacePanel("witness_thread", "nexus.ui.chat.witness_thread")}
+        />,
+      ),
+    },
+    {
+      id: "nexus.ui.muse_radar.chaos",
+      fallbackSpan: 4,
+      anchorKind: "node",
+      anchorId: "chaos",
+      worldSize: "m",
+      pinnedByDefault: true,
+      render: () => renderDeferredPanel(
+        args.deferredPanelsReady,
+        "Chaos Radar Muse",
+        <ThreatRadarPanel
+          fixedRadarMode="global"
+          assignedMuseByMode={assignedMuseByMode}
+          museEvents={args.museEvents}
+          simulation={args.simulation}
+          isConnected={args.isConnected}
+          museChatPanel={buildRadarMuseWorkspacePanel("chaos", "nexus.ui.chat.chaos")}
+        />,
+      ),
+    },
+  ];
 }
 
 function buildInspirationAtlasPanel(args: BuildPanelConfigsArgs): PanelConfig {
@@ -456,7 +533,7 @@ export function buildPanelConfigs(args: BuildPanelConfigsArgs): PanelConfig[] {
     buildGlassViewportPanel(),
     ...buildMusePresencePanels(args),
     buildWebGraphWeaverPanel(args),
-    buildThreatRadarPanel(args),
+    ...buildThreatRadarMusePanels(args),
     buildInspirationAtlasPanel(args),
     buildEntityVitalsPanel(args),
     buildProjectionLedgerPanel(args),

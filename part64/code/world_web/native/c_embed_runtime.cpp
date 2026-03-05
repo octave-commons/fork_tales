@@ -56,9 +56,15 @@ static bool wants_gpu_device(const std::string& value) {
          probe == "NVIDIA_GPU";
 }
 
+static bool wants_cpu_device(const std::string& value) {
+  const std::string probe = to_upper(value);
+  return probe == "CPU" || probe == "HOST";
+}
+
 static bool is_hardware_device(const std::string& value) {
   const std::string probe = to_upper(value);
-  return probe == "NPU" || probe == "CUDA" || probe == "GPU";
+  return probe == "NPU" || probe == "CUDA" || probe == "GPU" ||
+         probe == "CPU";
 }
 
 static bool env_true(const char* key) {
@@ -242,6 +248,11 @@ struct CEmbedRuntime {
       }
     };
 
+    auto append_cpu_provider = [&]() {
+      selected_device = "CPU";
+      return true;
+    };
+
     bool provider_selected = false;
     if (wanted == "AUTO") {
       provider_selected = append_npu_provider();
@@ -251,6 +262,9 @@ struct CEmbedRuntime {
       if (!provider_selected) {
         provider_selected = append_openvino_gpu_provider();
       }
+      if (!provider_selected) {
+        provider_selected = append_cpu_provider();
+      }
     } else if (wants_npu_device(wanted)) {
       provider_selected = append_npu_provider();
     } else if (wants_gpu_device(wanted)) {
@@ -258,8 +272,11 @@ struct CEmbedRuntime {
       if (!provider_selected) {
         provider_selected = append_openvino_gpu_provider();
       }
+    } else if (wants_cpu_device(wanted)) {
+      provider_selected = append_cpu_provider();
     } else {
-      throw std::runtime_error("unsupported requested_device (expected AUTO|NPU|GPU|CUDA)");
+      throw std::runtime_error(
+          "unsupported requested_device (expected AUTO|NPU|GPU|CUDA|CPU)");
     }
 
     if (!provider_selected) {
@@ -393,6 +410,9 @@ static void ort_log_capture(void* param,
   if (runtime == nullptr || message == nullptr) {
     return;
   }
+  if (to_upper(runtime->selected_device) == "CPU") {
+    return;
+  }
   const std::string text(message);
   if (!message_has_cpu_fallback_signal(text)) {
     return;
@@ -496,7 +516,9 @@ static int run_embed(CEmbedRuntime* runtime,
 
   {
     std::lock_guard<std::mutex> status_lock(runtime->status_lock);
-    if (runtime->deny_cpu_fallback && runtime->cpu_fallback_detected) {
+    const bool enforce_no_cpu_fallback =
+        runtime->deny_cpu_fallback && to_upper(runtime->selected_device) != "CPU";
+    if (enforce_no_cpu_fallback && runtime->cpu_fallback_detected) {
       runtime->last_error = runtime->cpu_fallback_detail.empty()
                                 ? "npu_cpu_fallback_detected"
                                 : std::string("npu_cpu_fallback_detected:") +
@@ -576,7 +598,9 @@ static int run_embed(CEmbedRuntime* runtime,
 
     {
       std::lock_guard<std::mutex> status_lock(runtime->status_lock);
-      if (runtime->deny_cpu_fallback && runtime->cpu_fallback_detected) {
+      const bool enforce_no_cpu_fallback =
+          runtime->deny_cpu_fallback && to_upper(runtime->selected_device) != "CPU";
+      if (enforce_no_cpu_fallback && runtime->cpu_fallback_detected) {
         runtime->last_error = runtime->cpu_fallback_detail.empty()
                                   ? "npu_cpu_fallback_detected"
                                   : std::string("npu_cpu_fallback_detected:") +

@@ -502,27 +502,25 @@ body {
 
 .world-council-shell {
   pointer-events: none;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(248px, 21rem);
-  gap: 0.5rem;
-  align-items: start;
+  position: relative;
+  display: block;
 }
 
 .world-council-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 0.6rem;
+  justify-content: flex-end;
+  gap: 0.4rem;
   border: 1px solid rgba(131, 188, 227, 0.36);
   border-radius: 0.72rem;
-  padding: 0.48rem 0.62rem;
+  padding: 0.24rem 0.34rem;
   background: linear-gradient(180deg, rgba(10, 22, 36, 0.2), rgba(8, 17, 28, 0.16));
   box-shadow: 0 6px 14px rgba(0, 8, 16, 0.2);
 }
 
 .world-council-kicker {
   margin: 0;
-  font-size: 9px;
+  font-size: 8px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: rgba(161, 214, 244, 0.88);
@@ -530,7 +528,7 @@ body {
 
 .world-council-title {
   margin: 0.1rem 0 0;
-  font-size: 11px;
+  font-size: 10px;
   color: rgba(201, 230, 249, 0.92);
 }
 
@@ -539,8 +537,8 @@ body {
   border-radius: 0.45rem;
   background: rgba(13, 29, 44, 0.72);
   color: rgba(198, 229, 247, 0.96);
-  padding: 0.22rem 0.58rem;
-  font-size: 10px;
+  padding: 0.14rem 0.34rem;
+  font-size: 9px;
   text-transform: uppercase;
   letter-spacing: 0.09em;
 }
@@ -736,7 +734,7 @@ body {
 
 .world-focus-title {
   margin: 0.08rem 0 0;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -897,14 +895,14 @@ body {
 
 .world-focus-reason {
   margin: 0.38rem 0.5rem 0;
-  font-size: 11px;
+  font-size: 10px;
   line-height: 1.35;
   color: rgba(183, 216, 240, 0.9);
 }
 
 .world-focus-reason-muted {
   color: rgba(159, 200, 228, 0.84);
-  font-size: 10px;
+  font-size: 9px;
 }
 
 .world-focus-tool-row {
@@ -1152,6 +1150,11 @@ body {
 }
 
 .world-unity-sidebar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 52;
+  width: min(24rem, 34vw);
   min-height: calc(100vh - 20rem);
   max-height: calc(100vh - 12.2rem);
   overflow: hidden;
@@ -1162,7 +1165,9 @@ body {
     linear-gradient(180deg, rgba(8, 19, 31, 0.18), rgba(7, 13, 22, 0.12));
   box-shadow: 0 8px 18px rgba(0, 8, 16, 0.2);
   display: grid;
-  grid-template-rows: auto auto minmax(0, 0.92fr) minmax(0, 0.92fr) minmax(0, auto);
+  grid-template-rows: auto auto minmax(0, 1fr);
+  transition: width 170ms ease, opacity 170ms ease, transform 170ms ease;
+  transform-origin: top right;
 }
 
 .world-unity-sidebar .world-pinned-pile,
@@ -1172,7 +1177,8 @@ body {
 }
 
 .world-unity-sidebar-collapsed {
-  width: min(7.2rem, 22vw);
+  width: 3.4rem;
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .world-unity-sidebar-header {
@@ -1180,12 +1186,33 @@ body {
   justify-content: space-between;
   align-items: center;
   gap: 0.35rem;
-  padding: 0.46rem 0.52rem;
+  padding: 0.24rem 0.26rem;
   border-bottom: 1px solid rgba(132, 188, 221, 0.28);
-  font-size: 9px;
+  font-size: 8px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: rgba(172, 216, 241, 0.93);
+}
+
+.world-unity-sidebar-header-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.18rem;
+}
+
+.world-unity-sidebar-header-collapsed {
+  width: 100%;
+  display: grid;
+  justify-items: center;
+}
+
+.world-unity-sidebar-header-collapsed .world-unity-sidebar-toggle {
+  width: 100%;
+  padding: 0.06rem 0.1rem;
+  font-size: 7px;
+  letter-spacing: 0.06em;
 }
 
 .world-unity-sidebar-toggle {
@@ -1193,8 +1220,8 @@ body {
   border-radius: 0.34rem;
   background: rgba(9, 24, 36, 0.24);
   color: rgba(188, 225, 246, 0.95);
-  padding: 0.08rem 0.34rem;
-  font-size: 9px;
+  padding: 0.06rem 0.24rem;
+  font-size: 8px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -1202,7 +1229,7 @@ body {
 .world-unity-sidebar-filters {
   display: grid;
   gap: 0.28rem;
-  padding: 0.36rem 0.42rem;
+  padding: 0.24rem 0.3rem;
   border-bottom: 1px solid rgba(125, 183, 216, 0.24);
 }
 
@@ -1223,8 +1250,8 @@ body {
   border-radius: 0.34rem;
   background: rgba(9, 24, 36, 0.24);
   color: rgba(207, 233, 250, 0.97);
-  padding: 0.2rem 0.38rem;
-  font-size: 10px;
+  padding: 0.14rem 0.28rem;
+  font-size: 9px;
 }
 
 .world-unity-search-input::placeholder {
@@ -1274,16 +1301,17 @@ body {
 }
 
 .world-unity-icon-strip {
-  padding: 0.42rem;
+  padding: 0.24rem;
   display: grid;
-  gap: 0.28rem;
+  gap: 0.2rem;
   overflow: auto;
   max-height: calc(100vh - 14rem);
   contain: layout style paint;
 }
 
 .world-unity-icon-strip-collapsed {
-  gap: 0.2rem;
+  gap: 0.14rem;
+  padding: 0.1rem;
 }
 
 .world-unity-icon-cluster {
@@ -1296,10 +1324,10 @@ body {
   border-radius: 0.56rem;
   background: linear-gradient(180deg, rgba(10, 25, 38, 0.3), rgba(8, 19, 30, 0.22));
   display: grid;
-  grid-template-columns: 1.62rem minmax(0, 1fr);
-  gap: 0.35rem;
+  grid-template-columns: 1.28rem minmax(0, 1fr);
+  gap: 0.22rem;
   align-items: center;
-  padding: 0.14rem 0.28rem;
+  padding: 0.1rem 0.16rem;
   transform: scale(var(--unity-scale, 1));
   transform-origin: right center;
   transition: transform 130ms ease, border-color 130ms ease, box-shadow 130ms ease;
@@ -1307,9 +1335,10 @@ body {
 }
 
 .world-unity-icon-collapsed {
-  grid-template-columns: 1.62rem;
+  grid-template-columns: 1.16rem;
   justify-content: center;
-  padding-inline: 0.16rem;
+  padding: 0.08rem;
+  border-radius: 999px;
 }
 
 .world-unity-icon:hover,
@@ -1320,8 +1349,8 @@ body {
 }
 
 .world-unity-icon-lens {
-  width: 1.46rem;
-  height: 1.46rem;
+  width: 1.16rem;
+  height: 1.16rem;
   border-radius: 999px;
   position: relative;
   overflow: hidden;
@@ -1372,7 +1401,7 @@ body {
 }
 
 .world-unity-icon-label {
-  font-size: 10px;
+  font-size: 9px;
   letter-spacing: 0.07em;
   text-transform: uppercase;
   color: rgba(194, 226, 246, 0.94);
@@ -1472,8 +1501,8 @@ body {
 
 .world-smart-card-title {
   margin: 0;
-  font-size: 10px;
-  letter-spacing: 0.08em;
+  font-size: 9px;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: rgba(220, 241, 255, 0.95);
   white-space: nowrap;
@@ -1491,7 +1520,7 @@ body {
 .world-smart-card-particles,
 .world-smart-card-reason {
   margin: 0.14rem 0 0;
-  font-size: 10px;
+  font-size: 9px;
   color: rgba(179, 214, 236, 0.9);
 }
 
@@ -1539,8 +1568,8 @@ body {
   border-radius: 0.3rem;
   background: rgba(10, 25, 38, 0.24);
   color: rgba(184, 219, 241, 0.92);
-  padding: 0.08rem 0.34rem;
-  font-size: 9px;
+  padding: 0.06rem 0.24rem;
+  font-size: 8px;
   letter-spacing: 0.07em;
   text-transform: uppercase;
 }
@@ -1622,8 +1651,12 @@ body {
 }
 
 @media (max-width: 1420px) {
-  .world-council-shell {
-    grid-template-columns: minmax(0, 1fr) minmax(230px, 16.8rem);
+  .world-unity-sidebar {
+    width: min(21rem, 38vw);
+  }
+
+  .world-unity-sidebar-collapsed {
+    width: 3.2rem;
   }
 
   .world-council-grid,
@@ -1638,7 +1671,21 @@ body {
 
 @media (max-width: 1100px) {
   .world-council-shell {
-    grid-template-columns: minmax(0, 1fr);
+    display: grid;
+    gap: 0.44rem;
+  }
+
+  .world-unity-sidebar {
+    position: relative;
+    top: auto;
+    right: auto;
+    width: 100%;
+    max-width: none;
+    z-index: 1;
+  }
+
+  .world-unity-sidebar-collapsed {
+    width: 100%;
   }
 
   .world-council-grid,

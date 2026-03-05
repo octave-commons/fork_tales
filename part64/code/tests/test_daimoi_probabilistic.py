@@ -427,6 +427,111 @@ def test_web_objective_profile_recognizes_url_and_resource_nodes() -> None:
     assert 0.0 <= float(profile.get("web_resource_ratio", 0.0)) <= 1.0
 
 
+def test_node_semantic_vector_uses_chunked_weighted_crawler_embedding(
+    monkeypatch: Any,
+) -> None:
+    calls: list[tuple[str, str | None]] = []
+
+    def fake_embed(
+        text: str,
+        *,
+        dims: int = daimoi_module.DAIMOI_EMBED_DIMS,
+        model: str | None = None,
+    ) -> list[float]:
+        calls.append((text, model))
+        vector = [0.0 for _ in range(max(1, int(dims)))]
+        lowered = str(text).lower()
+        if "summary chunk" in lowered:
+            vector[0] = 1.0
+        if "excerpt chunk" in lowered:
+            vector[1] = 1.0
+        if "conversation chunk" in lowered:
+            vector[2] = 1.0
+        if "commit chunk" in lowered:
+            vector[3] = 1.0
+        if "diff chunk" in lowered:
+            vector[4] = 1.0
+        if "files chunk" in lowered:
+            vector[5] = 1.0
+        if model:
+            vector[6] = 1.0
+        if not any(value > 0.0 for value in vector):
+            vector[7] = 1.0
+        return daimoi_module._normalize_vector(vector, dims=max(1, int(dims)))
+
+    monkeypatch.setenv("GITHUB_CRAWLER_EMBED_MODEL", "nomic-embed-text-v1.5")
+    monkeypatch.setattr(daimoi_module, "_embedding_from_text", fake_embed)
+
+    node = {
+        "kind": "github:pr",
+        "title": "fix token validation",
+        "summary": "harden oauth token validation and parser checks",
+        "text_excerpt": "Parser now validates oauth token boundaries for security.",
+        "conversation_markdown": "\n".join(
+            [
+                "## Conversation",
+                "reviewer: token handling still leaks state in edge case.",
+                "author: patched and added regression tests.",
+            ]
+        ),
+        "commit_rows": [
+            {"sha": "abc123", "author": "octocat", "message": "fix token parser"}
+        ],
+        "diff_keyword_hits": [{"file": "src/auth/token_parser.py", "term": "token"}],
+        "filenames_touched": ["src/auth/token_parser.py", "requirements.txt"],
+    }
+
+    vector = daimoi_module._node_semantic_vector(node)
+
+    assert len(vector) == daimoi_module.DAIMOI_EMBED_DIMS
+    assert math.isclose(
+        math.sqrt(sum(float(value) * float(value) for value in vector)),
+        1.0,
+        rel_tol=0.0,
+        abs_tol=1e-6,
+    )
+    assert vector[0] > 0.0
+    assert vector[1] > 0.0
+    assert vector[2] > 0.0
+    assert vector[6] > 0.0
+    assert vector[0] >= vector[5]
+    assert len(calls) >= 4
+    assert all(model == "nomic-embed-text-v1.5" for _, model in calls)
+
+
+def test_node_semantic_vector_keeps_single_pass_for_non_crawler_nodes(
+    monkeypatch: Any,
+) -> None:
+    calls: list[str] = []
+
+    def fake_embed(
+        text: str,
+        *,
+        dims: int = daimoi_module.DAIMOI_EMBED_DIMS,
+        model: str | None = None,
+    ) -> list[float]:
+        del model
+        calls.append(text)
+        vector = [0.0 for _ in range(max(1, int(dims)))]
+        vector[0] = 1.0
+        return daimoi_module._normalize_vector(vector, dims=max(1, int(dims)))
+
+    monkeypatch.setattr(daimoi_module, "_embedding_from_text", fake_embed)
+
+    node = {
+        "name": "witness note",
+        "summary": "lineage continuity",
+        "text_excerpt": "event chain with receipts",
+        "dominant_field": "f2",
+        "dominant_presence": "witness_thread",
+    }
+
+    vector = daimoi_module._node_semantic_vector(node)
+
+    assert len(vector) == daimoi_module.DAIMOI_EMBED_DIMS
+    assert len(calls) == 1
+
+
 def test_job_probabilities_with_crawl_objective_boosts_crawl() -> None:
     baseline = {
         "deliver_message": 0.22,
@@ -1854,6 +1959,104 @@ def test_crawler_interaction_triggers_apply_rate_limit_and_deadline(
     assert "crawler_interaction_accepted" in reasons
     assert "crawler_deadline_exceeded" in reasons
     assert interaction_log_path.exists()
+
+
+def test_crawler_interaction_budget_policy_throttles_per_tick_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    simulation_module._reset_nooi_field_state()
+
+    monkeypatch.setattr(
+        simulation_module,
+        "_SIMULATION_WEAVER_INTERACTION_PER_TICK_CAP",
+        6,
+    )
+
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        simulation_module,
+        "_weaver_interaction_service_ready",
+        lambda _now: True,
+    )
+
+    def _fake_post(url: str, *, delta: float, source: str) -> dict[str, Any]:
+        calls.append(url)
+        return {
+            "ok": True,
+            "interaction": {
+                "ok": True,
+                "url": url,
+                "enqueued": True,
+                "enqueue_reason": "activation_enqueued",
+                "cooldown_remaining_ms": 0,
+            },
+        }
+
+    monkeypatch.setattr(
+        simulation_module,
+        "_post_weaver_entity_interaction",
+        _fake_post,
+    )
+
+    rows: list[dict[str, Any]] = [
+        {
+            "id": "field:crawl-a",
+            "presence_id": "witness_thread",
+            "top_job": "invoke_graph_crawl",
+            "route_node_id": "url:a",
+            "graph_node_id": "url:a",
+            "collision_count": 2,
+            "message_probability": 0.93,
+            "route_probability": 0.89,
+            "age": 4,
+        },
+        {
+            "id": "field:crawl-b",
+            "presence_id": "witness_thread",
+            "top_job": "invoke_graph_crawl",
+            "route_node_id": "url:b",
+            "graph_node_id": "url:b",
+            "collision_count": 1,
+            "message_probability": 0.88,
+            "route_probability": 0.82,
+            "age": 4,
+        },
+    ]
+    crawler_graph = {
+        "crawler_nodes": [
+            {
+                "id": "url:a",
+                "web_node_role": "web:url",
+                "canonical_url": "https://example.org/a",
+            },
+            {
+                "id": "url:b",
+                "web_node_role": "web:url",
+                "canonical_url": "https://example.org/b",
+            },
+        ]
+    }
+
+    summary = simulation_module._apply_crawler_weaver_interaction_triggers(
+        field_particles=rows,
+        crawler_graph=crawler_graph,
+        now_seconds=2000.0,
+        presence_dynamics={
+            "resource_consumption": {
+                "control_budget": {"mode": "minimal", "ratio": 0.05},
+                "queue_ratio": 0.95,
+                "cpu_sentinel_burn_active": False,
+            },
+            "compute_jobs_180s": 52,
+        },
+    )
+
+    policy = summary.get("policy", {}) if isinstance(summary, dict) else {}
+    assert int(policy.get("per_tick_cap", 0)) == 1
+    assert int(summary.get("attempted", 0)) == 1
+    assert int(summary.get("rate_limited", 0)) == 1
+    assert len(calls) == 1
 
 
 def test_advance_simulation_field_particles_applies_policy_tick_signals_and_cap() -> (

@@ -45,11 +45,33 @@ vi.mock("../components/Panels/MythWorld", () => ({
 }));
 
 vi.mock("../components/Panels/WebGraphWeaverPanel", () => ({
-  WebGraphWeaverPanel: () => <div data-testid="lazy-web-graph-panel" />,
+  WebGraphWeaverPanel: (
+    { onOpenSimulationNexus }: { onOpenSimulationNexus?: unknown },
+  ) => (
+    <div
+      data-testid="lazy-web-graph-panel"
+      data-has-open-simulation={typeof onOpenSimulationNexus === "function" ? "yes" : "no"}
+    />
+  ),
 }));
 
 vi.mock("../components/Panels/ThreatRadarPanel", () => ({
-  ThreatRadarPanel: () => <div data-testid="lazy-threat-radar-panel" />,
+  ThreatRadarPanel: ({
+    simulation,
+    isConnected,
+    fixedRadarMode,
+  }: {
+    simulation?: unknown;
+    isConnected?: boolean;
+    fixedRadarMode?: "local" | "global";
+  }) => (
+    <div
+      data-testid={`lazy-threat-radar-panel-${fixedRadarMode ?? "mixed"}`}
+      data-has-simulation={simulation ? "yes" : "no"}
+      data-is-connected={isConnected ? "yes" : "no"}
+      data-radar-mode={fixedRadarMode ?? "mixed"}
+    />
+  ),
 }));
 
 vi.mock("../components/Panels/InspirationAtlasPanel", () => ({
@@ -89,6 +111,7 @@ function createArgs(overrides: Partial<UseAppPanelConfigsArgs> = {}): UseAppPane
     },
     deferredPanelsReady: false,
     flyCameraToAnchor: vi.fn(),
+    handleOpenSimulationNexusFromWebGraph: vi.fn(),
     handleMuseWorkspaceBindingsChange: vi.fn(),
     handleMuseWorkspaceContextChange: vi.fn(),
     handleMuseWorkspaceSend: vi.fn(),
@@ -98,8 +121,10 @@ function createArgs(overrides: Partial<UseAppPanelConfigsArgs> = {}): UseAppPane
     handleUserPresenceInput: vi.fn(),
     handleWorldInteract: vi.fn(async () => undefined),
     interactingPersonId: null,
+    isConnected: false,
     isRecording: false,
     isThinking: false,
+    museEvents: [],
     museWorkspaceBindings: {
       witness_thread: ["file:1", "file:2"],
       chaos: [],
@@ -147,7 +172,8 @@ describe("useAppPanelConfigs", () => {
     expect(panelIds).toContain(GLASS_VIEWPORT_PANEL_ID);
     expect(panelIds).toContain("nexus.ui.chat.witness_thread");
     expect(panelIds).toContain("nexus.ui.runtime_config");
-    expect(panelIds).toContain("nexus.ui.threat_radar");
+    expect(panelIds).toContain("nexus.ui.muse_radar.witness_thread");
+    expect(panelIds).toContain("nexus.ui.muse_radar.chaos");
 
     const dedicated = result.current.find((entry) => entry.id === "nexus.ui.dedicated_views");
     if (!dedicated) {
@@ -217,17 +243,19 @@ describe("useAppPanelConfigs", () => {
     const { result } = renderHook(() => useAppPanelConfigs(createArgs({ deferredPanelsReady: true })));
 
     const webGraphPanel = result.current.find((entry) => entry.id === "nexus.ui.web_graph_weaver");
-    const threatRadarPanel = result.current.find((entry) => entry.id === "nexus.ui.threat_radar");
+    const witnessThreatRadarPanel = result.current.find((entry) => entry.id === "nexus.ui.muse_radar.witness_thread");
+    const chaosThreatRadarPanel = result.current.find((entry) => entry.id === "nexus.ui.muse_radar.chaos");
     const runtimeConfigPanel = result.current.find((entry) => entry.id === "nexus.ui.runtime_config");
     const mythCommonsPanel = result.current.find((entry) => entry.id === "nexus.ui.myth_commons");
-    if (!webGraphPanel || !threatRadarPanel || !runtimeConfigPanel || !mythCommonsPanel) {
+    if (!webGraphPanel || !witnessThreatRadarPanel || !chaosThreatRadarPanel || !runtimeConfigPanel || !mythCommonsPanel) {
       throw new Error("missing deferred panel config");
     }
 
     render(
       <>
         {webGraphPanel.render()}
-        {threatRadarPanel.render()}
+        {witnessThreatRadarPanel.render()}
+        {chaosThreatRadarPanel.render()}
         {runtimeConfigPanel.render()}
         {mythCommonsPanel.render()}
       </>,
@@ -235,10 +263,15 @@ describe("useAppPanelConfigs", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("lazy-web-graph-panel")).toBeTruthy();
-      expect(screen.getByTestId("lazy-threat-radar-panel")).toBeTruthy();
+      expect(screen.getByTestId("lazy-threat-radar-panel-local")).toBeTruthy();
+      expect(screen.getByTestId("lazy-threat-radar-panel-global")).toBeTruthy();
       expect(screen.getByTestId("lazy-runtime-config-panel")).toBeTruthy();
       expect(screen.getByTestId("lazy-myth-panel")).toBeTruthy();
     });
+
+    expect(screen.getByTestId("lazy-web-graph-panel").getAttribute("data-has-open-simulation")).toBe("yes");
+    expect(screen.getByTestId("lazy-threat-radar-panel-local").getAttribute("data-is-connected")).toBe("no");
+    expect(screen.getByTestId("lazy-threat-radar-panel-global").getAttribute("data-radar-mode")).toBe("global");
   });
 
   it("renders autopilot event details", () => {

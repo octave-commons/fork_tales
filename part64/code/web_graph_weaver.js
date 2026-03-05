@@ -7,11 +7,38 @@ const { WebSocketServer } = require("ws");
 
 const HOST = process.env.WEAVER_HOST || "127.0.0.1";
 const PORT = Number.parseInt(process.env.WEAVER_PORT || "8793", 10);
-const MAX_EVENTS = Number.parseInt(process.env.WEAVER_MAX_EVENTS || "1200", 10);
-const DEFAULT_MAX_DEPTH = Number.parseInt(process.env.WEAVER_MAX_DEPTH || "3", 10);
-const DEFAULT_MAX_NODES = Number.parseInt(process.env.WEAVER_MAX_NODES || "10000", 10);
+const MAX_EVENTS = Number.parseInt(process.env.WEAVER_MAX_EVENTS || "200000", 10);
+const DEFAULT_MAX_DEPTH = Number.parseInt(process.env.WEAVER_MAX_DEPTH || "12", 10);
+const DEFAULT_MAX_NODES = Number.parseInt(process.env.WEAVER_MAX_NODES || "2000000", 10);
+const MAX_NODES_HARD_LIMIT_RAW = Number.parseInt(
+  process.env.WEAVER_MAX_NODES_HARD_LIMIT || "50000000",
+  10,
+);
+const MAX_NODES_HARD_LIMIT =
+  Number.isFinite(MAX_NODES_HARD_LIMIT_RAW) && MAX_NODES_HARD_LIMIT_RAW >= 500000
+    ? MAX_NODES_HARD_LIMIT_RAW
+    : 50000000;
+const MAX_NODES_HEADROOM_RAW = Number.parseInt(
+  process.env.WEAVER_MAX_NODES_HEADROOM || "65536",
+  10,
+);
+const MAX_NODES_HEADROOM =
+  Number.isFinite(MAX_NODES_HEADROOM_RAW) && MAX_NODES_HEADROOM_RAW >= 128
+    ? MAX_NODES_HEADROOM_RAW
+    : 65536;
+const MAX_NODES_AUTOGROW_ENABLED = !["0", "false", "off"].includes(
+  String(process.env.WEAVER_MAX_NODES_AUTOGROW_ENABLED || "1").trim().toLowerCase(),
+);
+const MAX_NODES_AUTOGROW_STEP_RAW = Number.parseInt(
+  process.env.WEAVER_MAX_NODES_AUTOGROW_STEP || String(Math.max(4096, MAX_NODES_HEADROOM)),
+  10,
+);
+const MAX_NODES_AUTOGROW_STEP =
+  Number.isFinite(MAX_NODES_AUTOGROW_STEP_RAW) && MAX_NODES_AUTOGROW_STEP_RAW >= 128
+    ? MAX_NODES_AUTOGROW_STEP_RAW
+    : Math.max(4096, MAX_NODES_HEADROOM);
 const DEFAULT_CONCURRENCY = Number.parseInt(
-  process.env.WEAVER_CONCURRENCY || "2",
+  process.env.WEAVER_CONCURRENCY || "32",
   10,
 );
 const DEFAULT_DELAY_MS = Number.parseInt(
@@ -30,7 +57,11 @@ const ARXIV_API_MIN_DELAY_MS = Number.parseInt(
   10,
 );
 const ARXIV_API_MAX_RESULTS = Number.parseInt(
-  process.env.WEAVER_ARXIV_API_MAX_RESULTS || "25",
+  process.env.WEAVER_ARXIV_API_MAX_RESULTS || "400",
+  10,
+);
+const FEED_ENTRY_LINK_MAX = Number.parseInt(
+  process.env.WEAVER_FEED_ENTRY_LINK_MAX || "2000",
   10,
 );
 const ROBOTS_CACHE_TTL_MS = Number.parseInt(
@@ -38,19 +69,19 @@ const ROBOTS_CACHE_TTL_MS = Number.parseInt(
   10,
 );
 const MAX_SEMANTIC_REFERENCES_PER_PAGE = Number.parseInt(
-  process.env.WEAVER_MAX_SEMANTIC_REFERENCES_PER_PAGE || "120",
+  process.env.WEAVER_MAX_SEMANTIC_REFERENCES_PER_PAGE || "2000",
   10,
 );
 const MAX_ARXIV_REFERENCES_PER_PAGE = Number.parseInt(
-  process.env.WEAVER_MAX_ARXIV_REFERENCES_PER_PAGE || "70",
+  process.env.WEAVER_MAX_ARXIV_REFERENCES_PER_PAGE || "1500",
   10,
 );
 const MAX_WIKIPEDIA_REFERENCES_PER_PAGE = Number.parseInt(
-  process.env.WEAVER_MAX_WIKIPEDIA_REFERENCES_PER_PAGE || "90",
+  process.env.WEAVER_MAX_WIKIPEDIA_REFERENCES_PER_PAGE || "1500",
   10,
 );
 const DEFAULT_MAX_REQUESTS_PER_HOST = Number.parseInt(
-  process.env.WEAVER_MAX_REQUESTS_PER_HOST || "2",
+  process.env.WEAVER_MAX_REQUESTS_PER_HOST || "16",
   10,
 );
 const NODE_COOLDOWN_MS = Number.parseInt(
@@ -58,21 +89,21 @@ const NODE_COOLDOWN_MS = Number.parseInt(
   10,
 );
 const CONTENT_HASH_INDEX_MAX_RAW = Number.parseInt(
-  process.env.WEAVER_CONTENT_HASH_INDEX_MAX || "60000",
+  process.env.WEAVER_CONTENT_HASH_INDEX_MAX || "2000000",
   10,
 );
 const CONTENT_HASH_INDEX_MAX =
-  Number.isFinite(CONTENT_HASH_INDEX_MAX_RAW) && CONTENT_HASH_INDEX_MAX_RAW >= 2048
+  Number.isFinite(CONTENT_HASH_INDEX_MAX_RAW) && CONTENT_HASH_INDEX_MAX_RAW >= 65536
     ? CONTENT_HASH_INDEX_MAX_RAW
-    : 60000;
+    : 2000000;
 const DOMAIN_STATE_MAX_RAW = Number.parseInt(
-  process.env.WEAVER_DOMAIN_STATE_MAX || "4000",
+  process.env.WEAVER_DOMAIN_STATE_MAX || "200000",
   10,
 );
 const DOMAIN_STATE_MAX =
-  Number.isFinite(DOMAIN_STATE_MAX_RAW) && DOMAIN_STATE_MAX_RAW >= 128
+  Number.isFinite(DOMAIN_STATE_MAX_RAW) && DOMAIN_STATE_MAX_RAW >= 2048
     ? DOMAIN_STATE_MAX_RAW
-    : 4000;
+    : 200000;
 const ACTIVATION_THRESHOLD = Number.parseFloat(
   process.env.WEAVER_ACTIVATION_THRESHOLD || "1.0",
 );
@@ -83,7 +114,7 @@ const ENTITY_VISIT_ACTIVATION_DELTA = Number.parseFloat(
   process.env.WEAVER_ENTITY_VISIT_ACTIVATION_DELTA || "0.28",
 );
 const DEFAULT_ENTITY_COUNT = Number.parseInt(
-  process.env.WEAVER_ENTITY_COUNT || "4",
+  process.env.WEAVER_ENTITY_COUNT || "32",
   10,
 );
 const ENTITY_TICK_MS = Number.parseInt(
@@ -178,6 +209,25 @@ const USER_AGENT =
 
 const PART_ROOT = path.join(__dirname, "..");
 const WORLD_STATE_DIR = path.join(PART_ROOT, "world_state");
+const WORLD_WATCHLIST_PATH = String(
+  process.env.WEAVER_WORLD_WATCHLIST_PATH
+    || path.join(WORLD_STATE_DIR, "config", "world_watchlist.json"),
+).trim();
+const WORLD_WATCHLIST_ENABLED = !["0", "false", "off"].includes(
+  String(process.env.WEAVER_WORLD_WATCHLIST_ENABLED || "1").trim().toLowerCase(),
+);
+const WEAVER_CRAWL_AUTOSTART = !["0", "false", "off", "no"].includes(
+  String(process.env.WEAVER_CRAWL_AUTOSTART || "1").trim().toLowerCase(),
+);
+const WEAVER_CRAWL_AUTOSTART_GRAPH_SEED_LIMIT_RAW = Number.parseInt(
+  process.env.WEAVER_CRAWL_AUTOSTART_GRAPH_SEED_LIMIT || "5000",
+  10,
+);
+const WEAVER_CRAWL_AUTOSTART_GRAPH_SEED_LIMIT =
+  Number.isFinite(WEAVER_CRAWL_AUTOSTART_GRAPH_SEED_LIMIT_RAW)
+  && WEAVER_CRAWL_AUTOSTART_GRAPH_SEED_LIMIT_RAW >= 0
+    ? clamp(WEAVER_CRAWL_AUTOSTART_GRAPH_SEED_LIMIT_RAW, 0, 250000)
+    : 5000;
 const EVENT_LOG_PATH = path.join(WORLD_STATE_DIR, "web_graph_weaver.events.jsonl");
 const DELTA_LOG_PATH = path.join(
   WORLD_STATE_DIR,
@@ -188,6 +238,143 @@ const SNAPSHOT_PATH = path.join(WORLD_STATE_DIR, "web_graph_weaver.snapshot.json
 function ensureWorldStateDir() {
   if (!fs.existsSync(WORLD_STATE_DIR)) {
     fs.mkdirSync(WORLD_STATE_DIR, { recursive: true });
+  }
+}
+
+function parseWorldWatchlistSeeds(payload) {
+  if (!payload || typeof payload !== "object") {
+    return [];
+  }
+  if (payload.enabled === false) {
+    return [];
+  }
+  const domains = Array.isArray(payload.domains) ? payload.domains : [];
+  const rows = [];
+  const seen = new Set();
+  for (const domainRow of domains) {
+    if (!domainRow || typeof domainRow !== "object") {
+      continue;
+    }
+    if (domainRow.enabled === false) {
+      continue;
+    }
+    const domainId = String(domainRow.id || "").trim();
+    const seedRows = Array.isArray(domainRow.seed_urls) ? domainRow.seed_urls : [];
+    for (const seedRow of seedRows) {
+      let rawUrl = "";
+      let kind = "";
+      let title = "";
+      let sourceType = "";
+      if (typeof seedRow === "string") {
+        rawUrl = seedRow;
+      } else if (seedRow && typeof seedRow === "object") {
+        rawUrl = String(seedRow.url || "").trim();
+        kind = String(seedRow.kind || "").trim().toLowerCase();
+        title = String(seedRow.title || "").trim();
+        sourceType = String(seedRow.source_type || "").trim().toLowerCase();
+      }
+      const normalizedUrl = normalizeUrl(rawUrl, undefined);
+      if (!normalizedUrl || seen.has(normalizedUrl)) {
+        continue;
+      }
+      seen.add(normalizedUrl);
+      rows.push({
+        url: normalizedUrl,
+        kind,
+        title,
+        source_type: sourceType,
+        domain_id: domainId,
+      });
+    }
+  }
+  return rows;
+}
+
+function loadWorldWatchlistSeeds(filePath = WORLD_WATCHLIST_PATH) {
+  if (!WORLD_WATCHLIST_ENABLED) {
+    return [];
+  }
+  const target = String(filePath || "").trim();
+  if (!target) {
+    return [];
+  }
+  try {
+    if (!fs.existsSync(target)) {
+      return [];
+    }
+    const payload = JSON.parse(fs.readFileSync(target, "utf-8"));
+    return parseWorldWatchlistSeeds(payload);
+  } catch (_err) {
+    return [];
+  }
+}
+
+function loadWeaverSnapshot(filePath = SNAPSHOT_PATH) {
+  const target = String(filePath || "").trim();
+  if (!target) {
+    return null;
+  }
+  try {
+    if (!fs.existsSync(target)) {
+      return null;
+    }
+    const text = fs.readFileSync(target, "utf-8");
+    if (!text.trim()) {
+      return null;
+    }
+    let payload = null;
+    try {
+      payload = JSON.parse(text);
+    } catch (_err) {
+      payload = null;
+    }
+    if (!payload || typeof payload !== "object") {
+      const startIndex = text.indexOf("{");
+      if (startIndex >= 0) {
+        let depth = 0;
+        let inString = false;
+        let escaped = false;
+        for (let index = startIndex; index < text.length; index += 1) {
+          const ch = text[index];
+          if (inString) {
+            if (escaped) {
+              escaped = false;
+            } else if (ch === "\\") {
+              escaped = true;
+            } else if (ch === '"') {
+              inString = false;
+            }
+            continue;
+          }
+          if (ch === '"') {
+            inString = true;
+            continue;
+          }
+          if (ch === "{") {
+            depth += 1;
+            continue;
+          }
+          if (ch === "}") {
+            depth -= 1;
+            if (depth === 0) {
+              const candidate = text.slice(startIndex, index + 1);
+              try {
+                payload = JSON.parse(candidate);
+              } catch (_innerErr) {
+                payload = null;
+              }
+              break;
+            }
+          }
+        }
+      }
+    }
+    if (!payload || typeof payload !== "object") {
+      return null;
+    }
+    return payload;
+  } catch (_err) {
+    return null;
   }
 }
 
@@ -206,6 +393,16 @@ function hashText(input) {
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function normalizeMaxNodes(rawMaxNodes, floor = 100) {
+  const parsed = Number.parseInt(String(rawMaxNodes || DEFAULT_MAX_NODES), 10);
+  const requested = Number.isFinite(parsed) ? parsed : DEFAULT_MAX_NODES;
+  const minFloorRaw = Number.parseInt(String(floor || 100), 10);
+  const minFloor = Number.isFinite(minFloorRaw)
+    ? clamp(minFloorRaw, 100, MAX_NODES_HARD_LIMIT)
+    : 100;
+  return clamp(Math.max(requested, minFloor), minFloor, MAX_NODES_HARD_LIMIT);
 }
 
 function parseJsonBody(req) {
@@ -461,6 +658,204 @@ function extractArxivAbsUrlsFromApiFeed(feedXml, maxItems = ARXIV_API_MAX_RESULT
     }
   }
   return output;
+}
+
+function extractFeedEntries(feedBody, baseUrl, maxItems = FEED_ENTRY_LINK_MAX) {
+  const output = [];
+  const seen = new Set();
+  const safeMax = clamp(Number(maxItems || FEED_ENTRY_LINK_MAX), 1, Math.max(1, FEED_ENTRY_LINK_MAX));
+
+  const cleanFeedText = (rawValue, limit = 360) => {
+    const decoded = decodeHtmlEntities(String(rawValue || "")).replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, "$1");
+    const plain = decoded
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!plain) {
+      return "";
+    }
+    if (plain.length <= limit) {
+      return plain;
+    }
+    return `${plain.slice(0, Math.max(0, limit - 3)).trim()}...`;
+  };
+
+  const pushEntry = (rawValue, meta = {}) => {
+    const decoded = String(rawValue || "")
+      .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, "$1")
+      .replace(/&amp;/gi, "&")
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">")
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'")
+      .trim();
+    if (!decoded) {
+      return;
+    }
+    const normalized = normalizeUrl(decoded, baseUrl);
+    if (!normalized || seen.has(normalized)) {
+      return;
+    }
+    const title = cleanFeedText(meta.title || "", 200);
+    const summary = cleanFeedText(meta.summary || meta.description || "", 480);
+    const publishedAt = cleanFeedText(meta.publishedAt || meta.date_published || "", 80);
+    const sourceKind = cleanFeedText(meta.sourceKind || "", 80).toLowerCase();
+    seen.add(normalized);
+    output.push({
+      url: normalized,
+      title,
+      summary,
+      publishedAt,
+      sourceKind,
+    });
+  };
+
+  const text = String(feedBody || "").trim();
+  if (!text) {
+    return output;
+  }
+
+  const maybeJson = text.startsWith("{") || text.startsWith("[");
+  if (maybeJson) {
+    try {
+      const payload = JSON.parse(text);
+      const items = Array.isArray(payload?.items) ? payload.items : [];
+      for (const item of items) {
+        if (!item || typeof item !== "object") {
+          continue;
+        }
+        pushEntry(item.url || item.external_url || item.id || "", {
+          title: item.title || "",
+          summary: item.summary || item.content_text || item.content_html || "",
+          publishedAt: item.date_published || item.date_modified || "",
+          sourceKind: "feed:json",
+        });
+        if (output.length >= safeMax) {
+          return output;
+        }
+      }
+      if (output.length > 0) {
+        return output;
+      }
+    } catch (_err) {
+      // Fall through to XML feed parsing.
+    }
+  }
+
+  const xml = text;
+  const rssItems = xml.match(/<item\b[\s\S]*?<\/item>/gi) || [];
+  for (const item of rssItems) {
+    const titleMatch = /<title[^>]*>\s*([\s\S]*?)\s*<\/title>/i.exec(item);
+    const descriptionMatch = /<description[^>]*>\s*([\s\S]*?)\s*<\/description>/i.exec(item);
+    const pubDateMatch = /<pubDate[^>]*>\s*([\s\S]*?)\s*<\/pubDate>/i.exec(item);
+    const dcDateMatch = /<dc:date[^>]*>\s*([\s\S]*?)\s*<\/dc:date>/i.exec(item);
+    const rssMeta = {
+      title: titleMatch?.[1] || "",
+      summary: descriptionMatch?.[1] || "",
+      publishedAt: pubDateMatch?.[1] || dcDateMatch?.[1] || "",
+      sourceKind: "feed:rss",
+    };
+    const linkMatch = /<link[^>]*>\s*([\s\S]*?)\s*<\/link>/i.exec(item);
+    if (linkMatch) {
+      pushEntry(linkMatch[1], rssMeta);
+    }
+    const guidMatch = /<guid\b([^>]*)>\s*([\s\S]*?)\s*<\/guid>/i.exec(item);
+    if (guidMatch) {
+      const attrs = String(guidMatch[1] || "").toLowerCase();
+      if (!attrs.includes('ispermalink="false"')) {
+        pushEntry(guidMatch[2], rssMeta);
+      }
+    }
+    const rdfAboutMatch = /<item\b[^>]*\brdf:about\s*=\s*(?:"([^"]+)"|'([^']+)')/i.exec(item);
+    if (rdfAboutMatch) {
+      pushEntry(rdfAboutMatch[1] || rdfAboutMatch[2] || "", rssMeta);
+    }
+    if (output.length >= safeMax) {
+      return output.slice(0, safeMax);
+    }
+  }
+
+  const atomEntries = xml.match(/<entry\b[\s\S]*?<\/entry>/gi) || [];
+  for (const entry of atomEntries) {
+    const titleMatch = /<title[^>]*>\s*([\s\S]*?)\s*<\/title>/i.exec(entry);
+    const summaryMatch = /<summary[^>]*>\s*([\s\S]*?)\s*<\/summary>/i.exec(entry);
+    const contentMatch = /<content[^>]*>\s*([\s\S]*?)\s*<\/content>/i.exec(entry);
+    const publishedMatch = /<published[^>]*>\s*([\s\S]*?)\s*<\/published>/i.exec(entry);
+    const updatedMatch = /<updated[^>]*>\s*([\s\S]*?)\s*<\/updated>/i.exec(entry);
+    const atomMeta = {
+      title: titleMatch?.[1] || "",
+      summary: summaryMatch?.[1] || contentMatch?.[1] || "",
+      publishedAt: publishedMatch?.[1] || updatedMatch?.[1] || "",
+      sourceKind: "feed:atom",
+    };
+    const atomLinkPattern = /<link\b[^>]*>/gi;
+    while (true) {
+      const linkTagMatch = atomLinkPattern.exec(entry);
+      if (!linkTagMatch) {
+        break;
+      }
+      const tag = String(linkTagMatch[0] || "");
+      const hrefMatch = /\bhref\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'`<>]+))/i.exec(tag);
+      if (!hrefMatch) {
+        continue;
+      }
+      const relMatch = /\brel\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'`<>]+))/i.exec(tag);
+      const relValue = String(relMatch?.[1] || relMatch?.[2] || relMatch?.[3] || "")
+        .toLowerCase()
+        .trim();
+      if (relValue && !relValue.split(/\s+/).includes("alternate")) {
+        continue;
+      }
+      pushEntry(hrefMatch[1] || hrefMatch[2] || hrefMatch[3] || "", atomMeta);
+      if (output.length >= safeMax) {
+        return output.slice(0, safeMax);
+      }
+    }
+    const idMatch = /<id[^>]*>\s*([\s\S]*?)\s*<\/id>/i.exec(entry);
+    if (idMatch) {
+      pushEntry(idMatch[1], atomMeta);
+      if (output.length >= safeMax) {
+        return output.slice(0, safeMax);
+      }
+    }
+  }
+
+  return output.slice(0, safeMax);
+}
+
+function extractFeedEntryLinks(feedBody, baseUrl, maxItems = FEED_ENTRY_LINK_MAX) {
+  return extractFeedEntries(feedBody, baseUrl, maxItems)
+    .map((row) => String(row?.url || "").trim())
+    .filter((url) => url.length > 0);
+}
+
+function looksLikeFeedDocument(contentType, bodyText) {
+  const type = String(contentType || "").toLowerCase();
+  if (type.includes("application/rss+xml") || type.includes("application/atom+xml")) {
+    return true;
+  }
+  if (type.includes("application/feed+json")) {
+    return true;
+  }
+
+  const trimmed = String(bodyText || "").trim();
+  if (!trimmed) {
+    return false;
+  }
+  if ((type.includes("json") || trimmed.startsWith("{")) && trimmed.includes("jsonfeed.org/version")) {
+    return true;
+  }
+  if (!(type.includes("xml") || type.includes("text/") || trimmed.startsWith("<"))) {
+    return false;
+  }
+
+  const head = trimmed.slice(0, 8192).toLowerCase();
+  return (
+    head.includes("<rss")
+    || head.includes("<feed")
+    || head.includes("<rdf:rdf")
+    || (head.includes("<channel") && head.includes("<item"))
+  );
 }
 
 function canonicalWikipediaArticleUrl(rawUrl) {
@@ -1421,6 +1816,64 @@ class GraphStore {
       },
     };
   }
+
+  restoreSnapshot(snapshot) {
+    this.nodes = new Map();
+    this.edges = new Map();
+    this.urlNodeCount = 0;
+
+    const graphSnapshot = snapshot && typeof snapshot === "object" ? snapshot : {};
+    const nodeRows = Array.isArray(graphSnapshot.nodes) ? graphSnapshot.nodes : [];
+    for (const row of nodeRows) {
+      if (!row || typeof row !== "object") {
+        continue;
+      }
+      const id = String(row.id || "").trim();
+      const kind = String(row.kind || "").trim().toLowerCase();
+      if (!id || !kind) {
+        continue;
+      }
+      const normalized = {
+        ...row,
+        id,
+        kind,
+      };
+      this.nodes.set(id, normalized);
+      if (kind === "url") {
+        this.urlNodeCount += 1;
+      }
+    }
+
+    const knownNodeIds = new Set(this.nodes.keys());
+    const edgeRows = Array.isArray(graphSnapshot.edges) ? graphSnapshot.edges : [];
+    for (const row of edgeRows) {
+      if (!row || typeof row !== "object") {
+        continue;
+      }
+      const source = String(row.source || "").trim();
+      const target = String(row.target || "").trim();
+      if (!source || !target || !knownNodeIds.has(source) || !knownNodeIds.has(target)) {
+        continue;
+      }
+      const kind = String(row.kind || "relates").trim().toLowerCase() || "relates";
+      const id =
+        String(row.id || "").trim()
+        || this._makeEdgeId(kind, source, target);
+      this.edges.set(id, {
+        ...row,
+        id,
+        kind,
+        source,
+        target,
+      });
+    }
+
+    return {
+      nodes_total: this.nodes.size,
+      edges_total: this.edges.size,
+      url_nodes_total: this.urlNodeCount,
+    };
+  }
 }
 
 class RobotsCache {
@@ -1449,7 +1902,20 @@ class RobotsCache {
 }
 
 class WebGraphWeaver {
-  constructor() {
+  constructor(options = {}) {
+    const restoreSnapshot = Boolean(options.restoreSnapshot);
+    const autoStartCrawl = Boolean(options.autoStartCrawl);
+    const autoStartGraphSeedLimit = clamp(
+      Number.parseInt(
+        String(
+          options.autoStartGraphSeedLimit
+            ?? WEAVER_CRAWL_AUTOSTART_GRAPH_SEED_LIMIT,
+        ),
+        10,
+      ) || WEAVER_CRAWL_AUTOSTART_GRAPH_SEED_LIMIT,
+      0,
+      250000,
+    );
     this.frontier = new FrontierQueue();
     this.graph = new GraphStore({ maxUrlNodes: DEFAULT_MAX_NODES });
     this.robotsCache = new RobotsCache();
@@ -1477,6 +1943,10 @@ class WebGraphWeaver {
     this.entityCount = DEFAULT_ENTITY_COUNT;
     this.entities = [];
     this.lastEntityBroadcastAt = 0;
+    this.worldWatchlistSeeds = [];
+    this.worldWatchlistFeedSeeds = 0;
+    this.autoStartCrawl = autoStartCrawl;
+    this.autoStartGraphSeedLimit = autoStartGraphSeedLimit;
 
     this.stats = {
       discovered: 0,
@@ -1512,6 +1982,11 @@ class WebGraphWeaver {
     };
 
     this.broadcast = () => {};
+    this.lastSnapshotGraphCounts = {
+      nodes_total: 0,
+      edges_total: 0,
+      url_nodes_total: 0,
+    };
     this.scheduler = setInterval(() => {
       this.tick();
     }, 120);
@@ -1520,10 +1995,225 @@ class WebGraphWeaver {
     }, ENTITY_TICK_MS);
 
     this._bootstrapEntities();
+    if (restoreSnapshot) {
+      this._restoreFromSnapshot();
+    }
+    if (this.autoStartCrawl) {
+      const floored = this._applyAutoStartRuntimeFloors();
+      if (floored) {
+        this._persistSnapshot();
+      }
+      this._autostartCrawlOnBoot();
+    }
   }
 
   setBroadcast(fn) {
     this.broadcast = fn;
+  }
+
+  _restoreFromSnapshot(snapshotPath = SNAPSHOT_PATH) {
+    const payload = loadWeaverSnapshot(snapshotPath);
+    if (!payload) {
+      return false;
+    }
+
+    const status = payload.status && typeof payload.status === "object"
+      ? payload.status
+      : null;
+    const config = status && status.config && typeof status.config === "object"
+      ? status.config
+      : {};
+
+    const restoredGraphCounts = this.graph.restoreSnapshot(payload.graph);
+    this.lastSnapshotGraphCounts = {
+      nodes_total: Number(restoredGraphCounts.nodes_total || 0),
+      edges_total: Number(restoredGraphCounts.edges_total || 0),
+      url_nodes_total: Number(restoredGraphCounts.url_nodes_total || 0),
+    };
+    const restoredUrlNodes = Number(restoredGraphCounts.url_nodes_total || 0);
+
+    this.currentMaxDepth = clamp(
+      Number.parseInt(String(config.max_depth || this.currentMaxDepth), 10) || this.currentMaxDepth,
+      0,
+      64,
+    );
+    const configuredMaxNodes =
+      Number.parseInt(String(config.max_nodes || this.currentMaxNodes), 10) || this.currentMaxNodes;
+    const restoreFloor = Math.max(100, restoredUrlNodes + MAX_NODES_HEADROOM);
+    this.currentMaxNodes = normalizeMaxNodes(
+      Math.max(restoredUrlNodes, configuredMaxNodes),
+      restoreFloor,
+    );
+    this.currentConcurrency = clamp(
+      Number.parseInt(String(config.concurrency || this.currentConcurrency), 10) || this.currentConcurrency,
+      1,
+      512,
+    );
+    this.currentMaxRequestsPerHost = clamp(
+      Number.parseInt(String(config.max_requests_per_host || this.currentMaxRequestsPerHost), 10)
+        || this.currentMaxRequestsPerHost,
+      1,
+      256,
+    );
+    this.defaultDelayMs = clamp(
+      Number.parseInt(String(config.default_delay_ms || this.defaultDelayMs), 10) || this.defaultDelayMs,
+      100,
+      60000,
+    );
+    this.nodeCooldownMs = clamp(
+      Number.parseInt(String(config.node_cooldown_ms || this.nodeCooldownMs), 10) || this.nodeCooldownMs,
+      0,
+      24 * 60 * 60 * 1000,
+    );
+    const activationThresholdRaw = Number.parseFloat(
+      String(config.activation_threshold || this.activationThreshold),
+    );
+    this.activationThreshold = Number.isFinite(activationThresholdRaw)
+      ? clamp(activationThresholdRaw, 0.01, 64)
+      : this.activationThreshold;
+    this.graph.maxUrlNodes = this.currentMaxNodes;
+
+    if (status && typeof status.started_at === "number" && Number.isFinite(status.started_at)) {
+      this.startedAtMs = Number(status.started_at);
+    }
+
+    const stateValue = String(status?.state || "stopped").trim().toLowerCase();
+    this.running = stateValue === "running" || stateValue === "paused";
+    this.paused = stateValue === "paused";
+
+    const metrics = status && status.metrics && typeof status.metrics === "object"
+      ? status.metrics
+      : {};
+    const fetched = Math.max(0, Number.parseInt(String(metrics.fetched || 0), 10) || 0);
+    const averageFetchMs = Math.max(
+      0,
+      Number.parseFloat(String(metrics.average_fetch_ms || 0)) || 0,
+    );
+
+    this.stats = {
+      ...this.stats,
+      discovered: Math.max(0, Number.parseInt(String(metrics.discovered || 0), 10) || 0),
+      fetched,
+      skipped: Math.max(0, Number.parseInt(String(metrics.skipped || 0), 10) || 0),
+      robots_blocked: Math.max(
+        0,
+        Number.parseInt(String(metrics.robots_blocked || 0), 10) || 0,
+      ),
+      errors: Math.max(0, Number.parseInt(String(metrics.errors || 0), 10) || 0),
+      duplicates: Math.max(
+        0,
+        Number.parseInt(String(metrics.duplicate_content || 0), 10) || 0,
+      ),
+      semantic_edges: Math.max(
+        0,
+        Number.parseInt(String(metrics.semantic_edges || 0), 10) || 0,
+      ),
+      citation_edges: Math.max(
+        0,
+        Number.parseInt(String(metrics.citation_edges || 0), 10) || 0,
+      ),
+      wiki_reference_edges: Math.max(
+        0,
+        Number.parseInt(String(metrics.wiki_reference_edges || 0), 10) || 0,
+      ),
+      cross_reference_edges: Math.max(
+        0,
+        Number.parseInt(String(metrics.cross_reference_edges || 0), 10) || 0,
+      ),
+      paper_pdf_edges: Math.max(
+        0,
+        Number.parseInt(String(metrics.paper_pdf_edges || 0), 10) || 0,
+      ),
+      host_concurrency_waits: Math.max(
+        0,
+        Number.parseInt(String(metrics.host_concurrency_waits || 0), 10) || 0,
+      ),
+      cooldown_blocked: Math.max(
+        0,
+        Number.parseInt(String(metrics.cooldown_blocked || 0), 10) || 0,
+      ),
+      interactions: Math.max(
+        0,
+        Number.parseInt(String(metrics.interactions || 0), 10) || 0,
+      ),
+      activation_enqueues: Math.max(
+        0,
+        Number.parseInt(String(metrics.activation_enqueues || 0), 10) || 0,
+      ),
+      entity_moves: Math.max(
+        0,
+        Number.parseInt(String(metrics.entity_moves || 0), 10) || 0,
+      ),
+      entity_visits: Math.max(
+        0,
+        Number.parseInt(String(metrics.entity_visits || 0), 10) || 0,
+      ),
+      llm_analysis_success: Math.max(
+        0,
+        Number.parseInt(String(metrics.llm_analysis_success || 0), 10) || 0,
+      ),
+      llm_analysis_fail: Math.max(
+        0,
+        Number.parseInt(String(metrics.llm_analysis_fail || 0), 10) || 0,
+      ),
+      total_fetch_time_ms: Number((fetched * averageFetchMs).toFixed(1)),
+    };
+
+    const optOutRows = Array.isArray(status?.opt_out_domains) ? status.opt_out_domains : [];
+    this.optOutDomains = new Set(
+      optOutRows
+        .map((row) => normalizeDomain(row))
+        .filter((row) => row.length > 0),
+    );
+
+    const entities = status && status.entities && typeof status.entities === "object"
+      ? status.entities
+      : {};
+    const countValue = Number.parseInt(String(entities.count || this.entityCount), 10);
+    this.entityCount = clamp(
+      Number.isFinite(countValue) ? countValue : this.entityCount,
+      0,
+      1024,
+    );
+    this.entitiesEnabled = entities.enabled !== false;
+    this.entitiesPaused = Boolean(this.paused || entities.paused === true);
+
+    const entityRows = Array.isArray(entities.entities) ? entities.entities : [];
+    this.entities = entityRows
+      .filter((row) => row && typeof row === "object")
+      .map((row, index) => ({
+        id: String(row.id || `entity:${index + 1}`),
+        label: String(row.label || `crawler-${index + 1}`),
+        state: String(row.state || "idle"),
+        current_url: row.current_url ? String(row.current_url) : null,
+        from_url: row.from_url ? String(row.from_url) : null,
+        target_url: row.target_url ? String(row.target_url) : null,
+        progress: Number(row.progress || 0),
+        move_started_at: Number(row.move_started_at || 0),
+        move_eta_ms: Number(row.move_eta_ms || 0),
+        visits: Number(row.visits || 0),
+        last_visit_at: Number(row.last_visit_at || 0),
+        next_available_at: Number(row.next_available_at || 0),
+      }));
+    this._bootstrapEntities();
+
+    const eventRows = Array.isArray(payload.events) ? payload.events : [];
+    this.recentEvents = eventRows
+      .filter((row) => row && typeof row === "object" && String(row.event || "").trim())
+      .map((row) => ({
+        ...row,
+        event: String(row.event || "unknown"),
+        timestamp: Number(row.timestamp || nowMs()),
+      }))
+      .slice(-MAX_EVENTS);
+
+    console.log(
+      `[weaver] Restored snapshot: nodes=${this.lastSnapshotGraphCounts.nodes_total} edges=${this.lastSnapshotGraphCounts.edges_total} urls=${this.lastSnapshotGraphCounts.url_nodes_total}`,
+    );
+
+    this._persistSnapshot();
+
+    return true;
   }
 
   _emit(event, payload = {}) {
@@ -1676,7 +2366,7 @@ class WebGraphWeaver {
     const nextCount = clamp(
       Number.parseInt(String(this.entityCount || DEFAULT_ENTITY_COUNT), 10) || DEFAULT_ENTITY_COUNT,
       0,
-      24,
+      1024,
     );
     const existing = new Map(this.entities.map((entity) => [entity.id, entity]));
     const rows = [];
@@ -1754,7 +2444,7 @@ class WebGraphWeaver {
     const previous = Number(node.activation_potential || 0);
     const interactionCount = Number(node.interaction_count || 0) + 1;
     const safeDelta = Number.isFinite(delta) ? delta : INTERACTION_ACTIVATION_DELTA;
-    const nextPotential = clamp(previous + safeDelta, 0, 8);
+    const nextPotential = clamp(previous + safeDelta, 0, 64);
     const cooldownRemainingMs = this._cooldownRemainingMs(normalized, now);
 
     this.graph.setUrlStatus(normalized, {
@@ -2144,13 +2834,13 @@ class WebGraphWeaver {
     }
 
     if (count !== undefined) {
-      this.entityCount = clamp(Number.parseInt(String(count), 10) || this.entityCount, 0, 24);
+      this.entityCount = clamp(Number.parseInt(String(count), 10) || this.entityCount, 0, 1024);
       this._bootstrapEntities();
     }
     if (activationThreshold !== undefined) {
       const threshold = Number.parseFloat(String(activationThreshold));
       if (Number.isFinite(threshold)) {
-        this.activationThreshold = clamp(threshold, 0.1, 8);
+        this.activationThreshold = clamp(threshold, 0.01, 64);
       }
     }
     if (nodeCooldownMs !== undefined) {
@@ -2162,7 +2852,7 @@ class WebGraphWeaver {
     if (maxPerHost !== undefined) {
       const maxHost = Number.parseInt(String(maxPerHost), 10);
       if (Number.isFinite(maxHost)) {
-        this.currentMaxRequestsPerHost = clamp(maxHost, 1, 12);
+        this.currentMaxRequestsPerHost = clamp(maxHost, 1, 256);
       }
     }
 
@@ -2699,6 +3389,7 @@ class WebGraphWeaver {
       this._pruneContentHashIndex();
 
       let outboundCount = 0;
+      const isFeedPayload = looksLikeFeedDocument(contentType, bodyText);
       if (contentType.includes("html")) {
         const canonicalHref = extractCanonicalHref(bodyText);
         if (canonicalHref) {
@@ -2770,6 +3461,67 @@ class WebGraphWeaver {
           });
         }
       }
+      if (!contentType.includes("html") && isFeedPayload) {
+        const feedEntries = extractFeedEntries(bodyText, item.url, FEED_ENTRY_LINK_MAX);
+        for (const feedEntry of feedEntries) {
+          const targetUrl = String(feedEntry?.url || "").trim();
+          if (!targetUrl) {
+            continue;
+          }
+          if (item.depth + 1 > this.currentMaxDepth) {
+            break;
+          }
+          const enqueued = this.enqueueUrl(
+            targetUrl,
+            item.url,
+            item.depth + 1,
+            "feed_entry_discovered",
+          );
+          if (enqueued.ok) {
+            outboundCount += 1;
+          }
+
+          const existingNode = this.graph.getUrlNode(targetUrl);
+          const existingTitle = String(existingNode?.title || "").trim();
+          const existingSummary = String(existingNode?.analysis_summary || "").trim();
+          const feedSummary = String(feedEntry?.summary || "").trim();
+          const feedTitle = String(feedEntry?.title || "").trim();
+          const textExcerpt = fallbackTextSummary(feedSummary || feedTitle);
+          const statusPatch = {
+            feed_entry: true,
+            feed_source_url: item.url,
+            feed_entry_title: feedTitle,
+            feed_entry_summary: feedSummary,
+            feed_entry_published_at: String(feedEntry?.publishedAt || "").trim(),
+            feed_entry_source_kind: String(feedEntry?.sourceKind || "feed:entry").trim().toLowerCase() || "feed:entry",
+            last_enqueue_reason: enqueued.ok ? "feed_entry_discovered" : "feed_entry_metadata",
+          };
+          if (!existingTitle && feedTitle) {
+            statusPatch.title = feedTitle.slice(0, 160);
+          }
+          if (!existingSummary && feedSummary) {
+            statusPatch.analysis_summary = normalizeAnalysisSummary(feedSummary, feedSummary);
+            statusPatch.text_excerpt = textExcerpt;
+            statusPatch.text_excerpt_hash = textExcerpt ? hashText(textExcerpt) : "";
+          }
+          this.graph.setUrlStatus(targetUrl, statusPatch);
+        }
+        this.graph.setUrlStatus(item.url, {
+          feed_detected: feedEntries.length > 0,
+          feed_entry_count: feedEntries.length,
+        });
+        this._emit("reference_extracted", {
+          url: item.url,
+          depth: item.depth,
+          source_kind: "feed_document",
+          discovered: feedEntries.length,
+          created_edges: 0,
+          enqueued: outboundCount,
+          kind_counts: {
+            feed_entry: feedEntries.length,
+          },
+        });
+      }
 
       this.stats.fetched += 1;
       this.stats.total_fetch_time_ms += nowMs() - startedAt;
@@ -2813,12 +3565,7 @@ class WebGraphWeaver {
       this.inFlightUrls.delete(item.url);
       domainState.active = Math.max(0, domainState.active - 1);
       if (this.graph.urlNodeCount >= this.currentMaxNodes) {
-        this.running = false;
-        this.paused = false;
-        this._emit("crawl_state", {
-          state: "stopped",
-          reason: "max_nodes_reached",
-        });
+        this._handleMaxNodesReached();
       }
       this._persistSnapshot();
     }
@@ -3010,16 +3757,300 @@ class WebGraphWeaver {
     }
   }
 
-  start({ seeds, maxDepth, maxNodes, concurrency, maxPerHost, entityCount }) {
+  _handleMaxNodesReached() {
+    const urlNodesTotal = Math.max(0, Number.parseInt(String(this.graph.urlNodeCount || 0), 10) || 0);
+    const previousMaxNodes = Math.max(
+      100,
+      Number.parseInt(String(this.currentMaxNodes || 0), 10) || DEFAULT_MAX_NODES,
+    );
+    const hasPendingWork =
+      this.frontier.size > 0 || this.activeWorkers > 0 || this.inFlightUrls.size > 0;
+    if (MAX_NODES_AUTOGROW_ENABLED && hasPendingWork) {
+      const nextFloor = Math.max(100, urlNodesTotal + 1);
+      const nextMaxNodes = normalizeMaxNodes(previousMaxNodes + MAX_NODES_AUTOGROW_STEP, nextFloor);
+      if (nextMaxNodes > previousMaxNodes) {
+        this.currentMaxNodes = nextMaxNodes;
+        this.graph.maxUrlNodes = nextMaxNodes;
+        this._emit("crawl_state", {
+          state: "running",
+          reason: "max_nodes_autogrow",
+          max_nodes_previous: previousMaxNodes,
+          max_nodes: nextMaxNodes,
+          url_nodes_total: urlNodesTotal,
+          frontier_size: this.frontier.size,
+        });
+        return;
+      }
+    }
+
+    this.running = false;
+    this.paused = false;
+    this._emit("crawl_state", {
+      state: "stopped",
+      reason: "max_nodes_reached",
+      url_nodes_total: urlNodesTotal,
+      max_nodes: previousMaxNodes,
+      frontier_size: this.frontier.size,
+      max_nodes_autogrow_enabled: MAX_NODES_AUTOGROW_ENABLED,
+      max_nodes_autogrow_exhausted: MAX_NODES_AUTOGROW_ENABLED,
+    });
+  }
+
+  _collectBootstrapGraphSeeds(limit = this.autoStartGraphSeedLimit) {
+    const safeLimit = clamp(Number.parseInt(String(limit || 0), 10) || 0, 0, 250000);
+    if (safeLimit <= 0) {
+      return [];
+    }
+
+    const rows = [];
+    const seen = new Set();
+    const now = nowMs();
+    for (const node of this.graph.getUrlNodes()) {
+      const normalized = normalizeUrl(node?.url || node?.label || "", undefined);
+      if (!normalized || seen.has(normalized)) {
+        continue;
+      }
+      let host = "";
+      try {
+        host = String(new URL(normalized).hostname || "").trim().toLowerCase();
+      } catch (_err) {
+        host = "";
+      }
+      if (!host || host === "localhost" || host === "127.0.0.1" || host === "::1") {
+        continue;
+      }
+      if (this.optOutDomains.has(host)) {
+        continue;
+      }
+
+      const status = String(node?.status || "").trim().toLowerCase();
+      if (status === "blocked") {
+        continue;
+      }
+      const statusWeight = status === "discovered"
+        ? 6
+        : status === "queued"
+          ? 5
+          : status === "error"
+            ? 4
+            : status === "skipped"
+              ? 3
+              : status === "fetched"
+                ? 2
+                : 1;
+      const activation = Number(node?.activation_potential || 0);
+      const depthPenalty = Math.max(0, Number(node?.depth || 0)) * 0.3;
+      const cooldownPenalty = this._cooldownRemainingMs(normalized, now) > 0 ? 3.5 : 0;
+      const score = statusWeight + activation - depthPenalty - cooldownPenalty;
+      const freshness = Math.max(
+        0,
+        Number(node?.last_interacted_at || 0),
+        Number(node?.queued_at || 0),
+        Number(node?.discovered_at || 0),
+        Number(node?.fetched_at || 0),
+      );
+      rows.push({
+        url: normalized,
+        score,
+        freshness,
+      });
+      seen.add(normalized);
+    }
+
+    rows.sort((a, b) => {
+      if (b.score !== a.score) {
+        return b.score - a.score;
+      }
+      if (b.freshness !== a.freshness) {
+        return b.freshness - a.freshness;
+      }
+      return String(a.url || "").localeCompare(String(b.url || ""));
+    });
+
+    return rows.slice(0, safeLimit).map((row) => row.url);
+  }
+
+  _applyAutoStartRuntimeFloors() {
+    if (!this.autoStartCrawl) {
+      return false;
+    }
+
+    const previousDepth = this.currentMaxDepth;
+    const previousMaxNodes = this.currentMaxNodes;
+    const previousConcurrency = this.currentConcurrency;
+    const previousMaxPerHost = this.currentMaxRequestsPerHost;
+    const previousEntityCount = this.entityCount;
+
+    this.currentMaxDepth = clamp(
+      Math.max(
+        0,
+        Number.parseInt(String(this.currentMaxDepth || 0), 10) || 0,
+        Number.parseInt(String(DEFAULT_MAX_DEPTH || 0), 10) || 0,
+      ),
+      0,
+      64,
+    );
+
+    const existingUrlNodes = Math.max(
+      0,
+      Number.parseInt(String(this.graph.urlNodeCount || 0), 10) || 0,
+    );
+    const autoStartFloor = Math.max(
+      100,
+      existingUrlNodes + MAX_NODES_HEADROOM,
+      Number.parseInt(String(DEFAULT_MAX_NODES || 0), 10) || 0,
+    );
+    const autoStartRequestedMaxNodes = Math.max(
+      Number.parseInt(String(this.currentMaxNodes || 0), 10) || 0,
+      Number.parseInt(String(DEFAULT_MAX_NODES || 0), 10) || 0,
+    );
+    this.currentMaxNodes = normalizeMaxNodes(autoStartRequestedMaxNodes, autoStartFloor);
+
+    this.currentConcurrency = clamp(
+      Math.max(
+        1,
+        Number.parseInt(String(this.currentConcurrency || 0), 10) || 0,
+        Number.parseInt(String(DEFAULT_CONCURRENCY || 0), 10) || 0,
+      ),
+      1,
+      512,
+    );
+    this.currentMaxRequestsPerHost = clamp(
+      Math.max(
+        1,
+        Number.parseInt(String(this.currentMaxRequestsPerHost || 0), 10) || 0,
+        Number.parseInt(String(DEFAULT_MAX_REQUESTS_PER_HOST || 0), 10) || 0,
+      ),
+      1,
+      256,
+    );
+    this.entityCount = clamp(
+      Math.max(
+        0,
+        Number.parseInt(String(this.entityCount || 0), 10) || 0,
+        Number.parseInt(String(DEFAULT_ENTITY_COUNT || 0), 10) || 0,
+      ),
+      0,
+      1024,
+    );
+
+    this.graph.maxUrlNodes = this.currentMaxNodes;
+    if (this.entities.length !== this.entityCount) {
+      this._bootstrapEntities();
+      this._emitEntityTick(true);
+    }
+
+    return (
+      this.currentMaxDepth !== previousDepth
+      || this.currentMaxNodes !== previousMaxNodes
+      || this.currentConcurrency !== previousConcurrency
+      || this.currentMaxRequestsPerHost !== previousMaxPerHost
+      || this.entityCount !== previousEntityCount
+    );
+  }
+
+  _autostartCrawlOnBoot() {
+    if (!this.autoStartCrawl || this.running) {
+      return { ok: true, skipped: true };
+    }
+
+    this._applyAutoStartRuntimeFloors();
+
+    const graphSeeds = this._collectBootstrapGraphSeeds(this.autoStartGraphSeedLimit);
+    const autoStartMaxDepth = Math.max(
+      0,
+      Number.parseInt(String(this.currentMaxDepth || 0), 10) || 0,
+      Number.parseInt(String(DEFAULT_MAX_DEPTH || 0), 10) || 0,
+    );
+    const autoStartMaxNodes = Math.max(
+      Number.parseInt(String(this.currentMaxNodes || 0), 10) || 0,
+      Number.parseInt(String(DEFAULT_MAX_NODES || 0), 10) || 0,
+    );
+    const autoStartConcurrency = Math.max(
+      1,
+      Number.parseInt(String(this.currentConcurrency || 0), 10) || 0,
+      Number.parseInt(String(DEFAULT_CONCURRENCY || 0), 10) || 0,
+    );
+    const autoStartMaxPerHost = Math.max(
+      1,
+      Number.parseInt(String(this.currentMaxRequestsPerHost || 0), 10) || 0,
+      Number.parseInt(String(DEFAULT_MAX_REQUESTS_PER_HOST || 0), 10) || 0,
+    );
+    const autoStartEntityCount = Math.max(
+      0,
+      Number.parseInt(String(this.entityCount || 0), 10) || 0,
+      Number.parseInt(String(DEFAULT_ENTITY_COUNT || 0), 10) || 0,
+    );
+    const outcome = this.start({
+      seeds: graphSeeds,
+      maxDepth: autoStartMaxDepth,
+      maxNodes: autoStartMaxNodes,
+      concurrency: autoStartConcurrency,
+      maxPerHost: autoStartMaxPerHost,
+      entityCount: autoStartEntityCount,
+      startReason: "bootstrap_autostart",
+    });
+    if (!outcome.ok) {
+      this._emit("crawl_state", {
+        state: "stopped",
+        reason: "bootstrap_autostart_failed",
+        error: String(outcome.error || "unknown"),
+        graph_seed_count: graphSeeds.length,
+      });
+      this._persistSnapshot();
+    }
+    return outcome;
+  }
+
+  start({ seeds, maxDepth, maxNodes, concurrency, maxPerHost, entityCount, startReason } = {}) {
     const seedList = Array.isArray(seeds) ? seeds : [];
-    const normalizedSeeds = [];
+    const requestedSeeds = [];
     for (const seed of seedList) {
       const normalized = normalizeUrl(seed, undefined);
       if (normalized) {
-        normalizedSeeds.push(normalized);
+        requestedSeeds.push(normalized);
       }
     }
-    if (normalizedSeeds.length === 0) {
+
+    const watchlistRows = loadWorldWatchlistSeeds();
+    const watchlistSeeds = watchlistRows.map((row) => row.url);
+    const mergedRows = [];
+    const mergedSeen = new Set();
+    for (const seed of requestedSeeds) {
+      if (mergedSeen.has(seed)) {
+        continue;
+      }
+      mergedSeen.add(seed);
+      mergedRows.push({
+        url: seed,
+        source: "request",
+        kind: "",
+        domain_id: "",
+        source_type: "",
+      });
+    }
+    for (const row of watchlistRows) {
+      const seed = String(row?.url || "").trim();
+      const kind = String(row?.kind || "").trim().toLowerCase();
+      const domainId = String(row?.domain_id || "").trim().toLowerCase();
+      const sourceType = String(row?.source_type || "").trim().toLowerCase();
+      if (!seed) {
+        continue;
+      }
+      if (mergedSeen.has(seed)) {
+        continue;
+      }
+      mergedSeen.add(seed);
+      mergedRows.push({
+        url: seed,
+        source: "watchlist",
+        kind,
+        domain_id: domainId,
+        source_type: sourceType,
+      });
+    }
+
+    if (mergedRows.length === 0) {
       return {
         ok: false,
         error: "at least one valid seed URL is required",
@@ -3035,42 +4066,70 @@ class WebGraphWeaver {
     this.currentMaxDepth = clamp(
       Number.parseInt(String(maxDepth || DEFAULT_MAX_DEPTH), 10) || DEFAULT_MAX_DEPTH,
       0,
-      8,
+      64,
     );
-    this.currentMaxNodes = clamp(
+    const existingUrlNodes = Math.max(
+      0,
+      Number.parseInt(String(this.graph.urlNodeCount || 0), 10) || 0,
+    );
+    const startFloor = Math.max(100, existingUrlNodes + MAX_NODES_HEADROOM);
+    this.currentMaxNodes = normalizeMaxNodes(
       Number.parseInt(String(maxNodes || DEFAULT_MAX_NODES), 10) || DEFAULT_MAX_NODES,
-      100,
-      50000,
+      startFloor,
     );
     this.currentConcurrency = clamp(
       Number.parseInt(String(concurrency || DEFAULT_CONCURRENCY), 10) || DEFAULT_CONCURRENCY,
       1,
-      24,
+      512,
     );
     this.currentMaxRequestsPerHost = clamp(
       Number.parseInt(String(maxPerHost || DEFAULT_MAX_REQUESTS_PER_HOST), 10)
         || DEFAULT_MAX_REQUESTS_PER_HOST,
       1,
-      12,
+      256,
     );
     if (entityCount !== undefined) {
       this.entityCount = clamp(
         Number.parseInt(String(entityCount), 10) || this.entityCount,
         0,
-        24,
+        1024,
       );
       this._bootstrapEntities();
       this._emitEntityTick(true);
     }
     this.graph.maxUrlNodes = this.currentMaxNodes;
+    this.worldWatchlistSeeds = watchlistSeeds;
+    this.worldWatchlistFeedSeeds = watchlistRows.filter((row) =>
+      String(row?.kind || "").trim().toLowerCase().startsWith("feed:"),
+    ).length;
 
-    for (const seed of normalizedSeeds) {
-      this.enqueueUrl(seed, null, 0, "seed");
+    for (const row of mergedRows) {
+      const seedKind = String(row.kind || "").trim().toLowerCase();
+      const enqueueReason =
+        row.source === "watchlist"
+          ? (seedKind.startsWith("feed:") ? "world_watch_feed_seed" : "world_watch_seed")
+          : "seed";
+      this.enqueueUrl(
+        row.url,
+        null,
+        0,
+        enqueueReason,
+      );
     }
 
     this._emit("crawl_state", {
       state: "running",
-      seeds: normalizedSeeds,
+      start_reason: String(startReason || "manual"),
+      seeds: mergedRows.map((row) => row.url),
+      requested_seed_count: requestedSeeds.length,
+      bootstrap_graph_seed_count:
+        String(startReason || "").trim().toLowerCase() === "bootstrap_autostart"
+          ? requestedSeeds.length
+          : 0,
+      world_watch_seed_count: watchlistSeeds.length,
+      world_watch_feed_seed_count: watchlistRows.filter((row) =>
+        String(row?.kind || "").trim().toLowerCase().startsWith("feed:"),
+      ).length,
       max_depth: this.currentMaxDepth,
       max_nodes: this.currentMaxNodes,
       concurrency: this.currentConcurrency,
@@ -3083,7 +4142,10 @@ class WebGraphWeaver {
     return {
       ok: true,
       state: "running",
-      seeds: normalizedSeeds,
+      start_reason: String(startReason || "manual"),
+      seeds: mergedRows.map((row) => row.url),
+      requested_seeds: requestedSeeds,
+      world_watch_seeds: watchlistSeeds,
     };
   }
 
@@ -3182,7 +4244,7 @@ class WebGraphWeaver {
   }
 
   status() {
-    const snapshot = this.graph.toSnapshot({ nodeLimit: 12000, edgeLimit: 26000 });
+    const snapshot = this.graph.toSnapshot({ nodeLimit: 500000, edgeLimit: 2000000 });
     const urlNodes = snapshot.nodes.filter((node) => node.kind === "url");
     const elapsedSeconds = this.startedAtMs
       ? Math.max(1, Math.floor((nowMs() - this.startedAtMs) / 1000))
@@ -3193,7 +4255,7 @@ class WebGraphWeaver {
     const activeDomains = [...this.domainState.entries()]
       .filter(([, state]) => state.active > 0)
       .map(([domain]) => domain)
-      .slice(0, 20);
+      .slice(0, 2000);
     const sourceFamilyCounts = {
       arxiv: 0,
       wikipedia: 0,
@@ -3229,12 +4291,17 @@ class WebGraphWeaver {
       config: {
         max_depth: this.currentMaxDepth,
         max_nodes: this.currentMaxNodes,
+        max_nodes_autogrow_enabled: MAX_NODES_AUTOGROW_ENABLED,
+        max_nodes_autogrow_step: MAX_NODES_AUTOGROW_STEP,
+        crawl_autostart: this.autoStartCrawl,
+        crawl_autostart_graph_seed_limit: this.autoStartGraphSeedLimit,
         concurrency: this.currentConcurrency,
         max_requests_per_host: this.currentMaxRequestsPerHost,
         default_delay_ms: this.defaultDelayMs,
         node_cooldown_ms: this.nodeCooldownMs,
         activation_threshold: this.activationThreshold,
         fetch_timeout_ms: FETCH_TIMEOUT_MS,
+        world_watchlist_enabled: WORLD_WATCHLIST_ENABLED,
       },
       metrics: {
         crawl_rate_nodes_per_sec: crawlRate,
@@ -3269,6 +4336,8 @@ class WebGraphWeaver {
       domain_distribution: domainDistribution,
       depth_histogram: depthHistogram,
       opt_out_domains: [...this.optOutDomains].sort(),
+      world_watch_seed_count: this.worldWatchlistSeeds.length,
+      world_watch_feed_seed_count: this.worldWatchlistFeedSeeds,
       graph_counts: snapshot.counts,
       knowledge: {
         source_families: sourceFamilyCounts,
@@ -3287,15 +4356,15 @@ class WebGraphWeaver {
   }
 
   events(limit = 200) {
-    const safeLimit = clamp(Number.parseInt(String(limit), 10) || 200, 1, 2000);
+    const safeLimit = clamp(Number.parseInt(String(limit), 10) || 200, 1, 200000);
     return this.recentEvents.slice(-safeLimit);
   }
 
   graphSnapshot({ domainFilter = "", nodeLimit = 5000, edgeLimit = 12000 } = {}) {
     return this.graph.toSnapshot({
       domainFilter,
-      nodeLimit: clamp(Number.parseInt(String(nodeLimit), 10) || 5000, 100, 20000),
-      edgeLimit: clamp(Number.parseInt(String(edgeLimit), 10) || 12000, 200, 80000),
+      nodeLimit: clamp(Number.parseInt(String(nodeLimit), 10) || 5000, 100, 5000000),
+      edgeLimit: clamp(Number.parseInt(String(edgeLimit), 10) || 12000, 200, 20000000),
     });
   }
 
@@ -3303,15 +4372,47 @@ class WebGraphWeaver {
     const payload = {
       generated_at: new Date().toISOString(),
       status: this.status(),
-      graph: this.graphSnapshot({ nodeLimit: 15000, edgeLimit: 40000 }),
+      graph: this.graphSnapshot({ nodeLimit: 500000, edgeLimit: 2000000 }),
+      events: this.events(5000),
     };
-    fs.writeFile(SNAPSHOT_PATH, JSON.stringify(payload, null, 2), () => {});
+    const graphCounts = payload.graph && payload.graph.counts && typeof payload.graph.counts === "object"
+      ? payload.graph.counts
+      : {};
+    const nextCounts = {
+      nodes_total: Number(graphCounts.nodes_total || 0),
+      edges_total: Number(graphCounts.edges_total || 0),
+      url_nodes_total: Number(graphCounts.url_nodes_total || 0),
+    };
+    if (
+      nextCounts.nodes_total <= 0
+      && this.lastSnapshotGraphCounts.nodes_total > 0
+    ) {
+      return;
+    }
+    this.lastSnapshotGraphCounts = nextCounts;
+    const tempPath = `${SNAPSHOT_PATH}.tmp`;
+    try {
+      fs.writeFileSync(tempPath, JSON.stringify(payload, null, 2), "utf-8");
+      fs.renameSync(tempPath, SNAPSHOT_PATH);
+    } catch (_err) {
+      try {
+        if (fs.existsSync(tempPath)) {
+          fs.unlinkSync(tempPath);
+        }
+      } catch (_cleanupErr) {
+        // ignore cleanup failures
+      }
+    }
   }
 }
 
 function createWeaverServer() {
   ensureWorldStateDir();
-  const weaver = new WebGraphWeaver();
+  const weaver = new WebGraphWeaver({
+    restoreSnapshot: true,
+    autoStartCrawl: WEAVER_CRAWL_AUTOSTART,
+    autoStartGraphSeedLimit: WEAVER_CRAWL_AUTOSTART_GRAPH_SEED_LIMIT,
+  });
   const wsServer = new WebSocketServer({ noServer: true });
   const wsClients = new Set();
 
@@ -3334,8 +4435,8 @@ function createWeaverServer() {
         timestamp: nowMs(),
         status: weaver.status(),
         entities: weaver.entityStatus(),
-        graph: weaver.graphSnapshot({ nodeLimit: 5000, edgeLimit: 12000 }),
-        recent_events: weaver.events(120),
+        graph: weaver.graphSnapshot({ nodeLimit: 50000, edgeLimit: 250000 }),
+        recent_events: weaver.events(1000),
       }),
     );
 
@@ -3395,7 +4496,7 @@ function createWeaverServer() {
     }
 
     if (req.method === "GET" && pathname === "/api/weaver/events") {
-      const limit = parsed.searchParams.get("limit") || "200";
+      const limit = parsed.searchParams.get("limit") || "5000";
       sendJson(res, 200, {
         ok: true,
         events: weaver.events(limit),
@@ -3405,8 +4506,8 @@ function createWeaverServer() {
 
     if (req.method === "GET" && pathname === "/api/weaver/graph") {
       const domain = parsed.searchParams.get("domain") || "";
-      const nodeLimit = parsed.searchParams.get("node_limit") || "5000";
-      const edgeLimit = parsed.searchParams.get("edge_limit") || "12000";
+      const nodeLimit = parsed.searchParams.get("node_limit") || "50000";
+      const edgeLimit = parsed.searchParams.get("edge_limit") || "250000";
       sendJson(res, 200, {
         ok: true,
         graph: weaver.graphSnapshot({
@@ -3636,6 +4737,9 @@ module.exports = {
   parseArxivSearchSeed,
   buildArxivApiQueryUrl,
   extractArxivAbsUrlsFromApiFeed,
+  extractFeedEntries,
+  extractFeedEntryLinks,
+  looksLikeFeedDocument,
   canonicalArxivAbsUrlFromId,
   canonicalArxivPdfUrlFromId,
   canonicalWikipediaArticleUrl,
@@ -3644,6 +4748,8 @@ module.exports = {
   normalizeAnalysisSummary,
   parseAuthHeader,
   llmAuthHeaders,
+  parseWorldWatchlistSeeds,
+  loadWorldWatchlistSeeds,
   FrontierQueue,
   GraphStore,
   WebGraphWeaver,

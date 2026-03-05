@@ -719,10 +719,15 @@ def _build_canonical_nexus_graph(
         edge_kind_counts[kind] = edge_kind_counts.get(kind, 0) + 1
 
     # Mean connectivity
-    connectivity_sum = sum(
-        sum(1 for e in edges if e["source"] == node_id or e["target"] == node_id)
-        for node_id in node_id_set
-    )
+    degree_by_node: dict[str, int] = {node_id: 0 for node_id in node_id_set}
+    for edge in edges:
+        source_id = str(edge.get("source", "")).strip()
+        target_id = str(edge.get("target", "")).strip()
+        if source_id in degree_by_node:
+            degree_by_node[source_id] += 1
+        if target_id in degree_by_node and target_id != source_id:
+            degree_by_node[target_id] += 1
+    connectivity_sum = sum(degree_by_node.values())
     mean_connectivity = (connectivity_sum / len(node_id_set)) if node_id_set else 0.0
 
     return {

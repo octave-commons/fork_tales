@@ -2,11 +2,33 @@ import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 const buildSourceMaps = process.env.VITE_BUILD_SOURCEMAP !== "false";
+const devRuntimeProxyTarget = process.env.VITE_DEV_PROXY_TARGET || "http://127.0.0.1:8787";
 
 // https://vite.dev/config/
 export default defineConfig({
   base: "./",
   plugins: [react()],
+  server: {
+    proxy: {
+      "/api": {
+        target: devRuntimeProxyTarget,
+        changeOrigin: true,
+      },
+      "/ws": {
+        target: devRuntimeProxyTarget,
+        changeOrigin: true,
+        ws: true,
+      },
+      "/stream": {
+        target: devRuntimeProxyTarget,
+        changeOrigin: true,
+      },
+      "/weaver": {
+        target: devRuntimeProxyTarget,
+        changeOrigin: true,
+      },
+    },
+  },
   build: {
     sourcemap: buildSourceMaps,
   },

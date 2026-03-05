@@ -3,9 +3,12 @@ from __future__ import annotations
 import atexit
 import colorsys
 import ctypes
+import hashlib
 import heapq
+import json
 import math
 import os
+import select
 import shutil
 import site
 import subprocess
@@ -17,6 +20,7 @@ from typing import Any
 
 from . import daimoi_observer as daimoi_observer_module
 from .daimoi_probabilistic import (
+    DAIMOI_EMBED_DIMS,
     DAIMOI_ANTI_CLUMP_TARGET,
     _anti_clump_controller_update,
     _anti_clump_scales,
@@ -25,7 +29,7 @@ from .daimoi_probabilistic import (
 CDB_FLAG_NEXUS = 0x1
 CDB_FLAG_CHAOS = 0x2
 _CDB_NOOI_FLOAT_COUNT = 64 * 64 * 8 * 2
-_CDB_EMBED_DIM = 24
+_CDB_EMBED_DIM = max(1, int(DAIMOI_EMBED_DIMS))
 
 _CDB_GRAPH_RUNTIME_RECORD = "eta-mu.graph-runtime.cdb.v1"
 _CDB_GRAPH_RUNTIME_SCHEMA = "graph.runtime.cdb.v1"
@@ -174,12 +178,20 @@ _ENGINE: "_CDBEngine | None" = None
 
 _EMBED_LIB_LOCK = threading.Lock()
 _EMBED_RUNTIME_LOCK = threading.Lock()
-_EMBED_LIB: ctypes.CDLL | None = None
+_EMBED_LIBS: dict[str, ctypes.CDLL] = {}
 _EMBED_RUNTIME: Any = None
 _EMBED_RUNTIME_ERROR: str = ""
 _EMBED_RUNTIME_SOURCE: str = "pending"
 _EMBED_RUNTIME_CPU_FALLBACK: bool = False
 _EMBED_RUNTIME_CPU_FALLBACK_DETAIL: str = ""
+_EMBED_SIDECAR_LOCK = threading.Lock()
+_EMBED_SIDECARS: dict[str, Any] = {}
+_EMBED_SIDECAR_REQUEST_SEQ = 0
+_EMBED_SIDECAR_FAILURES: dict[str, int] = {}
+_EMBED_SIDECAR_DISABLED_UNTIL: dict[str, float] = {}
+_EMBED_SIDECAR_LAST_ERROR: dict[str, str] = {}
+_EMBED_GPU_CONTROLLER_LOCK = threading.Lock()
+_EMBED_GPU_CONTROLLER_STATE: dict[str, Any] = {}
 _LEVEL_ZERO_PRELOAD_LOCK = threading.Lock()
 _LEVEL_ZERO_PRELOADED = False
 _LEVEL_ZERO_HANDLES: list[Any] = []
@@ -231,6 +243,14 @@ def _clamp01(value: float) -> float:
         return 0.0
     if value >= 1.0:
         return 1.0
+    return value
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    if value <= low:
+        return low
+    if value >= high:
+        return high
     return value
 
 
@@ -374,8 +394,6 @@ def _is_cpu_fallback_signal(text: str) -> bool:
         return True
     if "cpu execution provider" in probe:
         return True
-    if "selected_device=cpu" in probe:
-        return True
     return False
 
 
@@ -387,9 +405,75 @@ def _normalize_embed_device(raw: str | None) -> str:
         return "NPU"
     if value in {"GPU", "CUDA", "NVIDIA", "NVIDIA_GPU"}:
         return "GPU"
+    if value in {"CPU", "HOST"}:
+        return "CPU"
     if value == "AUTO":
         return "AUTO"
     return "AUTO"
+
+
+def _embed_auto_policy() -> str:
+    raw = str(os.getenv("CDB_EMBED_AUTO_POLICY", "adaptive-npu") or "adaptive-npu")
+    value = raw.strip().lower()
+    if value in {"throughput", "gpu", "gpu-first"}:
+        return "throughput"
+    if value in {"npu", "npu-first", "efficiency"}:
+        return "npu-first"
+    if value in {"cpu", "cpu-first"}:
+        return "cpu-first"
+    return "adaptive-npu"
+
+
+def _adaptive_embed_auto_candidates() -> list[str]:
+    preferred = ["NPU", "GPU", "CPU"]
+    try:
+        from .metrics import _resource_monitor_snapshot
+    except Exception:
+        return preferred
+
+    try:
+        snapshot = _resource_monitor_snapshot()
+        devices = snapshot.get("devices", {}) if isinstance(snapshot, dict) else {}
+        npu = devices.get("npu0", {}) if isinstance(devices, dict) else {}
+        gpu = devices.get("gpu1", {}) if isinstance(devices, dict) else {}
+
+        npu_status = str(npu.get("status", "ok") or "ok").strip().lower()
+        npu_utilization = _safe_float(npu.get("utilization", 0.0), 0.0)
+        gpu_utilization = _safe_float(gpu.get("utilization", 0.0), 0.0)
+
+        npu_hot_threshold = max(
+            50.0,
+            min(
+                100.0,
+                _safe_float(
+                    os.getenv("CDB_EMBED_NPU_HOT_UTIL_THRESHOLD", "92") or "92",
+                    92.0,
+                ),
+            ),
+        )
+        gpu_hot_threshold = max(
+            50.0,
+            min(
+                100.0,
+                _safe_float(
+                    os.getenv("CDB_EMBED_GPU_HOT_UTIL_THRESHOLD", "97") or "97",
+                    97.0,
+                ),
+            ),
+        )
+
+        if npu_status in {"missing", "offline", "error", "failed", "unavailable"}:
+            return ["GPU", "NPU", "CPU"]
+
+        if npu_status in {"hot", "critical", "throttled"} or (
+            npu_utilization >= npu_hot_threshold
+        ):
+            if gpu_utilization < gpu_hot_threshold:
+                return ["GPU", "NPU", "CPU"]
+    except Exception:
+        return preferred
+
+    return preferred
 
 
 def _embed_device_candidates(raw: str | None) -> list[str]:
@@ -398,14 +482,24 @@ def _embed_device_candidates(raw: str | None) -> list[str]:
         return ["NPU"]
     if normalized == "GPU":
         return ["GPU"]
-    return ["NPU", "GPU"]
+    if normalized == "CPU":
+        return ["CPU"]
+
+    policy = _embed_auto_policy()
+    if policy == "throughput":
+        return ["GPU", "NPU", "CPU"]
+    if policy == "cpu-first":
+        return ["CPU", "NPU", "GPU"]
+    if policy == "npu-first":
+        return ["NPU", "GPU", "CPU"]
+    return _adaptive_embed_auto_candidates()
 
 
 def _is_hardware_embed_device(value: str) -> bool:
     probe = str(value or "").strip().upper()
     if not probe:
         return False
-    return probe in {"NPU", "GPU", "CUDA"}
+    return probe in {"NPU", "GPU", "CUDA", "CPU"}
 
 
 def _sigmoid(value: float) -> float:
@@ -1536,6 +1630,13 @@ def _load_native_lib() -> ctypes.CDLL:
             ]
             lib.cdb_engine_update_embeddings.restype = ctypes.c_int
 
+        if hasattr(lib, "cdb_engine_update_cosine_matrix"):
+            lib.cdb_engine_update_cosine_matrix.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_float),
+            ]
+            lib.cdb_engine_update_cosine_matrix.restype = ctypes.c_int
+
         if hasattr(lib, "cdb_growth_guard_scores"):
             lib.cdb_growth_guard_scores.argtypes = [
                 ctypes.POINTER(ctypes.c_float),
@@ -1918,6 +2019,1360 @@ def _resolve_ort_capi_dir() -> Path | None:
     return ordered[0] if ordered else None
 
 
+def _embed_runtime_profile_for_device(device: str | None) -> str:
+    normalized = _normalize_embed_device(device)
+    if normalized == "GPU":
+        return "gpu"
+    return "default"
+
+
+def _resolve_ort_include_dir_for_profile(profile: str) -> Path | None:
+    profile_key = str(profile or "default").strip().lower()
+    if profile_key == "gpu":
+        explicit = str(os.getenv("CDB_ORT_GPU_INCLUDE_DIR", "") or "").strip()
+        if explicit:
+            path = Path(explicit).expanduser().resolve()
+            if path.exists() and path.is_dir():
+                return path
+    return _resolve_ort_include_dir()
+
+
+def _resolve_ort_capi_dir_for_profile(profile: str) -> Path | None:
+    profile_key = str(profile or "default").strip().lower()
+    if profile_key == "gpu":
+        explicit_lib = str(os.getenv("CDB_ORT_GPU_LIB_DIR", "") or "").strip()
+        if explicit_lib:
+            path = Path(explicit_lib).expanduser().resolve()
+            if path.exists() and path.is_dir():
+                return path
+
+        explicit = str(os.getenv("CDB_ORT_GPU_CAPI_DIR", "") or "").strip()
+        if explicit:
+            path = Path(explicit).expanduser().resolve()
+            if path.exists() and path.is_dir():
+                return path
+    return _resolve_ort_capi_dir()
+
+
+_CUDA_NVIDIA_LIBRARY_SUFFIXES: tuple[str, ...] = (
+    "nvidia/cuda_runtime/lib",
+    "nvidia/cuda_nvrtc/lib",
+    "nvidia/cublas/lib",
+    "nvidia/cudnn/lib",
+    "nvidia/cufft/lib",
+    "nvidia/curand/lib",
+    "nvidia/nvjitlink/lib",
+)
+
+
+def _python_site_roots() -> list[Path]:
+    raw_candidates: list[Any] = []
+    try:
+        raw_candidates.extend(site.getsitepackages())
+    except Exception:
+        pass
+    try:
+        raw_candidates.append(site.getusersitepackages())
+    except Exception:
+        pass
+    raw_candidates.extend(sys.path)
+
+    ordered: list[Path] = []
+    seen: set[str] = set()
+    for raw in raw_candidates:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        try:
+            path = Path(value).expanduser().resolve()
+        except Exception:
+            continue
+        if not path.exists() or not path.is_dir():
+            continue
+        marker = str(path)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        ordered.append(path)
+    return ordered
+
+
+def _cuda_runtime_library_roots() -> list[Path]:
+    ordered: list[Path] = []
+    seen: set[str] = set()
+
+    def _append(path: Path) -> None:
+        try:
+            resolved = path.expanduser().resolve()
+        except Exception:
+            return
+        if not resolved.exists() or not resolved.is_dir():
+            return
+        marker = str(resolved)
+        if marker in seen:
+            return
+        seen.add(marker)
+        ordered.append(resolved)
+
+    for root in _python_site_roots():
+        for suffix in _CUDA_NVIDIA_LIBRARY_SUFFIXES:
+            _append(root / suffix)
+
+    for suffix in _CUDA_NVIDIA_LIBRARY_SUFFIXES:
+        _append(Path("/usr/local/lib/python3.12/site-packages") / suffix)
+
+    return ordered
+
+
+def _prepare_gpu_cuda_env() -> None:
+    existing = str(os.getenv("LD_LIBRARY_PATH", "") or "")
+    parts = [part for part in existing.split(":") if part]
+
+    capi_dir = _resolve_ort_capi_dir_for_profile("gpu")
+    if capi_dir is not None and capi_dir.exists():
+        _ensure_ort_soname_links(capi_dir)
+        capi_str = str(capi_dir)
+        parts = [part for part in parts if part != capi_str]
+        parts.insert(0, capi_str)
+
+    for path in _cuda_runtime_library_roots():
+        if not path.exists() or not path.is_dir():
+            continue
+        path_str = str(path)
+        if path_str not in parts:
+            parts.append(path_str)
+
+    if parts:
+        os.environ["LD_LIBRARY_PATH"] = ":".join(parts)
+
+
+def _embed_gpu_sidecar_enabled() -> bool:
+    if _bool_env("CDB_EMBED_LANE_WORKER", False):
+        return False
+    return _bool_env("CDB_EMBED_GPU_SIDECAR_ENABLED", True)
+
+
+def _embed_gpu_sidecar_split_min_count() -> int:
+    return _int_env("CDB_EMBED_GPU_SIDECAR_MIN_COUNT", 384, minimum=32, maximum=20000)
+
+
+def _embed_gpu_sidecar_split_ratio() -> float:
+    return max(
+        0.0,
+        min(
+            1.0,
+            _safe_float(os.getenv("CDB_EMBED_GPU_SIDECAR_SPLIT_RATIO", "0.35"), 0.35),
+        ),
+    )
+
+
+def _embed_gpu_sidecar_split_hot_ratio() -> float:
+    return max(
+        0.0,
+        min(
+            1.0,
+            _safe_float(
+                os.getenv("CDB_EMBED_GPU_SIDECAR_SPLIT_HOT_RATIO", "0.75"),
+                0.75,
+            ),
+        ),
+    )
+
+
+_EMBED_GPU_CONTROLLER_PROFILE_DEFAULTS: dict[str, dict[str, float]] = {
+    "energy": {
+        "setpoint_percent": 88.0,
+        "kp": 0.46,
+        "ki": 0.16,
+        "kd": 0.12,
+        "integral_limit": 1.6,
+        "slew_per_second": 0.16,
+        "min_base_factor": 0.08,
+        "gpu_soft_limit": 78.0,
+        "gpu_pressure_gain": 0.94,
+        "failure_gain": 0.84,
+        "fallback_gain": 0.92,
+        "count_gain": 0.04,
+        "cost_gain": 0.9,
+        "escape_gain": 0.22,
+        "feedback_alpha": 0.48,
+    },
+    "balanced": {
+        "setpoint_percent": 84.0,
+        "kp": 0.58,
+        "ki": 0.24,
+        "kd": 0.08,
+        "integral_limit": 2.2,
+        "slew_per_second": 0.22,
+        "min_base_factor": 0.2,
+        "gpu_soft_limit": 84.0,
+        "gpu_pressure_gain": 0.65,
+        "failure_gain": 0.72,
+        "fallback_gain": 0.78,
+        "count_gain": 0.08,
+        "cost_gain": 0.58,
+        "escape_gain": 0.34,
+        "feedback_alpha": 0.4,
+    },
+    "aggressive": {
+        "setpoint_percent": 74.0,
+        "kp": 0.86,
+        "ki": 0.34,
+        "kd": 0.06,
+        "integral_limit": 3.0,
+        "slew_per_second": 0.42,
+        "min_base_factor": 0.28,
+        "gpu_soft_limit": 90.0,
+        "gpu_pressure_gain": 0.34,
+        "failure_gain": 0.54,
+        "fallback_gain": 0.52,
+        "count_gain": 0.2,
+        "cost_gain": 0.28,
+        "escape_gain": 0.74,
+        "feedback_alpha": 0.34,
+    },
+    "throughput": {
+        "setpoint_percent": 68.0,
+        "kp": 0.98,
+        "ki": 0.38,
+        "kd": 0.04,
+        "integral_limit": 3.4,
+        "slew_per_second": 0.56,
+        "min_base_factor": 0.34,
+        "gpu_soft_limit": 93.0,
+        "gpu_pressure_gain": 0.22,
+        "failure_gain": 0.44,
+        "fallback_gain": 0.42,
+        "count_gain": 0.28,
+        "cost_gain": 0.2,
+        "escape_gain": 0.88,
+        "feedback_alpha": 0.3,
+    },
+}
+
+
+def _embed_gpu_controller_profile_name() -> str:
+    raw = str(os.getenv("CDB_EMBED_GPU_CONTROLLER_PROFILE", "energy") or "energy")
+    token = raw.strip().lower()
+    if token in {"perf", "performance", "latency", "turbo"}:
+        token = "aggressive"
+    if token in {"max", "max-throughput", "throughput-max"}:
+        token = "throughput"
+    if token not in _EMBED_GPU_CONTROLLER_PROFILE_DEFAULTS:
+        token = "energy"
+    return token
+
+
+def _embed_gpu_controller_profile_defaults() -> dict[str, float]:
+    profile = _embed_gpu_controller_profile_name()
+    defaults = _EMBED_GPU_CONTROLLER_PROFILE_DEFAULTS.get(profile, {})
+    return {str(key): _safe_float(value, 0.0) for key, value in defaults.items()}
+
+
+def _embed_gpu_controller_param(
+    *,
+    name: str,
+    default: float,
+    minimum: float,
+    maximum: float,
+) -> float:
+    env_key = f"CDB_EMBED_GPU_CONTROLLER_{str(name or '').strip().upper()}"
+    return _clamp(
+        _safe_float(os.getenv(env_key, str(default)) or str(default), default),
+        minimum,
+        maximum,
+    )
+
+
+def _presence_signature_averages(
+    signatures: dict[str, dict[str, float]] | None,
+) -> dict[str, float]:
+    base = {
+        "cpu": 0.0,
+        "gpu": 0.0,
+        "npu": 0.0,
+        "ram": 0.0,
+        "disk": 0.0,
+        "network": 0.0,
+    }
+    rows = signatures if isinstance(signatures, dict) else {}
+    count = 0
+    for row in rows.values():
+        if not isinstance(row, dict):
+            continue
+        count += 1
+        for key in base.keys():
+            base[key] += _clamp01(_safe_float(row.get(key, 0.0), 0.0))
+
+    if count <= 0:
+        default = _default_resource_signature(0.0)
+        for key in base.keys():
+            base[key] = _clamp01(_safe_float(default.get(key, 0.0), 0.0))
+        return base
+
+    inv = 1.0 / float(count)
+    for key in base.keys():
+        base[key] = _clamp01(base[key] * inv)
+    return base
+
+
+def _embed_gpu_controller_cost_signals(
+    *,
+    signatures: dict[str, dict[str, float]] | None,
+    queue_ratio: float,
+    compute_count: int,
+    cpu_util: float,
+) -> dict[str, float]:
+    means = _presence_signature_averages(signatures)
+    queue_clamped = _clamp01(_safe_float(queue_ratio, 0.0))
+    compute_pressure = _clamp01(_safe_float(compute_count, 0.0) / 96.0)
+    cpu_pressure = _clamp01(_safe_float(cpu_util, 0.0) / 100.0)
+
+    gpu_need = _clamp01(_safe_float(means.get("gpu", 0.0), 0.0))
+    npu_need = _clamp01(_safe_float(means.get("npu", 0.0), 0.0))
+    cpu_need = _clamp01(_safe_float(means.get("cpu", 0.0), 0.0))
+    network_need = _clamp01(_safe_float(means.get("network", 0.0), 0.0))
+
+    cost_pressure = _clamp01(
+        (gpu_need * 0.54)
+        + (cpu_need * 0.16)
+        + (queue_clamped * 0.16)
+        + (cpu_pressure * 0.08)
+        + (network_need * 0.06)
+    )
+    escape_pressure = _clamp01(
+        max(0.0, (npu_need * 1.1) - (gpu_need * 0.72))
+        + (compute_pressure * 0.22)
+        + (max(0.0, queue_clamped - 0.58) * 0.3)
+    )
+
+    return {
+        "queue": round(queue_clamped, 6),
+        "compute_pressure": round(compute_pressure, 6),
+        "cpu_pressure": round(cpu_pressure, 6),
+        "mean_gpu_need": round(gpu_need, 6),
+        "mean_npu_need": round(npu_need, 6),
+        "mean_cpu_need": round(cpu_need, 6),
+        "cost_pressure": round(cost_pressure, 6),
+        "escape_pressure": round(escape_pressure, 6),
+    }
+
+
+def _embed_gpu_controller_enabled() -> bool:
+    return _bool_env("CDB_EMBED_GPU_CONTROLLER_ENABLED", True)
+
+
+def _embed_gpu_controller_reset(reason: str) -> None:
+    profile = _embed_gpu_controller_profile_name()
+    with _EMBED_GPU_CONTROLLER_LOCK:
+        _EMBED_GPU_CONTROLLER_STATE.clear()
+        _EMBED_GPU_CONTROLLER_STATE["snapshot"] = {
+            "mode": "meta-pid",
+            "status": "reset",
+            "profile": profile,
+            "reason": str(reason or ""),
+        }
+
+
+def _embed_gpu_controller_snapshot() -> dict[str, Any]:
+    profile = _embed_gpu_controller_profile_name()
+    with _EMBED_GPU_CONTROLLER_LOCK:
+        raw = _EMBED_GPU_CONTROLLER_STATE.get("snapshot", {})
+        if isinstance(raw, dict) and raw:
+            if "profile" not in raw:
+                out = dict(raw)
+                out["profile"] = profile
+                return out
+            return dict(raw)
+    if not _embed_gpu_controller_enabled():
+        return {
+            "mode": "disabled",
+            "status": "disabled",
+            "profile": profile,
+        }
+    return {
+        "mode": "meta-pid",
+        "status": "pending",
+        "profile": profile,
+    }
+
+
+def _embed_gpu_controller_feedback(
+    *,
+    total_count: int,
+    route_counts: dict[str, int],
+    daimoi_cost_pressure: float | None = None,
+    daimoi_escape_pressure: float | None = None,
+    daimoi_signals: dict[str, float] | None = None,
+) -> None:
+    if not _embed_gpu_controller_enabled():
+        return
+
+    profile_defaults = _embed_gpu_controller_profile_defaults()
+    profile = _embed_gpu_controller_profile_name()
+
+    gpu_sidecar = max(0, int(_safe_float(route_counts.get("gpu_sidecar", 0), 0.0)))
+    gpu_fallback = max(
+        0,
+        int(_safe_float(route_counts.get("gpu_sidecar_fallback", 0), 0.0)),
+    )
+    attempts = max(0, gpu_sidecar + gpu_fallback)
+    fallback_ratio = (float(gpu_fallback) / float(attempts)) if attempts > 0 else 0.0
+    attempted_share = (
+        float(attempts) / float(max(1, int(total_count)))
+        if int(total_count) > 0
+        else 0.0
+    )
+    alpha = _embed_gpu_controller_param(
+        name="feedback_alpha",
+        default=_safe_float(profile_defaults.get("feedback_alpha", 0.4), 0.4),
+        minimum=0.05,
+        maximum=1.0,
+    )
+
+    with _EMBED_GPU_CONTROLLER_LOCK:
+        prev_penalty = _safe_float(
+            _EMBED_GPU_CONTROLLER_STATE.get("fallback_penalty", 0.0),
+            0.0,
+        )
+        penalty = _clamp(
+            ((1.0 - alpha) * prev_penalty) + (alpha * fallback_ratio),
+            0.0,
+            1.0,
+        )
+        _EMBED_GPU_CONTROLLER_STATE["fallback_penalty"] = penalty
+
+        snapshot = _EMBED_GPU_CONTROLLER_STATE.get("snapshot", {})
+        if not isinstance(snapshot, dict):
+            snapshot = {}
+        snapshot.update(
+            {
+                "profile": profile,
+                "fallback_ratio": round(fallback_ratio, 6),
+                "fallback_penalty": round(penalty, 6),
+                "attempted_share": round(attempted_share, 6),
+            }
+        )
+        if daimoi_cost_pressure is not None:
+            snapshot["daimoi_cost_pressure"] = round(
+                _clamp01(_safe_float(daimoi_cost_pressure, 0.0)),
+                6,
+            )
+        if daimoi_escape_pressure is not None:
+            snapshot["daimoi_escape_pressure"] = round(
+                _clamp01(_safe_float(daimoi_escape_pressure, 0.0)),
+                6,
+            )
+        if isinstance(daimoi_signals, dict) and daimoi_signals:
+            filtered = {
+                str(key): round(_safe_float(value, 0.0), 6)
+                for key, value in daimoi_signals.items()
+                if str(key).strip()
+            }
+            if filtered:
+                snapshot["daimoi_signals"] = filtered
+        _EMBED_GPU_CONTROLLER_STATE["snapshot"] = snapshot
+
+
+def _embed_gpu_controller_ratio(
+    *,
+    total_count: int,
+    npu_util: float,
+    gpu_util: float,
+    warm_threshold: float,
+    base_ratio: float,
+    hot_ratio: float,
+    heuristic_ratio: float,
+    daimoi_cost_pressure: float = 0.0,
+    daimoi_escape_pressure: float = 0.0,
+) -> float:
+    if not _embed_gpu_controller_enabled():
+        return _clamp(heuristic_ratio, 0.0, max(0.0, hot_ratio))
+
+    profile = _embed_gpu_controller_profile_name()
+    profile_defaults = _embed_gpu_controller_profile_defaults()
+
+    ratio_high = max(0.0, _safe_float(hot_ratio, 0.0))
+    ratio_base = _clamp(_safe_float(base_ratio, 0.0), 0.0, ratio_high)
+    ratio_heuristic = _clamp(_safe_float(heuristic_ratio, 0.0), 0.0, ratio_high)
+    if ratio_high <= 0.0:
+        _embed_gpu_controller_reset("ratio_high_zero")
+        return 0.0
+
+    setpoint = _embed_gpu_controller_param(
+        name="setpoint_percent",
+        default=_safe_float(
+            profile_defaults.get("setpoint_percent", round(warm_threshold, 2)),
+            warm_threshold,
+        ),
+        minimum=50.0,
+        maximum=99.0,
+    )
+    kp = _embed_gpu_controller_param(
+        name="kp",
+        default=_safe_float(profile_defaults.get("kp", 0.58), 0.58),
+        minimum=0.0,
+        maximum=4.0,
+    )
+    ki = _embed_gpu_controller_param(
+        name="ki",
+        default=_safe_float(profile_defaults.get("ki", 0.24), 0.24),
+        minimum=0.0,
+        maximum=4.0,
+    )
+    kd = _embed_gpu_controller_param(
+        name="kd",
+        default=_safe_float(profile_defaults.get("kd", 0.08), 0.08),
+        minimum=0.0,
+        maximum=4.0,
+    )
+    integral_limit = _embed_gpu_controller_param(
+        name="integral_limit",
+        default=_safe_float(profile_defaults.get("integral_limit", 2.2), 2.2),
+        minimum=0.1,
+        maximum=8.0,
+    )
+    slew_per_second = _embed_gpu_controller_param(
+        name="slew_per_second",
+        default=_safe_float(profile_defaults.get("slew_per_second", 0.22), 0.22),
+        minimum=0.01,
+        maximum=8.0,
+    )
+    min_base_factor = _embed_gpu_controller_param(
+        name="min_base_factor",
+        default=_safe_float(profile_defaults.get("min_base_factor", 0.2), 0.2),
+        minimum=0.0,
+        maximum=1.0,
+    )
+    gpu_soft_limit = _embed_gpu_controller_param(
+        name="gpu_soft_limit",
+        default=_safe_float(profile_defaults.get("gpu_soft_limit", 84.0), 84.0),
+        minimum=30.0,
+        maximum=99.0,
+    )
+    gpu_pressure_gain = _embed_gpu_controller_param(
+        name="gpu_pressure_gain",
+        default=_safe_float(profile_defaults.get("gpu_pressure_gain", 0.65), 0.65),
+        minimum=0.0,
+        maximum=2.0,
+    )
+    failure_gain = _embed_gpu_controller_param(
+        name="failure_gain",
+        default=_safe_float(profile_defaults.get("failure_gain", 0.72), 0.72),
+        minimum=0.0,
+        maximum=2.0,
+    )
+    fallback_gain = _embed_gpu_controller_param(
+        name="fallback_gain",
+        default=_safe_float(profile_defaults.get("fallback_gain", 0.78), 0.78),
+        minimum=0.0,
+        maximum=2.0,
+    )
+    count_gain = _embed_gpu_controller_param(
+        name="count_gain",
+        default=_safe_float(profile_defaults.get("count_gain", 0.08), 0.08),
+        minimum=0.0,
+        maximum=1.0,
+    )
+    cost_gain = _embed_gpu_controller_param(
+        name="cost_gain",
+        default=_safe_float(profile_defaults.get("cost_gain", 0.58), 0.58),
+        minimum=0.0,
+        maximum=2.0,
+    )
+    escape_gain = _embed_gpu_controller_param(
+        name="escape_gain",
+        default=_safe_float(profile_defaults.get("escape_gain", 0.34), 0.34),
+        minimum=0.0,
+        maximum=2.0,
+    )
+
+    daimoi_cost_pressure = _clamp01(_safe_float(daimoi_cost_pressure, 0.0))
+    daimoi_escape_pressure = _clamp01(_safe_float(daimoi_escape_pressure, 0.0))
+
+    npu_util_norm = _clamp(_safe_float(npu_util, 0.0), 0.0, 100.0)
+    gpu_util_norm = _clamp(_safe_float(gpu_util, 0.0), 0.0, 100.0)
+    error = (npu_util_norm - setpoint) / 100.0
+    gpu_pressure = max(0.0, (gpu_util_norm - gpu_soft_limit) / 100.0)
+
+    now_mono = time.monotonic()
+    with _EMBED_GPU_CONTROLLER_LOCK:
+        prev_update = _safe_float(
+            _EMBED_GPU_CONTROLLER_STATE.get("updated_at", 0.0), 0.0
+        )
+        prev_error = _safe_float(
+            _EMBED_GPU_CONTROLLER_STATE.get("prev_error", 0.0), 0.0
+        )
+        prev_ratio = _safe_float(
+            _EMBED_GPU_CONTROLLER_STATE.get("prev_ratio", ratio_heuristic),
+            ratio_heuristic,
+        )
+        integral = _safe_float(_EMBED_GPU_CONTROLLER_STATE.get("integral", 0.0), 0.0)
+        oscillation = _safe_float(
+            _EMBED_GPU_CONTROLLER_STATE.get("oscillation", 0.0), 0.0
+        )
+        fallback_penalty = _safe_float(
+            _EMBED_GPU_CONTROLLER_STATE.get("fallback_penalty", 0.0),
+            0.0,
+        )
+
+        if prev_update > 0.0:
+            dt = _clamp(now_mono - prev_update, 0.05, 8.0)
+        else:
+            dt = 1.0
+
+        integral = _clamp(integral + (error * dt), -integral_limit, integral_limit)
+        derivative = (error - prev_error) / max(1e-6, dt)
+
+        sign_flip = (prev_error * error) < 0.0 and abs(error - prev_error) >= 0.02
+        if sign_flip:
+            oscillation = _clamp(oscillation + 0.22, 0.0, 1.0)
+        else:
+            oscillation = _clamp(oscillation - (0.08 * dt), 0.0, 1.0)
+
+        gain_scale = _clamp(1.0 - (0.45 * oscillation), 0.55, 1.0)
+        control_term = gain_scale * ((kp * error) + (ki * integral) + (kd * derivative))
+        command = ratio_heuristic + control_term
+
+        split_min_count = max(1, _embed_gpu_sidecar_split_min_count())
+        count_pressure = _clamp(
+            (float(max(0, int(total_count))) - float(split_min_count))
+            / float(max(1, split_min_count)),
+            0.0,
+            1.0,
+        )
+        command += ratio_base * count_pressure * count_gain
+        command += ratio_high * daimoi_escape_pressure * escape_gain
+        command -= ratio_high * daimoi_cost_pressure * cost_gain
+        command -= gpu_pressure * gpu_pressure_gain
+
+        failures = int(_EMBED_SIDECAR_FAILURES.get("GPU", 0))
+        fail_limit = max(1, _embed_sidecar_failure_limit())
+        failure_pressure = _clamp(float(failures) / float(fail_limit), 0.0, 1.0)
+        command *= max(0.0, 1.0 - (failure_gain * failure_pressure))
+        command *= max(0.0, 1.0 - (fallback_gain * fallback_penalty))
+
+        ratio_min = _clamp(ratio_base * min_base_factor, 0.0, ratio_high)
+        ratio_max = max(ratio_min, ratio_high)
+        command = _clamp(command, ratio_min, ratio_max)
+
+        if prev_update <= 0.0:
+            ratio = command
+        else:
+            max_delta = max(0.01, slew_per_second * dt)
+            delta = _clamp(command - prev_ratio, -max_delta, max_delta)
+            ratio = _clamp(prev_ratio + delta, ratio_min, ratio_max)
+
+        if (ratio <= ratio_min + 1e-9 and error < 0.0) or (
+            ratio >= ratio_max - 1e-9 and error > 0.0
+        ):
+            integral *= 0.85
+
+        _EMBED_GPU_CONTROLLER_STATE["integral"] = integral
+        _EMBED_GPU_CONTROLLER_STATE["prev_error"] = error
+        _EMBED_GPU_CONTROLLER_STATE["prev_ratio"] = ratio
+        _EMBED_GPU_CONTROLLER_STATE["updated_at"] = now_mono
+        _EMBED_GPU_CONTROLLER_STATE["oscillation"] = oscillation
+
+        _EMBED_GPU_CONTROLLER_STATE["snapshot"] = {
+            "mode": "meta-pid",
+            "status": "active",
+            "profile": profile,
+            "setpoint_percent": round(setpoint, 3),
+            "npu_utilization": round(npu_util_norm, 3),
+            "gpu_utilization": round(gpu_util_norm, 3),
+            "error": round(error, 6),
+            "integral": round(integral, 6),
+            "derivative": round(derivative, 6),
+            "gain_scale": round(gain_scale, 6),
+            "kp_eff": round(kp * gain_scale, 6),
+            "ki_eff": round(ki * gain_scale, 6),
+            "kd_eff": round(kd * gain_scale, 6),
+            "heuristic_ratio": round(ratio_heuristic, 6),
+            "command_ratio": round(command, 6),
+            "ratio": round(ratio, 6),
+            "ratio_min": round(ratio_min, 6),
+            "ratio_max": round(ratio_max, 6),
+            "count_gain": round(count_gain, 6),
+            "cost_gain": round(cost_gain, 6),
+            "escape_gain": round(escape_gain, 6),
+            "failure_pressure": round(failure_pressure, 6),
+            "fallback_penalty": round(fallback_penalty, 6),
+            "gpu_pressure": round(gpu_pressure, 6),
+            "daimoi_cost_pressure": round(daimoi_cost_pressure, 6),
+            "daimoi_escape_pressure": round(daimoi_escape_pressure, 6),
+            "oscillation": round(oscillation, 6),
+            "total_count": int(max(0, int(total_count))),
+        }
+
+        return ratio
+
+
+def _embed_sidecar_timeout_seconds() -> float:
+    return max(
+        0.1,
+        min(
+            180.0,
+            _safe_float(
+                os.getenv("CDB_EMBED_SIDECAR_TIMEOUT_SECONDS", "8.0"),
+                8.0,
+            ),
+        ),
+    )
+
+
+def _embed_sidecar_retry_timeout_seconds() -> float:
+    return max(
+        2.0,
+        min(
+            240.0,
+            _safe_float(
+                os.getenv("CDB_EMBED_SIDECAR_RETRY_TIMEOUT_SECONDS", "90.0"),
+                90.0,
+            ),
+        ),
+    )
+
+
+def _cosine_gpu_matrix_enabled() -> bool:
+    if not _embed_gpu_sidecar_enabled():
+        return False
+    return _bool_env("CDB_COSINE_GPU_MATRIX_ENABLED", True)
+
+
+def _cosine_gpu_matrix_min_count() -> int:
+    return _int_env("CDB_COSINE_GPU_MATRIX_MIN_COUNT", 96, minimum=16, maximum=8192)
+
+
+def _cosine_gpu_matrix_max_count() -> int:
+    lower = _cosine_gpu_matrix_min_count()
+    raw = _int_env("CDB_COSINE_GPU_MATRIX_MAX_COUNT", 2048, minimum=lower, maximum=8192)
+    return max(lower, raw)
+
+
+def _cosine_gpu_matrix_chunk_rows() -> int:
+    return _int_env("CDB_COSINE_GPU_MATRIX_CHUNK_ROWS", 128, minimum=8, maximum=2048)
+
+
+def _cosine_gpu_matrix_timeout_seconds() -> float:
+    return max(
+        0.2,
+        min(
+            180.0,
+            _safe_float(
+                os.getenv("CDB_COSINE_GPU_MATRIX_TIMEOUT_SECONDS", "20.0") or "20.0",
+                20.0,
+            ),
+        ),
+    )
+
+
+def _cosine_gpu_matrix_retry_timeout_seconds() -> float:
+    return max(
+        2.0,
+        min(
+            240.0,
+            _safe_float(
+                os.getenv("CDB_COSINE_GPU_MATRIX_RETRY_TIMEOUT_SECONDS", "90.0")
+                or "90.0",
+                90.0,
+            ),
+        ),
+    )
+
+
+def _embed_sidecar_error_is_retryable(reason: str) -> bool:
+    probe = str(reason or "").strip().lower()
+    if not probe:
+        return False
+    if probe.startswith("timeout"):
+        return True
+
+    retry_signals = (
+        "cudaexecutionprovider unavailable",
+        "openvinoexecutionprovider gpu error",
+        "failed to load shared library",
+        "std_create_error",
+    )
+    return any(token in probe for token in retry_signals)
+
+
+def _embed_sidecar_boot_timeout_seconds() -> float:
+    return max(
+        30.0,
+        min(
+            600.0,
+            _safe_float(
+                os.getenv("CDB_EMBED_SIDECAR_BOOT_TIMEOUT_SECONDS", "240") or "240",
+                240.0,
+            ),
+        ),
+    )
+
+
+def _embed_sidecar_failure_limit() -> int:
+    return _int_env("CDB_EMBED_GPU_SIDECAR_MAX_FAILURES", 2, minimum=1, maximum=20)
+
+
+def _embed_sidecar_cooldown_seconds() -> float:
+    return max(
+        30.0,
+        min(
+            3600.0,
+            _safe_float(
+                os.getenv("CDB_EMBED_GPU_SIDECAR_COOLDOWN_SECONDS", "900") or "900",
+                900.0,
+            ),
+        ),
+    )
+
+
+def _embed_sidecar_available(device: str) -> bool:
+    normalized = _normalize_embed_device(device)
+    now = time.time()
+    with _EMBED_SIDECAR_LOCK:
+        disabled_until = float(
+            _EMBED_SIDECAR_DISABLED_UNTIL.get(normalized, 0.0) or 0.0
+        )
+        if disabled_until > now:
+            return False
+        if disabled_until > 0.0:
+            _EMBED_SIDECAR_DISABLED_UNTIL.pop(normalized, None)
+            _EMBED_SIDECAR_FAILURES[normalized] = 0
+            _EMBED_SIDECAR_LAST_ERROR.pop(normalized, None)
+    return True
+
+
+def _record_embed_sidecar_failure(device: str, reason: str = "") -> None:
+    normalized = _normalize_embed_device(device)
+    message = str(reason or "").strip()
+    with _EMBED_SIDECAR_LOCK:
+        failures = int(_EMBED_SIDECAR_FAILURES.get(normalized, 0)) + 1
+        _EMBED_SIDECAR_FAILURES[normalized] = failures
+        if message:
+            _EMBED_SIDECAR_LAST_ERROR[normalized] = message
+        if failures >= _embed_sidecar_failure_limit():
+            _EMBED_SIDECAR_DISABLED_UNTIL[normalized] = (
+                time.time() + _embed_sidecar_cooldown_seconds()
+            )
+
+
+def _record_embed_sidecar_success(device: str) -> None:
+    normalized = _normalize_embed_device(device)
+    with _EMBED_SIDECAR_LOCK:
+        _EMBED_SIDECAR_FAILURES[normalized] = 0
+        _EMBED_SIDECAR_DISABLED_UNTIL.pop(normalized, None)
+        _EMBED_SIDECAR_LAST_ERROR.pop(normalized, None)
+
+
+def _read_int_from_path(path: Path) -> int | None:
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except Exception:
+        return None
+    if not raw:
+        return None
+    if raw.lower() == "max":
+        return None
+    try:
+        value = int(raw)
+    except Exception:
+        return None
+    if value <= 0:
+        return None
+    return value
+
+
+def _gpu_sidecar_memory_guard_passes() -> bool:
+    limit = _read_int_from_path(Path("/sys/fs/cgroup/memory.max"))
+    usage = _read_int_from_path(Path("/sys/fs/cgroup/memory.current"))
+    if limit is None or usage is None:
+        return True
+
+    limit = max(1, int(limit))
+    usage = max(0, min(int(usage), limit))
+    used_ratio = usage / float(limit)
+    available_bytes = max(0, limit - usage)
+
+    max_ratio = max(
+        0.5,
+        min(
+            0.98,
+            _safe_float(
+                os.getenv("CDB_EMBED_GPU_SIDECAR_MAX_MEM_RATIO", "0.62") or "0.62",
+                0.62,
+            ),
+        ),
+    )
+    min_available_mb = max(
+        64.0,
+        min(
+            32768.0,
+            _safe_float(
+                os.getenv("CDB_EMBED_GPU_SIDECAR_MIN_AVAILABLE_MB", "6144") or "6144",
+                6144.0,
+            ),
+        ),
+    )
+    min_available_bytes = int(min_available_mb * 1024.0 * 1024.0)
+
+    if used_ratio >= max_ratio:
+        return False
+    if available_bytes < min_available_bytes:
+        return False
+    return True
+
+
+def _next_embed_sidecar_request_id() -> str:
+    global _EMBED_SIDECAR_REQUEST_SEQ
+    with _EMBED_SIDECAR_LOCK:
+        _EMBED_SIDECAR_REQUEST_SEQ += 1
+        seq = _EMBED_SIDECAR_REQUEST_SEQ
+    return f"req-{seq}"
+
+
+def _compact_diagnostic_text(value: Any, *, limit: int = 220) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if len(raw) <= limit:
+        return raw
+    if limit <= 3:
+        return raw[:limit]
+    return f"{raw[: limit - 3]}..."
+
+
+def _format_embed_sidecar_response_error(response: dict[str, Any]) -> str:
+    base = _compact_diagnostic_text(response.get("error", ""), limit=800)
+    diag = response.get("diag")
+    if not isinstance(diag, dict):
+        return base
+
+    keys = (
+        "source",
+        "selected_device",
+        "cpu_fallback",
+        "cpu_fallback_detail",
+        "cdb_ort_gpu_capi_dir",
+        "cdb_ort_gpu_include_dir",
+        "cdb_ort_capi_dir",
+        "cdb_ort_include_dir",
+        "nvidia_visible_devices",
+        "cuda_visible_devices",
+        "cdb_embed_device",
+        "ld_library_path_entries",
+        "ld_library_path_preview",
+        "sidecar_stderr_path",
+        "cosine_source",
+        "cosine_provider",
+        "cosine_model_path",
+        "cosine_ort_module",
+        "cosine_gpu_enabled",
+    )
+    chunks: list[str] = []
+    for key in keys:
+        if key not in diag:
+            continue
+        value = diag.get(key)
+        if isinstance(value, bool):
+            rendered = "1" if value else "0"
+        else:
+            rendered = _compact_diagnostic_text(value, limit=180)
+        if rendered:
+            chunks.append(f"{key}={rendered}")
+
+    if not chunks:
+        return base
+
+    diag_payload = "; ".join(chunks)
+    if base:
+        return f"{base} [diag:{diag_payload}]"
+    return f"diag:{diag_payload}"
+
+
+class _EmbedLaneSidecar:
+    def __init__(self, *, device: str) -> None:
+        self._device = _normalize_embed_device(device)
+        self._proc: subprocess.Popen[str] | None = None
+        self._lock = threading.Lock()
+        self._last_error = ""
+        self._stderr_path: Path | None = None
+        self._stderr_fp: Any = None
+
+    def _stderr_tail(self) -> str:
+        path = self._stderr_path
+        if path is None:
+            return ""
+        try:
+            raw = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return ""
+        lines = [line.strip() for line in raw.splitlines() if str(line).strip()]
+        if not lines:
+            return ""
+        limit = _int_env(
+            "CDB_EMBED_SIDECAR_STDERR_TAIL_LINES", 5, minimum=1, maximum=20
+        )
+        tail = lines[-limit:]
+        return " | ".join(tail)
+
+    def _set_last_error(self, message: str) -> None:
+        base = str(message or "").strip()
+        path = self._stderr_path
+        if path is not None:
+            base = f"{base} [stderr={path}]" if base else f"stderr={path}"
+        tail = self._stderr_tail()
+        if tail:
+            base = f"{base} [stderr_tail={tail}]" if base else f"stderr_tail={tail}"
+        self._last_error = base
+
+    def stderr_path(self) -> str:
+        return str(self._stderr_path or "")
+
+    def _spawn(self) -> None:
+        self._stderr_path = None
+        self._stderr_fp = None
+        env = dict(os.environ)
+        env["PYTHONUNBUFFERED"] = "1"
+        env["CDB_EMBED_IN_C"] = "1"
+        env["CDB_EMBED_REQUIRE_C"] = "0"
+        env["CDB_EMBED_DEVICE"] = self._device
+        env["CDB_EMBED_LANE_WORKER"] = "1"
+        env["CDB_EMBED_GPU_SIDECAR_ENABLED"] = "0"
+        env["CDB_EMBED_GPU_USE_SIDECAR_FOR_EXPLICIT"] = "0"
+        if self._device == "GPU":
+            current_visible = (
+                str(env.get("NVIDIA_VISIBLE_DEVICES", "") or "").strip().lower()
+            )
+            if current_visible in {"", "void", "none", "no-dev-files"}:
+                env["NVIDIA_VISIBLE_DEVICES"] = str(
+                    os.getenv("CDB_EMBED_GPU_VISIBLE_DEVICES", "all") or "all"
+                )
+            explicit_cuda_visible = str(
+                os.getenv("CDB_EMBED_CUDA_VISIBLE_DEVICES", "") or ""
+            ).strip()
+            if explicit_cuda_visible:
+                env["CUDA_VISIBLE_DEVICES"] = explicit_cuda_visible
+            _prepare_gpu_cuda_env()
+            env["LD_LIBRARY_PATH"] = str(os.getenv("LD_LIBRARY_PATH", "") or "")
+
+        part_root = Path(__file__).resolve().parents[2]
+        stderr_stream: Any = subprocess.DEVNULL
+        if _bool_env("CDB_EMBED_SIDECAR_STDERR_LOG", True):
+            stderr_dir = Path(
+                str(os.getenv("CDB_EMBED_SIDECAR_STDERR_DIR", "/tmp") or "/tmp")
+            ).expanduser()
+            try:
+                stderr_dir.mkdir(parents=True, exist_ok=True)
+                stderr_path = stderr_dir / (
+                    f"cdb_embed_sidecar_{self._device.lower()}_{os.getpid()}.log"
+                )
+                stderr_fp = stderr_path.open("a", encoding="utf-8", buffering=1)
+                self._stderr_path = stderr_path
+                self._stderr_fp = stderr_fp
+                stderr_stream = stderr_fp
+                env["CDB_EMBED_SIDECAR_STDERR_PATH"] = str(stderr_path)
+            except Exception:
+                self._stderr_path = None
+                self._stderr_fp = None
+                stderr_stream = subprocess.DEVNULL
+
+        command = [
+            sys.executable,
+            "-m",
+            "code.world_web.embed_lane_worker",
+            "--device",
+            self._device,
+        ]
+        self._proc = subprocess.Popen(
+            command,
+            cwd=str(part_root),
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=stderr_stream,
+            text=True,
+            bufsize=1,
+        )
+
+    def _ensure_process(self) -> tuple[subprocess.Popen[str] | None, bool]:
+        proc = self._proc
+        if proc is not None and proc.poll() is None:
+            return proc, False
+        self.close()
+        try:
+            self._spawn()
+        except Exception as exc:
+            self._set_last_error(str(exc))
+            return None, False
+        return self._proc, True
+
+    def close(self) -> None:
+        proc = self._proc
+        self._proc = None
+        if proc is not None:
+            try:
+                if proc.stdin is not None:
+                    req = {"id": _next_embed_sidecar_request_id(), "cmd": "shutdown"}
+                    proc.stdin.write(json.dumps(req, ensure_ascii=True) + "\n")
+                    proc.stdin.flush()
+            except Exception:
+                pass
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=0.8)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+        stderr_fp = self._stderr_fp
+        self._stderr_fp = None
+        if stderr_fp is not None:
+            try:
+                stderr_fp.close()
+            except Exception:
+                pass
+
+    def last_error(self) -> str:
+        return str(self._last_error or "")
+
+    def embed(self, text: str, *, timeout_s: float) -> list[float] | None:
+        prompt = str(text or "").strip()
+        if not prompt:
+            return None
+
+        with self._lock:
+            proc, spawned_now = self._ensure_process()
+            if proc is None or proc.stdin is None or proc.stdout is None:
+                _record_embed_sidecar_failure(self._device, self._last_error)
+                return None
+
+            req_id = _next_embed_sidecar_request_id()
+            payload = {
+                "id": req_id,
+                "cmd": "embed",
+                "text": prompt,
+            }
+            try:
+                proc.stdin.write(json.dumps(payload, ensure_ascii=True) + "\n")
+                proc.stdin.flush()
+            except Exception as exc:
+                self._set_last_error(f"write_failed:{exc}")
+                self.close()
+                _record_embed_sidecar_failure(self._device, self._last_error)
+                return None
+
+            try:
+                fd = proc.stdout.fileno()
+            except Exception as exc:
+                self._set_last_error(f"stdout_unavailable:{exc}")
+                self.close()
+                _record_embed_sidecar_failure(self._device, self._last_error)
+                return None
+
+            timeout_budget = (
+                _embed_sidecar_boot_timeout_seconds()
+                if spawned_now
+                else max(0.05, float(timeout_s))
+            )
+            ready, _, _ = select.select([fd], [], [], timeout_budget)
+            if not ready:
+                self._set_last_error("timeout")
+                self.close()
+                _record_embed_sidecar_failure(self._device, self._last_error)
+                return None
+
+            line = proc.stdout.readline()
+            if not line:
+                self._set_last_error("eof")
+                self.close()
+                _record_embed_sidecar_failure(self._device, self._last_error)
+                return None
+
+            try:
+                response = json.loads(line)
+            except Exception as exc:
+                self._set_last_error(f"invalid_json:{exc}")
+                self.close()
+                _record_embed_sidecar_failure(self._device, self._last_error)
+                return None
+
+            response_error = _format_embed_sidecar_response_error(response)
+
+            if str(response.get("id", "")).strip() != req_id:
+                self._set_last_error("mismatched_response")
+                _record_embed_sidecar_failure(self._device, self._last_error)
+                return None
+
+            vector = response.get("vector")
+            if not isinstance(vector, list):
+                self._set_last_error(response_error)
+                _record_embed_sidecar_failure(self._device, self._last_error)
+                return None
+
+            try:
+                out = [float(item) for item in vector]
+            except Exception as exc:
+                self._set_last_error(response_error or f"invalid_vector_payload:{exc}")
+                _record_embed_sidecar_failure(self._device, self._last_error)
+                return None
+            if len(out) != _CDB_EMBED_DIM:
+                self._set_last_error(
+                    response_error or f"invalid_vector_length:{len(out)}"
+                )
+                _record_embed_sidecar_failure(self._device, self._last_error)
+                return None
+            _record_embed_sidecar_success(self._device)
+            return out
+
+    def cosine_matrix(
+        self,
+        left_rows: list[list[float]],
+        right_rows: list[list[float]],
+        *,
+        timeout_s: float,
+    ) -> tuple[list[float], int, int] | None:
+        if not left_rows or not right_rows:
+            return None
+
+        with self._lock:
+            proc, spawned_now = self._ensure_process()
+            if proc is None or proc.stdin is None or proc.stdout is None:
+                _record_embed_sidecar_failure(self._device, self._last_error)
+                return None
+
+            req_id = _next_embed_sidecar_request_id()
+            payload = {
+                "id": req_id,
+                "cmd": "cosine_matrix",
+                "left": left_rows,
+                "right": right_rows,
+            }
+            try:
+                proc.stdin.write(
+                    json.dumps(payload, ensure_ascii=True, separators=(",", ":")) + "\n"
+                )
+                proc.stdin.flush()
+            except Exception as exc:
+                self._set_last_error(f"write_failed:{exc}")
+                self.close()
+                _record_embed_sidecar_failure(self._device, self._last_error)
+                return None
+
+            try:
+                fd = proc.stdout.fileno()
+            except Exception as exc:
+                self._set_last_error(f"stdout_unavailable:{exc}")
+                self.close()
+                _record_embed_sidecar_failure(self._device, self._last_error)
+                return None
+
+            timeout_budget = (
+                _embed_sidecar_boot_timeout_seconds()
+                if spawned_now
+                else max(0.05, float(timeout_s))
+            )
+            ready, _, _ = select.select([fd], [], [], timeout_budget)
+            if not ready:
+                self._set_last_error("timeout")
+                self.close()
+                _record_embed_sidecar_failure(self._device, self._last_error)
+                return None
+
+            line = proc.stdout.readline()
+            if not line:
+                self._set_last_error("eof")
+                self.close()
+                _record_embed_sidecar_failure(self._device, self._last_error)
+                return None
+
+            try:
+                response = json.loads(line)
+            except Exception as exc:
+                self._set_last_error(f"invalid_json:{exc}")
+                self.close()
+                _record_embed_sidecar_failure(self._device, self._last_error)
+                return None
+
+            response_error = _format_embed_sidecar_response_error(response)
+
+            if str(response.get("id", "")).strip() != req_id:
+                self._set_last_error("mismatched_response")
+                _record_embed_sidecar_failure(self._device, self._last_error)
+                return None
+
+            matrix = response.get("matrix")
+            out_rows = int(_safe_float(response.get("rows", 0), 0.0))
+            out_cols = int(_safe_float(response.get("cols", 0), 0.0))
+            if not isinstance(matrix, list):
+                self._set_last_error(response_error or "missing_matrix")
+                _record_embed_sidecar_failure(self._device, self._last_error)
+                return None
+            if out_rows <= 0 or out_cols <= 0:
+                self._set_last_error(response_error or "invalid_matrix_shape")
+                _record_embed_sidecar_failure(self._device, self._last_error)
+                return None
+
+            expected = out_rows * out_cols
+            if len(matrix) != expected:
+                self._set_last_error(
+                    response_error
+                    or f"invalid_matrix_length:{len(matrix)} expected:{expected}"
+                )
+                _record_embed_sidecar_failure(self._device, self._last_error)
+                return None
+
+            try:
+                out = [float(item) for item in matrix]
+            except Exception as exc:
+                self._set_last_error(response_error or f"invalid_matrix_payload:{exc}")
+                _record_embed_sidecar_failure(self._device, self._last_error)
+                return None
+
+            _record_embed_sidecar_success(self._device)
+            return out, out_rows, out_cols
+
+
+def _get_embed_lane_sidecar(device: str) -> _EmbedLaneSidecar | None:
+    normalized = _normalize_embed_device(device)
+    if normalized not in {"GPU", "CPU"}:
+        return None
+    if not _embed_sidecar_available(normalized):
+        stale: Any = None
+        with _EMBED_SIDECAR_LOCK:
+            stale = _EMBED_SIDECARS.pop(normalized, None)
+        if isinstance(stale, _EmbedLaneSidecar):
+            try:
+                stale.close()
+            except Exception:
+                pass
+        return None
+    with _EMBED_SIDECAR_LOCK:
+        cached = _EMBED_SIDECARS.get(normalized)
+        if isinstance(cached, _EmbedLaneSidecar):
+            return cached
+        sidecar = _EmbedLaneSidecar(device=normalized)
+        _EMBED_SIDECARS[normalized] = sidecar
+        return sidecar
+
+
+def _close_embed_lane_sidecars() -> None:
+    with _EMBED_SIDECAR_LOCK:
+        sidecars = list(_EMBED_SIDECARS.values())
+        _EMBED_SIDECARS.clear()
+    for sidecar in sidecars:
+        if isinstance(sidecar, _EmbedLaneSidecar):
+            try:
+                sidecar.close()
+            except Exception:
+                pass
+
+
 def _resolve_ort_soname(capi_dir: Path) -> str | None:
     direct = capi_dir / "libonnxruntime.so"
     if direct.exists() and direct.is_file():
@@ -2144,13 +3599,35 @@ def _embed_source_signature() -> str:
     return f"{int(stat.st_mtime_ns)}:{int(stat.st_size)}"
 
 
+def _embed_build_artifact_paths(
+    *, profile: str, include_dir: Path, capi_dir: Path, soname: str
+) -> tuple[Path, Path]:
+    seed = "|".join(
+        [
+            str(profile or "default").strip().lower() or "default",
+            str(include_dir.resolve()),
+            str(capi_dir.resolve()),
+            str(soname),
+        ]
+    )
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
+    lib_path = _NATIVE_DIR / f"libc_embed_runtime.{digest}.so"
+    buildinfo_path = _NATIVE_DIR / f"libc_embed_runtime.{digest}.buildinfo"
+    return lib_path, buildinfo_path
+
+
 def _embed_buildinfo_matches(
-    *, include_dir: Path, capi_dir: Path, soname: str, source_signature: str
+    *,
+    include_dir: Path,
+    capi_dir: Path,
+    soname: str,
+    source_signature: str,
+    buildinfo_path: Path,
 ) -> bool:
-    if not _EMBED_NATIVE_BUILDINFO.exists() or not _EMBED_NATIVE_BUILDINFO.is_file():
+    if not buildinfo_path.exists() or not buildinfo_path.is_file():
         return False
     try:
-        rows = _EMBED_NATIVE_BUILDINFO.read_text(encoding="utf-8").splitlines()
+        rows = buildinfo_path.read_text(encoding="utf-8").splitlines()
     except Exception:
         return False
     expected = [
@@ -2163,28 +3640,29 @@ def _embed_buildinfo_matches(
 
 
 def _write_embed_buildinfo(
-    *, include_dir: Path, capi_dir: Path, soname: str, source_signature: str
+    *,
+    include_dir: Path,
+    capi_dir: Path,
+    soname: str,
+    source_signature: str,
+    buildinfo_path: Path,
 ) -> None:
     payload = (
         f"{include_dir.resolve()}\n{capi_dir.resolve()}\n{soname}\n{source_signature}\n"
     )
-    _EMBED_NATIVE_BUILDINFO.write_text(payload, encoding="utf-8")
+    buildinfo_path.write_text(payload, encoding="utf-8")
 
 
-def _build_embed_shared_library() -> None:
+def _build_embed_shared_library(
+    *,
+    include_dir: Path,
+    capi_dir: Path,
+    soname: str,
+    lib_path: Path,
+    buildinfo_path: Path,
+) -> None:
     if not _EMBED_NATIVE_SOURCE.exists():
         raise RuntimeError(f"missing embed native source: {_EMBED_NATIVE_SOURCE}")
-
-    include_dir = _resolve_ort_include_dir()
-    capi_dir = _resolve_ort_capi_dir()
-    if include_dir is None:
-        raise RuntimeError("missing ONNX Runtime include directory for c_embed_runtime")
-    if capi_dir is None:
-        raise RuntimeError("missing ONNX Runtime capi directory for c_embed_runtime")
-
-    soname = _resolve_ort_soname(capi_dir)
-    if not soname:
-        raise RuntimeError("missing libonnxruntime.so in capi directory")
     source_signature = _embed_source_signature()
 
     command = [
@@ -2201,7 +3679,7 @@ def _build_embed_shared_library() -> None:
         f"-l:{soname}",
         f"-Wl,-rpath,{capi_dir}",
         "-o",
-        str(_EMBED_NATIVE_LIB),
+        str(lib_path),
     ]
     subprocess.run(command, check=True, capture_output=True, text=True)
     _write_embed_buildinfo(
@@ -2209,49 +3687,73 @@ def _build_embed_shared_library() -> None:
         capi_dir=capi_dir,
         soname=soname,
         source_signature=source_signature,
+        buildinfo_path=buildinfo_path,
     )
 
 
-def _load_embed_lib() -> ctypes.CDLL:
-    global _EMBED_LIB
+def _load_embed_lib(profile: str) -> ctypes.CDLL:
+    profile_key = str(profile or "default").strip().lower() or "default"
     with _EMBED_LIB_LOCK:
-        if _EMBED_LIB is not None:
-            return _EMBED_LIB
+        cached = _EMBED_LIBS.get(profile_key)
+        if cached is not None:
+            return cached
 
-        capi_dir_for_links = _resolve_ort_capi_dir()
-        _ensure_ort_soname_links(capi_dir_for_links)
+        include_dir = _resolve_ort_include_dir_for_profile(profile_key)
+        capi_dir = _resolve_ort_capi_dir_for_profile(profile_key)
+        if include_dir is None:
+            raise RuntimeError(
+                "missing ONNX Runtime include directory for c_embed_runtime"
+            )
+        if capi_dir is None:
+            raise RuntimeError(
+                "missing ONNX Runtime capi directory for c_embed_runtime"
+            )
+
+        _ensure_ort_soname_links(capi_dir)
+        soname = _resolve_ort_soname(capi_dir)
+        if not soname:
+            raise RuntimeError("missing libonnxruntime.so in capi directory")
+
+        lib_path, buildinfo_path = _embed_build_artifact_paths(
+            profile=profile_key,
+            include_dir=include_dir,
+            capi_dir=capi_dir,
+            soname=soname,
+        )
 
         can_build = shutil.which("g++") is not None
 
-        needs_build = (not _EMBED_NATIVE_LIB.exists()) or (
-            _EMBED_NATIVE_LIB.stat().st_mtime < _EMBED_NATIVE_SOURCE.stat().st_mtime
+        needs_build = (not lib_path.exists()) or (
+            lib_path.stat().st_mtime < _EMBED_NATIVE_SOURCE.stat().st_mtime
         )
         if not needs_build:
-            include_dir = _resolve_ort_include_dir()
-            capi_dir = _resolve_ort_capi_dir()
-            soname = _resolve_ort_soname(capi_dir) if capi_dir is not None else None
-            if include_dir is None or capi_dir is None or not soname:
-                needs_build = True
-            elif not _embed_buildinfo_matches(
+            if not _embed_buildinfo_matches(
                 include_dir=include_dir,
                 capi_dir=capi_dir,
                 soname=soname,
                 source_signature=_embed_source_signature(),
+                buildinfo_path=buildinfo_path,
             ):
                 needs_build = True
 
-        if needs_build and not can_build and _EMBED_NATIVE_LIB.exists():
+        if needs_build and not can_build and lib_path.exists():
             needs_build = False
 
         if needs_build:
             try:
-                _build_embed_shared_library()
+                _build_embed_shared_library(
+                    include_dir=include_dir,
+                    capi_dir=capi_dir,
+                    soname=soname,
+                    lib_path=lib_path,
+                    buildinfo_path=buildinfo_path,
+                )
             except Exception:
-                if not _EMBED_NATIVE_LIB.exists():
+                if not lib_path.exists():
                     raise
 
         mode = getattr(ctypes, "RTLD_GLOBAL", 0)
-        lib = ctypes.CDLL(str(_EMBED_NATIVE_LIB), mode=mode)
+        lib = ctypes.CDLL(str(lib_path), mode=mode)
         lib.c_embed_runtime_create.argtypes = [
             ctypes.c_char_p,
             ctypes.c_char_p,
@@ -2295,19 +3797,20 @@ def _load_embed_lib() -> ctypes.CDLL:
         lib.c_embed_runtime_destroy.argtypes = [ctypes.c_void_p]
         lib.c_embed_runtime_destroy.restype = None
 
-        _EMBED_LIB = lib
+        _EMBED_LIBS[profile_key] = lib
         return lib
 
 
 class _CEmbedRuntime:
     def __init__(self, *, requested_device: str) -> None:
-        self._lib = _load_embed_lib()
+        normalized = _normalize_embed_device(requested_device)
+        self._device = "NPU" if normalized == "AUTO" else normalized
+        self._profile = _embed_runtime_profile_for_device(self._device)
+        self._lib = _load_embed_lib(self._profile)
         self._handle: ctypes.c_void_p | None = None
         self._tokenizer: Any = None
         self._seq_len = _int_env("CDB_EMBED_SEQ_LEN", 128, minimum=8, maximum=8192)
-        self._out_dim = 24
-        normalized = _normalize_embed_device(requested_device)
-        self._device = "NPU" if normalized == "AUTO" else normalized
+        self._out_dim = _CDB_EMBED_DIM
         self._threads = _int_env("CDB_EMBED_THREADS", 1, minimum=1, maximum=32)
         self._strict = _bool_env("CDB_EMBED_STRICT_DEVICE", True)
 
@@ -2477,6 +3980,8 @@ def _get_c_embed_runtime() -> Any:
             try:
                 if candidate == "NPU":
                     _prepare_npu_level_zero_env()
+                elif candidate == "GPU":
+                    _prepare_gpu_cuda_env()
 
                 runtime = _CEmbedRuntime(requested_device=candidate)
 
@@ -2510,7 +4015,9 @@ def _get_c_embed_runtime() -> Any:
                     raise RuntimeError(runtime_error)
                 if _is_cpu_fallback_signal(fallback_detail):
                     raise RuntimeError(fallback_detail)
-                if not (isinstance(probe_vec, list) and len(probe_vec) == 24):
+                if not (
+                    isinstance(probe_vec, list) and len(probe_vec) == _CDB_EMBED_DIM
+                ):
                     detail = runtime_error or "hardware_probe_failed"
                     raise RuntimeError(detail)
 
@@ -2593,6 +4100,43 @@ def embed_text_24_local(
         requested_device or os.getenv("CDB_EMBED_DEVICE", "AUTO")
     )
     active = _normalize_embed_device(os.getenv("CDB_EMBED_DEVICE", "AUTO"))
+    allow_local_gpu_fallback = _bool_env(
+        "CDB_EMBED_GPU_EXPLICIT_ALLOW_LOCAL_FALLBACK",
+        False,
+    )
+    sidecar_attempted = False
+
+    if (
+        requested == "GPU"
+        and _embed_gpu_sidecar_enabled()
+        and _bool_env("CDB_EMBED_GPU_USE_SIDECAR_FOR_EXPLICIT", True)
+        and _gpu_sidecar_memory_guard_passes()
+    ):
+        sidecar_attempted = True
+        sidecar = _get_embed_lane_sidecar("GPU")
+        if sidecar is not None:
+            sidecar_vec = sidecar.embed(
+                prompt, timeout_s=_embed_sidecar_timeout_seconds()
+            )
+            if sidecar_vec is None and _embed_sidecar_error_is_retryable(
+                sidecar.last_error()
+            ):
+                sidecar_vec = sidecar.embed(
+                    prompt,
+                    timeout_s=_embed_sidecar_retry_timeout_seconds(),
+                )
+            if isinstance(sidecar_vec, list) and len(sidecar_vec) == _CDB_EMBED_DIM:
+                try:
+                    return [float(item) for item in sidecar_vec]
+                except Exception:
+                    pass
+
+    if requested == "GPU" and sidecar_attempted and not allow_local_gpu_fallback:
+        return None
+
+    if requested == "GPU" and active == "NPU" and not allow_local_gpu_fallback:
+        return None
+
     if requested != active:
         os.environ["CDB_EMBED_DEVICE"] = requested
         _reset_c_embed_runtime()
@@ -2605,7 +4149,7 @@ def embed_text_24_local(
         vec = runtime.embed_24(prompt)
     except Exception:
         vec = None
-    if not isinstance(vec, list) or len(vec) != 24:
+    if not isinstance(vec, list) or len(vec) != _CDB_EMBED_DIM:
         return None
     try:
         return [float(item) for item in vec]
@@ -2615,6 +4159,246 @@ def embed_text_24_local(
 
 _EMBED_CACHE_HITS = 0
 _EMBED_CACHE_MISSES = 0
+_EMBED_GPU_SIDECAR_HITS = 0
+_EMBED_GPU_SIDECAR_MISSES = 0
+
+
+def _stable_route_ratio(seed: str) -> float:
+    digest = hashlib.sha256(str(seed).encode("utf-8")).digest()
+    return int.from_bytes(digest[:2], "big") / 65535.0
+
+
+def _resolve_gpu_sidecar_ratio(
+    *,
+    total_count: int,
+    cost_signals: dict[str, float] | None = None,
+) -> float:
+    if not _embed_gpu_sidecar_enabled():
+        return 0.0
+    if not _embed_sidecar_available("GPU"):
+        _embed_gpu_controller_reset("sidecar_unavailable")
+        return 0.0
+    if not _gpu_sidecar_memory_guard_passes():
+        _embed_gpu_controller_reset("memory_guard")
+        return 0.0
+    if total_count < _embed_gpu_sidecar_split_min_count():
+        _embed_gpu_controller_reset("below_min_count")
+        return 0.0
+
+    policy = _embed_auto_policy()
+    if policy != "adaptive-npu":
+        _embed_gpu_controller_reset(f"policy:{policy}")
+        return 0.0
+
+    base_ratio = _embed_gpu_sidecar_split_ratio()
+    hot_ratio = _embed_gpu_sidecar_split_hot_ratio()
+    warm_threshold = max(
+        50.0,
+        min(
+            100.0,
+            _safe_float(
+                os.getenv("CDB_EMBED_NPU_WARM_UTIL_THRESHOLD", "84") or "84",
+                84.0,
+            ),
+        ),
+    )
+    cold_ratio = max(0.0, min(base_ratio * 0.45, 1.0))
+
+    npu_status = "ok"
+    gpu_status = "ok"
+    npu_util = warm_threshold
+    gpu_util = 0.0
+    signal_row = cost_signals if isinstance(cost_signals, dict) else {}
+    daimoi_cost_pressure = _clamp01(
+        _safe_float(signal_row.get("cost_pressure", 0.0), 0.0)
+    )
+    daimoi_escape_pressure = _clamp01(
+        _safe_float(signal_row.get("escape_pressure", 0.0), 0.0)
+    )
+
+    try:
+        from .metrics import _resource_monitor_snapshot
+
+        snapshot = _resource_monitor_snapshot()
+        devices = snapshot.get("devices", {}) if isinstance(snapshot, dict) else {}
+        npu = devices.get("npu0", {}) if isinstance(devices, dict) else {}
+        gpu = devices.get("gpu1", {}) if isinstance(devices, dict) else {}
+        npu_status = str(npu.get("status", "ok") or "ok").strip().lower()
+        npu_util = _safe_float(npu.get("utilization", warm_threshold), warm_threshold)
+        gpu_status = str(gpu.get("status", "ok") or "ok").strip().lower()
+        gpu_util = _safe_float(gpu.get("utilization", 0.0), 0.0)
+
+        if gpu_status in {
+            "missing",
+            "offline",
+            "error",
+            "failed",
+            "unavailable",
+            "hot",
+        }:
+            _embed_gpu_controller_reset(f"gpu_status:{gpu_status}")
+            return 0.0
+        if npu_status in {"missing", "offline", "error", "failed", "unavailable"}:
+            _embed_gpu_controller_reset(f"npu_status:{npu_status}")
+            return hot_ratio
+        if npu_status in {"hot", "critical", "throttled"}:
+            _embed_gpu_controller_reset(f"npu_status:{npu_status}")
+            return hot_ratio
+    except Exception:
+        if not _embed_gpu_controller_enabled():
+            return base_ratio
+
+    heuristic_ratio = base_ratio if npu_util >= warm_threshold else cold_ratio
+    if not _embed_gpu_controller_enabled():
+        return _clamp(heuristic_ratio, 0.0, hot_ratio)
+
+    return _embed_gpu_controller_ratio(
+        total_count=total_count,
+        npu_util=npu_util,
+        gpu_util=gpu_util,
+        warm_threshold=warm_threshold,
+        base_ratio=base_ratio,
+        hot_ratio=hot_ratio,
+        heuristic_ratio=heuristic_ratio,
+        daimoi_cost_pressure=daimoi_cost_pressure,
+        daimoi_escape_pressure=daimoi_escape_pressure,
+    )
+
+
+def _embed_seed_vector_gpu_sidecar(text: str) -> tuple[float, ...] | None:
+    global _EMBED_GPU_SIDECAR_HITS, _EMBED_GPU_SIDECAR_MISSES
+    source_text = str(text or "")
+    key = f"gpu-sidecar|{source_text}"
+
+    with _EMBED_VECTOR_CACHE_LOCK:
+        cached = _EMBED_VECTOR_CACHE.get(key)
+    if cached is not None:
+        _EMBED_GPU_SIDECAR_HITS += 1
+        return cached
+
+    _EMBED_GPU_SIDECAR_MISSES += 1
+    sidecar = _get_embed_lane_sidecar("GPU")
+    if sidecar is None:
+        return None
+
+    vector = sidecar.embed(source_text, timeout_s=_embed_sidecar_timeout_seconds())
+    if vector is None and _embed_sidecar_error_is_retryable(sidecar.last_error()):
+        vector = sidecar.embed(
+            source_text,
+            timeout_s=_embed_sidecar_retry_timeout_seconds(),
+        )
+    if not isinstance(vector, list) or len(vector) != _CDB_EMBED_DIM:
+        return None
+
+    try:
+        packed = tuple(float(item) for item in vector)
+    except Exception:
+        return None
+
+    with _EMBED_VECTOR_CACHE_LOCK:
+        if len(_EMBED_VECTOR_CACHE) >= 16384:
+            _EMBED_VECTOR_CACHE.clear()
+        _EMBED_VECTOR_CACHE[key] = packed
+    return packed
+
+
+def _embed_seed_vector_routed(
+    text: str,
+    *,
+    slot_index: int,
+    total_count: int,
+    gpu_sidecar_ratio: float,
+) -> tuple[tuple[float, ...], str]:
+    ratio = max(0.0, min(1.0, _safe_float(gpu_sidecar_ratio, 0.0)))
+    if ratio > 0.0:
+        marker = _stable_route_ratio(f"{slot_index}|{text}")
+        if marker < ratio:
+            packed = _embed_seed_vector_gpu_sidecar(text)
+            if packed is not None:
+                return packed, "gpu_sidecar"
+            return _embed_seed_vector_24(text), "gpu_sidecar_fallback"
+    del total_count
+    return _embed_seed_vector_24(text), "local"
+
+
+def _as_float_rows(rows: list[list[float]]) -> list[list[float]]:
+    out: list[list[float]] = []
+    for row in rows:
+        if not isinstance(row, list) or not row:
+            continue
+        try:
+            values = [float(item) for item in row]
+        except Exception:
+            continue
+        if len(values) == _CDB_EMBED_DIM:
+            out.append(values)
+    return out
+
+
+def _cosine_matrix_gpu_sidecar(
+    vectors: list[list[float]],
+) -> tuple[list[float] | None, str, str]:
+    if not _cosine_gpu_matrix_enabled():
+        return None, "disabled", "disabled"
+    count = len(vectors)
+    if count < _cosine_gpu_matrix_min_count():
+        return None, "below-min-count", "below_min_count"
+    if count > _cosine_gpu_matrix_max_count():
+        return None, "above-max-count", "above_max_count"
+    if not _gpu_sidecar_memory_guard_passes():
+        return None, "memory-guard", "memory_guard"
+
+    sidecar = _get_embed_lane_sidecar("GPU")
+    if sidecar is None:
+        return None, "sidecar-unavailable", "sidecar_unavailable"
+
+    chunk_rows = max(1, _cosine_gpu_matrix_chunk_rows())
+    timeout_s = _cosine_gpu_matrix_timeout_seconds()
+    retry_timeout_s = _cosine_gpu_matrix_retry_timeout_seconds()
+    flat: list[float] = []
+    for start in range(0, count, chunk_rows):
+        end = min(count, start + chunk_rows)
+        left = vectors[start:end]
+        block = sidecar.cosine_matrix(left, vectors, timeout_s=timeout_s)
+        if block is None and _embed_sidecar_error_is_retryable(sidecar.last_error()):
+            block = sidecar.cosine_matrix(left, vectors, timeout_s=retry_timeout_s)
+        if block is None:
+            return None, "sidecar-error", sidecar.last_error()
+        block_flat, rows, cols = block
+        if rows != (end - start) or cols != count:
+            return None, "shape-mismatch", f"rows={rows} cols={cols} count={count}"
+        flat.extend(block_flat)
+
+    expected = count * count
+    if len(flat) != expected:
+        return None, "length-mismatch", f"len={len(flat)} expected={expected}"
+    return flat, "gpu-sidecar", ""
+
+
+def _cosine_matrix_local(vectors: list[list[float]]) -> list[float]:
+    count = len(vectors)
+    out: list[float] = [0.0 for _ in range(count * count)]
+    normalized: list[list[float]] = []
+    for row in vectors:
+        mag_sq = 0.0
+        for value in row:
+            mag_sq += value * value
+        if mag_sq <= 1e-12:
+            normalized.append([0.0 for _ in range(_CDB_EMBED_DIM)])
+            continue
+        scale = 1.0 / math.sqrt(mag_sq)
+        normalized.append([value * scale for value in row])
+
+    for left in range(count):
+        left_vec = normalized[left]
+        base = left * count
+        for right in range(count):
+            right_vec = normalized[right]
+            dot = 0.0
+            for index in range(_CDB_EMBED_DIM):
+                dot += left_vec[index] * right_vec[index]
+            out[base + right] = max(-1.0, min(1.0, dot))
+    return out
 
 
 def _embed_seed_vector_24(text: str) -> tuple[float, ...]:
@@ -2666,14 +4450,14 @@ def _embed_seed_vector_24(text: str) -> tuple[float, ...]:
                 _EMBED_RUNTIME_CPU_FALLBACK_DETAIL = runtime_error
 
         packed: tuple[float, ...] | None = None
-        if isinstance(vec, list) and len(vec) == 24:
+        if isinstance(vec, list) and len(vec) == _CDB_EMBED_DIM:
             _EMBED_RUNTIME_ERROR = ""
             _EMBED_RUNTIME_CPU_FALLBACK = False
             _EMBED_RUNTIME_CPU_FALLBACK_DETAIL = ""
             packed = tuple(float(v) for v in vec)
         elif _EMBED_RUNTIME_CPU_FALLBACK:
             # Cache zeros for fallback to avoid repeated slow NPU->CPU failure paths
-            packed = tuple(0.0 for _ in range(24))
+            packed = tuple(0.0 for _ in range(_CDB_EMBED_DIM))
 
         if packed is not None:
             with _EMBED_VECTOR_CACHE_LOCK:
@@ -2684,7 +4468,7 @@ def _embed_seed_vector_24(text: str) -> tuple[float, ...]:
 
     if not _EMBED_RUNTIME_ERROR:
         _EMBED_RUNTIME_ERROR = "hardware_embedding_runtime_unavailable"
-    packed = tuple(0.0 for _ in range(24))
+    packed = tuple(0.0 for _ in range(_CDB_EMBED_DIM))
     with _EMBED_VECTOR_CACHE_LOCK:
         if len(_EMBED_VECTOR_CACHE) >= 16384:
             _EMBED_VECTOR_CACHE.clear()
@@ -2725,6 +4509,8 @@ class _CDBEngine:
         self._nooi_update_buffer: Any = None
         self._embedding_update_buffer: Any = None
         self._embedding_update_capacity = 0
+        self._cosine_update_buffer: Any = None
+        self._cosine_update_capacity = 0
         self._lock = threading.Lock()
 
     def close(self) -> None:
@@ -2733,6 +4519,8 @@ class _CDBEngine:
                 self._nooi_update_buffer = None
                 self._embedding_update_buffer = None
                 self._embedding_update_capacity = 0
+                self._cosine_update_buffer = None
+                self._cosine_update_capacity = 0
                 return
             self._lib.cdb_engine_stop(self._ptr)
             self._lib.cdb_engine_destroy(self._ptr)
@@ -2741,6 +4529,8 @@ class _CDBEngine:
             self._nooi_update_buffer = None
             self._embedding_update_buffer = None
             self._embedding_update_capacity = 0
+            self._cosine_update_buffer = None
+            self._cosine_update_capacity = 0
 
     def ensure(self, *, count: int, seed: int) -> None:
         target_count = max(64, int(count))
@@ -2887,6 +4677,34 @@ class _CDBEngine:
                 self._ptr, self._embedding_update_buffer
             )
 
+    def update_cosine_matrix(self, data: list[float]) -> bool:
+        if not data or not hasattr(self._lib, "cdb_engine_update_cosine_matrix"):
+            return False
+        with self._lock:
+            if self._ptr is None:
+                return False
+            expected_size = max(1, self._count * self._count)
+            if len(data) < expected_size:
+                return False
+            if (
+                self._cosine_update_buffer is None
+                or self._cosine_update_capacity != expected_size
+            ):
+                self._cosine_update_buffer = (ctypes.c_float * expected_size)()
+                self._cosine_update_capacity = expected_size
+            _copy_float_data_to_c_buffer(
+                source=data,
+                target=self._cosine_update_buffer,
+                target_size=expected_size,
+            )
+            code = int(
+                self._lib.cdb_engine_update_cosine_matrix(
+                    self._ptr,
+                    self._cosine_update_buffer,
+                )
+            )
+            return code == 0
+
     def set_flags(self, flags: int) -> None:
         with self._lock:
             if self._ptr is None:
@@ -2934,6 +4752,14 @@ def shutdown_c_double_buffer_backend() -> None:
         _clear_embed_seed_cache()
     except Exception:
         pass
+
+    try:
+        _close_embed_lane_sidecars()
+    except Exception:
+        pass
+
+    with _EMBED_GPU_CONTROLLER_LOCK:
+        _EMBED_GPU_CONTROLLER_STATE.clear()
 
 
 atexit.register(shutdown_c_double_buffer_backend)
@@ -4925,7 +6751,7 @@ def build_double_buffer_field_particles(
             pass
 
     # Resolve embeddings for all particles using C inference runtime when available.
-    # Python only receives 24d folded vectors from the runtime boundary.
+    # Python receives folded vectors matching the configured embed dimensionality.
     _prof_emb_start = time.perf_counter()
 
     nexus_stride_env = str(os.getenv("CDB_NEXUS_STRIDE", "") or "").strip()
@@ -4946,6 +6772,29 @@ def build_double_buffer_field_particles(
 
     nexus_slot_mask: list[bool] = [False for _ in range(target_count)]
     nexus_seed_node_ids: list[str] = ["" for _ in range(target_count)]
+    presence_resource_signatures = _build_presence_resource_signatures(
+        presence_ids=presence_ids,
+        presence_impacts=presence_rows,
+        queue_ratio=queue_clamped,
+    )
+    controller_cost_signals = _embed_gpu_controller_cost_signals(
+        signatures=presence_resource_signatures,
+        queue_ratio=queue_clamped,
+        compute_count=compute_count,
+        cpu_util=cpu_util,
+    )
+    gpu_sidecar_ratio = _resolve_gpu_sidecar_ratio(
+        total_count=target_count,
+        cost_signals=controller_cost_signals,
+    )
+    embed_route_counts = {
+        "local": 0,
+        "gpu_sidecar": 0,
+        "gpu_sidecar_fallback": 0,
+    }
+    cosine_matrix_source = "local"
+    cosine_matrix_error = ""
+    cosine_matrix_ready = False
 
     flat_embeddings: list[float] = []
     for i in range(target_count):
@@ -4965,7 +6814,7 @@ def build_double_buffer_field_particles(
                     nexus_seed_node_ids[i] = file_node_id
                 name = str(file_node.get("name", "unknown"))
                 # Use name and excerpt to create a semantically meaningful seed for the embedding.
-                # The hardware runtime will generate a 24d vector that guides Semantic Gravity.
+                # The hardware runtime generates a folded vector that guides Semantic Gravity.
                 excerpt = str(file_node.get("text_excerpt", ""))[:240]
                 seed_text = f"NEXUS File {name} {excerpt}"
             else:
@@ -4973,21 +6822,65 @@ def build_double_buffer_field_particles(
         else:
             seed_text = f"CDB Slot {i} Owner {presence_id}"
 
-        emb = list(_embed_seed_vector_24(seed_text))
-        if len(emb) < 24:
-            emb = emb + [0.0] * (24 - len(emb))
-        elif len(emb) > 24:
-            emb = emb[:24]
+        emb_tuple, emb_route = _embed_seed_vector_routed(
+            seed_text,
+            slot_index=i,
+            total_count=target_count,
+            gpu_sidecar_ratio=gpu_sidecar_ratio,
+        )
+        embed_route_counts[emb_route] = int(embed_route_counts.get(emb_route, 0)) + 1
+        emb = list(emb_tuple)
+        if len(emb) < _CDB_EMBED_DIM:
+            emb = emb + [0.0] * (_CDB_EMBED_DIM - len(emb))
+        elif len(emb) > _CDB_EMBED_DIM:
+            emb = emb[:_CDB_EMBED_DIM]
         flat_embeddings.extend(emb)
     _prof_emb_end = time.perf_counter()
     if os.getenv("SIM_PROFILE_INTERNAL") == "1":
         print(
             f"CDB PROFILE: embeddings={(_prof_emb_end - _prof_emb_start) * 1000:.2f}ms "
-            f"count={target_count} hits={_EMBED_CACHE_HITS} misses={_EMBED_CACHE_MISSES}",
+            f"count={target_count} hits={_EMBED_CACHE_HITS} misses={_EMBED_CACHE_MISSES} "
+            f"gpu_sidecar_hits={_EMBED_GPU_SIDECAR_HITS} "
+            f"gpu_sidecar_misses={_EMBED_GPU_SIDECAR_MISSES} "
+            f"gpu_sidecar_used={embed_route_counts.get('gpu_sidecar', 0)}",
             flush=True,
         )
     if flat_embeddings:
         engine.update_embeddings(flat_embeddings)
+        candidate_rows = [
+            flat_embeddings[(index * _CDB_EMBED_DIM) : ((index + 1) * _CDB_EMBED_DIM)]
+            for index in range(target_count)
+        ]
+        normalized_rows = _as_float_rows(candidate_rows)
+        cosine_flat: list[float] | None = None
+        if len(normalized_rows) == target_count:
+            allow_local_matrix_fallback = _bool_env(
+                "CDB_COSINE_MATRIX_LOCAL_FALLBACK",
+                False,
+            )
+            cosine_flat, cosine_matrix_source, cosine_matrix_error = (
+                _cosine_matrix_gpu_sidecar(normalized_rows)
+            )
+            if cosine_flat is None and allow_local_matrix_fallback:
+                cosine_matrix_source = (
+                    f"gpu-sidecar-fallback:{cosine_matrix_source}"
+                    if cosine_matrix_source
+                    else "gpu-sidecar-fallback"
+                )
+                cosine_flat = _cosine_matrix_local(normalized_rows)
+            if cosine_flat is not None:
+                update_cosine_matrix = getattr(engine, "update_cosine_matrix", None)
+                if callable(update_cosine_matrix):
+                    cosine_matrix_ready = bool(update_cosine_matrix(cosine_flat))
+                    if not cosine_matrix_ready and not cosine_matrix_error:
+                        cosine_matrix_error = "native_update_rejected"
+                else:
+                    cosine_matrix_source = "native-dot:update-unavailable"
+                    cosine_matrix_ready = False
+                    if not cosine_matrix_error:
+                        cosine_matrix_error = "native_update_unavailable"
+            elif cosine_matrix_source:
+                cosine_matrix_source = f"native-dot:{cosine_matrix_source}"
 
     embedding_runtime_source = _EMBED_RUNTIME_SOURCE
     embedding_runtime_error = _EMBED_RUNTIME_ERROR
@@ -4995,6 +6888,34 @@ def build_double_buffer_field_particles(
     embedding_runtime_cpu_fallback_detail = str(
         _EMBED_RUNTIME_CPU_FALLBACK_DETAIL or ""
     )
+    sidecar_gpu_failures = int(_EMBED_SIDECAR_FAILURES.get("GPU", 0))
+    sidecar_gpu_disabled_until = _safe_float(
+        _EMBED_SIDECAR_DISABLED_UNTIL.get("GPU", 0.0),
+        0.0,
+    )
+    sidecar_gpu_disabled_seconds = max(0.0, sidecar_gpu_disabled_until - now)
+    sidecar_gpu_last_error = str(_EMBED_SIDECAR_LAST_ERROR.get("GPU", "") or "")
+    sidecar_gpu_stderr_path = ""
+    sidecar_gpu_pid = 0
+    sidecar_gpu_alive = False
+    with _EMBED_SIDECAR_LOCK:
+        sidecar_gpu = _EMBED_SIDECARS.get("GPU")
+    if isinstance(sidecar_gpu, _EmbedLaneSidecar):
+        sidecar_gpu_last_error = sidecar_gpu.last_error()
+        sidecar_gpu_stderr_path = sidecar_gpu.stderr_path()
+        proc = getattr(sidecar_gpu, "_proc", None)
+        if proc is not None:
+            try:
+                proc_pid = int(getattr(proc, "pid", 0) or 0)
+            except Exception:
+                proc_pid = 0
+            sidecar_gpu_pid = max(0, proc_pid)
+            try:
+                sidecar_gpu_alive = proc.poll() is None
+            except Exception:
+                sidecar_gpu_alive = False
+    if int(embed_route_counts.get("gpu_sidecar", 0)) > 0:
+        embedding_runtime_source = f"{embedding_runtime_source}+gpu-sidecar"
 
     try:
         from .simulation import _NOOI_FIELD
@@ -5144,11 +7065,6 @@ def build_double_buffer_field_particles(
         min(2.4, anti_clump_tangent_scale_base * graph_noise_gain),
     )
 
-    presence_resource_signatures = _build_presence_resource_signatures(
-        presence_ids=presence_ids,
-        presence_impacts=presence_rows,
-        queue_ratio=queue_clamped,
-    )
     default_signature = _default_resource_signature(queue_clamped)
 
     particle_source_nodes: list[int] = [0 for _ in range(count)]
@@ -6036,6 +7952,46 @@ def build_double_buffer_field_particles(
     }
 
     active_count = len(rows)
+    mean_drift_cost_abs = abs(
+        (drift_cost_term_total / active_count) if active_count > 0 else 0.0
+    )
+    mean_drift_gravity_abs = abs(
+        (drift_gravity_term_total / active_count) if active_count > 0 else 0.0
+    )
+    route_cost_pressure = _clamp01(
+        mean_drift_cost_abs / (mean_drift_cost_abs + mean_drift_gravity_abs + 1e-6)
+    )
+    mean_edge_saturation = _clamp01(
+        (edge_saturation_total / active_count) if active_count > 0 else 0.0
+    )
+    mean_edge_health = _clamp01(
+        (edge_health_total / active_count) if active_count > 0 else 1.0
+    )
+    runtime_cost_pressure = _clamp01(
+        max(
+            _safe_float(controller_cost_signals.get("cost_pressure", 0.0), 0.0),
+            (route_cost_pressure * 0.68) + (mean_edge_saturation * 0.22),
+        )
+    )
+    runtime_escape_pressure = _clamp01(
+        max(
+            _safe_float(controller_cost_signals.get("escape_pressure", 0.0), 0.0),
+            (route_cost_pressure * 0.24) + ((1.0 - mean_edge_health) * 0.22),
+        )
+    )
+    runtime_controller_signals = dict(controller_cost_signals)
+    runtime_controller_signals["route_cost_pressure"] = round(route_cost_pressure, 6)
+    runtime_controller_signals["mean_edge_saturation"] = round(mean_edge_saturation, 6)
+    runtime_controller_signals["mean_edge_health"] = round(mean_edge_health, 6)
+    _embed_gpu_controller_feedback(
+        total_count=target_count,
+        route_counts=embed_route_counts,
+        daimoi_cost_pressure=runtime_cost_pressure,
+        daimoi_escape_pressure=runtime_escape_pressure,
+        daimoi_signals=runtime_controller_signals,
+    )
+    sidecar_controller_snapshot = _embed_gpu_controller_snapshot()
+
     summary = {
         "record": "eta-mu.daimoi-probabilistic.cdb.v1",
         "schema_version": "daimoi.probabilistic.cdb.v1",
@@ -6158,6 +8114,32 @@ def build_double_buffer_field_particles(
         "embedding_runtime_cpu_fallback_detail": str(
             embedding_runtime_cpu_fallback_detail or ""
         ),
+        "embedding_gpu_sidecar_enabled": bool(_embed_gpu_sidecar_enabled()),
+        "embedding_gpu_sidecar_ratio": round(
+            _safe_float(gpu_sidecar_ratio, 0.0),
+            4,
+        ),
+        "embedding_gpu_sidecar_controller": sidecar_controller_snapshot,
+        "embedding_gpu_sidecar_failures": int(sidecar_gpu_failures),
+        "embedding_gpu_sidecar_disabled": bool(sidecar_gpu_disabled_seconds > 0.0),
+        "embedding_gpu_sidecar_disabled_seconds": round(
+            sidecar_gpu_disabled_seconds,
+            2,
+        ),
+        "embedding_gpu_sidecar_last_error": str(sidecar_gpu_last_error or ""),
+        "embedding_gpu_sidecar_stderr_path": str(sidecar_gpu_stderr_path or ""),
+        "embedding_gpu_sidecar_pid": int(sidecar_gpu_pid),
+        "embedding_gpu_sidecar_alive": bool(sidecar_gpu_alive),
+        "embedding_route_counts": {
+            "local": int(embed_route_counts.get("local", 0)),
+            "gpu_sidecar": int(embed_route_counts.get("gpu_sidecar", 0)),
+            "gpu_sidecar_fallback": int(
+                embed_route_counts.get("gpu_sidecar_fallback", 0)
+            ),
+        },
+        "cosine_matrix_source": str(cosine_matrix_source or "native-dot"),
+        "cosine_matrix_ready": bool(cosine_matrix_ready),
+        "cosine_matrix_error": str(cosine_matrix_error or ""),
         "frame_id": int(frame_id),
         "force_frame": int(force_frame),
         "chaos_frame": int(chaos_frame),

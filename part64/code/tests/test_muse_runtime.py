@@ -395,6 +395,70 @@ def test_muse_tool_request_maps_natural_language_github_threat_radar() -> None:
     assert "CVE-2026-1234" in reply
 
 
+def test_muse_tool_request_maps_natural_language_hormuz_threat_radar() -> None:
+    manager = _manager()
+    tool_calls: list[str] = []
+
+    def _tool_callback(*, tool_name: str) -> dict[str, Any]:
+        tool_calls.append(tool_name)
+        if tool_name.startswith("graph_query:hormuz_threat_radar"):
+            return {
+                "ok": True,
+                "summary": "graph query generated",
+                "query": "hormuz_threat_radar",
+                "snapshot_hash": "h" * 64,
+                "result_count": 2,
+                "result": {
+                    "count": 2,
+                    "critical_count": 0,
+                    "high_count": 1,
+                    "medium_count": 0,
+                    "threats": [
+                        {
+                            "risk_level": "high",
+                            "risk_score": 5,
+                            "kind": "maritime:ukmto_advisory",
+                            "title": "UKMTO advisory update",
+                            "canonical_url": "https://www.ukmto.org/advisory/003-26",
+                            "labels": [
+                                "military_activity",
+                                "electronic_interference",
+                            ],
+                        }
+                    ],
+                },
+            }
+        if tool_name.startswith("graph_query:"):
+            return {
+                "ok": True,
+                "summary": "graph query generated",
+                "query": tool_name.split(":", 1)[1].split(" ", 1)[0],
+                "snapshot_hash": "h" * 64,
+                "result_count": 1,
+            }
+        return {"ok": True, "summary": f"ran:{tool_name}"}
+
+    payload = manager.send_message(
+        muse_id=DEFAULT_MUSE_ID,
+        text="run Hormuz threat radar from maritime advisories",
+        mode="deterministic",
+        token_budget=900,
+        idempotency_key="hormuz-threat-radar-1",
+        graph_revision="graph:v-hormuz-threat-radar",
+        surrounding_nodes=[],
+        tool_callback=_tool_callback,
+        reply_builder=_reply_builder,
+        seed="seed-hormuz-threat-radar",
+    )
+    assert payload["ok"] is True
+    assert any(
+        call.startswith("graph_query:hormuz_threat_radar") for call in tool_calls
+    )
+    reply = str(payload.get("reply", ""))
+    assert "Hormuz threat radar" in reply
+    assert "military_activity" in reply
+
+
 def test_muse_tool_request_maps_natural_language_daimoi_outcome_queries() -> None:
     manager = _manager()
     tool_calls: list[str] = []
@@ -474,6 +538,142 @@ def test_chaos_pinned_node_is_explicit_context() -> None:
     assert payload["ok"] is True
     explicit_selected = payload["manifest"].get("explicit_selected", [])
     assert "node:seeded:chaos" in explicit_selected
+
+
+def test_chaos_prioritizes_threat_nodes_in_explicit_context() -> None:
+    manager = _manager()
+    payload = manager.send_message(
+        muse_id="chaos",
+        text="what threats are active",
+        mode="stochastic",
+        token_budget=768,
+        idempotency_key="chaos-threat-explicit",
+        graph_revision="graph:v-threat-explicit",
+        surrounding_nodes=[
+            {
+                "id": "threat:global:0:aaaa1111",
+                "kind": "threat",
+                "label": "[CRITICAL:10] Maritime incident",
+                "text": "Threat: Maritime incident in chokepoint. Risk: CRITICAL (10)",
+                "x": 0.62,
+                "y": 0.18,
+                "tags": ["global", "threat", "risk_critical", "chaos"],
+                "risk_score": 10,
+            },
+            {
+                "id": "threat-source:site:bbbb2222",
+                "kind": "threat-source",
+                "label": "Hot Site UKMTO",
+                "text": "Watch source: UKMTO advisory feed",
+                "x": 0.64,
+                "y": 0.24,
+                "tags": ["global", "hot-site", "threat", "chaos"],
+                "risk_score": 5,
+            },
+            {
+                "id": "note:unrelated",
+                "kind": "resource",
+                "label": "unrelated note",
+                "text": "color palette draft and UI spacing",
+                "x": 0.12,
+                "y": 0.84,
+                "tags": ["design"],
+            },
+        ],
+        tool_callback=None,
+        reply_builder=_reply_builder,
+        seed="chaos-threat-seed",
+    )
+    assert payload["ok"] is True
+    explicit_selected = payload["manifest"].get("explicit_selected", [])
+    assert "threat:global:0:aaaa1111" in explicit_selected
+    assert "threat-source:site:bbbb2222" in explicit_selected
+
+
+def test_chaos_filters_non_threat_candidates_when_threats_present() -> None:
+    manager = _manager()
+    payload = manager.send_message(
+        muse_id="chaos",
+        text="summarize security posture",
+        mode="deterministic",
+        token_budget=1024,
+        idempotency_key="chaos-threat-filter",
+        graph_revision="graph:v-threat-filter",
+        surrounding_nodes=[
+            {
+                "id": "threat:global:1:cccc3333",
+                "kind": "threat",
+                "label": "[HIGH:8] Regional cyber alert",
+                "text": "Threat: Regional cyber alert with infrastructure targeting",
+                "x": 0.6,
+                "y": 0.22,
+                "tags": ["global", "threat", "risk_high", "chaos"],
+                "risk_score": 8,
+            },
+            {
+                "id": "resource:irrelevant",
+                "kind": "resource",
+                "label": "book notes",
+                "text": "fiction chapter edits and character notes",
+                "x": 0.1,
+                "y": 0.9,
+                "tags": ["writing"],
+            },
+        ],
+        tool_callback=None,
+        reply_builder=_reply_builder,
+        seed="chaos-filter-seed",
+    )
+    assert payload["ok"] is True
+    surround_candidates = payload["manifest"].get("surround_candidates", [])
+    assert "resource:irrelevant" not in surround_candidates
+
+
+def test_threat_fallback_reply_summarizes_active_threats_when_model_empty() -> None:
+    manager = _manager()
+
+    def _empty_reply_builder(**_: Any) -> dict[str, Any]:
+        return {"reply": "", "mode": "llm", "model": "proxy-model"}
+
+    payload = manager.send_message(
+        muse_id="chaos",
+        text="what threats are active right now",
+        mode="stochastic",
+        token_budget=900,
+        idempotency_key="chaos-threat-fallback-1",
+        graph_revision="graph:v-threat-fallback",
+        surrounding_nodes=[
+            {
+                "id": "threat:global:3:dddd4444",
+                "kind": "threat",
+                "label": "[CRITICAL:9] Regional maritime incident",
+                "text": "Threat: Regional maritime incident\nRisk: CRITICAL (9)\nDomain: strait.example",
+                "x": 0.61,
+                "y": 0.2,
+                "tags": ["global", "threat", "risk_critical", "chaos"],
+                "risk_score": 9,
+            },
+            {
+                "id": "threat-source:site:eeee5555",
+                "kind": "threat-source",
+                "label": "Hot Site UKMTO",
+                "text": "Watch source: UKMTO advisory feed. URL: https://example.test/feed",
+                "x": 0.64,
+                "y": 0.24,
+                "tags": ["global", "hot-site", "threat", "chaos"],
+            },
+        ],
+        tool_callback=None,
+        reply_builder=_empty_reply_builder,
+        seed="chaos-threat-fallback-seed",
+    )
+    assert payload["ok"] is True
+    assert bool(payload.get("fallback", False)) is True
+    reply = str(payload.get("reply", ""))
+    assert "Active global threat snapshot" in reply
+    assert "CRITICAL(9) Regional maritime incident" in reply
+    assert "Hot sources:" in reply
+    assert "UKMTO advisory feed" in reply
 
 
 def test_play_song_path_requests_audio_and_routes_daimoi() -> None:

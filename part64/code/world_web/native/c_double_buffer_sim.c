@@ -25,6 +25,7 @@
 #define CDB_NOOI_ROWS 64
 #define CDB_NOOI_LAYERS 8
 #define CDB_NOOI_SIZE (CDB_NOOI_COLS * CDB_NOOI_ROWS * CDB_NOOI_LAYERS * 2)
+#define CDB_EMBED_DIM 32
 
 #define CDB_SIM_FLAG_COLLISION 0x1u
 #define CDB_SIM_FLAG_MEAN_FIELD 0x2u
@@ -50,7 +51,7 @@ typedef struct CDBQuadNode {
     float mass;
     float com_x;
     float com_y;
-    float emb_sum[24];
+    float emb_sum[CDB_EMBED_DIM];
     float emb_norm;
     uint64_t group_mask;
 } CDBQuadNode;
@@ -76,7 +77,9 @@ typedef struct CDBEngine {
     uint32_t *flags;
     float *mass;
     float *radius;
-    float *embeddings; // 24-dim per particle
+    float *embeddings; // CDB_EMBED_DIM per particle
+    float *cosine_matrix; // particle_count * particle_count row-major cosine cache
+    _Atomic uint32_t cosine_matrix_ready;
 
     float *nooi_field;
     _Atomic int nooi_index; 
@@ -1890,25 +1893,45 @@ static void vec2_buffer_destroy(Vec2DoubleBuffer *buffer) {
 
 static float dot_product_24(const float *a, const float *b) {
     float dot = 0.0f;
-    for (int i = 0; i < 24; i++) {
+    for (int i = 0; i < CDB_EMBED_DIM; i++) {
         dot += a[i] * b[i];
     }
     return dot;
 }
 
+static float cdb_pair_similarity(
+    const CDBEngine *engine,
+    uint32_t left,
+    uint32_t right,
+    const float *left_embedding,
+    const float *right_embedding
+) {
+    if (
+        engine != NULL
+        && atomic_load_explicit(&engine->cosine_matrix_ready, memory_order_acquire) != 0u
+        && engine->cosine_matrix != NULL
+        && left < engine->particle_count
+        && right < engine->particle_count
+    ) {
+        size_t index = ((size_t)left * (size_t)engine->particle_count) + (size_t)right;
+        return engine->cosine_matrix[index];
+    }
+    return dot_product_24(left_embedding, right_embedding);
+}
+
 static void mix_vectors_24(float *target, const float *source, float alpha) {
     float inv = 1.0f - alpha;
-    for (int i = 0; i < 24; i++) {
+    for (int i = 0; i < CDB_EMBED_DIM; i++) {
         target[i] = (target[i] * inv) + (source[i] * alpha);
     }
     // Normalize
     float mag_sq = 0.0f;
-    for (int i = 0; i < 24; i++) {
+    for (int i = 0; i < CDB_EMBED_DIM; i++) {
         mag_sq += target[i] * target[i];
     }
     if (mag_sq > 1e-9f) {
         float scale = 1.0f / sqrtf(mag_sq);
-        for (int i = 0; i < 24; i++) {
+        for (int i = 0; i < CDB_EMBED_DIM; i++) {
             target[i] *= scale;
         }
     }
@@ -2123,7 +2146,7 @@ static void cdb_quadtree_accumulate(
             node->mass += child->mass;
             node->com_x += child->com_x * child->mass;
             node->com_y += child->com_y * child->mass;
-            for (uint32_t k = 0u; k < 24u; k += 1u) {
+            for (uint32_t k = 0u; k < CDB_EMBED_DIM; k += 1u) {
                 node->emb_sum[k] += child->emb_sum[k];
             }
             node->group_mask |= child->group_mask;
@@ -2153,8 +2176,8 @@ static void cdb_quadtree_accumulate(
                 node->mass += particle_mass;
                 node->com_x += pos_x[particle] * particle_mass;
                 node->com_y += pos_y[particle] * particle_mass;
-                const float *embedding = &engine->embeddings[particle * 24u];
-                for (uint32_t k = 0u; k < 24u; k += 1u) {
+                const float *embedding = &engine->embeddings[particle * CDB_EMBED_DIM];
+                for (uint32_t k = 0u; k < CDB_EMBED_DIM; k += 1u) {
                     node->emb_sum[k] += embedding[k] * particle_mass;
                 }
                 node->group_mask |= cdb_group_mask_bit(engine->group_id[particle]);
@@ -2171,7 +2194,7 @@ static void cdb_quadtree_accumulate(
     }
 
     float emb_sq = 0.0f;
-    for (uint32_t k = 0u; k < 24u; k += 1u) {
+    for (uint32_t k = 0u; k < CDB_EMBED_DIM; k += 1u) {
         emb_sq += node->emb_sum[k] * node->emb_sum[k];
     }
     node->emb_norm = (emb_sq > 1e-9f) ? sqrtf(emb_sq) : 0.0f;
@@ -2396,8 +2419,14 @@ static void cdb_apply_barnes_hut_force(
             float dx = pos_x[other] - xi;
             float dy = pos_y[other] - yi;
             float dist_sq = (dx * dx) + (dy * dy);
-            const float *other_embedding = &engine->embeddings[other * 24u];
-            float kappa = dot_product_24(embedding, other_embedding);
+            const float *other_embedding = &engine->embeddings[other * CDB_EMBED_DIM];
+            float kappa = cdb_pair_similarity(
+                engine,
+                target,
+                other,
+                embedding,
+                other_embedding
+            );
             float particle_mass = engine->mass[other];
             if (!isfinite(particle_mass) || particle_mass <= 0.0f) {
                 particle_mass = 0.7f;
@@ -2422,7 +2451,7 @@ static void cdb_apply_barnes_hut_force(
     if (!contains_target && dist_sq > 1e-9f && (size * size) <= ((theta * theta) * dist_sq)) {
         if (node->emb_norm > 1e-9f && node->mass > 0.0f) {
             float dot = 0.0f;
-            for (uint32_t k = 0u; k < 24u; k += 1u) {
+            for (uint32_t k = 0u; k < CDB_EMBED_DIM; k += 1u) {
                 dot += embedding[k] * node->emb_sum[k];
             }
             float kappa = dot / node->emb_norm;
@@ -2489,8 +2518,14 @@ static void cdb_apply_group_spring_forces_exact(
         float dx = pos_x[other] - xi;
         float dy = pos_y[other] - yi;
         float dist = sqrtf((dx * dx) + (dy * dy)) + 1e-9f;
-        const float *other_embedding = &engine->embeddings[other * 24u];
-        float sim = dot_product_24(embedding, other_embedding);
+        const float *other_embedding = &engine->embeddings[other * CDB_EMBED_DIM];
+        float sim = cdb_pair_similarity(
+            engine,
+            target,
+            other,
+            embedding,
+            other_embedding
+        );
         float beta = 1.2f;
         float ke = k0 * powf(clamp01(1.0f - sim), beta);
         float f_edge = ke * (dist - rest_length);
@@ -2571,8 +2606,14 @@ static void cdb_apply_group_cluster_force_bh(
                 dist = 0.0f;
             }
 
-            const float *other_embedding = &engine->embeddings[other * 24u];
-            float sim = dot_product_24(embedding, other_embedding);
+            const float *other_embedding = &engine->embeddings[other * CDB_EMBED_DIM];
+            float sim = cdb_pair_similarity(
+                engine,
+                target,
+                other,
+                embedding,
+                other_embedding
+            );
             float ke = k0 * powf(clamp01(1.0f - sim), 1.2f);
             float f_edge = ke * (dist - rest_length);
             *io_fx += nx * f_edge;
@@ -2599,7 +2640,7 @@ static void cdb_apply_group_cluster_force_bh(
     ) {
         if (node->emb_norm > 1e-9f && node->nexus_count > 0u) {
             float dot = 0.0f;
-            for (uint32_t k = 0u; k < 24u; k += 1u) {
+            for (uint32_t k = 0u; k < CDB_EMBED_DIM; k += 1u) {
                 dot += embedding[k] * node->emb_sum[k];
             }
             float sim = dot / node->emb_norm;
@@ -2705,7 +2746,7 @@ static void cdb_force_eval_range(const CDBForceEvalContext *ctx, uint32_t start,
             radius_i = 0.0f;
         }
 
-        const float *embedding = &engine->embeddings[i * 24u];
+        const float *embedding = &engine->embeddings[i * CDB_EMBED_DIM];
         if (ctx->node_count > 0u) {
             if ((ctx->sim_flags & CDB_SIM_FLAG_COLLISION) != 0u) {
                 cdb_apply_collision_force_from_tree(
@@ -2771,8 +2812,14 @@ static void cdb_force_eval_range(const CDBForceEvalContext *ctx, uint32_t start,
                 float dx = pos_x[other] - xi;
                 float dy = pos_y[other] - yi;
                 float dist_sq = (dx * dx) + (dy * dy);
-                const float *other_embedding = &engine->embeddings[other * 24u];
-                float kappa = dot_product_24(embedding, other_embedding);
+                const float *other_embedding = &engine->embeddings[other * CDB_EMBED_DIM];
+                float kappa = cdb_pair_similarity(
+                    engine,
+                    i,
+                    other,
+                    embedding,
+                    other_embedding
+                );
                 float particle_mass = engine->mass[other];
                 if (!isfinite(particle_mass) || particle_mass <= 0.0f) {
                     particle_mass = 0.7f;
@@ -3293,7 +3340,11 @@ CDBEngine *cdb_engine_create(uint32_t particle_count, uint32_t seed) {
     engine->flags = (uint32_t *)calloc((size_t)particle_count, sizeof(uint32_t));
     engine->mass = (float *)calloc((size_t)particle_count, sizeof(float));
     engine->radius = (float *)calloc((size_t)particle_count, sizeof(float));
-    engine->embeddings = (float *)calloc((size_t)particle_count * 24, sizeof(float));
+    engine->embeddings = (float *)calloc((size_t)particle_count * CDB_EMBED_DIM, sizeof(float));
+    engine->cosine_matrix = (float *)calloc(
+        (size_t)particle_count * (size_t)particle_count,
+        sizeof(float)
+    );
     engine->grid_head = (int32_t *)calloc(CDB_NOOI_COLS * CDB_NOOI_ROWS, sizeof(int32_t));
     engine->grid_next = (int32_t *)calloc((size_t)particle_count, sizeof(int32_t));
     engine->quad_nodes = (CDBQuadNode *)calloc((size_t)engine->quad_capacity, sizeof(CDBQuadNode));
@@ -3305,6 +3356,7 @@ CDBEngine *cdb_engine_create(uint32_t particle_count, uint32_t seed) {
         || engine->mass == NULL
         || engine->radius == NULL
         || engine->embeddings == NULL
+        || engine->cosine_matrix == NULL
         || engine->grid_head == NULL
         || engine->grid_next == NULL
         || engine->quad_nodes == NULL
@@ -3312,6 +3364,8 @@ CDBEngine *cdb_engine_create(uint32_t particle_count, uint32_t seed) {
         cdb_engine_destroy(engine);
         return NULL;
     }
+
+    atomic_store_explicit(&engine->cosine_matrix_ready, 0u, memory_order_release);
 
     uint32_t rng = (seed == 0u) ? 17u : seed;
     for (uint32_t i = 0; i < particle_count; i += 1) {
@@ -3441,6 +3495,7 @@ void cdb_engine_destroy(CDBEngine *engine) {
     free(engine->mass);
     free(engine->radius);
     free(engine->embeddings);
+    free(engine->cosine_matrix);
     free(engine->grid_head);
     free(engine->grid_next);
     free(engine->quad_nodes);
@@ -3470,8 +3525,19 @@ int cdb_engine_update_embeddings(CDBEngine *engine, const float *data) {
     if (engine == NULL || data == NULL) {
         return -1;
     }
-    // Expected size: particle_count * 24
-    memcpy(engine->embeddings, data, (size_t)engine->particle_count * 24 * sizeof(float));
+    // Expected size: particle_count * CDB_EMBED_DIM
+    memcpy(engine->embeddings, data, (size_t)engine->particle_count * CDB_EMBED_DIM * sizeof(float));
+    atomic_store_explicit(&engine->cosine_matrix_ready, 0u, memory_order_release);
+    return 0;
+}
+
+int cdb_engine_update_cosine_matrix(CDBEngine *engine, const float *data) {
+    if (engine == NULL || data == NULL || engine->cosine_matrix == NULL) {
+        return -1;
+    }
+    size_t matrix_count = (size_t)engine->particle_count * (size_t)engine->particle_count;
+    memcpy(engine->cosine_matrix, data, matrix_count * sizeof(float));
+    atomic_store_explicit(&engine->cosine_matrix_ready, 1u, memory_order_release);
     return 0;
 }
 

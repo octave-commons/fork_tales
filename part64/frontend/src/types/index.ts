@@ -528,6 +528,28 @@ export interface BackendFieldParticle {
   };
 }
 
+export interface DaimoiCollisionEvent {
+  record: string;
+  schema_version: string;
+  event_id: string;
+  seq: number;
+  kind: string;
+  ts: string;
+  particle_id: string;
+  presence_id: string;
+  owner_presence_id?: string;
+  target_presence_id?: string;
+  resource_type?: string;
+  x: number;
+  y: number;
+  target_x?: number;
+  target_y?: number;
+  graph_node_id?: string;
+  route_node_id?: string;
+  collision_count?: number;
+  resource_emit_amount?: number;
+}
+
 export interface FileGraphEmbeddingParticle {
   id: string;
   x: number;
@@ -1622,6 +1644,9 @@ export interface PresenceDynamics {
   }>;
   field_particles_record?: string;
   field_particles?: BackendFieldParticle[];
+  daimoi_collision_events_record?: string;
+  daimoi_collision_events?: DaimoiCollisionEvent[];
+  daimoi_collision_event_seq?: number;
   graph_node_positions?: Record<string, {
     x: number;
     y: number;

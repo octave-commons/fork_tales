@@ -347,6 +347,8 @@ describe("App", () => {
     expect(screen.getByText("eta-mu world daemon")).toBeTruthy();
     expect(screen.getByText(/Connected/)).toBeTruthy();
 
+    fireEvent.click(screen.getByRole("button", { name: "open" }));
+
     fireEvent.click(screen.getByRole("button", { name: "init overlay" }));
     fireEvent.click(screen.getByRole("button", { name: "emit nexus interaction" }));
     fireEvent.click(screen.getByRole("button", { name: "emit user presence" }));
@@ -406,6 +408,8 @@ describe("App", () => {
   it("creates a muse from the forge input and allows dismissing toast", async () => {
     render(<App />);
 
+    fireEvent.click(screen.getByRole("button", { name: "open" }));
+    fireEvent.click(screen.getByRole("button", { name: "show forge" }));
     const input = screen.getByPlaceholderText("create muse label (e.g. Archive Witness)");
     fireEvent.change(input, { target: { value: "Archive Witness" } });
     fireEvent.keyDown(input, { key: "Enter" });
@@ -432,6 +436,8 @@ describe("App", () => {
 
     render(<App />);
 
+    fireEvent.click(screen.getByRole("button", { name: "open" }));
+    fireEvent.click(screen.getByRole("button", { name: "show forge" }));
     fireEvent.change(screen.getByPlaceholderText("create muse label (e.g. Archive Witness)"), {
       target: { value: "Conflicting Muse" },
     });

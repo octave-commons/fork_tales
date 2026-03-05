@@ -41,6 +41,10 @@ _SECURITY_TERMS: set[str] = {
     "security",
 }
 
+_VERSION_TOKEN_RE = re.compile(
+    r"\b\d+(?:\.\d+){1,3}(?:[-+._][0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?\b"
+)
+
 
 def _safe_str(value: Any) -> str:
     return str(value or "").strip()
@@ -246,6 +250,47 @@ def _candidate_file_patterns(config_seeds: dict[str, Any]) -> set[str]:
     return patterns
 
 
+def _file_patch_map(payload: dict[str, Any]) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    files_payload = payload.get("files", [])
+    if not isinstance(files_payload, list):
+        return mapping
+
+    for row in files_payload[:200]:
+        if not isinstance(row, dict):
+            continue
+        filename = _safe_str(row.get("filename", ""))
+        if not filename:
+            continue
+        patch = _safe_str(row.get("patch", ""))
+        mapping[filename] = patch
+    return mapping
+
+
+def _extract_version_delta_from_patch(patch: str) -> tuple[str, str]:
+    text = _safe_str(patch)
+    if not text:
+        return "", ""
+
+    removed_versions: list[str] = []
+    added_versions: list[str] = []
+    for line in text.splitlines():
+        if not line:
+            continue
+        if line.startswith("---") or line.startswith("+++"):
+            continue
+        if line.startswith("-"):
+            removed_versions.extend(_VERSION_TOKEN_RE.findall(line))
+        elif line.startswith("+"):
+            added_versions.extend(_VERSION_TOKEN_RE.findall(line))
+
+    from_ver = _safe_str(removed_versions[0] if removed_versions else "")
+    to_ver = _safe_str(added_versions[0] if added_versions else "")
+    if from_ver and to_ver and from_ver == to_ver:
+        return "", ""
+    return from_ver, to_ver
+
+
 def _canonical_atom_key(atom: dict[str, Any]) -> str:
     return json.dumps(atom, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -318,16 +363,25 @@ def extract_github_atoms(
     for key in (
         "title",
         "body",
+        "description",
         "name",
         "tag_name",
         "message",
         "summary",
+        "severity",
         "text_excerpt",
         "conversation_markdown",
     ):
         token = _safe_str(payload.get(key, ""))
         if token:
             text_parts.append(token)
+    identifiers = payload.get("identifiers", [])
+    if isinstance(identifiers, list):
+        for row in identifiers[:32]:
+            if not isinstance(row, dict):
+                continue
+            text_parts.append(_safe_str(row.get("value", "")))
+            text_parts.append(_safe_str(row.get("type", "")))
     conversation_rows = payload.get("conversation_rows", [])
     if isinstance(conversation_rows, list):
         for row in conversation_rows[:80]:
@@ -369,6 +423,24 @@ def extract_github_atoms(
             }
         )
 
+    if isinstance(identifiers, list):
+        for row in identifiers[:64]:
+            if not isinstance(row, dict):
+                continue
+            type_token = _safe_str(row.get("type", "")).lower()
+            value_token = _safe_str(row.get("value", "")).upper()
+            if type_token != "cve" or not re.fullmatch(
+                r"CVE-\d{4}-\d{4,7}", value_token
+            ):
+                continue
+            atoms.append(
+                {
+                    "kind": "references_cve",
+                    "repo": repo,
+                    "cve_id": value_token,
+                }
+            )
+
     for label in _labels_from_payload(payload):
         if label in _SECURITY_LABELS:
             atoms.append(
@@ -381,6 +453,7 @@ def extract_github_atoms(
 
     touched_files = _touched_files_from_payload(payload)
     pattern_set = _candidate_file_patterns(config_seeds)
+    file_patches = _file_patch_map(payload)
     for filename in touched_files:
         atoms.append(
             {
@@ -401,13 +474,19 @@ def extract_github_atoms(
 
         leaf = _safe_str(filename.split("/")[-1]).lower()
         if leaf in pattern_set:
-            atoms.append(
-                {
-                    "kind": "changes_dependency",
-                    "repo": repo,
-                    "dep_name": leaf,
-                }
+            from_ver, to_ver = _extract_version_delta_from_patch(
+                file_patches.get(filename, "")
             )
+            dependency_atom: dict[str, Any] = {
+                "kind": "changes_dependency",
+                "repo": repo,
+                "dep_name": leaf,
+            }
+            if from_ver:
+                dependency_atom["from_ver"] = from_ver
+            if to_ver:
+                dependency_atom["to_ver"] = to_ver
+            atoms.append(dependency_atom)
 
     number_value = payload.get("number")
     if isinstance(number_value, int):
@@ -498,6 +577,15 @@ def compute_importance_score(
         score += 1
 
     if "has_label" in atom_kinds:
+        score += 1
+
+    severity = _safe_str(payload.get("severity", "")).lower()
+    if severity in {"critical", "high"}:
+        score += 2
+    elif severity in {"moderate", "medium"}:
+        score += 1
+
+    if _safe_str(payload.get("ghsa_id", "")):
         score += 1
 
     return int(score)

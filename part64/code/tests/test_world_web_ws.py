@@ -24,10 +24,12 @@ class _MockWebSocketTransport:
     def sendall(self, payload: bytes) -> None:
         self.sent.append(payload)
 
+
 def _masked_ws_frame(opcode: int, payload: bytes) -> bytes:
     mask = bytes([0x23, 0x45, 0x67, 0x89])
     masked_payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
     return bytes([0x80 | (opcode & 0x0F), 0x80 | len(payload)]) + mask + masked_payload
+
 
 def test_websocket_helpers() -> None:
     accept = websocket_accept_value("dGhlIHNhbXBsZSBub25jZQ==")
@@ -36,6 +38,7 @@ def test_websocket_helpers() -> None:
     frame = websocket_frame_text('{"ok":true}')
     assert frame[0] == 0x81
     assert frame[1] == len('{"ok":true}')
+
 
 def test_simulation_ws_normalize_delta_stream_mode_aliases() -> None:
     from code.world_web import server as server_module
@@ -48,6 +51,7 @@ def test_simulation_ws_normalize_delta_stream_mode_aliases() -> None:
     )
     assert server_module._simulation_ws_normalize_delta_stream_mode("world") == "world"
 
+
 def test_simulation_ws_normalize_payload_mode_aliases() -> None:
     from code.world_web import server as server_module
 
@@ -55,6 +59,64 @@ def test_simulation_ws_normalize_payload_mode_aliases() -> None:
     assert server_module._simulation_ws_normalize_payload_mode("debug") == "full"
     assert server_module._simulation_ws_normalize_payload_mode("trimmed") == "trimmed"
     assert server_module._simulation_ws_normalize_payload_mode("") == "trimmed"
+
+
+def test_simulation_ws_http_cache_bridge_rejects_disabled_particle_payload() -> None:
+    from code.world_web import simulation_ws_cache_utils as ws_cache_utils
+
+    payload = {
+        "presence_dynamics": {
+            "field_particles": [{"id": "dm:0"}, {"id": "dm:1"}],
+            "daimoi_probabilistic": {"disabled": True},
+        }
+    }
+
+    def _has_disabled_particle_dynamics(row: dict[str, Any]) -> bool:
+        dynamics = row.get("presence_dynamics", {}) if isinstance(row, dict) else {}
+        summary = (
+            dynamics.get("daimoi_probabilistic", {})
+            if isinstance(dynamics, dict)
+            else {}
+        )
+        return bool(summary.get("disabled", False))
+
+    assert (
+        ws_cache_utils.simulation_ws_should_bridge_to_http_cache(
+            payload,
+            min_field_particles=2,
+            payload_has_disabled_particle_dynamics=_has_disabled_particle_dynamics,
+        )
+        is False
+    )
+
+
+def test_simulation_ws_http_cache_bridge_requires_min_particle_count() -> None:
+    from code.world_web import simulation_ws_cache_utils as ws_cache_utils
+
+    payload = {
+        "presence_dynamics": {
+            "field_particles": [{"id": "dm:0"}, {"id": "dm:1"}],
+            "daimoi_probabilistic": {"disabled": False},
+        }
+    }
+
+    assert (
+        ws_cache_utils.simulation_ws_should_bridge_to_http_cache(
+            payload,
+            min_field_particles=3,
+            payload_has_disabled_particle_dynamics=lambda _row: False,
+        )
+        is False
+    )
+    assert (
+        ws_cache_utils.simulation_ws_should_bridge_to_http_cache(
+            payload,
+            min_field_particles=2,
+            payload_has_disabled_particle_dynamics=lambda _row: False,
+        )
+        is True
+    )
+
 
 def test_simulation_ws_chunk_messages_round_trip() -> None:
     from code.world_web import server as server_module
@@ -87,6 +149,7 @@ def test_simulation_ws_chunk_messages_round_trip() -> None:
     merged_text = "".join(str(row.get("payload", "")) for row in ordered_rows)
     assert json.loads(merged_text) == payload
 
+
 def test_simulation_ws_chunk_plan_reuses_small_payload_text() -> None:
     from code.world_web import server as server_module
 
@@ -104,6 +167,7 @@ def test_simulation_ws_chunk_plan_reuses_small_payload_text() -> None:
     assert rows == []
     assert isinstance(payload_text, str)
     assert json.loads(payload_text) == payload
+
 
 def test_simulation_ws_chunk_plan_emits_chunks_for_large_payload() -> None:
     from code.world_web import server as server_module
@@ -136,6 +200,7 @@ def test_simulation_ws_chunk_plan_emits_chunks_for_large_payload() -> None:
         for row in sorted(rows, key=lambda row: int(row.get("chunk_index", -1)))
     )
     assert json.loads(merged_text) == payload
+
 
 def test_simulation_ws_chunk_plan_keeps_medium_delta_payload_unchunked(
     monkeypatch: Any,
@@ -173,6 +238,35 @@ def test_simulation_ws_chunk_plan_keeps_medium_delta_payload_unchunked(
     assert isinstance(payload_text, str)
     assert len(payload_text) > 4096
     assert len(payload_text) < 50000
+
+
+def test_simulation_ws_payload_missing_graph_payload_detects_empty_graphs() -> None:
+    from code.world_web import server as server_module
+
+    payload = {
+        "total": 12,
+        "file_graph": {"file_nodes": [], "nodes": [], "edges": []},
+        "crawler_graph": {"crawler_nodes": [], "nodes": [], "edges": []},
+    }
+
+    assert server_module._simulation_ws_payload_missing_graph_payload(payload) is True
+
+
+def test_simulation_ws_payload_missing_graph_payload_accepts_non_empty_graphs() -> None:
+    from code.world_web import server as server_module
+
+    payload = {
+        "total": 12,
+        "file_graph": {
+            "file_nodes": [{"id": "file:1"}],
+            "nodes": [{"id": "file:1"}],
+            "edges": [],
+        },
+        "crawler_graph": {"crawler_nodes": [], "nodes": [], "edges": []},
+    }
+
+    assert server_module._simulation_ws_payload_missing_graph_payload(payload) is False
+
 
 def test_simulation_ws_compact_graph_payload_keeps_node_labels() -> None:
     from code.world_web import server as server_module
@@ -254,6 +348,7 @@ def test_simulation_ws_compact_graph_payload_keeps_node_labels() -> None:
     )
     assert crawler_graph.get("nodes", [])[0].get("label") == "example.org"
 
+
 def test_simulation_ws_compact_graph_payload_assume_trimmed_reuses_graph_refs() -> None:
     from code.world_web import server as server_module
 
@@ -273,6 +368,7 @@ def test_simulation_ws_compact_graph_payload_assume_trimmed_reuses_graph_refs() 
     )
     assert compact.get("file_graph") is file_graph
     assert compact.get("crawler_graph") is crawler_graph
+
 
 def test_simulation_ws_load_cached_payload_trimmed_includes_compact_graphs() -> None:
     from code.world_web import server as server_module
@@ -390,6 +486,7 @@ def test_simulation_ws_load_cached_payload_trimmed_includes_compact_graphs() -> 
         == "example.org"
     )
 
+
 def test_simulation_ws_load_cached_payload_trimmed_prefers_compact_cache() -> None:
     from code.world_web import server as server_module
 
@@ -449,6 +546,7 @@ def test_simulation_ws_load_cached_payload_trimmed_prefers_compact_cache() -> No
     assert projection.get("perspective") == "hybrid"
     assert simulation_payload.get("file_graph", {}).get("record") == "ημ.file-graph.v1"
 
+
 def test_simulation_ws_load_cached_payload_full_falls_back_when_cache_bytes_invalid(
     monkeypatch: Any,
 ) -> None:
@@ -491,6 +589,7 @@ def test_simulation_ws_load_cached_payload_full_falls_back_when_cache_bytes_inva
         assert len(simulation_payload.get("points", [])) == 2
         assert simulation_payload.get("projection") is None
         assert projection == {"perspective": "hybrid"}
+
 
 def test_simulation_ws_load_cached_payload_full_prefers_non_sparse_disk_payload(
     monkeypatch: Any,
@@ -552,12 +651,33 @@ def test_simulation_ws_load_cached_payload_full_prefers_non_sparse_disk_payload(
         )
         assert projection == {"perspective": "hybrid"}
 
+
 def test_ws_wire_mode_normalization_aliases() -> None:
     from code.world_web import server as server_module
 
     assert server_module._normalize_ws_wire_mode("arr") == "arr"
     assert server_module._normalize_ws_wire_mode("packed") == "arr"
     assert server_module._normalize_ws_wire_mode("json") == "json"
+
+
+def test_simulation_ws_disabled_flag_allows_payload_when_particles_present() -> None:
+    from code.world_web import server as server_module
+
+    payload = {
+        "presence_dynamics": {
+            "daimoi_probabilistic": {
+                "disabled": True,
+                "disabled_reason": "include_particle_dynamics=false",
+            },
+            "field_particles": [{"id": "dm:1"}],
+        }
+    }
+
+    assert (
+        server_module._simulation_ws_payload_has_disabled_particle_dynamics(payload)
+        is False
+    )
+
 
 def test_ws_pack_message_uses_array_numeric_wire_nodes() -> None:
     from code.world_web import server as server_module
@@ -620,6 +740,7 @@ def test_ws_pack_message_uses_array_numeric_wire_nodes() -> None:
     decoded = decode_node(packed[2])
     assert decoded == payload
 
+
 def test_simulation_ws_split_delta_by_worker_splits_presence_dynamics() -> None:
     from code.world_web import server as server_module
 
@@ -633,6 +754,8 @@ def test_simulation_ws_split_delta_by_worker_splits_presence_dynamics() -> None:
                 "graph_node_positions": {"node-1": {"x": 0.3, "y": 0.7}},
                 "presence_anchor_positions": {"witness_thread": {"x": 0.6, "y": 0.4}},
                 "resource_heartbeat": {"devices": {"cpu": {"utilization": 12.0}}},
+                "daimoi_collision_events": [{"event_id": "evt:1", "kind": "emitted"}],
+                "daimoi_collision_event_seq": 1,
                 "user_presence": {"id": "user"},
             },
         },
@@ -671,11 +794,21 @@ def test_simulation_ws_split_delta_by_worker_splits_presence_dynamics() -> None:
     assert by_worker["sim-resource"]["patch"].get("presence_dynamics", {}).get(
         "resource_heartbeat", {}
     ) == {"devices": {"cpu": {"utilization": 12.0}}}
+    assert (
+        by_worker["sim-resource"]["patch"]
+        .get("presence_dynamics", {})
+        .get("daimoi_collision_event_seq", 0)
+        == 1
+    )
+    assert by_worker["sim-resource"]["patch"].get("presence_dynamics", {}).get(
+        "daimoi_collision_events", []
+    ) == [{"event_id": "evt:1", "kind": "emitted"}]
     assert by_worker["sim-interaction"]["patch"].get("presence_dynamics", {}).get(
         "user_presence", {}
     ) == {"id": "user"}
 
     assert by_worker["sim-daimoi"]["patch"].get("timestamp") == "2026-02-21T17:55:00Z"
+
 
 def test_simulation_ws_split_delta_by_worker_routes_tick_telemetry_to_core() -> None:
     from code.world_web import server as server_module
@@ -722,6 +855,77 @@ def test_simulation_ws_split_delta_by_worker_routes_tick_telemetry_to_core() -> 
     assert core_patch.get("graph_node_positions_total") == 2048
     assert core_patch.get("presence_anchor_positions_total") == 1024
 
+
+def test_simulation_ws_sample_particle_page_cycles_with_jitter() -> None:
+    from code.world_web import server as server_module
+
+    rows = [{"id": f"dm:{index}"} for index in range(10)]
+    sampled_a, meta_a, cursor_a = server_module._simulation_ws_sample_particle_page(
+        rows,
+        max_rows=4,
+        page_cursor=0,
+        jitter_seed=7,
+    )
+    sampled_b, meta_b, cursor_b = server_module._simulation_ws_sample_particle_page(
+        rows,
+        max_rows=4,
+        page_cursor=cursor_a,
+        jitter_seed=7,
+    )
+
+    assert len(sampled_a) == 4
+    assert len(sampled_b) == 4
+    assert meta_a.get("page_total") == 3
+    assert cursor_a == 1
+    assert cursor_b == 2
+    first_ids = {str(row.get("id", "")) for row in sampled_a}
+    second_ids = {str(row.get("id", "")) for row in sampled_b}
+    assert first_ids
+    assert second_ids
+    assert first_ids != second_ids
+
+
+def test_simulation_ws_split_delta_by_worker_routes_particle_page_metadata() -> None:
+    from code.world_web import server as server_module
+
+    delta = {
+        "patch": {
+            "timestamp": "2026-02-21T18:21:00Z",
+            "presence_dynamics": {
+                "field_particles": [{"id": "dm-1"}],
+                "field_particles_page": {
+                    "record": "eta-mu.ws.field-particles-page.v1",
+                    "page_index": 1,
+                    "page_total": 8,
+                    "sample_size": 72,
+                    "total": 530,
+                },
+            },
+        },
+        "changed_keys": [
+            "timestamp",
+            "presence_dynamics.field_particles",
+            "presence_dynamics.field_particles_page",
+        ],
+    }
+
+    rows = server_module._simulation_ws_split_delta_by_worker(delta)
+    by_worker = {
+        str(row.get("worker_id", "")): row
+        for row in rows
+        if isinstance(row, dict) and row.get("worker_id")
+    }
+
+    assert "sim-particles" in by_worker
+    particles_patch = by_worker["sim-particles"].get("patch", {})
+    assert (
+        particles_patch.get("presence_dynamics", {})
+        .get("field_particles_page", {})
+        .get("page_total")
+        == 8
+    )
+
+
 def test_consume_ws_client_frame_replies_to_ping() -> None:
     from code.world_web import server as server_module
 
@@ -730,6 +934,7 @@ def test_consume_ws_client_frame_replies_to_ping() -> None:
 
     assert keep_open is True
     assert transport.sent == [b"\x8a\x04ping"]
+
 
 def test_consume_ws_client_frame_handles_close() -> None:
     from code.world_web import server as server_module
@@ -740,6 +945,7 @@ def test_consume_ws_client_frame_handles_close() -> None:
 
     assert keep_open is False
     assert transport.sent == [b"\x88\x02" + payload]
+
 
 def test_simulation_ws_trim_payload_drops_field_registry_and_heat_values() -> None:
     from code.world_web import server as server_module

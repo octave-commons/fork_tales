@@ -231,8 +231,13 @@ export function useAutopilotController({
     let health: AutopilotHealth = "green";
     const healthReasons: string[] = [];
     if (!runtime.isConnected) {
-      health = "red";
-      healthReasons.push("runtime websocket disconnected");
+      if (study) {
+        health = "yellow";
+        healthReasons.push("runtime websocket disconnected; study endpoint still reachable");
+      } else {
+        health = "red";
+        healthReasons.push("runtime websocket disconnected and study endpoint unreachable");
+      }
     } else if (blockedGateCount >= 4 || activeDriftCount >= 8) {
       health = "red";
       healthReasons.push("high drift or blocked gate pressure");
@@ -559,6 +564,9 @@ export function useAutopilotController({
         normalized.includes("pause autopilot")
         || normalized.includes("disable autopilot")
         || normalized === "/autopilot off";
+      const respondsToOption = Array.isArray(pendingAsk.options)
+        && pendingAsk.options.some((option) => option.trim().toLowerCase() === normalized);
+      const explicitAutopilotDirective = normalized.startsWith("autopilot:") || normalized.startsWith("/autopilot");
 
       if (pauseRequested) {
         autopilot.stop();
@@ -572,16 +580,29 @@ export function useAutopilotController({
 
       const permission =
         typeof pendingAsk.context?.permission === "string" ? pendingAsk.context.permission : null;
-      if (permission && isAffirmativeResponse(text)) {
+      const permissionGrantRequested = permission ? isAffirmativeResponse(text) : false;
+      const permissionDenyRequested = permission
+        ? normalized === "deny" || normalized.startsWith("deny ")
+        : false;
+
+      if (!respondsToOption && !explicitAutopilotDirective && !permissionGrantRequested && !permissionDenyRequested) {
+        return false;
+      }
+
+      const directiveText = explicitAutopilotDirective
+        ? text.replace(/^\/?autopilot\s*:?\s*/i, "").trim()
+        : text;
+
+      if (permission && permissionGrantRequested) {
         setAutopilotPermissions((prev) => ({
           ...prev,
           [permission]: true,
         }));
         emitSystemMessage(`autopilot permission granted: ${permission}`);
-      } else if (permission && normalized.includes("deny")) {
+      } else if (permission && permissionDenyRequested) {
         emitSystemMessage(`autopilot permission denied: ${permission}`);
-      } else {
-        autopilotDirectiveRef.current = text;
+      } else if (directiveText) {
+        autopilotDirectiveRef.current = directiveText;
       }
 
       autopilotPendingAskRef.current = null;

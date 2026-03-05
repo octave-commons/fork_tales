@@ -248,6 +248,7 @@ describe('useWorldState websocket worker streams', () => {
         devices: { cpu: { utilization: 72 } },
       });
       expect(result.current.simulation?.presence_dynamics?.field_particles).toEqual([
+        { id: 'dm-1' },
         { id: 'dm-2' },
       ]);
       expect(dynamics?.user_presence).toEqual({ id: 'user-1' });
@@ -292,6 +293,56 @@ describe('useWorldState websocket worker streams', () => {
         perspective: 'hybrid',
       });
       expect(result.current.simulation?.timestamp).toBe('2026-02-21T18:00:02Z');
+    });
+  });
+
+  it('does not replace an active graph simulation with bootstrap placeholder frames', async () => {
+    const { result } = renderHook(() => useWorldState('hybrid'));
+    const ws = MockWebSocket.instances[0];
+    act(() => {
+      ws.emitOpen();
+    });
+
+    act(() => {
+      ws.emitMessage({
+        type: 'simulation',
+        simulation: simulationFixture({
+          timestamp: '2026-02-21T18:00:05Z',
+          total: 8,
+        }),
+      });
+    });
+
+    await waitFor(() => {
+      expect(result.current.simulation?.total).toBe(8);
+      expect(result.current.simulation?.timestamp).toBe('2026-02-21T18:00:05Z');
+    });
+
+    act(() => {
+      ws.emitMessage({
+        type: 'simulation',
+        simulation: {
+          timestamp: '2026-02-21T18:00:06Z',
+          total: 0,
+          audio: 0,
+          image: 0,
+          video: 0,
+          points: [],
+          record: 'eta-mu.ws.simulation-fast-bootstrap.v1',
+          presence_dynamics: {
+            generated_at: '2026-02-21T18:00:06Z',
+            field_particles: [{ id: 'ws-bootstrap:0' }],
+            daimoi_probabilistic: {
+              disabled_reason: 'ws_fast_bootstrap',
+            },
+          },
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(result.current.simulation?.total).toBe(8);
+      expect(result.current.simulation?.timestamp).toBe('2026-02-21T18:00:05Z');
     });
   });
 

@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WebGraphWeaverPanel } from "./WebGraphWeaverPanel";
 
+const PANEL_CACHE_KEY = "fork_tales.web_graph_weaver.panel.cache.v1";
+
 function mockJsonResponse(body: unknown, status = 200): Response {
   return {
     ok: status >= 200 && status < 300,
@@ -267,6 +269,7 @@ function setupFetchMock() {
 
 beforeEach(() => {
   MockWebSocket.instances = [];
+  window.localStorage.clear();
   vi.stubGlobal("WebSocket", MockWebSocket as unknown as typeof WebSocket);
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(() => {
     return null as unknown as RenderingContext | null;
@@ -492,5 +495,103 @@ describe("WebGraphWeaverPanel", () => {
     await waitFor(() => {
       expect(screen.getByText(/If Web Graph Weaver is not running/)).toBeTruthy();
     });
+  });
+
+  it("hydrates cached panel state before network bootstrap", async () => {
+    window.localStorage.setItem(
+      PANEL_CACHE_KEY,
+      JSON.stringify({
+        status: {
+          ...statusPayload(["robots.example"], "paused"),
+          graph_counts: {
+            nodes_total: 77,
+            edges_total: 42,
+            url_nodes_total: 15,
+          },
+        },
+        graph: graphPayload().graph,
+        events: [
+          {
+            event: "cached_bootstrap",
+            timestamp: Date.now() - 1000,
+            reason: "cached",
+          },
+        ],
+        entityState: entitiesEnvelope(),
+      }),
+    );
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/weaver/status")) {
+        throw new TypeError("Failed to fetch");
+      }
+      if (url.includes("/api/weaver/graph")) {
+        return mockJsonResponse({
+          ok: true,
+          graph: { nodes: [], edges: [], counts: { nodes_total: 0, edges_total: 0, url_nodes_total: 0 } },
+        });
+      }
+      if (url.includes("/api/weaver/events")) {
+        return mockJsonResponse({ ok: true, events: [] });
+      }
+      if (url.includes("/api/weaver/entities")) {
+        return mockJsonResponse(entitiesEnvelope());
+      }
+      return mockJsonResponse({ ok: true });
+    });
+
+    render(<WebGraphWeaverPanel />);
+
+    expect(screen.getByText(/cached_bootstrap/)).toBeTruthy();
+    expect(screen.getByText("77")).toBeTruthy();
+
+    await waitFor(() => {
+      expect(screen.getByText(/If Web Graph Weaver is not running/)).toBeTruthy();
+    });
+  });
+
+  it("keeps cached graph when full graph refresh is empty", async () => {
+    window.localStorage.setItem(
+      PANEL_CACHE_KEY,
+      JSON.stringify({
+        status: statusPayload(["robots.example"], "stopped"),
+        graph: graphPayload().graph,
+        events: [],
+        entityState: entitiesEnvelope(),
+      }),
+    );
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/weaver/status")) {
+        return mockJsonResponse(statusPayload(["robots.example"], "stopped"));
+      }
+      if (url.includes("/api/weaver/entities")) {
+        return mockJsonResponse(entitiesEnvelope());
+      }
+      if (url.includes("/api/weaver/events")) {
+        return mockJsonResponse({ ok: true, events: [] });
+      }
+      if (url.includes("/api/weaver/graph")) {
+        return mockJsonResponse({
+          ok: true,
+          graph: { nodes: [], edges: [], counts: { nodes_total: 0, edges_total: 0, url_nodes_total: 0 } },
+        });
+      }
+      return mockJsonResponse({ ok: true });
+    });
+
+    render(<WebGraphWeaverPanel />);
+
+    await waitFor(() => {
+      expect(fetchSpy.mock.calls.some(([url]) => String(url).includes("/api/weaver/graph"))).toBe(true);
+    });
+
+    const cachedRaw = window.localStorage.getItem(PANEL_CACHE_KEY);
+    expect(cachedRaw).toBeTruthy();
+    const cachedPayload = JSON.parse(String(cachedRaw));
+    expect(Array.isArray(cachedPayload.graph?.nodes)).toBe(true);
+    expect(cachedPayload.graph.nodes.length).toBeGreaterThan(0);
   });
 });

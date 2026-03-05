@@ -4,6 +4,7 @@ import type {
   SimulationState,
   Catalog,
   BackendFieldParticle,
+  DaimoiCollisionEvent,
 } from "../../types";
 import { runtimeBaseUrl } from "../../runtime/endpoints";
 import { GalaxyModelDock } from "./GalaxyModelDock";
@@ -204,6 +205,19 @@ interface UserQueryEdgeRow {
   strength: number;
 }
 
+interface DaimoiCollisionBurst {
+  eventId: string;
+  kind: string;
+  resourceType: string;
+  x: number;
+  y: number;
+  originX?: number;
+  originY?: number;
+  impactX?: number;
+  impactY?: number;
+  atMs: number;
+}
+
 interface HologramAudioVisualization {
   sourceUrl: string;
   durationSeconds: number;
@@ -267,6 +281,10 @@ const EMPTY_PARTICLE_LEGEND_STATS = {
     resource: 0,
   },
 };
+
+const DAIMOI_COLLISION_BURST_MAX = 72;
+const DAIMOI_COLLISION_SEEN_MAX = 2048;
+const DAIMOI_COLLISION_EVENT_TAIL = 128;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object") {
@@ -2215,6 +2233,50 @@ function resolveOverlayParticleFlags(row: BackendFieldParticle): OverlayParticle
   };
 }
 
+function normalizeDaimoiCollisionEvents(value: unknown): DaimoiCollisionEvent[] {
+  if (!Array.isArray(value) || value.length <= 0) {
+    return [];
+  }
+  const rows: DaimoiCollisionEvent[] = [];
+  for (const entry of value.slice(-DAIMOI_COLLISION_EVENT_TAIL)) {
+    const row = asRecord(entry);
+    if (!row) {
+      continue;
+    }
+    const eventId = String(row.event_id ?? "").trim();
+    if (!eventId) {
+      continue;
+    }
+    rows.push({
+      record: String(row.record ?? "eta-mu.daimoi-collision-event.v1"),
+      schema_version: String(row.schema_version ?? "daimoi.collision.event.v1"),
+      event_id: eventId,
+      seq: Math.max(0, Number(row.seq ?? 0)),
+      kind: String(row.kind ?? "event").trim().toLowerCase() || "event",
+      ts: String(row.ts ?? "").trim(),
+      particle_id: String(row.particle_id ?? "").trim(),
+      presence_id: String(row.presence_id ?? "").trim(),
+      owner_presence_id: String(row.owner_presence_id ?? "").trim() || undefined,
+      target_presence_id: String(row.target_presence_id ?? "").trim() || undefined,
+      resource_type: String(row.resource_type ?? "").trim() || undefined,
+      x: clamp01(Number(row.x ?? 0.5)),
+      y: clamp01(Number(row.y ?? 0.5)),
+      target_x: Number.isFinite(Number(row.target_x)) ? clamp01(Number(row.target_x)) : undefined,
+      target_y: Number.isFinite(Number(row.target_y)) ? clamp01(Number(row.target_y)) : undefined,
+      graph_node_id: String(row.graph_node_id ?? "").trim() || undefined,
+      route_node_id: String(row.route_node_id ?? "").trim() || undefined,
+      collision_count: Number.isFinite(Number(row.collision_count))
+        ? Math.max(0, Math.floor(Number(row.collision_count)))
+        : undefined,
+      resource_emit_amount: Number.isFinite(Number(row.resource_emit_amount))
+        ? Math.max(0, Number(row.resource_emit_amount))
+        : undefined,
+    });
+  }
+  rows.sort((left, right) => left.seq - right.seq);
+  return rows;
+}
+
 export function SimulationCanvas({
   simulation,
   catalog,
@@ -2251,6 +2313,7 @@ export function SimulationCanvas({
   const containerRef = useRef<HTMLDivElement>(null);
   const simulationRef = useRef<SimulationState | null>(simulation);
   const catalogRef = useRef<Catalog | null>(catalog);
+  const daimoiCollisionEventsRef = useRef<DaimoiCollisionEvent[]>([]);
   const museWorkspaceBindingsRef = useRef<Record<string, string[]>>(
     normalizeWorkspaceBindingMap(museWorkspaceBindings),
   );
@@ -4233,6 +4296,9 @@ export function SimulationCanvas({
     let userPresenceMouseEmitMs = 0;
     let pulse = { x: 0.5, y: 0.5, power: 0, atMs: 0, target: "particle_field" };
     let pointerField = { x: 0.5, y: 0.5, power: 0, inside: false };
+    const daimoiCollisionBursts: DaimoiCollisionBurst[] = [];
+    const daimoiCollisionSeenIds = new Set<string>();
+    const daimoiCollisionSeenOrder: string[] = [];
     const PARTICLE_TRAIL_FRAME_COUNT = 12;
     const particleTrailFrames: number[][] = [];
     const particleTrailFramePool: number[][] = [];
@@ -5166,6 +5232,81 @@ export function SimulationCanvas({
         ingestFallbackGraphPositions();
       }
 
+      const collisionEventRows = daimoiCollisionEventsRef.current;
+      if (collisionEventRows.length > 0) {
+        const nowPerformanceMs = performance.now();
+        for (const eventRow of collisionEventRows) {
+          const eventId = String(eventRow.event_id ?? "").trim();
+          if (!eventId || daimoiCollisionSeenIds.has(eventId)) {
+            continue;
+          }
+          daimoiCollisionSeenIds.add(eventId);
+          daimoiCollisionSeenOrder.push(eventId);
+          while (daimoiCollisionSeenOrder.length > DAIMOI_COLLISION_SEEN_MAX) {
+            const removedId = daimoiCollisionSeenOrder.shift();
+            if (removedId) {
+              daimoiCollisionSeenIds.delete(removedId);
+            }
+          }
+
+          const burstKind = String(eventRow.kind ?? "event").trim().toLowerCase() || "event";
+          let originX = clamp01(Number(eventRow.x ?? 0.5));
+          let originY = clamp01(Number(eventRow.y ?? 0.5));
+          let impactX = originX;
+          let impactY = originY;
+          const routeNodeId = String(eventRow.route_node_id ?? "").trim();
+          const graphNodeId = String(eventRow.graph_node_id ?? "").trim();
+          const routeAnchor = routeNodeId ? graphNodeLookup.get(routeNodeId) : undefined;
+          const graphAnchor = graphNodeId ? graphNodeLookup.get(graphNodeId) : undefined;
+          const targetXRaw = Number(eventRow.target_x);
+          const targetYRaw = Number(eventRow.target_y);
+          const targetX = Number.isFinite(targetXRaw) ? clamp01(targetXRaw) : null;
+          const targetY = Number.isFinite(targetYRaw) ? clamp01(targetYRaw) : null;
+
+          if (targetX !== null && targetY !== null) {
+            impactX = targetX;
+            impactY = targetY;
+          } else if (graphAnchor) {
+            impactX = clamp01(graphAnchor.x);
+            impactY = clamp01(graphAnchor.y);
+          } else if (routeAnchor) {
+            impactX = clamp01(routeAnchor.x);
+            impactY = clamp01(routeAnchor.y);
+          }
+
+          if (!Number.isFinite(originX) || !Number.isFinite(originY)) {
+            originX = impactX;
+            originY = impactY;
+          }
+
+          const focusX = burstKind === "absorbed" ? impactX : originX;
+          const focusY = burstKind === "absorbed" ? impactY : originY;
+
+          daimoiCollisionBursts.push({
+            eventId,
+            kind: burstKind,
+            resourceType: String(eventRow.resource_type ?? "cpu").trim().toLowerCase() || "cpu",
+            x: focusX,
+            y: focusY,
+            originX,
+            originY,
+            impactX,
+            impactY,
+            atMs: nowPerformanceMs,
+          });
+        }
+      }
+      const burstNowMs = performance.now();
+      for (let burstIndex = daimoiCollisionBursts.length - 1; burstIndex >= 0; burstIndex -= 1) {
+        const burst = daimoiCollisionBursts[burstIndex];
+        if (!burst || (burstNowMs - burst.atMs) > 2600) {
+          daimoiCollisionBursts.splice(burstIndex, 1);
+        }
+      }
+      if (daimoiCollisionBursts.length > DAIMOI_COLLISION_BURST_MAX) {
+        daimoiCollisionBursts.splice(0, daimoiCollisionBursts.length - DAIMOI_COLLISION_BURST_MAX);
+      }
+
       const fileEdges = (showFileGraphLayer || showTrueGraphLayer) && Array.isArray(fileGraph?.edges)
         ? fileGraph.edges
         : [];
@@ -5688,6 +5829,64 @@ export function SimulationCanvas({
               0.28 + (throughput * 0.5),
             );
           }
+        }
+      }
+
+      if (daimoiCollisionBursts.length > 0) {
+        const burstNowMs = performance.now();
+        for (const burst of daimoiCollisionBursts) {
+          const burstAgeSec = Math.max(0, (burstNowMs - burst.atMs) * 0.001);
+          const burstDuration = 1.55;
+          if (burstAgeSec > burstDuration) {
+            continue;
+          }
+          const progress = clamp01(burstAgeSec / burstDuration);
+          const fade = clamp01(1 - progress);
+          const [baseR, baseG, baseB] = getDaimoiColor(burst.resourceType);
+          const eventR = clamp01((baseR * 0.82) + 0.18);
+          const eventG = clamp01((baseG * 0.82) + 0.18);
+          const eventB = clamp01((baseB * 0.82) + 0.18);
+          const centerX = clamp01(burst.impactX ?? burst.x);
+          const centerY = clamp01(burst.impactY ?? burst.y);
+          const isAbsorbBurst = burst.kind === "absorbed";
+          const burstPower = isAbsorbBurst ? 1.0 : 0.86;
+          const ringSegments = isLowPowerOverlay ? 16 : 28;
+          const waveOffsets = isLowPowerOverlay ? [0, 0.24] : [0, 0.14, 0.28];
+          for (const waveOffset of waveOffsets) {
+            const waveProgress = progress - waveOffset;
+            if (waveProgress < 0 || waveProgress > 1) {
+              continue;
+            }
+            const waveFade = clamp01(1 - waveProgress);
+            const ringRadius = (0.014 + (waveProgress * 0.15)) * burstPower;
+            const ringAlpha = clamp01((0.22 + (fade * 0.24)) * waveFade);
+            for (let segment = 0; segment < ringSegments; segment += 1) {
+              const t0 = (segment / ringSegments) * Math.PI * 2;
+              const t1 = ((segment + 1) / ringSegments) * Math.PI * 2;
+              addLine(
+                centerX + Math.cos(t0) * ringRadius,
+                centerY + Math.sin(t0) * ringRadius,
+                centerX + Math.cos(t1) * ringRadius,
+                centerY + Math.sin(t1) * ringRadius,
+                eventR,
+                eventG,
+                eventB,
+                ringAlpha,
+              );
+            }
+          }
+
+          const coreAlpha = clamp01((0.12 + (fade * 0.22)) * burstPower);
+          const coreSize = (1.8 + (fade * 3.2)) * dpr;
+          addPoint(
+            centerX,
+            centerY,
+            coreSize,
+            eventR,
+            eventG,
+            eventB,
+            coreAlpha,
+          );
         }
       }
 
@@ -6235,6 +6434,39 @@ export function SimulationCanvas({
   const activeFieldParticleRows = useMemo<BackendFieldParticle[]>(() => {
     return resolveFieldParticleRows(simulation);
   }, [resolveFieldParticleRows, simulation]);
+  const daimoiCollisionEvents = useMemo(() => {
+    return normalizeDaimoiCollisionEvents(simulation?.presence_dynamics?.daimoi_collision_events);
+  }, [simulation?.presence_dynamics?.daimoi_collision_events]);
+  useEffect(() => {
+    daimoiCollisionEventsRef.current = daimoiCollisionEvents;
+  }, [daimoiCollisionEvents]);
+  const daimoiCollisionHud = useMemo(() => {
+    if (!interactive || daimoiCollisionEvents.length <= 0) {
+      return {
+        total: 0,
+        emitted: 0,
+        absorbed: 0,
+        latestKind: "",
+      };
+    }
+    let emitted = 0;
+    let absorbed = 0;
+    for (const row of daimoiCollisionEvents) {
+      const kind = String(row.kind ?? "").trim().toLowerCase();
+      if (kind === "emitted") {
+        emitted += 1;
+      } else if (kind === "absorbed") {
+        absorbed += 1;
+      }
+    }
+    const latest = daimoiCollisionEvents[daimoiCollisionEvents.length - 1];
+    return {
+      total: daimoiCollisionEvents.length,
+      emitted,
+      absorbed,
+      latestKind: String(latest?.kind ?? "").trim().toLowerCase(),
+    };
+  }, [daimoiCollisionEvents, interactive]);
   const queryTransientEdgeRows = useMemo(() => {
     return normalizeUserQueryEdgeRows(simulation?.presence_dynamics?.user_query_transient_edges);
   }, [simulation?.presence_dynamics?.user_query_transient_edges]);
@@ -6814,6 +7046,12 @@ export function SimulationCanvas({
               <p className="text-[#ffbf9a]">
                 transfer {resourceEconomyHud.transfer.toFixed(2)} · consumed {resourceEconomyHud.consumedTotal.toFixed(2)} · starved presences {resourceEconomyHud.starvedPresences}
               </p>
+              <p className="text-[#ffc8a8]">
+                daimoi collisions: emit {daimoiCollisionHud.emitted} · absorb {daimoiCollisionHud.absorbed} · events {daimoiCollisionHud.total}
+              </p>
+              {daimoiCollisionHud.latestKind ? (
+                <p className="text-[#ffb89a]">latest collision event: {daimoiCollisionHud.latestKind}</p>
+              ) : null}
               <p className="mt-1 text-[#9ecbe8]">mode: field particles ({liveFieldParticleCount})</p>
             </>
           ) : (

@@ -115,6 +115,17 @@ function originWithPort(origin: string, port: string): string {
   }
 }
 
+export function isLikelyViteDevPort(port: string): boolean {
+  if (!port) {
+    return false;
+  }
+  const parsedPort = Number.parseInt(port, 10);
+  if (!Number.isFinite(parsedPort)) {
+    return false;
+  }
+  return parsedPort >= 5173 && parsedPort <= 5199;
+}
+
 function runtimeBridgeConfig(): RuntimeBridgeConfig {
   if (typeof window === "undefined") {
     return {};
@@ -137,8 +148,8 @@ export function runtimeBaseUrl(): string {
     return DEV_WORLD_ORIGIN;
   }
 
-  if (window.location.port === "5173") {
-    return DEV_WORLD_ORIGIN;
+  if (isLikelyViteDevPort(window.location.port)) {
+    return window.location.origin;
   }
 
   if (window.location.protocol === "file:") {

@@ -1,4 +1,42 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "instructions": ["opmf.lisp"]
+  "instructions": ["opmf.lisp"],
+  "provider": {
+    "vivgrid-anth": {
+      "npm": "@ai-sdk/anthropic",
+      "name": "vivgrid(anthropic)",
+      "options": {
+        "baseURL": "https://api.vivgrid.com/v1",
+        "apiKey": "viv-dafdsf-bCsEFRGzVjtIWygMFfsGtgjJLaDOoX",
+        "timeout": 300000
+      },
+      "models": {
+        "claude-opus-4.5": {
+          "id": "claude-opus-4-5",
+          "name": "Claude Opus 4.5 Thinking",
+          "limit": {
+            "context": 200000,
+            "output": 16000
+          },
+          "reasoning": true,
+          "interleaved": true,
+          "modalities": {
+            "input": [
+              "image",
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        }
+      }
+    },
+    "vivgrid": {
+      "models": {
+        "gemini-3.1-pro-preview": {},
+        "gpt-5.3-codex": {}
+      }
+    }
+  }
 }

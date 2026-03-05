@@ -127,6 +127,17 @@ from .simulation_nexus import (
     _project_legacy_logical_graph_from_nexus,
 )
 from . import simulation_resources as simulation_resources_module
+from . import simulation_backend_particles as simulation_backend_particles_module
+from . import simulation_document_layout as simulation_document_layout_module
+from . import simulation_embedding_layout as simulation_embedding_layout_module
+from . import simulation_file_graph_prep as simulation_file_graph_prep_module
+from . import simulation_collision_utils as simulation_collision_utils_module
+from . import simulation_field_context_utils as simulation_field_context_utils_module
+from . import (
+    simulation_field_absorption_utils as simulation_field_absorption_utils_module,
+)
+from . import simulation_stream_motion_utils as simulation_stream_motion_utils_module
+from . import simulation_test_artifacts as simulation_test_artifacts_module
 
 _RESOURCE_DAIMOI_TYPES = simulation_resources_module._RESOURCE_DAIMOI_TYPES
 _RESOURCE_DAIMOI_TYPE_ALIASES = (
@@ -297,6 +308,23 @@ SIMULATION_GROWTH_GUARD_RECORD = "eta-mu.simulation-growth-guard.v1"
 SIMULATION_GROWTH_GUARD_SCHEMA_VERSION = "simulation.growth-guard.v1"
 SIMULATION_GROWTH_EVENT_RECORD = "eta-mu.simulation-event.v1"
 SIMULATION_GROWTH_EVENT_SCHEMA_VERSION = "simulation.events.v1"
+DAIMOI_COLLISION_EVENT_RECORD = "eta-mu.daimoi-collision-event.v1"
+DAIMOI_COLLISION_EVENT_SCHEMA_VERSION = "daimoi.collision.event.v1"
+DAIMOI_COLLISION_EVENTS_RECORD = "eta-mu.daimoi-collision-events.v1"
+SIMULATION_DAIMOI_COLLISION_EVENT_HISTORY_MAX = max(
+    16,
+    _safe_int(
+        os.getenv("SIMULATION_DAIMOI_COLLISION_EVENT_HISTORY_MAX", "192") or "192",
+        192,
+    ),
+)
+SIMULATION_DAIMOI_COLLISION_ACTIVE_ID_MAX = max(
+    64,
+    _safe_int(
+        os.getenv("SIMULATION_DAIMOI_COLLISION_ACTIVE_ID_MAX", "4096") or "4096",
+        4096,
+    ),
+)
 SIMULATION_GROWTH_WATCH_THRESHOLD = 0.62
 SIMULATION_GROWTH_CRITICAL_THRESHOLD = 0.82
 SIMULATION_GROWTH_MAX_CLUSTER_NODES = 18
@@ -414,8 +442,6 @@ _SIMULATION_RESOURCE_ALIASES: dict[str, str] = {
     "npu": "npu",
     "npu0": "npu",
 }
-_SEMANTIC_COLLISION_BUFFER_LOCAL = threading.local()
-
 SIMULATION_STREAM_FIELD_FORCE = max(
     0.0,
     _safe_float(os.getenv("SIMULATION_WS_STREAM_FIELD_FORCE", "0.22") or "0.22", 0.22),
@@ -1311,52 +1337,27 @@ def _graph_rows(
     file_graph: dict[str, Any] | None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     graph = file_graph if isinstance(file_graph, dict) else {}
-    node_rows = [
-        row
-        for row in (
-            graph.get("nodes", []) if isinstance(graph.get("nodes", []), list) else []
-        )
-        if isinstance(row, dict)
-    ]
-    if not node_rows:
-        node_rows = [
-            *[
-                row
-                for row in (
-                    graph.get("field_nodes", [])
-                    if isinstance(graph.get("field_nodes", []), list)
-                    else []
-                )
-                if isinstance(row, dict)
-            ],
-            *[
-                row
-                for row in (
-                    graph.get("tag_nodes", [])
-                    if isinstance(graph.get("tag_nodes", []), list)
-                    else []
-                )
-                if isinstance(row, dict)
-            ],
-            *[
-                row
-                for row in (
-                    graph.get("file_nodes", [])
-                    if isinstance(graph.get("file_nodes", []), list)
-                    else []
-                )
-                if isinstance(row, dict)
-            ],
-            *[
-                row
-                for row in (
-                    graph.get("crawler_nodes", [])
-                    if isinstance(graph.get("crawler_nodes", []), list)
-                    else []
-                )
-                if isinstance(row, dict)
-            ],
-        ]
+    node_rows: list[dict[str, Any]] = []
+    seen_node_ids: set[str] = set()
+
+    def _append_rows(raw_rows: Any) -> None:
+        if not isinstance(raw_rows, list):
+            return
+        for row in raw_rows:
+            if not isinstance(row, dict):
+                continue
+            node_id = str(row.get("id", "")).strip()
+            if node_id and node_id in seen_node_ids:
+                continue
+            node_rows.append(row)
+            if node_id:
+                seen_node_ids.add(node_id)
+
+    _append_rows(graph.get("nodes", []))
+    _append_rows(graph.get("field_nodes", []))
+    _append_rows(graph.get("tag_nodes", []))
+    _append_rows(graph.get("file_nodes", []))
+    _append_rows(graph.get("crawler_nodes", []))
     edge_rows = [
         row
         for row in (
@@ -3911,300 +3912,77 @@ def _apply_daimoi_dynamics_to_pain_field(
 
 
 def _load_test_failures_from_path(candidate: Path) -> list[dict[str, Any]]:
-    try:
-        text = candidate.read_text("utf-8")
-    except:
-        return []
-    if candidate.suffix.lower() in {".json", ".jsonl", ".ndjson"}:
-        if candidate.suffix.lower() == ".json":
-            try:
-                return _coerce_test_failure_rows(json.loads(text))
-            except:
-                return []
-        rows = []
-        for line in text.splitlines():
-            try:
-                rows.extend(_coerce_test_failure_rows(json.loads(line)))
-            except:
-                continue
-        return rows
-    return _parse_test_failures_text(text)
+    return simulation_test_artifacts_module.load_test_failures_from_path(candidate)
 
 
 def _coerce_test_failure_rows(payload: Any) -> list[dict[str, Any]]:
-    rows = []
-
-    def _add(item):
-        if isinstance(item, dict):
-            rows.append(dict(item))
-        elif str(item).strip():
-            rows.append({"name": str(item).strip(), "status": "failed"})
-
-    if isinstance(payload, list):
-        for i in payload:
-            _add(i)
-    elif isinstance(payload, dict):
-        for k in ("failures", "failed_tests", "failing_tests", "tests"):
-            if isinstance(payload.get(k), list):
-                for i in payload[k]:
-                    if k == "tests" and isinstance(i, dict):
-                        s = str(i.get("status") or i.get("outcome") or "").lower()
-                        if s in {"failed", "error", "failing", "xfailed"}:
-                            r = dict(i)
-                            r.setdefault("status", s or "failed")
-                            r.setdefault(
-                                "name",
-                                str(
-                                    i.get("nodeid")
-                                    or i.get("test")
-                                    or i.get("id")
-                                    or ""
-                                ),
-                            )
-                            rows.append(r)
-                    else:
-                        _add(i)
-                if rows:
-                    return rows
-        n = str(
-            payload.get("name") or payload.get("test") or payload.get("nodeid") or ""
-        ).strip()
-        if n:
-            r = dict(payload)
-            r.setdefault("status", "failed")
-            rows.append(r)
-    return rows
+    return simulation_test_artifacts_module.coerce_test_failure_rows(payload)
 
 
 def _parse_test_failures_text(raw_text: str) -> list[dict[str, Any]]:
-    rows = []
-    for line in raw_text.splitlines():
-        if not line.strip() or line.strip().startswith("#"):
-            continue
-        n, sep, c = line.partition("|")
-        if n.strip():
-            row: dict[str, Any] = {"name": n.strip(), "status": "failed"}
-            if sep:
-                row["covered_files"] = [
-                    t.strip() for t in re.split(r"[,\s]+", c.strip()) if t.strip()
-                ]
-            rows.append(row)
-    return rows
+    return simulation_test_artifacts_module.parse_test_failures_text(raw_text)
 
 
 def _load_test_coverage_from_path(
     candidate: Path, part_root: Path, vault_root: Path
 ) -> dict[str, Any]:
-    try:
-        text = candidate.read_text("utf-8")
-    except:
-        return {}
-    if candidate.suffix.lower() == ".json":
-        try:
-            p = json.loads(text)
-            return p if isinstance(p, dict) else {}
-        except:
-            return {}
-    if candidate.name.lower().endswith(".info") and "lcov" in candidate.name.lower():
-        return _parse_lcov_payload(text, part_root, vault_root)
-    return {}
+    return simulation_test_artifacts_module.load_test_coverage_from_path(
+        candidate,
+        part_root,
+        vault_root,
+        normalize_path_for_file_id=_normalize_path_for_file_id,
+        file_id_for_path=_file_id_for_path,
+        safe_float=_safe_float,
+        clamp01=_clamp01,
+    )
 
 
 def _parse_lcov_payload(text: str, part_root: Path, vault_root: Path) -> dict[str, Any]:
-    files, by_test_sets, by_test_spans = {}, defaultdict(set), defaultdict(list)
-    cur_t = cur_s = ""
-    da_f = da_h = lf = lh = 0
-    cur_hits = []
-
-    def _flush():
-        nonlocal cur_s, da_f, da_h, lf, lh, cur_hits
-        if not cur_s:
-            return
-        n = _normalize_coverage_source_path(cur_s, part_root, vault_root)
-        if n:
-            e = files.setdefault(
-                n,
-                {
-                    "file_id": _file_id_for_path(n),
-                    "lines_found": 0,
-                    "lines_hit": 0,
-                    "tests": [],
-                },
-            )
-            e["lines_found"] += lf or da_f
-            e["lines_hit"] += lh or da_h
-            if cur_t.strip():
-                by_test_sets[cur_t.strip()].add(n)
-                if cur_t.strip() not in e["tests"]:
-                    e["tests"].append(cur_t.strip())
-                for sp in _line_hits_to_spans(cur_hits):
-                    by_test_spans[cur_t.strip()].append(
-                        {
-                            "file": n,
-                            "start_line": sp["start_line"],
-                            "end_line": sp["end_line"],
-                            "hits": sp["hits"],
-                            "weight": 1.0,
-                        }
-                    )
-        cur_s = ""
-        da_f = da_h = lf = lh = 0
-        cur_hits = []
-
-    for line in text.splitlines():
-        line = line.strip()
-        if line.startswith("TN:"):
-            cur_t = line[3:].strip()
-        elif line.startswith("SF:"):
-            _flush()
-            cur_s = line[3:].strip()
-        elif line == "end_of_record":
-            _flush()
-        elif cur_s:
-            if line.startswith("DA:"):
-                p = line[3:].split(",")
-                ln, h = int(_safe_float(p[0])), int(_safe_float(p[1]))
-                cur_hits.append((ln, h))
-                da_f += 1
-                da_h += 1 if h > 0 else 0
-            elif line.startswith("LF:"):
-                lf = int(_safe_float(line[3:]))
-            elif line.startswith("LH:"):
-                lh = int(_safe_float(line[3:]))
-    _flush()
-    f_pay = {
-        k: {
-            **v,
-            "line_rate": round(_clamp01(v["lines_hit"] / v["lines_found"]), 6)
-            if v["lines_found"] > 0
-            else 0.0,
-        }
-        for k, v in files.items()
-    }
-    return {
-        "record": "ημ.test-coverage.v2",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "source": "lcov",
-        "files": f_pay,
-        "by_test": {k: sorted(list(v)) for k, v in by_test_sets.items()},
-        "by_test_spans": dict(by_test_spans),
-        "hottest_files": sorted(
-            f_pay.keys(), key=lambda k: (f_pay[k].get("line_rate", 1.0), k)
-        ),
-    }
+    return simulation_test_artifacts_module.parse_lcov_payload(
+        text,
+        part_root,
+        vault_root,
+        normalize_path_for_file_id=_normalize_path_for_file_id,
+        file_id_for_path=_file_id_for_path,
+        safe_float=_safe_float,
+        clamp01=_clamp01,
+    )
 
 
 def _normalize_coverage_source_path(raw: str, part_root: Path, vault_root: Path) -> str:
-    s = str(raw or "").strip()
-    if s.startswith("file://"):
-        s = unquote(urlparse(s).path)
-    p = Path(s.strip())
-    if p.is_absolute():
-        try:
-            r = p.resolve(strict=False)
-        except:
-            r = p
-        for root in (part_root, vault_root):
-            try:
-                return _normalize_path_for_file_id(str(r.relative_to(root.resolve())))
-            except:
-                continue
-    return _normalize_path_for_file_id(s)
+    return simulation_test_artifacts_module.normalize_coverage_source_path(
+        raw,
+        part_root,
+        vault_root,
+        normalize_path_for_file_id=_normalize_path_for_file_id,
+    )
 
 
 def _line_hits_to_spans(hits: list[tuple[int, int]]) -> list[dict[str, Any]]:
-    sorted_hits = sorted([(ln, h) for ln, h in hits if h > 0], key=lambda r: r[0])
-    if not sorted_hits:
-        return []
-    spans, sl, pl, t = [], sorted_hits[0][0], sorted_hits[0][0], sorted_hits[0][1]
-    for ln, h in sorted_hits[1:]:
-        if ln <= pl + 1:
-            pl, t = ln, t + h
-        else:
-            spans.append({"start_line": sl, "end_line": pl, "hits": t})
-            sl, pl, t = ln, ln, h
-    spans.append({"start_line": sl, "end_line": pl, "hits": t})
-    return spans
+    return simulation_test_artifacts_module.line_hits_to_spans(hits)
 
 
 def _extract_coverage_spans(raw: Any) -> list[dict[str, Any]]:
-    spans = []
-
-    def _walk(item, fp, fw):
-        if isinstance(item, str):
-            n = _normalize_path_for_file_id(item)
-            if n:
-                spans.append(
-                    {
-                        "path": n,
-                        "start_line": 1,
-                        "end_line": 1,
-                        "symbol": "",
-                        "weight": fw,
-                    }
-                )
-        elif isinstance(item, list):
-            for s in item:
-                _walk(s, fp, fw)
-        elif isinstance(item, dict):
-            p = next(
-                (
-                    item.get(k)
-                    for k in ("file", "path", "source")
-                    if isinstance(item.get(k), str)
-                ),
-                fp,
-            )
-            w = _safe_float(
-                next(
-                    (item.get(k) for k in ("w", "weight") if item.get(k) is not None),
-                    fw,
-                )
-            )
-            for k in ("spans", "files", "coverage"):
-                if item.get(k):
-                    _walk(item[k], p, w)
-            if p and not any(item.get(k) for k in ("spans", "files", "coverage")):
-                spans.append(
-                    {
-                        "path": _normalize_path_for_file_id(p),
-                        "start_line": int(_safe_int(item.get("start_line", 1))),
-                        "end_line": int(_safe_int(item.get("end_line", 1))),
-                        "symbol": str(item.get("symbol", "")),
-                        "weight": w,
-                    }
-                )
-
-    _walk(raw, "", 1.0)
-    return spans
+    return simulation_test_artifacts_module.extract_coverage_spans(
+        raw,
+        normalize_path_for_file_id=_normalize_path_for_file_id,
+        safe_float=_safe_float,
+        safe_int=_safe_int,
+    )
 
 
 def _load_test_signal_artifacts(
     part_root: Path, vault_root: Path
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    f: list[dict[str, Any]] = []
-    for c in [
-        part_root / "world_state" / "failing_tests.txt",
-        part_root / "world_state" / "failing_tests.json",
-        part_root / ".opencode" / "runtime" / "failing_tests.json",
-        vault_root / ".opencode" / "runtime" / "failing_tests.json",
-    ]:
-        if c.exists():
-            rows = _load_test_failures_from_path(c)
-            if rows:
-                f = rows
-                break
-    cov: dict[str, Any] = {}
-    for c in [
-        part_root / "coverage" / "lcov.info",
-        part_root / "world_state" / "test_coverage.json",
-    ]:
-        if c.exists():
-            p = _load_test_coverage_from_path(c, part_root, vault_root)
-            if p:
-                cov = p
-                break
-    return f, cov
+    return simulation_test_artifacts_module.load_test_signal_artifacts(
+        part_root,
+        vault_root,
+        normalize_path_for_file_id=_normalize_path_for_file_id,
+        file_id_for_path=_file_id_for_path,
+        safe_float=_safe_float,
+        safe_int=_safe_int,
+        clamp01=_clamp01,
+    )
 
 
 def _build_logical_graph(catalog: dict[str, Any]) -> dict[str, Any]:
@@ -5944,16 +5722,95 @@ def _trim_weaver_interaction_state(
             _DAIMOI_CRAWL_SEARCH_STATE.pop(daimoi_id, None)
 
 
+def _weaver_interaction_budget_policy(
+    presence_dynamics: dict[str, Any] | None,
+) -> dict[str, Any]:
+    dynamics = presence_dynamics if isinstance(presence_dynamics, dict) else {}
+    resource_consumption = (
+        dynamics.get("resource_consumption", {})
+        if isinstance(dynamics.get("resource_consumption", {}), dict)
+        else {}
+    )
+    control_budget = (
+        resource_consumption.get("control_budget", {})
+        if isinstance(resource_consumption.get("control_budget", {}), dict)
+        else {}
+    )
+    mode = str(control_budget.get("mode", "") or "").strip().lower()
+    ratio = _clamp01(_safe_float(control_budget.get("ratio", 1.0), 1.0))
+    queue_ratio = _clamp01(
+        _safe_float(resource_consumption.get("queue_ratio", 0.0), 0.0)
+    )
+    compute_jobs_180s = max(0, _safe_int(dynamics.get("compute_jobs_180s", 0), 0))
+    cpu_sentinel_burn_active = bool(
+        resource_consumption.get("cpu_sentinel_burn_active", False)
+    )
+
+    cap = max(0, int(_SIMULATION_WEAVER_INTERACTION_PER_TICK_CAP))
+    cooldown_seconds = max(
+        0.2, float(_SIMULATION_WEAVER_INTERACTION_LOCAL_COOLDOWN_SECONDS)
+    )
+
+    if cpu_sentinel_burn_active or mode == "minimal" or ratio < 0.08:
+        cap = min(cap, 1)
+        cooldown_seconds = max(cooldown_seconds, 24.0)
+    elif mode == "reduced" or ratio < 0.16:
+        cap = min(cap, 2)
+        cooldown_seconds = max(cooldown_seconds, 14.0)
+    elif mode == "moderate" or ratio < 0.30:
+        cap = min(cap, 3)
+        cooldown_seconds = max(cooldown_seconds, 9.0)
+
+    if queue_ratio >= 0.90:
+        cap = min(cap, 1)
+        cooldown_seconds = max(cooldown_seconds, 24.0)
+    elif queue_ratio >= 0.75:
+        cap = min(cap, 2)
+        cooldown_seconds = max(cooldown_seconds, 12.0)
+
+    if compute_jobs_180s >= 48:
+        cap = min(cap, 1)
+        cooldown_seconds = max(cooldown_seconds, 16.0)
+    elif compute_jobs_180s >= 28:
+        cap = min(cap, 2)
+        cooldown_seconds = max(cooldown_seconds, 10.0)
+
+    return {
+        "mode": mode or "full",
+        "ratio": round(ratio, 6),
+        "queue_ratio": round(queue_ratio, 6),
+        "compute_jobs_180s": int(compute_jobs_180s),
+        "cpu_sentinel_burn_active": bool(cpu_sentinel_burn_active),
+        "per_tick_cap": max(0, int(cap)),
+        "local_cooldown_seconds": round(max(0.2, cooldown_seconds), 3),
+    }
+
+
 def _apply_crawler_weaver_interaction_triggers(
     *,
     field_particles: list[dict[str, Any]],
     crawler_graph: dict[str, Any] | None,
     now_seconds: float,
+    presence_dynamics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    budget_policy = _weaver_interaction_budget_policy(presence_dynamics)
+    per_tick_cap = max(0, _safe_int(budget_policy.get("per_tick_cap", 0), 0))
+    local_cooldown_seconds = max(
+        0.2,
+        _safe_float(
+            budget_policy.get("local_cooldown_seconds", 0.0),
+            _SIMULATION_WEAVER_INTERACTION_LOCAL_COOLDOWN_SECONDS,
+        ),
+    )
     summary: dict[str, Any] = {
         "record": "eta-mu.crawler-interactions.v1",
         "schema_version": "crawler.interactions.v1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "policy": {
+            "per_tick_cap": int(per_tick_cap),
+            "local_cooldown_seconds": round(local_cooldown_seconds, 3),
+            "budget": budget_policy,
+        },
         "attempted": 0,
         "accepted": 0,
         "enqueued": 0,
@@ -5965,7 +5822,7 @@ def _apply_crawler_weaver_interaction_triggers(
     }
     if not isinstance(field_particles, list):
         return summary
-    if _SIMULATION_WEAVER_INTERACTION_PER_TICK_CAP <= 0:
+    if per_tick_cap <= 0:
         return summary
 
     url_lookup = _crawler_url_lookup(crawler_graph)
@@ -6132,7 +5989,7 @@ def _apply_crawler_weaver_interaction_triggers(
         row["crawler_interaction_url"] = canonical_url
         row["crawler_interaction_url_id"] = url_id
 
-        if attempted_count >= _SIMULATION_WEAVER_INTERACTION_PER_TICK_CAP:
+        if attempted_count >= per_tick_cap:
             row["crawler_interaction_status"] = "rate_limited"
             row["crawler_interaction_reason"] = "per_tick_cap"
             summary["rate_limited"] = int(summary.get("rate_limited", 0)) + 1
@@ -6227,13 +6084,13 @@ def _apply_crawler_weaver_interaction_triggers(
         )
         accepted = enqueue_reason not in {"cooldown_active"}
 
-        local_cooldown_seconds = max(
-            _SIMULATION_WEAVER_INTERACTION_LOCAL_COOLDOWN_SECONDS,
+        local_cooldown_seconds_effective = max(
+            local_cooldown_seconds,
             cooldown_remaining_ms / 1000.0,
         )
         with _WEAVER_INTERACTION_STATE_LOCK:
             _WEAVER_INTERACTION_COOLDOWN_UNTIL[canonical_url] = (
-                now_monotonic + local_cooldown_seconds
+                now_monotonic + local_cooldown_seconds_effective
             )
 
         if accepted:
@@ -6408,338 +6265,79 @@ def _fetch_weaver_graph_payload(part_root: Path) -> dict[str, Any]:
 
 
 def _json_deep_clone(payload: dict[str, Any]) -> dict[str, Any]:
-    return json.loads(json.dumps(payload, ensure_ascii=False))
+    return simulation_file_graph_prep_module.json_deep_clone(payload)
 
 
 def _bounded_text(value: Any, *, limit: int) -> str:
-    text = str(value or "")
-    if len(text) <= limit:
-        return text
-    return text[:limit]
+    return simulation_file_graph_prep_module.bounded_text(value, limit=limit)
 
 
 def _compact_embed_layer_points(value: Any) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        return []
-    compact_rows: list[dict[str, Any]] = []
-    for row in value[:SIMULATION_FILE_GRAPH_EMBED_LAYER_POINT_CAP]:
-        if not isinstance(row, dict):
-            continue
-        embed_ids_raw = row.get("embed_ids", [])
-        embed_ids = (
-            [
-                str(embed_id).strip()
-                for embed_id in embed_ids_raw[:SIMULATION_FILE_GRAPH_EMBED_IDS_CAP]
-                if str(embed_id).strip()
-            ]
-            if isinstance(embed_ids_raw, list)
-            else []
-        )
-        compact_rows.append(
-            {
-                "id": str(row.get("id", "")).strip(),
-                "key": str(row.get("key", "")).strip(),
-                "x": round(_clamp01(_safe_float(row.get("x", 0.5), 0.5)), 5),
-                "y": round(_clamp01(_safe_float(row.get("y", 0.5), 0.5)), 5),
-                "hue": round(_safe_float(row.get("hue", 210.0), 210.0), 3),
-                "active": bool(row.get("active", True)),
-                "embed_ids": embed_ids,
-            }
-        )
-    return compact_rows
+    return simulation_file_graph_prep_module.compact_embed_layer_points(
+        value,
+        embed_layer_point_cap=SIMULATION_FILE_GRAPH_EMBED_LAYER_POINT_CAP,
+        embed_ids_cap=SIMULATION_FILE_GRAPH_EMBED_IDS_CAP,
+    )
 
 
 def _compact_file_graph_node(node: dict[str, Any]) -> dict[str, Any]:
-    compact: dict[str, Any] = {
-        key: node[key] for key in SIMULATION_FILE_GRAPH_NODE_FIELDS if key in node
-    }
-    compact["x"] = round(_clamp01(_safe_float(compact.get("x", 0.5), 0.5)), 6)
-    compact["y"] = round(_clamp01(_safe_float(compact.get("y", 0.5), 0.5)), 6)
-    compact["hue"] = int(round(_safe_float(compact.get("hue", 200.0), 200.0))) % 360
-    compact["importance"] = round(
-        _clamp01(_safe_float(compact.get("importance", 0.24), 0.24)),
-        6,
+    return simulation_file_graph_prep_module.compact_file_graph_node(
+        node,
+        node_fields=SIMULATION_FILE_GRAPH_NODE_FIELDS,
+        summary_chars=SIMULATION_FILE_GRAPH_SUMMARY_CHARS,
+        excerpt_chars=SIMULATION_FILE_GRAPH_EXCERPT_CHARS,
+        embed_link_cap=SIMULATION_FILE_GRAPH_EMBED_LINK_CAP,
+        embed_layer_point_cap=SIMULATION_FILE_GRAPH_EMBED_LAYER_POINT_CAP,
+        embed_ids_cap=SIMULATION_FILE_GRAPH_EMBED_IDS_CAP,
     )
-
-    compact["summary"] = _bounded_text(
-        compact.get("summary", ""),
-        limit=SIMULATION_FILE_GRAPH_SUMMARY_CHARS,
-    )
-    compact["text_excerpt"] = _bounded_text(
-        compact.get("text_excerpt", ""),
-        limit=SIMULATION_FILE_GRAPH_EXCERPT_CHARS,
-    )
-
-    tags_raw = compact.get("tags", [])
-    compact["tags"] = (
-        [str(tag).strip() for tag in tags_raw[:16] if str(tag).strip()]
-        if isinstance(tags_raw, list)
-        else []
-    )
-    labels_raw = compact.get("labels", [])
-    compact["labels"] = (
-        [str(label).strip() for label in labels_raw[:16] if str(label).strip()]
-        if isinstance(labels_raw, list)
-        else []
-    )
-
-    field_scores_raw = compact.get("field_scores", {})
-    if isinstance(field_scores_raw, dict):
-        compact["field_scores"] = {
-            str(key).strip(): round(_clamp01(_safe_float(value, 0.0)), 6)
-            for key, value in list(field_scores_raw.items())[:24]
-            if str(key).strip()
-        }
-    else:
-        compact["field_scores"] = {}
-
-    embedding_links_raw = compact.get("embedding_links", [])
-    compact["embedding_links"] = (
-        [
-            str(link).strip()
-            for link in embedding_links_raw[:SIMULATION_FILE_GRAPH_EMBED_LINK_CAP]
-            if str(link).strip()
-        ]
-        if isinstance(embedding_links_raw, list)
-        else []
-    )
-
-    compact["embed_layer_points"] = _compact_embed_layer_points(
-        compact.get("embed_layer_points", [])
-    )
-    compact["embed_layer_count"] = int(
-        _safe_int(compact.get("embed_layer_count", 0), 0)
-    )
-    return compact
 
 
 def _compact_file_graph_nodes(value: Any) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        return []
-    return [_compact_file_graph_node(node) for node in value if isinstance(node, dict)]
+    return simulation_file_graph_prep_module.compact_file_graph_nodes(
+        value,
+        node_fields=SIMULATION_FILE_GRAPH_NODE_FIELDS,
+        summary_chars=SIMULATION_FILE_GRAPH_SUMMARY_CHARS,
+        excerpt_chars=SIMULATION_FILE_GRAPH_EXCERPT_CHARS,
+        embed_link_cap=SIMULATION_FILE_GRAPH_EMBED_LINK_CAP,
+        embed_layer_point_cap=SIMULATION_FILE_GRAPH_EMBED_LAYER_POINT_CAP,
+        embed_ids_cap=SIMULATION_FILE_GRAPH_EMBED_IDS_CAP,
+    )
 
 
 def _compact_file_graph_render_node(node: dict[str, Any]) -> dict[str, Any]:
-    compact = {
-        key: node[key]
-        for key in SIMULATION_FILE_GRAPH_RENDER_NODE_FIELDS
-        if key in node
-    }
-    compact["x"] = round(_clamp01(_safe_float(compact.get("x", 0.5), 0.5)), 6)
-    compact["y"] = round(_clamp01(_safe_float(compact.get("y", 0.5), 0.5)), 6)
-    compact["hue"] = int(round(_safe_float(compact.get("hue", 200.0), 200.0))) % 360
-    compact["importance"] = round(
-        _clamp01(_safe_float(compact.get("importance", 0.24), 0.24)),
-        6,
+    return simulation_file_graph_prep_module.compact_file_graph_render_node(
+        node,
+        render_node_fields=SIMULATION_FILE_GRAPH_RENDER_NODE_FIELDS,
     )
-    compact["embed_layer_count"] = int(
-        _safe_int(compact.get("embed_layer_count", 0), 0)
-    )
-    return compact
 
 
 def _compact_file_graph_for_simulation(file_graph: dict[str, Any]) -> dict[str, Any]:
-    compact_file_nodes = _compact_file_graph_nodes(file_graph.get("file_nodes", []))
-    compact_field_nodes = _compact_file_graph_nodes(file_graph.get("field_nodes", []))
-    compact_tag_nodes = _compact_file_graph_nodes(file_graph.get("tag_nodes", []))
-    file_node_ids = {
-        str(node.get("id", "")).strip()
-        for node in compact_file_nodes
-        if isinstance(node, dict) and str(node.get("id", "")).strip()
-    }
-
-    raw_nodes = file_graph.get("nodes", [])
-    compact_non_file_nodes: list[dict[str, Any]] = []
-    non_file_seen_ids: set[str] = set()
-    for node in raw_nodes:
-        if not isinstance(node, dict):
-            continue
-        node_type = str(node.get("node_type", "")).strip().lower()
-        node_id = str(node.get("id", "")).strip()
-        if node_type == "file":
-            continue
-        if not node_type and node_id and node_id in file_node_ids:
-            continue
-        compact_node = _compact_file_graph_render_node(node)
-        compact_node_id = str(compact_node.get("id", "")).strip()
-        if compact_node_id and compact_node_id in non_file_seen_ids:
-            continue
-        if compact_node_id:
-            non_file_seen_ids.add(compact_node_id)
-        compact_non_file_nodes.append(compact_node)
-
-    if not compact_non_file_nodes:
-        for node in [*compact_field_nodes, *compact_tag_nodes]:
-            compact_node = _compact_file_graph_render_node(node)
-            compact_node_id = str(compact_node.get("id", "")).strip()
-            if compact_node_id and compact_node_id in non_file_seen_ids:
-                continue
-            if compact_node_id:
-                non_file_seen_ids.add(compact_node_id)
-            compact_non_file_nodes.append(compact_node)
-
-    compact_file_nodes_for_render = [
-        _compact_file_graph_render_node(node) for node in compact_file_nodes
-    ]
-    compact_nodes = [*compact_non_file_nodes, *compact_file_nodes_for_render]
-
-    edges_raw = file_graph.get("edges", [])
-    compact_edges = [
-        {
-            "id": str(edge.get("id", "")).strip(),
-            "source": str(edge.get("source", "")).strip(),
-            "target": str(edge.get("target", "")).strip(),
-            "field": str(edge.get("field", "")).strip(),
-            "weight": round(_clamp01(_safe_float(edge.get("weight", 0.42), 0.42)), 6),
-            "kind": str(edge.get("kind", "relates")).strip().lower() or "relates",
-        }
-        for edge in edges_raw
-        if isinstance(edge, dict)
-    ]
-    dynamic_edge_cap = max(
-        384,
-        min(
-            SIMULATION_FILE_GRAPH_EDGE_RESPONSE_CAP,
-            max(
-                384,
-                int(
-                    round(
-                        max(1, len(compact_file_nodes))
-                        * SIMULATION_FILE_GRAPH_EDGE_RESPONSE_FACTOR
-                    )
-                ),
-            ),
-        ),
+    return simulation_file_graph_prep_module.compact_file_graph_for_simulation(
+        file_graph,
+        node_fields=SIMULATION_FILE_GRAPH_NODE_FIELDS,
+        render_node_fields=SIMULATION_FILE_GRAPH_RENDER_NODE_FIELDS,
+        summary_chars=SIMULATION_FILE_GRAPH_SUMMARY_CHARS,
+        excerpt_chars=SIMULATION_FILE_GRAPH_EXCERPT_CHARS,
+        embed_link_cap=SIMULATION_FILE_GRAPH_EMBED_LINK_CAP,
+        embed_layer_point_cap=SIMULATION_FILE_GRAPH_EMBED_LAYER_POINT_CAP,
+        embed_ids_cap=SIMULATION_FILE_GRAPH_EMBED_IDS_CAP,
+        edge_response_cap=SIMULATION_FILE_GRAPH_EDGE_RESPONSE_CAP,
+        edge_response_factor=SIMULATION_FILE_GRAPH_EDGE_RESPONSE_FACTOR,
+        file_graph_record=ETA_MU_FILE_GRAPH_RECORD,
     )
-    edge_count_before_projection = len(compact_edges)
-
-    compact_stats_raw = file_graph.get("stats", {})
-    compact_stats = (
-        dict(compact_stats_raw) if isinstance(compact_stats_raw, dict) else {}
-    )
-    compact_stats["file_count"] = int(len(compact_file_nodes))
-    compact_stats["edge_count"] = int(len(compact_edges))
-    compact_stats["edge_count_before_projection"] = int(edge_count_before_projection)
-    compact_stats["edge_response_cap"] = int(dynamic_edge_cap)
-
-    return {
-        "record": str(file_graph.get("record", ETA_MU_FILE_GRAPH_RECORD)),
-        "generated_at": str(
-            file_graph.get("generated_at", datetime.now(timezone.utc).isoformat())
-        ),
-        "inbox": (
-            dict(file_graph.get("inbox", {}))
-            if isinstance(file_graph.get("inbox", {}), dict)
-            else {}
-        ),
-        "embed_layers": [
-            dict(row)
-            for row in file_graph.get("embed_layers", [])
-            if isinstance(row, dict)
-        ],
-        "organizer_presence": (
-            dict(file_graph.get("organizer_presence", {}))
-            if isinstance(file_graph.get("organizer_presence", {}), dict)
-            else {}
-        ),
-        "concept_presences": [
-            dict(row)
-            for row in file_graph.get("concept_presences", [])
-            if isinstance(row, dict)
-        ],
-        "field_nodes": compact_field_nodes,
-        "tag_nodes": compact_tag_nodes,
-        "file_nodes": compact_file_nodes,
-        "nodes": compact_nodes,
-        "edges": compact_edges,
-        "stats": compact_stats,
-    }
 
 
 def _file_graph_layout_cache_key(file_graph: dict[str, Any]) -> str:
-    file_nodes = file_graph.get("file_nodes", [])
-    edges = file_graph.get("edges", [])
-    file_count = len(file_nodes) if isinstance(file_nodes, list) else 0
-    edge_count = len(edges) if isinstance(edges, list) else 0
-
-    digest = hashlib.sha1()
-    if isinstance(file_nodes, list):
-        for node in file_nodes:
-            if not isinstance(node, dict):
-                continue
-            node_id = str(node.get("id", "")).strip()
-            layer_count = _safe_int(node.get("embed_layer_count", 0), 0)
-            has_collection = (
-                "1" if str(node.get("vecstore_collection", "")).strip() else "0"
-            )
-            embedding_links = node.get("embedding_links", [])
-            link_count = (
-                len(embedding_links) if isinstance(embedding_links, list) else 0
-            )
-            importance = round(
-                _clamp01(_safe_float(node.get("importance", 0.0), 0.0)), 4
-            )
-            usage_path = _file_node_usage_path(node)
-            dominant_field = str(node.get("dominant_field", "")).strip()
-            kind = str(node.get("kind", "")).strip().lower()
-            summary_text = _bounded_text(
-                node.get("summary", ""),
-                limit=SIMULATION_FILE_GRAPH_SUMMARY_CHARS,
-            )
-            excerpt_text = _bounded_text(
-                node.get("text_excerpt", ""),
-                limit=SIMULATION_FILE_GRAPH_EXCERPT_CHARS,
-            )
-            text_signature = hashlib.sha1(
-                f"{summary_text}|{excerpt_text}".encode("utf-8")
-            ).hexdigest()[:12]
-            digest.update(
-                f"{node_id}|{usage_path}|{dominant_field}|{kind}|{layer_count}|{has_collection}|{link_count}|{importance}|{text_signature}".encode(
-                    "utf-8"
-                )
-            )
-    if isinstance(edges, list):
-        for edge in edges[:256]:
-            if not isinstance(edge, dict):
-                continue
-            source_id = str(edge.get("source", "")).strip()
-            target_id = str(edge.get("target", "")).strip()
-            kind = str(edge.get("kind", "")).strip().lower()
-            weight = round(_clamp01(_safe_float(edge.get("weight", 0.0), 0.0)), 4)
-            digest.update(f"{source_id}|{target_id}|{kind}|{weight}".encode("utf-8"))
-    return f"{file_count}|{edge_count}|{digest.hexdigest()[:24]}"
+    return simulation_file_graph_prep_module.file_graph_layout_cache_key(
+        file_graph,
+        file_node_usage_path=_file_node_usage_path,
+        summary_chars=SIMULATION_FILE_GRAPH_SUMMARY_CHARS,
+        excerpt_chars=SIMULATION_FILE_GRAPH_EXCERPT_CHARS,
+    )
 
 
 def _clone_prepared_file_graph(prepared_graph: dict[str, Any]) -> dict[str, Any]:
-    clone = dict(prepared_graph)
-    clone["inbox"] = (
-        dict(prepared_graph.get("inbox", {}))
-        if isinstance(prepared_graph.get("inbox", {}), dict)
-        else {}
-    )
-    clone["stats"] = (
-        dict(prepared_graph.get("stats", {}))
-        if isinstance(prepared_graph.get("stats", {}), dict)
-        else {}
-    )
-    clone["organizer_presence"] = (
-        dict(prepared_graph.get("organizer_presence", {}))
-        if isinstance(prepared_graph.get("organizer_presence", {}), dict)
-        else {}
-    )
-    for key in (
-        "embed_layers",
-        "concept_presences",
-        "field_nodes",
-        "tag_nodes",
-        "file_nodes",
-        "nodes",
-        "edges",
-        "embedding_particles",
-    ):
-        value = prepared_graph.get(key, [])
-        clone[key] = list(value) if isinstance(value, list) else []
-    return clone
+    return simulation_file_graph_prep_module.clone_prepared_file_graph(prepared_graph)
 
 
 def _prepare_file_graph_for_simulation(
@@ -6784,83 +6382,25 @@ def _prepare_file_graph_for_simulation(
 
 
 def _clean_tokens(text: str) -> list[str]:
-    return [token for token in re.findall(r"[A-Za-z0-9_-]+", text.lower()) if token]
+    return simulation_document_layout_module.clean_tokens(text)
 
 
 def _document_layout_range_from_importance(importance: float) -> float:
-    normalized = _clamp01(_safe_float(importance, 0.2))
-    return 0.018 + (normalized * 0.055)
+    return simulation_document_layout_module.document_layout_range_from_importance(
+        importance
+    )
 
 
 def _document_layout_tokens(node: dict[str, Any]) -> list[str]:
-    values: list[str] = []
-    tags = node.get("tags", [])
-    labels = node.get("labels", [])
-    if isinstance(tags, list):
-        values.extend(str(tag) for tag in tags)
-    if isinstance(labels, list):
-        values.extend(str(label) for label in labels)
-    values.extend(
-        [
-            _bounded_text(
-                node.get("summary", ""),
-                limit=SIMULATION_FILE_GRAPH_SUMMARY_CHARS,
-            ),
-            _bounded_text(
-                node.get("text_excerpt", ""),
-                limit=SIMULATION_FILE_GRAPH_EXCERPT_CHARS,
-            ),
-            _bounded_text(node.get("source_rel_path", ""), limit=160),
-            _bounded_text(node.get("archived_rel_path", ""), limit=160),
-            _bounded_text(node.get("archive_rel_path", ""), limit=160),
-            _bounded_text(node.get("name", ""), limit=160),
-            _bounded_text(node.get("kind", ""), limit=64),
-            _bounded_text(node.get("dominant_field", ""), limit=32),
-            _bounded_text(node.get("vecstore_collection", ""), limit=96),
-        ]
+    return simulation_document_layout_module.document_layout_tokens(
+        node,
+        summary_chars=SIMULATION_FILE_GRAPH_SUMMARY_CHARS,
+        excerpt_chars=SIMULATION_FILE_GRAPH_EXCERPT_CHARS,
     )
-
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        for token in _clean_tokens(value):
-            if len(token) < 3:
-                continue
-            if token in seen:
-                continue
-            seen.add(token)
-            deduped.append(token)
-            if len(deduped) >= 80:
-                return deduped
-    return deduped
 
 
 def _document_layout_text_density(node: dict[str, Any], tokens: list[str]) -> float:
-    token_density = min(1.0, len(tokens) / 42.0)
-    summary_len = len(str(node.get("summary", "")).strip())
-    excerpt_len = len(str(node.get("text_excerpt", "")).strip())
-    label_len = len(str(node.get("name", "")).strip()) + len(
-        str(node.get("label", "")).strip()
-    )
-    char_density = min(1.0, (summary_len + excerpt_len + label_len) / 760.0)
-
-    tags = node.get("tags", [])
-    labels = node.get("labels", [])
-    embedding_links = node.get("embedding_links", [])
-    tag_count = len(tags) if isinstance(tags, list) else 0
-    label_count = len(labels) if isinstance(labels, list) else 0
-    link_count = len(embedding_links) if isinstance(embedding_links, list) else 0
-    layer_count = _safe_int(node.get("embed_layer_count", 0), 0)
-    structural = min(
-        1.0,
-        (tag_count * 0.08)
-        + (label_count * 0.05)
-        + (layer_count * 0.22)
-        + (link_count * 0.04),
-    )
-
-    density = 0.2 + (token_density * 0.42) + (char_density * 0.26) + (structural * 0.36)
-    return max(0.12, min(1.9, density))
+    return simulation_document_layout_module.document_layout_text_density(node, tokens)
 
 
 def _document_layout_semantic_vector(
@@ -6869,98 +6409,25 @@ def _document_layout_semantic_vector(
     *,
     dimensions: int = 8,
 ) -> list[float]:
-    if dimensions <= 0:
-        return []
-
-    raw_tokens = list(tokens)
-    if not raw_tokens:
-        raw_tokens = _clean_tokens(
-            " ".join(
-                [
-                    str(node.get("dominant_field", "")),
-                    str(node.get("kind", "")),
-                    str(node.get("vecstore_collection", "")),
-                    str(node.get("name", "")),
-                    str(node.get("label", "")),
-                ]
-            )
-        )
-    if not raw_tokens:
-        raw_tokens = ["eta", "mu", "field"]
-
-    accum = [0.0 for _ in range(dimensions)]
-    for token_index, token in enumerate(raw_tokens[:96]):
-        weight = 0.8 + min(1.6, len(token) / 6.5)
-        digest = hashlib.sha1(
-            f"{token}|{token_index}|{dimensions}".encode("utf-8")
-        ).digest()
-        for axis in range(dimensions):
-            byte = digest[axis % len(digest)]
-            signed = (float(byte) / 127.5) - 1.0
-            accum[axis] += signed * weight
-
-    field_token = str(node.get("dominant_field", "")).strip()
-    kind_token = str(node.get("kind", "")).strip().lower()
-    for marker, gain in ((field_token, 0.36), (kind_token, 0.22)):
-        if not marker:
-            continue
-        digest = hashlib.sha1(f"marker:{marker}".encode("utf-8")).digest()
-        for axis in range(dimensions):
-            byte = digest[(axis * 3) % len(digest)]
-            signed = (float(byte) / 127.5) - 1.0
-            accum[axis] += signed * gain
-
-    magnitude = math.sqrt(sum(value * value for value in accum))
-    if magnitude <= 1e-8:
-        fallback = [0.0 for _ in range(dimensions)]
-        fallback[0] = 1.0
-        return fallback
-    return [value / magnitude for value in accum]
+    return simulation_document_layout_module.document_layout_semantic_vector(
+        node,
+        tokens,
+        dimensions=dimensions,
+    )
 
 
 def _semantic_vector_blend(
     base: list[float], target: list[float], blend: float
 ) -> list[float]:
-    if not base and not target:
-        return []
-    if not base:
-        return list(target)
-    if not target:
-        return list(base)
-
-    mix = max(0.0, min(1.0, _safe_float(blend, 0.5)))
-    size = min(len(base), len(target))
-    if size <= 0:
-        return list(base)
-
-    merged = [(base[i] * (1.0 - mix)) + (target[i] * mix) for i in range(size)]
-    magnitude = math.sqrt(sum(value * value for value in merged))
-    if magnitude <= 1e-8:
-        return [0.0 for _ in range(size)]
-    return [value / magnitude for value in merged]
+    return simulation_document_layout_module.semantic_vector_blend(base, target, blend)
 
 
 def _semantic_vector_cosine(left: list[float], right: list[float]) -> float:
-    size = min(len(left), len(right))
-    if size <= 0:
-        return 0.0
-    dot = sum(left[i] * right[i] for i in range(size))
-    left_mag = sum(left[i] * left[i] for i in range(size))
-    right_mag = sum(right[i] * right[i] for i in range(size))
-    if left_mag <= 1e-12 or right_mag <= 1e-12:
-        return 0.0
-    cosine = dot / math.sqrt(left_mag * right_mag)
-    return max(-1.0, min(1.0, cosine))
+    return simulation_document_layout_module.semantic_vector_cosine(left, right)
 
 
 def _semantic_vector_hue(vector: list[float]) -> float:
-    if not vector:
-        return 210.0
-    vx = _safe_float(vector[0], 0.0)
-    vy = _safe_float(vector[1], 0.0) if len(vector) > 1 else 0.0
-    if abs(vx) <= 1e-8 and abs(vy) <= 1e-8:
-        return 210.0
-    return (math.degrees(math.atan2(vy, vx)) + 360.0) % 360.0
+    return simulation_document_layout_module.semantic_vector_hue(vector)
 
 
 def _document_layout_similarity(
@@ -6969,593 +6436,29 @@ def _document_layout_similarity(
     left_tokens: list[str],
     right_tokens: list[str],
 ) -> float:
-    left_set = set(left_tokens)
-    right_set = set(right_tokens)
-    overlap = len(left_set.intersection(right_set))
-    union = max(1, len(left_set) + len(right_set) - overlap)
-    token_jaccard = overlap / float(union)
-
-    left_field = str(left_node.get("dominant_field", "")).strip()
-    right_field = str(right_node.get("dominant_field", "")).strip()
-
-    # Strong attraction for same field
-    same_field = 1.0 if left_field and left_field == right_field else 0.0
-
-    # REPULSION: Strong penalty for unrelated fields
-    field_repulsion = 0.0
-    if left_field and right_field and left_field != right_field:
-        # Base repulsion for any different fields
-        field_repulsion = -0.35
-
-        # Enhanced repulsion for "opposite" philosophical concepts
-        opposite_pairs = [
-            ("f9", "f10"),  # good vs evil
-            ("f10", "f9"),  # evil vs good
-            ("f11", "f12"),  # right vs wrong
-            ("f12", "f11"),  # wrong vs right
-            ("f13", "f14"),  # dead vs living
-            ("f14", "f13"),  # living vs dead
-        ]
-        if (left_field, right_field) in opposite_pairs:
-            field_repulsion = -0.62  # Strong repulsion for opposites
-
-    same_kind = (
-        1.0
-        if str(left_node.get("kind", "")).strip().lower()
-        and str(left_node.get("kind", "")).strip().lower()
-        == str(right_node.get("kind", "")).strip().lower()
-        else 0.0
+    return simulation_document_layout_module.document_layout_similarity(
+        left_node,
+        right_node,
+        left_tokens,
+        right_tokens,
     )
-    left_collection = str(left_node.get("vecstore_collection", "")).strip()
-    right_collection = str(right_node.get("vecstore_collection", "")).strip()
-    same_collection = (
-        1.0 if left_collection and left_collection == right_collection else 0.0
-    )
-
-    score = (
-        (token_jaccard * 0.78)
-        + (same_field * 0.12)
-        + (same_kind * 0.06)
-        + (same_collection * 0.04)
-        + field_repulsion  # Add repulsion penalty
-    )
-
-    # Increased penalty threshold for unrelated nodes
-    if token_jaccard < 0.05 and same_field <= 0.0 and same_kind <= 0.0:
-        score *= 0.25  # Reduced from 0.45 for stronger separation
-
-    return _clamp01(score)
 
 
 def _document_layout_is_embedded(node: dict[str, Any]) -> bool:
-    if _safe_int(node.get("embed_layer_count", 0), 0) > 0:
-        return True
-
-    layer_points = node.get("embed_layer_points", [])
-    if isinstance(layer_points, list):
-        for row in layer_points:
-            if not isinstance(row, dict):
-                continue
-            if bool(row.get("active", True)):
-                return True
-
-    if str(node.get("vecstore_collection", "")).strip():
-        return True
-
-    embedding_links = node.get("embedding_links", [])
-    if isinstance(embedding_links, list) and len(embedding_links) > 0:
-        return True
-
-    return False
+    return simulation_document_layout_module.document_layout_is_embedded(node)
 
 
 def _apply_file_graph_document_similarity_layout(
     file_graph: dict[str, Any], *, now: float | None = None
 ) -> list[dict[str, float]]:
-    file_nodes_raw = file_graph.get("file_nodes", [])
-    if not isinstance(file_nodes_raw, list) or len(file_nodes_raw) <= 0:
-        file_graph["embedding_particles"] = []
-        return []
-
-    entries: list[dict[str, Any]] = []
-    for index, node in enumerate(file_nodes_raw):
-        if not isinstance(node, dict):
-            continue
-        node_id = str(node.get("id", "")).strip() or f"file:{index}"
-        x = _clamp01(_safe_float(node.get("x", 0.5), 0.5))
-        y = _clamp01(_safe_float(node.get("y", 0.5), 0.5))
-        importance = _clamp01(_safe_float(node.get("importance", 0.2), 0.2))
-        local_range = _document_layout_range_from_importance(importance)
-        tokens = _document_layout_tokens(node)
-        semantic_vector = _document_layout_semantic_vector(node, tokens)
-        text_density = _document_layout_text_density(node, tokens)
-        entries.append(
-            {
-                "id": node_id,
-                "index": len(entries),
-                "node": node,
-                "x": x,
-                "y": y,
-                "importance": importance,
-                "range": local_range,
-                "embedded": _document_layout_is_embedded(node),
-                "tokens": tokens,
-                "vector": semantic_vector,
-                "text_density": text_density,
-            }
+    return (
+        simulation_embedding_layout_module.apply_file_graph_document_similarity_layout(
+            file_graph,
+            now=now,
+            summary_chars=SIMULATION_FILE_GRAPH_SUMMARY_CHARS,
+            excerpt_chars=SIMULATION_FILE_GRAPH_EXCERPT_CHARS,
         )
-
-    if not entries:
-        file_graph["embedding_particles"] = []
-        return []
-
-    cell_size = 0.08
-    grid: dict[tuple[int, int], list[int]] = {}
-    for index, entry in enumerate(entries):
-        gx = int(entry["x"] / cell_size)
-        gy = int(entry["y"] / cell_size)
-        grid.setdefault((gx, gy), []).append(index)
-
-    offsets: list[list[float]] = [[0.0, 0.0] for _ in entries]
-    if len(entries) > 1:
-        for index, left in enumerate(entries):
-            gx = int(left["x"] / cell_size)
-            gy = int(left["y"] / cell_size)
-            radius_cells = max(1, int(math.ceil(left["range"] / cell_size)))
-
-            for oy in range(-radius_cells, radius_cells + 1):
-                for ox in range(-radius_cells, radius_cells + 1):
-                    bucket = grid.get((gx + ox, gy + oy), [])
-                    for other_index in bucket:
-                        if other_index <= index:
-                            continue
-                        right = entries[other_index]
-                        pair_range = max(left["range"], right["range"])
-                        dx = right["x"] - left["x"]
-                        dy = right["y"] - left["y"]
-                        distance = math.sqrt((dx * dx) + (dy * dy))
-                        if distance <= 1e-8 or distance > pair_range:
-                            continue
-
-                        similarity = _document_layout_similarity(
-                            left["node"],
-                            right["node"],
-                            left.get("tokens", []),
-                            right.get("tokens", []),
-                        )
-                        semantic_signed = max(
-                            -1.0, min(1.0, (similarity - 0.52) / 0.48)
-                        )
-                        mixed_embedding = bool(left["embedded"]) != bool(
-                            right["embedded"]
-                        )
-                        signed_similarity = (
-                            -max(0.46, abs(semantic_signed) * 0.72)
-                            if mixed_embedding
-                            else semantic_signed
-                        )
-                        if abs(signed_similarity) < 0.22:
-                            continue
-
-                        falloff = _clamp01(1.0 - (distance / max(pair_range, 1e-6)))
-                        importance_mix = (
-                            left["importance"] + right["importance"]
-                        ) * 0.5
-                        density_mix = (
-                            _safe_float(left.get("text_density"), 0.45)
-                            + _safe_float(right.get("text_density"), 0.45)
-                        ) * 0.5
-                        strength = (
-                            falloff
-                            * abs(signed_similarity)
-                            * (1.2 if mixed_embedding else 1.0)
-                            * (0.00145 + (importance_mix * 0.0022))
-                            * (0.66 + (density_mix * 0.3))
-                        )
-                        if strength <= 0.0:
-                            continue
-
-                        ux = dx / distance
-                        uy = dy / distance
-                        direction = 1.0 if signed_similarity >= 0.0 else -1.0
-                        fx = ux * strength * direction
-                        fy = uy * strength * direction
-
-                        offsets[index][0] += fx
-                        offsets[index][1] += fy
-                        offsets[other_index][0] -= fx
-                        offsets[other_index][1] -= fy
-
-    embedding_particle_points: list[dict[str, float]] = []
-    embedding_particle_nodes: list[dict[str, float | str]] = []
-    embedded_entries = [entry for entry in entries if bool(entry.get("embedded"))]
-    if embedded_entries:
-        now_seconds = _safe_float(now, time.time()) if now is not None else time.time()
-        particle_count = max(6, min(42, int(round(len(embedded_entries) * 1.8))))
-        particles: list[dict[str, Any]] = []
-        source_weights = [
-            max(0.08, _safe_float(entry.get("text_density", 0.45), 0.45))
-            for entry in embedded_entries
-        ]
-        source_weight_total = sum(source_weights)
-
-        for index in range(particle_count):
-            source = embedded_entries[index % len(embedded_entries)]
-            if source_weight_total > 1e-8 and len(embedded_entries) > 1:
-                ratio_slot = (float(index) + 0.5) / float(max(1, particle_count))
-                cumulative = 0.0
-                for entry, weight in zip(embedded_entries, source_weights):
-                    cumulative += weight / source_weight_total
-                    if ratio_slot <= cumulative:
-                        source = entry
-                        break
-            seed = f"{source['id']}|particle|{index}"
-            scatter = 0.006 + (
-                _stable_ratio(seed, 31)
-                * max(0.018, _safe_float(source["range"], 0.03) * 0.64)
-            )
-            seed_x = (_stable_ratio(seed, 47) * 2.0) - 1.0
-            seed_y = (_stable_ratio(seed, 53) * 2.0) - 1.0
-            x = _clamp01(_safe_float(source["x"], 0.5) + (seed_x * scatter))
-            y = _clamp01(_safe_float(source["y"], 0.5) + (seed_y * scatter * 0.82))
-            particles.append(
-                {
-                    "id": f"embed-particle:{index}",
-                    "x": x,
-                    "y": y,
-                    "vx": 0.0,
-                    "vy": 0.0,
-                    "vector": list(source.get("vector", [])),
-                    "text_density": _safe_float(source.get("text_density"), 0.45),
-                    "focus_x": x,
-                    "focus_y": y,
-                    "cohesion": 0.0,
-                    "drift": (_stable_ratio(seed, 41) * 2.0) - 1.0,
-                }
-            )
-
-        for _ in range(4):
-            particle_forces: list[list[float]] = [[0.0, 0.0] for _ in particles]
-
-            for particle_index, particle in enumerate(particles):
-                influence_total = 0.0
-                avg_x = 0.0
-                avg_y = 0.0
-                avg_vector = [0.0 for _ in particle.get("vector", [])]
-                doc_radius = 0.22
-
-                for entry in embedded_entries:
-                    dx = _safe_float(entry["x"], 0.5) - _safe_float(particle["x"], 0.5)
-                    dy = _safe_float(entry["y"], 0.5) - _safe_float(particle["y"], 0.5)
-                    distance = math.sqrt((dx * dx) + (dy * dy))
-                    if distance > doc_radius:
-                        continue
-                    if distance <= 1e-8:
-                        jitter = (
-                            _stable_ratio(
-                                f"{particle['id']}|{entry['id']}|jitter",
-                                particle_index + 1,
-                            )
-                            - 0.5
-                        ) * 0.0012
-                        dx += jitter
-                        dy -= jitter
-                        distance = max(1e-6, math.sqrt((dx * dx) + (dy * dy)))
-
-                    similarity = _semantic_vector_cosine(
-                        particle.get("vector", []),
-                        entry.get("vector", []),
-                    )
-                    distance_weight = _clamp01(1.0 - (distance / doc_radius))
-                    density_weight = 0.24 + (
-                        _safe_float(entry.get("text_density"), 0.45) * 0.92
-                    )
-                    similarity_weight = 0.28 + ((similarity + 1.0) * 0.36)
-                    influence_weight = (
-                        distance_weight
-                        * distance_weight
-                        * density_weight
-                        * similarity_weight
-                    )
-                    if influence_weight <= 0.0:
-                        continue
-
-                    influence_total += influence_weight
-                    avg_x += _safe_float(entry["x"], 0.5) * influence_weight
-                    avg_y += _safe_float(entry["y"], 0.5) * influence_weight
-                    entry_vector = entry.get("vector", [])
-                    for axis in range(min(len(avg_vector), len(entry_vector))):
-                        avg_vector[axis] += (
-                            _safe_float(entry_vector[axis], 0.0) * influence_weight
-                        )
-
-                    direction = 1.0 if similarity >= 0.0 else -1.0
-                    force_strength = (
-                        (0.00072 + (abs(similarity) * 0.0024))
-                        * distance_weight
-                        * density_weight
-                    )
-                    particle_forces[particle_index][0] += (
-                        (dx / distance) * force_strength * direction
-                    )
-                    particle_forces[particle_index][1] += (
-                        (dy / distance) * force_strength * direction
-                    )
-
-                if influence_total > 0.0:
-                    target_x = avg_x / influence_total
-                    target_y = avg_y / influence_total
-                    particle["focus_x"] = target_x
-                    particle["focus_y"] = target_y
-                    particle["cohesion"] = _clamp01(
-                        (_safe_float(particle.get("cohesion", 0.0), 0.0) * 0.55)
-                        + min(1.0, influence_total * 0.48)
-                    )
-                    pull_strength = min(0.0052, 0.0012 + (influence_total * 0.0019))
-                    particle_forces[particle_index][0] += (
-                        target_x - _safe_float(particle["x"], 0.5)
-                    ) * pull_strength
-                    particle_forces[particle_index][1] += (
-                        target_y - _safe_float(particle["y"], 0.5)
-                    ) * pull_strength
-
-                    if avg_vector:
-                        avg_magnitude = math.sqrt(
-                            sum(value * value for value in avg_vector)
-                        )
-                        if avg_magnitude > 1e-8:
-                            normalized_avg = [
-                                value / avg_magnitude for value in avg_vector
-                            ]
-                            particle["vector"] = _semantic_vector_blend(
-                                list(particle.get("vector", [])),
-                                normalized_avg,
-                                0.26,
-                            )
-                else:
-                    particle["cohesion"] = _clamp01(
-                        _safe_float(particle.get("cohesion", 0.0), 0.0) * 0.86
-                    )
-
-            for left_index in range(len(particles)):
-                left = particles[left_index]
-                for right_index in range(left_index + 1, len(particles)):
-                    right = particles[right_index]
-                    dx = _safe_float(right["x"], 0.5) - _safe_float(left["x"], 0.5)
-                    dy = _safe_float(right["y"], 0.5) - _safe_float(left["y"], 0.5)
-                    distance = math.sqrt((dx * dx) + (dy * dy))
-                    if distance > 0.2:
-                        continue
-                    if distance <= 1e-8:
-                        jitter = (
-                            _stable_ratio(
-                                f"{left['id']}|{right['id']}|pair", left_index + 3
-                            )
-                            - 0.5
-                        ) * 0.001
-                        dx += jitter
-                        dy -= jitter
-                        distance = max(1e-6, math.sqrt((dx * dx) + (dy * dy)))
-
-                    similarity = _semantic_vector_cosine(
-                        left.get("vector", []),
-                        right.get("vector", []),
-                    )
-                    falloff = _clamp01(1.0 - (distance / 0.2))
-                    pair_strength = (0.00044 + (abs(similarity) * 0.00186)) * falloff
-                    direction = 1.0 if similarity >= 0.0 else -1.0
-                    fx = (dx / distance) * pair_strength * direction
-                    fy = (dy / distance) * pair_strength * direction
-
-                    particle_forces[left_index][0] += fx
-                    particle_forces[left_index][1] += fy
-                    particle_forces[right_index][0] -= fx
-                    particle_forces[right_index][1] -= fy
-
-            for particle_index, particle in enumerate(particles):
-                drift_phase = (
-                    now_seconds
-                    * (0.62 + abs(_safe_float(particle.get("drift", 0.0), 0.0)) * 0.42)
-                ) + (particle_index * 0.41)
-                particle_forces[particle_index][0] += math.cos(drift_phase) * 0.00021
-                particle_forces[particle_index][1] += math.sin(drift_phase) * 0.00017
-
-                particle_x = _safe_float(particle.get("x", 0.5), 0.5)
-                particle_y = _safe_float(particle.get("y", 0.5), 0.5)
-                simplex_amp = 0.00011 + (
-                    abs(_safe_float(particle.get("drift", 0.0), 0.0)) * 0.00017
-                )
-                simplex_phase = now_seconds * 0.31
-                simplex_x = _simplex_noise_2d(
-                    (particle_x * 4.6) + (particle_index * 0.19) + simplex_phase,
-                    (particle_y * 4.6) + (simplex_phase * 0.71),
-                    seed=particle_index + 17,
-                )
-                simplex_y = _simplex_noise_2d(
-                    (particle_x * 4.6) + 17.0 + (simplex_phase * 0.59),
-                    (particle_y * 4.6) + 11.0 + simplex_phase,
-                    seed=particle_index + 29,
-                )
-                particle_forces[particle_index][0] += simplex_x * simplex_amp
-                particle_forces[particle_index][1] += simplex_y * simplex_amp
-
-                vx = (
-                    _safe_float(particle.get("vx", 0.0), 0.0)
-                    + particle_forces[particle_index][0]
-                ) * 0.84
-                vy = (
-                    _safe_float(particle.get("vy", 0.0), 0.0)
-                    + particle_forces[particle_index][1]
-                ) * 0.84
-                speed = math.sqrt((vx * vx) + (vy * vy))
-                speed_limit = 0.0062 + (
-                    _safe_float(particle.get("text_density", 0.45), 0.45) * 0.0024
-                )
-                if speed > speed_limit and speed > 1e-8:
-                    scale = speed_limit / speed
-                    vx *= scale
-                    vy *= scale
-
-                particle["vx"] = vx
-                particle["vy"] = vy
-                particle["x"] = _clamp01(_safe_float(particle.get("x", 0.5), 0.5) + vx)
-                particle["y"] = _clamp01(_safe_float(particle.get("y", 0.5), 0.5) + vy)
-
-        if len(embedded_entries) > 1:
-            for entry in embedded_entries:
-                entry_index = int(entry.get("index", 0))
-                if entry_index < 0 or entry_index >= len(offsets):
-                    continue
-                influence_x = 0.0
-                influence_y = 0.0
-                influence_radius = max(
-                    0.08,
-                    min(
-                        0.26,
-                        (_safe_float(entry.get("range", 0.03), 0.03) * 2.4) + 0.05,
-                    ),
-                )
-
-                for particle in particles:
-                    dx = _safe_float(particle.get("x", 0.5), 0.5) - _safe_float(
-                        entry.get("x", 0.5), 0.5
-                    )
-                    dy = _safe_float(particle.get("y", 0.5), 0.5) - _safe_float(
-                        entry.get("y", 0.5), 0.5
-                    )
-                    distance = math.sqrt((dx * dx) + (dy * dy))
-                    if distance > influence_radius:
-                        continue
-                    if distance <= 1e-8:
-                        continue
-
-                    similarity = _semantic_vector_cosine(
-                        entry.get("vector", []),
-                        particle.get("vector", []),
-                    )
-                    falloff = _clamp01(1.0 - (distance / influence_radius))
-                    density_mix = 0.58 + (
-                        (
-                            _safe_float(entry.get("text_density"), 0.45)
-                            + _safe_float(particle.get("text_density"), 0.45)
-                        )
-                        * 0.24
-                    )
-                    strength = (
-                        (0.00016 + (abs(similarity) * 0.00052)) * falloff * density_mix
-                    )
-                    direction = 1.0 if similarity >= 0.0 else -1.0
-                    influence_x += (dx / distance) * strength * direction
-                    influence_y += (dy / distance) * strength * direction
-
-                max_influence = 0.0032 + (
-                    _safe_float(entry.get("importance", 0.2), 0.2) * 0.0048
-                )
-                offsets[entry_index][0] += max(
-                    -max_influence, min(max_influence, influence_x)
-                )
-                offsets[entry_index][1] += max(
-                    -max_influence, min(max_influence, influence_y)
-                )
-
-        density_center_weight_total = sum(source_weights)
-        if density_center_weight_total > 1e-8:
-            density_center_x = (
-                sum(
-                    _safe_float(entry.get("x", 0.5), 0.5) * weight
-                    for entry, weight in zip(embedded_entries, source_weights)
-                )
-                / density_center_weight_total
-            )
-            density_center_y = (
-                sum(
-                    _safe_float(entry.get("y", 0.5), 0.5) * weight
-                    for entry, weight in zip(embedded_entries, source_weights)
-                )
-                / density_center_weight_total
-            )
-            density_spread = max(source_weights) - min(source_weights)
-            center_pull = min(0.18, 0.06 + (density_spread * 0.09))
-            for particle in particles:
-                particle_x = _safe_float(particle.get("x", 0.5), 0.5)
-                particle_y = _safe_float(particle.get("y", 0.5), 0.5)
-                particle["x"] = _clamp01(
-                    particle_x + ((density_center_x - particle_x) * center_pull)
-                )
-                particle["y"] = _clamp01(
-                    particle_y + ((density_center_y - particle_y) * center_pull)
-                )
-
-        for particle in particles[:48]:
-            hue = _semantic_vector_hue(list(particle.get("vector", [])))
-            cohesion = _clamp01(_safe_float(particle.get("cohesion", 0.0), 0.0))
-            saturation = max(0.52, min(0.92, 0.64 + (cohesion * 0.2)))
-            value = max(0.72, min(0.98, 0.84 + (cohesion * 0.14)))
-            r_raw, g_raw, b_raw = colorsys.hsv_to_rgb(
-                (hue % 360.0) / 360.0,
-                saturation,
-                value,
-            )
-            size = (
-                1.8
-                + (_safe_float(particle.get("text_density", 0.45), 0.45) * 1.1)
-                + (cohesion * 1.8)
-            )
-            x_norm = _clamp01(_safe_float(particle.get("x", 0.5), 0.5))
-            y_norm = _clamp01(_safe_float(particle.get("y", 0.5), 0.5))
-            embedding_particle_points.append(
-                {
-                    "x": round((x_norm * 2.0) - 1.0, 5),
-                    "y": round(1.0 - (y_norm * 2.0), 5),
-                    "size": round(size, 5),
-                    "r": round(r_raw, 5),
-                    "g": round(g_raw, 5),
-                    "b": round(b_raw, 5),
-                }
-            )
-            embedding_particle_nodes.append(
-                {
-                    "id": str(particle.get("id", "")),
-                    "x": round(x_norm, 5),
-                    "y": round(y_norm, 5),
-                    "hue": round(hue, 4),
-                    "cohesion": round(cohesion, 5),
-                    "text_density": round(
-                        _safe_float(particle.get("text_density", 0.45), 0.45), 5
-                    ),
-                }
-            )
-
-    file_graph["embedding_particles"] = embedding_particle_nodes
-
-    position_by_id: dict[str, tuple[float, float]] = {}
-    for index, entry in enumerate(entries):
-        max_offset = 0.008 + (entry["importance"] * 0.014)
-        offset_x = max(-max_offset, min(max_offset, offsets[index][0]))
-        offset_y = max(-max_offset, min(max_offset, offsets[index][1]))
-        x = round(_clamp01(entry["x"] + offset_x), 6)
-        y = round(_clamp01(entry["y"] + offset_y), 6)
-        entry["node"]["x"] = x
-        entry["node"]["y"] = y
-        position_by_id[entry["id"]] = (x, y)
-
-    graph_nodes = file_graph.get("nodes", [])
-    if isinstance(graph_nodes, list):
-        for node in graph_nodes:
-            if not isinstance(node, dict):
-                continue
-            if str(node.get("node_type", "")).strip().lower() != "file":
-                continue
-            node_id = str(node.get("id", "")).strip()
-            if not node_id:
-                continue
-            position = position_by_id.get(node_id)
-            if position is None:
-                continue
-            node["x"] = position[0]
-            node["y"] = position[1]
-
-    return embedding_particle_points
+    )
 
 
 def _build_backend_field_particles(
@@ -7566,695 +6469,13 @@ def _build_backend_field_particles(
     compute_jobs: list[dict[str, Any]],
     now: float,
 ) -> list[dict[str, float | str]]:
-    if not presence_impacts:
-        return []
-
-    file_nodes_raw = (
-        file_graph.get("file_nodes", []) if isinstance(file_graph, dict) else []
+    return simulation_backend_particles_module._build_backend_field_particles(
+        file_graph=file_graph,
+        presence_impacts=presence_impacts,
+        resource_heartbeat=resource_heartbeat,
+        compute_jobs=compute_jobs,
+        now=now,
     )
-    file_nodes = [row for row in file_nodes_raw if isinstance(row, dict)]
-    embedding_nodes_raw = (
-        file_graph.get("embedding_particles", [])
-        if isinstance(file_graph, dict)
-        else []
-    )
-    embedding_nodes = [row for row in embedding_nodes_raw if isinstance(row, dict)]
-
-    manifest_by_id = {
-        str(row.get("id", "")).strip(): row
-        for row in ENTITY_MANIFEST
-        if str(row.get("id", "")).strip()
-    }
-    presence_to_field: dict[str, str] = {}
-    for field_id, presence_id in FIELD_TO_PRESENCE.items():
-        pid = str(presence_id).strip()
-        if pid and pid not in presence_to_field:
-            presence_to_field[pid] = str(field_id).strip()
-
-    devices = (
-        resource_heartbeat.get("devices", {})
-        if isinstance(resource_heartbeat, dict)
-        else {}
-    )
-    if not isinstance(devices, dict):
-        devices = {}
-    resource_pressure = 0.0
-    for device_key in ("cpu", "gpu1", "gpu2", "npu0"):
-        row = devices.get(device_key, {})
-        util = _safe_float(
-            (row if isinstance(row, dict) else {}).get("utilization", 0.0), 0.0
-        )
-        resource_pressure = max(resource_pressure, _clamp01(util / 100.0))
-
-    compute_pressure = _clamp01(len(compute_jobs) / 24.0)
-
-    field_particles: list[dict[str, float | str]] = []
-    now_mono = time.monotonic()
-    live_ids: set[str] = set()
-
-    def _node_field_similarity(
-        node: dict[str, Any], target_field_id: str, target_presence_id: str
-    ) -> float:
-        if not target_field_id:
-            return 0.0
-        score = 0.0
-        field_scores = node.get("field_scores", {})
-        if isinstance(field_scores, dict):
-            score = _clamp01(_safe_float(field_scores.get(target_field_id, 0.0), 0.0))
-        dominant_field = str(node.get("dominant_field", "")).strip()
-        if dominant_field and dominant_field == target_field_id:
-            score = max(score, 0.85)
-        dominant_presence = str(node.get("dominant_presence", "")).strip()
-        if dominant_presence and dominant_presence == target_presence_id:
-            score = max(score, 1.0)
-        return _clamp01(score)
-
-    with _DAIMO_DYNAMICS_LOCK:
-        runtime = _DAIMO_DYNAMICS_CACHE.get("field_particles", {})
-        if not isinstance(runtime, dict):
-            runtime = {}
-        # Handle nested runtime structure: {'particles': {...}, 'surfaces': {...}}
-        particle_cache = runtime.get("particles", {})
-        if not isinstance(particle_cache, dict):
-            particle_cache = {}
-
-        for impact in presence_impacts:
-            presence_id = str(impact.get("id", "")).strip()
-            if not presence_id:
-                continue
-
-            presence_meta = manifest_by_id.get(presence_id, {})
-            anchor_x = _clamp01(
-                _safe_float(
-                    presence_meta.get("x", _stable_ratio(f"{presence_id}|anchor", 3)),
-                    _stable_ratio(f"{presence_id}|anchor", 3),
-                )
-            )
-            anchor_y = _clamp01(
-                _safe_float(
-                    presence_meta.get("y", _stable_ratio(f"{presence_id}|anchor", 9)),
-                    _stable_ratio(f"{presence_id}|anchor", 9),
-                )
-            )
-            base_hue = _safe_float(presence_meta.get("hue", 200.0), 200.0)
-            target_field_id = presence_to_field.get(presence_id, "")
-            presence_role, particle_mode = _particle_role_and_mode_for_presence(
-                presence_id
-            )
-
-            affected_by = (
-                impact.get("affected_by", {}) if isinstance(impact, dict) else {}
-            )
-            affects = impact.get("affects", {}) if isinstance(impact, dict) else {}
-            file_influence = _clamp01(
-                _safe_float(
-                    (affected_by if isinstance(affected_by, dict) else {}).get(
-                        "files", 0.0
-                    ),
-                    0.0,
-                )
-            )
-            world_influence = _clamp01(
-                _safe_float(
-                    (affects if isinstance(affects, dict) else {}).get("world", 0.0),
-                    0.0,
-                )
-            )
-            ledger_influence = _clamp01(
-                _safe_float(
-                    (affects if isinstance(affects, dict) else {}).get("ledger", 0.0),
-                    0.0,
-                )
-            )
-
-            node_signals: list[dict[str, float]] = []
-            cluster_map: dict[tuple[int, int], dict[str, float]] = {}
-            cluster_bucket_size = 0.18
-            local_density_score = 0.0
-            for node in file_nodes:
-                nx = _clamp01(_safe_float(node.get("x", 0.5), 0.5))
-                ny = _clamp01(_safe_float(node.get("y", 0.5), 0.5))
-                field_similarity = _node_field_similarity(
-                    node, target_field_id, presence_id
-                )
-                embed_signal = _clamp01(
-                    (_safe_float(node.get("embed_layer_count", 0.0), 0.0) / 3.0)
-                    + (
-                        0.35
-                        if str(node.get("vecstore_collection", "")).strip()
-                        else 0.0
-                    )
-                )
-                signed_similarity = max(
-                    -1.0,
-                    min(
-                        1.0,
-                        (field_similarity * 0.72) + (embed_signal * 0.34) - 0.43,
-                    ),
-                )
-                node_importance = _clamp01(
-                    _safe_float(node.get("importance", 0.25), 0.25)
-                )
-                distance_to_anchor = math.sqrt(
-                    ((nx - anchor_x) * (nx - anchor_x))
-                    + ((ny - anchor_y) * (ny - anchor_y))
-                )
-                anchor_proximity = _clamp01(1.0 - (distance_to_anchor / 0.55))
-                relevance = (
-                    (abs(signed_similarity) * 0.62)
-                    + (node_importance * 0.24)
-                    + (anchor_proximity * 0.14)
-                )
-                if relevance < 0.12 and anchor_proximity <= 0.04:
-                    continue
-
-                if distance_to_anchor <= 0.24:
-                    local_density_score += _clamp01(
-                        1.0 - (distance_to_anchor / 0.24)
-                    ) * (0.35 + (node_importance * 0.65))
-
-                node_signals.append(
-                    {
-                        "x": nx,
-                        "y": ny,
-                        "signed": signed_similarity,
-                        "importance": node_importance,
-                        "relevance": relevance,
-                    }
-                )
-
-                cluster_key = (
-                    int(nx / cluster_bucket_size),
-                    int(ny / cluster_bucket_size),
-                )
-                cluster_weight = (
-                    0.24 + (node_importance * 0.64) + (abs(signed_similarity) * 0.82)
-                )
-                cluster_row = cluster_map.setdefault(
-                    cluster_key,
-                    {
-                        "xw": 0.0,
-                        "yw": 0.0,
-                        "signed": 0.0,
-                        "weight_raw": 0.0,
-                    },
-                )
-                cluster_row["xw"] += nx * cluster_weight
-                cluster_row["yw"] += ny * cluster_weight
-                cluster_row["signed"] += signed_similarity * cluster_weight
-                cluster_row["weight_raw"] += cluster_weight
-
-            if len(node_signals) > 140:
-                node_signals.sort(
-                    key=lambda row: _safe_float(row.get("relevance", 0.0), 0.0),
-                    reverse=True,
-                )
-                node_signals = node_signals[:140]
-
-            clusters: list[dict[str, float]] = []
-            for cluster_row in cluster_map.values():
-                weight_raw = _safe_float(cluster_row.get("weight_raw", 0.0), 0.0)
-                if weight_raw <= 1e-8:
-                    continue
-                clusters.append(
-                    {
-                        "x": _clamp01(
-                            _safe_float(cluster_row.get("xw", 0.0), 0.0) / weight_raw
-                        ),
-                        "y": _clamp01(
-                            _safe_float(cluster_row.get("yw", 0.0), 0.0) / weight_raw
-                        ),
-                        "signed": max(
-                            -1.0,
-                            min(
-                                1.0,
-                                _safe_float(cluster_row.get("signed", 0.0), 0.0)
-                                / weight_raw,
-                            ),
-                        ),
-                        "weight_raw": weight_raw,
-                        "weight": 0.0,
-                    }
-                )
-            clusters.sort(
-                key=lambda row: _safe_float(row.get("weight_raw", 0.0), 0.0),
-                reverse=True,
-            )
-            if len(clusters) > 8:
-                clusters = clusters[:8]
-
-            cluster_weight_total = 0.0
-            for row in clusters:
-                cluster_weight_total += _safe_float(row.get("weight_raw", 0.0), 0.0)
-            if cluster_weight_total > 1e-8:
-                for row in clusters:
-                    row["weight"] = _clamp01(
-                        _safe_float(row.get("weight_raw", 0.0), 0.0)
-                        / cluster_weight_total
-                    )
-
-            local_density_ratio = _clamp01(local_density_score / 3.0)
-            cluster_ratio = _clamp01(len(clusters) / 6.0)
-
-            field_center_x = anchor_x
-            field_center_y = anchor_y
-            if clusters:
-                primary_cluster = clusters[0]
-                cluster_pull = _clamp01(
-                    0.22
-                    + (local_density_ratio * 0.42)
-                    + (file_influence * 0.28)
-                    + (cluster_ratio * 0.2)
-                )
-                field_center_x = _clamp01(
-                    (anchor_x * (1.0 - cluster_pull))
-                    + (
-                        _safe_float(primary_cluster.get("x", anchor_x), anchor_x)
-                        * cluster_pull
-                    )
-                )
-                field_center_y = _clamp01(
-                    (anchor_y * (1.0 - cluster_pull))
-                    + (
-                        _safe_float(primary_cluster.get("y", anchor_y), anchor_y)
-                        * cluster_pull
-                    )
-                )
-
-            raw_count = (
-                4.0
-                + (world_influence * 4.0)
-                + (file_influence * 4.2)
-                + (local_density_ratio * 8.6)
-                + (cluster_ratio * 2.2)
-                - (resource_pressure * 1.2)
-            )
-            particle_count = max(4, min(22, int(round(raw_count))))
-
-            short_range_radius = 0.16 + (local_density_ratio * 0.04)
-            interaction_radius = 0.36
-            long_range_radius = 0.92
-            spread = max(
-                0.028,
-                min(
-                    0.14,
-                    0.072 + (local_density_ratio * 0.056) + (cluster_ratio * 0.022),
-                ),
-            )
-            peer_repulsion_radius = max(0.032, min(0.18, spread * 1.35))
-            peer_repulsion_strength = (
-                0.00022 + (local_density_ratio * 0.00088) + (cluster_ratio * 0.00034)
-            )
-
-            for local_index in range(particle_count):
-                particle_id = f"field:{presence_id}:{local_index}"
-                live_ids.add(particle_id)
-                cache_row = particle_cache.get(particle_id, {})
-                if not isinstance(cache_row, dict):
-                    cache_row = {}
-
-                seed_ratio = _stable_ratio(f"{particle_id}|seed", local_index + 11)
-                home_dx = (
-                    (_stable_ratio(f"{particle_id}|home-x", local_index + 19) * 2.0)
-                    - 1.0
-                ) * spread
-                home_dy = (
-                    (
-                        (_stable_ratio(f"{particle_id}|home-y", local_index + 29) * 2.0)
-                        - 1.0
-                    )
-                    * spread
-                    * 0.82
-                )
-                home_x = _clamp01(field_center_x + home_dx)
-                home_y = _clamp01(field_center_y + home_dy)
-
-                px = _clamp01(_safe_float(cache_row.get("x", home_x), home_x))
-                py = _clamp01(_safe_float(cache_row.get("y", home_y), home_y))
-                pvx = _safe_float(cache_row.get("vx", 0.0), 0.0)
-                pvy = _safe_float(cache_row.get("vy", 0.0), 0.0)
-
-                fx = (home_x - px) * (0.18 + (ledger_influence * 0.18))
-                fy = (home_y - py) * (0.18 + (ledger_influence * 0.18))
-
-                if particle_count > 1 and peer_repulsion_strength > 1e-9:
-                    for peer_index in range(particle_count):
-                        if peer_index == local_index:
-                            continue
-                        peer_id = f"field:{presence_id}:{peer_index}"
-                        peer_home_dx = (
-                            (
-                                _stable_ratio(
-                                    f"{peer_id}|home-x",
-                                    peer_index + 19,
-                                )
-                                * 2.0
-                            )
-                            - 1.0
-                        ) * spread
-                        peer_home_dy = (
-                            (
-                                (
-                                    _stable_ratio(
-                                        f"{peer_id}|home-y",
-                                        peer_index + 29,
-                                    )
-                                    * 2.0
-                                )
-                                - 1.0
-                            )
-                            * spread
-                            * 0.82
-                        )
-                        peer_home_x = _clamp01(field_center_x + peer_home_dx)
-                        peer_home_y = _clamp01(field_center_y + peer_home_dy)
-                        peer_cache_row = particle_cache.get(peer_id, {})
-                        if isinstance(peer_cache_row, dict):
-                            peer_x = _clamp01(
-                                _safe_float(
-                                    peer_cache_row.get("x", peer_home_x),
-                                    peer_home_x,
-                                )
-                            )
-                            peer_y = _clamp01(
-                                _safe_float(
-                                    peer_cache_row.get("y", peer_home_y),
-                                    peer_home_y,
-                                )
-                            )
-                        else:
-                            peer_x = peer_home_x
-                            peer_y = peer_home_y
-
-                        repel_dx = px - peer_x
-                        repel_dy = py - peer_y
-                        repel_distance = math.sqrt(
-                            (repel_dx * repel_dx) + (repel_dy * repel_dy)
-                        )
-                        if repel_distance <= 1e-8:
-                            repel_angle = (
-                                (
-                                    seed_ratio
-                                    + _stable_ratio(
-                                        f"{particle_id}|peer:{peer_index}",
-                                        peer_index + 53,
-                                    )
-                                )
-                                % 1.0
-                            ) * (math.pi * 2.0)
-                            fx += math.cos(repel_angle) * (
-                                peer_repulsion_strength * 0.9
-                            )
-                            fy += math.sin(repel_angle) * (
-                                peer_repulsion_strength * 0.9
-                            )
-                            continue
-                        if repel_distance >= peer_repulsion_radius:
-                            continue
-                        repel_falloff = _clamp01(
-                            1.0 - (repel_distance / peer_repulsion_radius)
-                        )
-                        repel_strength = peer_repulsion_strength * (
-                            repel_falloff * repel_falloff
-                        )
-                        fx += (repel_dx / repel_distance) * repel_strength
-                        fy += (repel_dy / repel_distance) * repel_strength
-
-                for node in node_signals:
-                    dx = _safe_float(node.get("x", 0.5), 0.5) - px
-                    dy = _safe_float(node.get("y", 0.5), 0.5) - py
-                    distance = math.sqrt((dx * dx) + (dy * dy))
-                    if distance <= 1e-8 or distance > interaction_radius:
-                        continue
-
-                    signed_similarity = max(
-                        -1.0,
-                        min(1.0, _safe_float(node.get("signed", 0.0), 0.0)),
-                    )
-                    if abs(signed_similarity) <= 0.03:
-                        continue
-                    node_importance = _clamp01(
-                        _safe_float(node.get("importance", 0.25), 0.25)
-                    )
-
-                    if distance <= short_range_radius:
-                        falloff = _clamp01(1.0 - (distance / short_range_radius))
-                        strength = (
-                            (0.00125 + (node_importance * 0.00245))
-                            * (falloff * falloff)
-                            * (0.78 + (abs(signed_similarity) * 0.94))
-                            * (0.72 + (file_influence * 0.58))
-                        )
-                    else:
-                        transition = max(1e-8, interaction_radius - short_range_radius)
-                        band = _clamp01((interaction_radius - distance) / transition)
-                        strength = (
-                            (0.00024 + (node_importance * 0.00082))
-                            * band
-                            * (0.46 + (abs(signed_similarity) * 0.54))
-                        )
-
-                    direction = 1.0 if signed_similarity >= 0.0 else -1.0
-                    ux = dx / distance
-                    uy = dy / distance
-                    fx += ux * strength * direction
-                    fy += uy * strength * direction
-
-                for cluster in clusters:
-                    dx = _safe_float(cluster.get("x", 0.5), 0.5) - px
-                    dy = _safe_float(cluster.get("y", 0.5), 0.5) - py
-                    distance = math.sqrt((dx * dx) + (dy * dy))
-                    if distance <= short_range_radius or distance > long_range_radius:
-                        continue
-
-                    cluster_signed = max(
-                        -1.0,
-                        min(1.0, _safe_float(cluster.get("signed", 0.0), 0.0)),
-                    )
-                    if abs(cluster_signed) <= 0.04:
-                        continue
-                    cluster_weight = _clamp01(
-                        _safe_float(cluster.get("weight", 0.0), 0.0)
-                    )
-                    range_span = max(1e-8, long_range_radius - short_range_radius)
-                    falloff = _clamp01((long_range_radius - distance) / range_span)
-                    strength = (
-                        (0.00012 + (cluster_weight * 0.00044))
-                        * falloff
-                        * (0.54 + (abs(cluster_signed) * 0.56))
-                        * (0.6 + (cluster_ratio * 0.5))
-                    )
-                    direction = 1.0 if cluster_signed >= 0.0 else -1.0
-                    ux = dx / distance
-                    uy = dy / distance
-                    fx += ux * strength * direction
-                    fy += uy * strength * direction
-
-                for embed in embedding_nodes:
-                    ex = _clamp01(_safe_float(embed.get("x", 0.5), 0.5))
-                    ey = _clamp01(_safe_float(embed.get("y", 0.5), 0.5))
-                    dx = ex - px
-                    dy = ey - py
-                    distance = math.sqrt((dx * dx) + (dy * dy))
-                    if distance <= 1e-8 or distance > 0.23:
-                        continue
-                    falloff = _clamp01(1.0 - (distance / 0.23))
-                    if falloff <= 0.0:
-                        continue
-                    cohesion = _clamp01(_safe_float(embed.get("cohesion", 0.0), 0.0))
-                    density = _clamp01(
-                        _safe_float(embed.get("text_density", 0.45), 0.45)
-                    )
-                    signed = (
-                        (file_influence * 0.74)
-                        + (cohesion * 0.52)
-                        + (density * 0.26)
-                        - 0.58
-                    )
-                    direction = 1.0 if signed >= 0.0 else -1.0
-                    strength = (0.00042 + (abs(signed) * 0.00108)) * (falloff * falloff)
-                    ux = dx / distance
-                    uy = dy / distance
-                    fx += ux * strength * direction
-                    fy += uy * strength * direction
-
-                jitter_angle = (now * (0.34 + (compute_pressure * 0.4))) + (
-                    local_index * 0.93
-                )
-                jitter_power = (
-                    0.00006
-                    + ((1.0 - resource_pressure) * 0.0001)
-                    + (local_density_ratio * 0.00005)
-                )
-                fx += math.cos(jitter_angle) * jitter_power
-                fy += math.sin(jitter_angle) * jitter_power
-
-                simplex_phase = now * (0.28 + (compute_pressure * 0.24))
-                simplex_amp = (
-                    0.00005
-                    + ((1.0 - resource_pressure) * 0.00007)
-                    + (local_density_ratio * 0.00004)
-                )
-                simplex_seed = (local_index + 1) * 73 + len(presence_id)
-                simplex_x = _simplex_noise_2d(
-                    (px * 4.8) + simplex_phase + (local_index * 0.23),
-                    (py * 4.8) + (simplex_phase * 0.69),
-                    seed=simplex_seed,
-                )
-                simplex_y = _simplex_noise_2d(
-                    (px * 4.8) + 13.0 + (simplex_phase * 0.57),
-                    (py * 4.8) + 29.0 + simplex_phase,
-                    seed=simplex_seed + 41,
-                )
-                fx += simplex_x * simplex_amp
-                fy += simplex_y * simplex_amp
-
-                damping = max(0.74, 0.91 - (resource_pressure * 0.13))
-                vx = (pvx * damping) + fx
-                vy = (pvy * damping) + fy
-                speed = math.sqrt((vx * vx) + (vy * vy))
-                speed_limit = (
-                    0.0042
-                    + ((1.0 - resource_pressure) * 0.0021)
-                    + (local_density_ratio * 0.0018)
-                )
-                if speed > speed_limit and speed > 1e-8:
-                    scale = speed_limit / speed
-                    vx *= scale
-                    vy *= scale
-
-                nx = _clamp01(px + vx)
-                ny = _clamp01(py + vy)
-                particle_cache[particle_id] = {
-                    "x": nx,
-                    "y": ny,
-                    "vx": vx,
-                    "vy": vy,
-                    "ts": now_mono,
-                }
-
-                saturation = max(
-                    0.32,
-                    min(
-                        0.58,
-                        0.4 + (world_influence * 0.16) + (local_density_ratio * 0.06),
-                    ),
-                )
-                value = max(
-                    0.38,
-                    min(
-                        0.68,
-                        0.48
-                        + (ledger_influence * 0.12)
-                        + (local_density_ratio * 0.06)
-                        - (resource_pressure * 0.12),
-                    ),
-                )
-                r_raw, g_raw, b_raw = colorsys.hsv_to_rgb(
-                    (base_hue % 360.0) / 360.0,
-                    saturation,
-                    value,
-                )
-                particle_size = (
-                    0.9
-                    + (world_influence * 1.0)
-                    + (file_influence * 0.8)
-                    + (local_density_ratio * 0.9)
-                )
-
-                field_particles.append(
-                    {
-                        "id": particle_id,
-                        "presence_id": presence_id,
-                        "presence_role": presence_role,
-                        "particle_mode": particle_mode,
-                        "x": round(nx, 5),
-                        "y": round(ny, 5),
-                        "size": round(particle_size, 5),
-                        "r": round(_clamp01(r_raw), 5),
-                        "g": round(_clamp01(g_raw), 5),
-                        "b": round(_clamp01(b_raw), 5),
-                    }
-                )
-
-        # RENDER CHAOS BUTTERFLIES - convert chaos particles to field particles
-        chaos_hue = 300.0  # Purple for chaos
-        for pid, particle_state in particle_cache.items():
-            if not isinstance(particle_state, dict):
-                continue
-            if not bool(particle_state.get("is_chaos_butterfly", False)):
-                continue
-
-            # Add to live_ids so they don't get cleaned up
-            live_ids.add(pid)
-
-            nx = _clamp01(_safe_float(particle_state.get("x", 0.5), 0.5))
-            ny = _clamp01(_safe_float(particle_state.get("y", 0.5), 0.5))
-            particle_size = _safe_float(particle_state.get("size", 0.5), 0.5)
-
-            # Chaos butterflies have distinct purple color with high saturation
-            r_raw, g_raw, b_raw = colorsys.hsv_to_rgb(
-                (chaos_hue % 360.0) / 360.0,
-                0.85,  # High saturation
-                0.92,  # High brightness
-            )
-
-            field_particles.append(
-                {
-                    "id": pid,
-                    "presence_id": "chaos_butterfly",
-                    "presence_role": "chaos-agent",
-                    "particle_mode": "noise-spreader",
-                    "x": round(nx, 5),
-                    "y": round(ny, 5),
-                    "size": round(particle_size, 5),
-                    "r": round(_clamp01(r_raw), 5),
-                    "g": round(_clamp01(g_raw), 5),
-                    "b": round(_clamp01(b_raw), 5),
-                }
-            )
-
-        stale_before = now_mono - 180.0
-        for pid in list(particle_cache.keys()):
-            if pid in live_ids:
-                continue
-            row = particle_cache.get(pid, {})
-            ts_value = _safe_float(
-                (row if isinstance(row, dict) else {}).get("ts", 0.0), 0.0
-            )
-            if ts_value < stale_before:
-                particle_cache.pop(pid, None)
-
-        # Preserve nested runtime structure when saving back
-        runtime["particles"] = particle_cache
-        _DAIMO_DYNAMICS_CACHE["field_particles"] = runtime
-
-    field_particles.sort(
-        key=lambda row: (
-            str(row.get("presence_id", "")),
-            str(row.get("id", "")),
-        )
-    )
-    return field_particles
-
-
-_PARTICLE_ROLE_BY_PRESENCE: dict[str, str] = {
-    "witness_thread": "crawl-routing",
-    "keeper_of_receipts": "file-analysis",
-    "mage_of_receipts": "image-captioning",
-    "anchor_registry": "council-orchestration",
-    "gates_of_truth": "compliance-gating",
-}
-
-
-def _particle_role_and_mode_for_presence(presence_id: str) -> tuple[str, str]:
-    clean_presence_id = str(presence_id).strip()
-    if not clean_presence_id:
-        return "neutral", "neutral"
-    role = str(_PARTICLE_ROLE_BY_PRESENCE.get(clean_presence_id, "")).strip()
-    if not role:
-        return "neutral", "neutral"
-    return role, "role-bound"
 
 
 def _dominant_eta_mu_field(scores: dict[str, float]) -> tuple[str, float]:
@@ -8373,6 +6594,150 @@ def _graph_resource_excerpt_hash(text_excerpt: Any) -> str:
     if not text:
         return ""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _graph_dedupe_atoms(
+    atoms: list[dict[str, Any]],
+    *,
+    max_atoms: int = 50,
+) -> list[dict[str, Any]]:
+    deduped: dict[str, dict[str, Any]] = {}
+    for atom in atoms:
+        if not isinstance(atom, dict):
+            continue
+        key = json.dumps(
+            atom, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        if key and key not in deduped:
+            deduped[key] = atom
+    rows = list(deduped.values())
+    rows.sort(
+        key=lambda row: json.dumps(
+            row,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+    safe_max = max(1, int(max_atoms or 1))
+    return rows[:safe_max]
+
+
+def _graph_maritime_resource_kind(canonical_url: str) -> str:
+    clean = str(canonical_url or "").strip()
+    if not clean:
+        return ""
+    try:
+        parsed = urlparse(clean)
+    except Exception:
+        return ""
+    host = str(parsed.hostname or "").strip().lower()
+    path = str(parsed.path or "").strip().lower()
+
+    if host.endswith("ukmto.org"):
+        return "maritime:ukmto_advisory"
+    if host.endswith("maritime.dot.gov") and "/msci/" in path:
+        return "maritime:marad_advisory"
+    if host.endswith("reuters.com"):
+        return "maritime:situation_report"
+    return ""
+
+
+def _graph_maritime_hormuz_atoms(
+    *,
+    canonical_url: str,
+    title: str,
+    summary: str,
+    text_excerpt: str,
+) -> list[dict[str, Any]]:
+    clean_url = str(canonical_url or "").strip()
+    clean_title = str(title or "").strip()
+    clean_summary = str(summary or "").strip()
+    clean_excerpt = str(text_excerpt or "").strip()
+
+    combined = " ".join(
+        part for part in (clean_url, clean_title, clean_summary, clean_excerpt) if part
+    ).lower()
+    if not combined:
+        return []
+
+    try:
+        parsed = urlparse(clean_url)
+        host = str(parsed.hostname or "").strip().lower()
+        path = str(parsed.path or "").strip().lower()
+    except Exception:
+        host = ""
+        path = ""
+
+    is_hormuz_context = any(
+        token in combined
+        for token in (
+            "hormuz",
+            "strait of hormuz",
+            "gulf of oman",
+            "persian gulf",
+        )
+    )
+    labels: set[str] = set()
+
+    if is_hormuz_context:
+        if any(
+            token in combined
+            for token in (
+                "military activity",
+                "significant military activity",
+                "naval activity",
+                "military operations",
+            )
+        ):
+            labels.add("military_activity")
+
+        if any(
+            token in combined
+            for token in (
+                "electronic interference",
+                "navigation interference",
+                "gps interference",
+                "gps jamming",
+                "spoofing",
+                "jamming",
+            )
+        ):
+            labels.add("electronic_interference")
+
+        if any(
+            token in combined
+            for token in (
+                "illegal boarding",
+                "boarding",
+                "detention",
+                "seizure",
+                "seized",
+                "detained",
+            )
+        ):
+            labels.add("boarding_seizure_risk")
+
+    # Stable source hints for advisory URLs that can be non-text payloads.
+    if host.endswith("ukmto.org") and "advisory" in path:
+        labels.add("military_activity")
+        labels.add("electronic_interference")
+    if (
+        host.endswith("maritime.dot.gov")
+        and "/msci/" in path
+        and any(token in path for token in ("boarding", "detention", "seizure"))
+    ):
+        labels.add("boarding_seizure_risk")
+
+    atoms = [
+        {
+            "kind": "hazard",
+            "region": "hormuz",
+            "label": label,
+        }
+        for label in sorted(labels)
+    ]
+    return _graph_dedupe_atoms(atoms, max_atoms=50)
 
 
 def _normalize_weaver_event_row(event_row: dict[str, Any]) -> dict[str, Any] | None:
@@ -8671,6 +7036,29 @@ def _build_weaver_field_graph_uncached(
             _safe_float(meta.get("y", 0.5), 0.5) + ((seed[1] / 255.0) - 0.5) * 0.03
         )
         fetched_ts = max(0.0, _safe_float(meta.get("fetched_ts", 0.0), 0.0))
+        title_text = str(meta.get("title", "") or "").strip()
+        summary_text = str(meta.get("summary", "") or "").strip()
+        text_excerpt = str(meta.get("text_excerpt", "") or "").strip()
+        kind_value = str(
+            meta.get("kind", "") or ""
+        ).strip().lower() or _graph_maritime_resource_kind(canonical_url)
+        atoms_seed = [
+            atom
+            for atom in (
+                meta.get("atoms", []) if isinstance(meta.get("atoms", []), list) else []
+            )
+            if isinstance(atom, dict)
+        ]
+        if kind_value.startswith("maritime:"):
+            atoms_seed.extend(
+                _graph_maritime_hormuz_atoms(
+                    canonical_url=canonical_url,
+                    title=title_text,
+                    summary=summary_text,
+                    text_excerpt=text_excerpt,
+                )
+            )
+        atoms = _graph_dedupe_atoms(atoms_seed, max_atoms=50)
         resource_row = {
             "id": resource_id,
             "node_id": resource_id,
@@ -8679,7 +7067,7 @@ def _build_weaver_field_graph_uncached(
             "web_node_role": "web:resource",
             "resource_kind": str(meta.get("resource_kind", "text") or "text"),
             "modality": str(meta.get("modality", "text") or "text"),
-            "label": str(meta.get("title", canonical_url) or canonical_url),
+            "label": title_text or canonical_url,
             "x": round(x, 4),
             "y": round(y, 4),
             "hue": 24,
@@ -8693,7 +7081,11 @@ def _build_weaver_field_graph_uncached(
             "fetched_ts": round(fetched_ts, 6),
             "content_hash": content_hash,
             "text_excerpt_hash": str(meta.get("text_excerpt_hash", "") or ""),
-            "title": str(meta.get("title", "") or ""),
+            "title": title_text,
+            "summary": summary_text,
+            "text_excerpt": text_excerpt,
+            "kind": kind_value,
+            "atoms": atoms,
             "source_url_id": url_id,
         }
         _append_crawler_node(resource_row)
@@ -8815,23 +7207,49 @@ def _build_weaver_field_graph_uncached(
         if kind == "url" and canonical_url:
             content_hash = str(node.get("content_hash", "") or "").strip().lower()
             text_excerpt_hash = str(node.get("text_excerpt_hash", "") or "").strip()
+            text_excerpt = str(node.get("text_excerpt", "") or "").strip()
+            summary_text = str(node.get("analysis_summary", "") or "").strip()
+            feed_summary = str(node.get("feed_entry_summary", "") or "").strip()
+            if not summary_text and feed_summary:
+                summary_text = feed_summary
+            title_text = str(node.get("title", "") or "").strip()
+            feed_title = str(node.get("feed_entry_title", "") or "").strip()
+            if not title_text and feed_title:
+                title_text = feed_title
+            feed_source_kind = (
+                str(node.get("feed_entry_source_kind", "") or "").strip().lower()
+            )
+            maritime_kind = _graph_maritime_resource_kind(canonical_url)
+            maritime_atoms = _graph_maritime_hormuz_atoms(
+                canonical_url=canonical_url,
+                title=title_text,
+                summary=summary_text,
+                text_excerpt=text_excerpt,
+            )
             if not text_excerpt_hash:
-                text_excerpt_hash = _graph_resource_excerpt_hash(
-                    node.get("text_excerpt", "")
-                )
+                text_excerpt_hash = _graph_resource_excerpt_hash(text_excerpt)
             url_node_meta[graph_node_id] = {
                 "canonical_url": canonical_url,
                 "x": x,
                 "y": y,
-                "title": str(node.get("title", "") or "").strip(),
+                "title": title_text,
                 "resource_kind": resource_kind,
                 "modality": modality,
                 "importance": importance,
                 "fetched_ts": fetched_ts,
                 "content_hash": content_hash,
                 "text_excerpt_hash": text_excerpt_hash,
+                "text_excerpt": text_excerpt,
+                "summary": summary_text,
+                "kind": feed_source_kind or maritime_kind,
+                "atoms": maritime_atoms,
+                "feed_entry": bool(node.get("feed_entry", False)),
             }
-            if status in {"fetched", "duplicate"} or bool(content_hash):
+            if (
+                status in {"fetched", "duplicate"}
+                or bool(content_hash)
+                or bool(node.get("feed_entry", False))
+            ):
                 _ensure_resource_for_url(graph_node_id)
 
         ranked = sorted(
@@ -9866,6 +8284,7 @@ def build_simulation_state(
     queue_snapshot: dict[str, Any] | None = None,
     docker_snapshot: dict[str, Any] | None = None,
     include_unified_graph: bool = True,
+    include_particle_dynamics: bool = True,
 ) -> dict[str, Any]:
     _prof_start = time.perf_counter()
     _maybe_reset_simulation_runtime_state()
@@ -9955,7 +8374,7 @@ def build_simulation_state(
         else (file_graph if isinstance(file_graph, dict) else None)
     )
     view_graph_contract = _build_view_graph_contract(
-        file_graph if isinstance(file_graph, dict) else None
+        output_file_graph if isinstance(output_file_graph, dict) else None
     )
     truth_state = catalog.get("truth_state") if isinstance(catalog, dict) else None
     logical_graph = catalog.get("logical_graph") if isinstance(catalog, dict) else None
@@ -10724,22 +9143,42 @@ def build_simulation_state(
     )
     if os.getenv("SIM_PROFILE_INTERNAL") == "1":
         print(f"DEBUG: particle_backend_mode={particle_backend_mode}", flush=True)
-    if particle_backend_mode in {"c", "cdb", "native", "double-buffer-c"}:
-        try:
-            from .c_double_buffer_backend import build_double_buffer_field_particles
 
-            field_particle_points_raw, daimoi_probabilistic = (
-                build_double_buffer_field_particles(
-                    file_graph=runtime_file_graph,
-                    presence_impacts=presence_impacts,
-                    resource_heartbeat=resource_heartbeat,
-                    compute_jobs=compute_jobs,
-                    queue_ratio=queue_ratio,
-                    now=now,
-                    entity_manifest=list(ENTITY_MANIFEST),
+    normalized_field_particles: list[dict[str, float | str]] = []
+    daimoi_probabilistic: dict[str, Any] = {}
+    if include_particle_dynamics:
+        if particle_backend_mode in {"c", "cdb", "native", "double-buffer-c"}:
+            try:
+                from .c_double_buffer_backend import build_double_buffer_field_particles
+
+                field_particle_points_raw, daimoi_probabilistic = (
+                    build_double_buffer_field_particles(
+                        file_graph=runtime_file_graph,
+                        presence_impacts=presence_impacts,
+                        resource_heartbeat=resource_heartbeat,
+                        compute_jobs=compute_jobs,
+                        queue_ratio=queue_ratio,
+                        now=now,
+                        entity_manifest=list(ENTITY_MANIFEST),
+                    )
                 )
-            )
-        except Exception as exc:
+            except Exception as exc:
+                field_particle_points_raw, daimoi_probabilistic = (
+                    build_probabilistic_daimoi_particles(
+                        file_graph=runtime_file_graph,
+                        presence_impacts=presence_impacts,
+                        resource_heartbeat=resource_heartbeat,
+                        compute_jobs=compute_jobs,
+                        queue_ratio=queue_ratio,
+                        now=now,
+                    )
+                )
+                if isinstance(daimoi_probabilistic, dict):
+                    daimoi_probabilistic["backend"] = "python-fallback"
+                    daimoi_probabilistic["backend_error"] = (
+                        f"{exc.__class__.__name__}:{exc}"
+                    )
+        else:
             field_particle_points_raw, daimoi_probabilistic = (
                 build_probabilistic_daimoi_particles(
                     file_graph=runtime_file_graph,
@@ -10750,115 +9189,372 @@ def build_simulation_state(
                     now=now,
                 )
             )
-            if isinstance(daimoi_probabilistic, dict):
-                daimoi_probabilistic["backend"] = "python-fallback"
-                daimoi_probabilistic["backend_error"] = (
-                    f"{exc.__class__.__name__}:{exc}"
-                )
+
+        for particle in field_particle_points_raw:
+            if not isinstance(particle, dict):
+                continue
+            x_norm = _clamp01(_safe_float(particle.get("x", 0.5), 0.5))
+            y_norm = _clamp01(_safe_float(particle.get("y", 0.5), 0.5))
+            normalized_row: dict[str, Any] = {
+                "id": str(particle.get("id", "")),
+                "presence_id": str(particle.get("presence_id", "")),
+                "presence_role": str(particle.get("presence_role", "neutral")),
+                "particle_mode": str(particle.get("particle_mode", "neutral")),
+                "x": round(x_norm, 5),
+                "y": round(y_norm, 5),
+                "size": round(
+                    max(0.6, _safe_float(particle.get("size", 1.0), 1.0)),
+                    5,
+                ),
+                "r": round(_clamp01(_safe_float(particle.get("r", 0.4), 0.4)), 5),
+                "g": round(_clamp01(_safe_float(particle.get("g", 0.4), 0.4)), 5),
+                "b": round(_clamp01(_safe_float(particle.get("b", 0.4), 0.4)), 5),
+            }
+            for key in (
+                "record",
+                "schema_version",
+                "packet_record",
+                "packet_schema_version",
+                "is_nexus",
+                "owner_presence_id",
+                "origin_presence_id",
+                "target_presence_id",
+                "top_job",
+                "package_entropy",
+                "message_probability",
+                "mass",
+                "radius",
+                "collision_count",
+                "source_node_id",
+                "is_view_compaction_bundle",
+                "simulation_semantic_role",
+                "semantic_bundle_mass",
+                "semantic_bundle_charge",
+                "semantic_bundle_gravity",
+                "graph_node_id",
+                "graph_distance_cost",
+                "gravity_potential",
+                "local_price",
+                "node_saturation",
+                "route_node_id",
+                "drift_score",
+                "drift_gravity_term",
+                "drift_cost_term",
+                "drift_gravity_delta",
+                "drift_gravity_delta_scalar",
+                "drift_cost_latency_term",
+                "drift_cost_congestion_term",
+                "drift_cost_semantic_term",
+                "drift_cost_upkeep_term",
+                "route_gravity_mode",
+                "route_resource_focus",
+                "route_resource_focus_weight",
+                "route_resource_focus_delta",
+                "route_resource_focus_contribution",
+                "route_probability",
+                "selected_edge_cost",
+                "selected_edge_health",
+                "selected_edge_affinity",
+                "selected_edge_saturation",
+                "selected_edge_upkeep_penalty",
+                "valve_pressure_term",
+                "valve_gravity_term",
+                "valve_affinity_term",
+                "valve_saturation_term",
+                "valve_health_term",
+                "valve_score_proxy",
+                "influence_power",
+                "vx",
+                "vy",
+            ):
+                if key in particle:
+                    normalized_row[key] = particle.get(key)
+            for key in (
+                "job_probabilities",
+                "packet_components",
+                "resource_signature",
+                "absorb_sampler",
+                "action_probabilities",
+                "behavior_actions",
+                "embedding_seed_preview",
+                "embedding_curr_preview",
+                "last_collision_matrix",
+            ):
+                value = particle.get(key)
+                if isinstance(value, (dict, list)):
+                    normalized_row[key] = value
+            normalized_field_particles.append(normalized_row)
     else:
-        field_particle_points_raw, daimoi_probabilistic = (
-            build_probabilistic_daimoi_particles(
-                file_graph=runtime_file_graph,
-                presence_impacts=presence_impacts,
-                resource_heartbeat=resource_heartbeat,
-                compute_jobs=compute_jobs,
-                queue_ratio=queue_ratio,
-                now=now,
+        daimoi_probabilistic = {
+            "record": "ημ.daimoi-probabilistic.v1",
+            "schema_version": "daimoi.probabilistic.v1",
+            "active": 0,
+            "spawned": 0,
+            "collisions": 0,
+            "deflects": 0,
+            "diffuses": 0,
+            "handoffs": 0,
+            "deliveries": 0,
+            "job_triggers": {},
+            "mean_package_entropy": 0.0,
+            "mean_message_probability": 0.0,
+            "matrix_mean": {"ss": 0.0, "sc": 0.0, "cs": 0.0, "cc": 0.0},
+            "behavior_defaults": ["deflect", "diffuse"],
+            "backend": "compact-lite",
+            "disabled": True,
+            "disabled_reason": "include_particle_dynamics=false",
+        }
+        lite_particle_budget = min(96, len(points))
+
+        compact_graph_node_ids: list[str] = []
+        compact_graph_node_positions: dict[str, tuple[float, float]] = {}
+        compact_graph_nodes, _ = _graph_rows(
+            output_file_graph if isinstance(output_file_graph, dict) else None
+        )
+        for node in compact_graph_nodes:
+            if not isinstance(node, dict):
+                continue
+            node_id = str(node.get("id", "") or "").strip()
+            if not node_id:
+                continue
+            compact_graph_node_ids.append(node_id)
+            compact_graph_node_positions[node_id] = (
+                _clamp01(_safe_float(node.get("x", 0.5), 0.5)),
+                _clamp01(_safe_float(node.get("y", 0.5), 0.5)),
             )
+
+        compact_core_presence_ids: list[str] = []
+        compact_non_core_presence_ids: list[str] = []
+        for impact in presence_impacts:
+            if not isinstance(impact, dict):
+                continue
+            compact_presence_id = str(impact.get("id", "") or "").strip()
+            if not compact_presence_id:
+                continue
+            if _core_resource_type_from_presence_id(compact_presence_id):
+                if compact_presence_id not in compact_core_presence_ids:
+                    compact_core_presence_ids.append(compact_presence_id)
+            elif compact_presence_id not in compact_non_core_presence_ids:
+                compact_non_core_presence_ids.append(compact_presence_id)
+
+        compact_presence_ids = (
+            compact_non_core_presence_ids
+            or compact_core_presence_ids
+            or ["runtime.catalog"]
+        )
+        compact_resource_types = list(_RESOURCE_DAIMOI_TYPES) or ["cpu"]
+
+        point_rows: list[dict[str, float]] = []
+        if lite_particle_budget > 0 and points:
+            if len(points) <= lite_particle_budget:
+                point_rows = [point for point in points if isinstance(point, dict)]
+            else:
+                point_indices = [
+                    min(
+                        len(points) - 1,
+                        int(
+                            (float(index) * float(len(points) - 1))
+                            / float(max(1, lite_particle_budget - 1))
+                        ),
+                    )
+                    for index in range(lite_particle_budget)
+                ]
+                point_rows = [
+                    points[index]
+                    for index in point_indices
+                    if 0 <= index < len(points) and isinstance(points[index], dict)
+                ]
+
+        compact_graph_count = len(compact_graph_node_ids)
+        compact_graph_start = (
+            int(
+                _stable_ratio(
+                    f"compact-lite:graph-start:{compact_graph_count}",
+                    max(1, compact_graph_count + 17),
+                )
+                * float(compact_graph_count)
+            )
+            % compact_graph_count
+            if compact_graph_count > 0
+            else 0
         )
 
-    normalized_field_particles: list[dict[str, float | str]] = []
-    for particle in field_particle_points_raw:
-        if not isinstance(particle, dict):
-            continue
-        x_norm = _clamp01(_safe_float(particle.get("x", 0.5), 0.5))
-        y_norm = _clamp01(_safe_float(particle.get("y", 0.5), 0.5))
-        normalized_row: dict[str, Any] = {
-            "id": str(particle.get("id", "")),
-            "presence_id": str(particle.get("presence_id", "")),
-            "presence_role": str(particle.get("presence_role", "neutral")),
-            "particle_mode": str(particle.get("particle_mode", "neutral")),
-            "x": round(x_norm, 5),
-            "y": round(y_norm, 5),
-            "size": round(max(0.6, _safe_float(particle.get("size", 1.0), 1.0)), 5),
-            "r": round(_clamp01(_safe_float(particle.get("r", 0.4), 0.4)), 5),
-            "g": round(_clamp01(_safe_float(particle.get("g", 0.4), 0.4)), 5),
-            "b": round(_clamp01(_safe_float(particle.get("b", 0.4), 0.4)), 5),
-        }
-        for key in (
-            "record",
-            "schema_version",
-            "packet_record",
-            "packet_schema_version",
-            "is_nexus",
-            "owner_presence_id",
-            "origin_presence_id",
-            "target_presence_id",
-            "top_job",
-            "package_entropy",
-            "message_probability",
-            "mass",
-            "radius",
-            "collision_count",
-            "source_node_id",
-            "is_view_compaction_bundle",
-            "simulation_semantic_role",
-            "semantic_bundle_mass",
-            "semantic_bundle_charge",
-            "semantic_bundle_gravity",
-            "graph_node_id",
-            "graph_distance_cost",
-            "gravity_potential",
-            "local_price",
-            "node_saturation",
-            "route_node_id",
-            "drift_score",
-            "drift_gravity_term",
-            "drift_cost_term",
-            "drift_gravity_delta",
-            "drift_gravity_delta_scalar",
-            "drift_cost_latency_term",
-            "drift_cost_congestion_term",
-            "drift_cost_semantic_term",
-            "drift_cost_upkeep_term",
-            "route_gravity_mode",
-            "route_resource_focus",
-            "route_resource_focus_weight",
-            "route_resource_focus_delta",
-            "route_resource_focus_contribution",
-            "route_probability",
-            "selected_edge_cost",
-            "selected_edge_health",
-            "selected_edge_affinity",
-            "selected_edge_saturation",
-            "selected_edge_upkeep_penalty",
-            "valve_pressure_term",
-            "valve_gravity_term",
-            "valve_affinity_term",
-            "valve_saturation_term",
-            "valve_health_term",
-            "valve_score_proxy",
-            "influence_power",
-            "vx",
-            "vy",
-        ):
-            if key in particle:
-                normalized_row[key] = particle.get(key)
-        for key in (
-            "job_probabilities",
-            "packet_components",
-            "resource_signature",
-            "absorb_sampler",
-            "action_probabilities",
-            "behavior_actions",
-            "embedding_seed_preview",
-            "embedding_curr_preview",
-            "last_collision_matrix",
-        ):
-            value = particle.get(key)
-            if isinstance(value, (dict, list)):
-                normalized_row[key] = value
-        normalized_field_particles.append(normalized_row)
+        for idx, point in enumerate(point_rows):
+            if not isinstance(point, dict):
+                continue
+            x_world = _safe_float(point.get("x", 0.0), 0.0)
+            y_world = _safe_float(point.get("y", 0.0), 0.0)
+            x_ratio = _clamp01((x_world + 1.0) * 0.5)
+            y_ratio = _clamp01((1.0 - y_world) * 0.5)
+
+            graph_node_id = ""
+            route_node_id = ""
+            graph_x = x_ratio
+            graph_y = y_ratio
+            route_x = graph_x
+            route_y = graph_y
+            if compact_graph_count > 0:
+                graph_slot = int(
+                    (float(idx) * float(compact_graph_count))
+                    / float(max(1, lite_particle_budget))
+                )
+                graph_node_id = compact_graph_node_ids[
+                    (compact_graph_start + graph_slot) % compact_graph_count
+                ]
+                if compact_graph_count > 1:
+                    route_slot = int(
+                        (float(idx + 1) * float(compact_graph_count))
+                        / float(max(1, lite_particle_budget))
+                    )
+                    route_node_id = compact_graph_node_ids[
+                        (compact_graph_start + route_slot) % compact_graph_count
+                    ]
+                    if route_node_id == graph_node_id:
+                        route_node_id = compact_graph_node_ids[
+                            (compact_graph_start + graph_slot + 1) % compact_graph_count
+                        ]
+                else:
+                    route_node_id = graph_node_id
+
+                graph_anchor = compact_graph_node_positions.get(graph_node_id)
+                route_anchor = compact_graph_node_positions.get(route_node_id)
+                if isinstance(graph_anchor, tuple) and len(graph_anchor) == 2:
+                    graph_x = _clamp01(_safe_float(graph_anchor[0], x_ratio))
+                    graph_y = _clamp01(_safe_float(graph_anchor[1], y_ratio))
+                if isinstance(route_anchor, tuple) and len(route_anchor) == 2:
+                    route_x = _clamp01(_safe_float(route_anchor[0], graph_x))
+                    route_y = _clamp01(_safe_float(route_anchor[1], graph_y))
+
+            compact_is_resource_emitter = bool(compact_core_presence_ids) and (
+                (idx % 4) == 0
+            )
+            if compact_is_resource_emitter:
+                compact_presence_id = compact_core_presence_ids[
+                    idx % len(compact_core_presence_ids)
+                ]
+            else:
+                compact_presence_id = compact_presence_ids[
+                    idx % len(compact_presence_ids)
+                ]
+
+            compact_resource_type = _core_resource_type_from_presence_id(
+                compact_presence_id
+            )
+            if not compact_resource_type:
+                compact_resource_type = compact_resource_types[
+                    idx % len(compact_resource_types)
+                ]
+
+            route_probability = 0.24 + (
+                _stable_ratio(f"compact-lite:{idx}:route", idx + 3) * 0.68
+            )
+            influence_power = 0.12 + (
+                _stable_ratio(f"compact-lite:{idx}:influence", idx + 11) * 0.74
+            )
+            package_entropy = 0.18 + (
+                _stable_ratio(f"compact-lite:{idx}:entropy", idx + 17) * 0.62
+            )
+            message_probability = 0.2 + (
+                _stable_ratio(f"compact-lite:{idx}:message", idx + 23) * 0.7
+            )
+            orbit_angle = (
+                (float(idx) / float(max(1, lite_particle_budget))) * math.tau
+            ) + (x_ratio * math.pi * 0.5)
+            orbit_speed = 0.003 + (
+                _stable_ratio(f"compact-lite:{idx}:speed", idx + 31) * 0.005
+            )
+            vx_value = math.cos(orbit_angle + (math.pi / 2.0)) * orbit_speed
+            vy_value = math.sin(orbit_angle + (math.pi / 2.0)) * orbit_speed
+
+            normalized_field_particles.append(
+                {
+                    "id": f"compact-lite:{idx}",
+                    "record": "ημ.field-particles.v1",
+                    "schema_version": "field.particles.v1",
+                    "presence_id": compact_presence_id,
+                    "owner_presence_id": compact_presence_id,
+                    "target_presence_id": "",
+                    "presence_role": (
+                        "resource-core"
+                        if compact_is_resource_emitter
+                        else "compact-neutral"
+                    ),
+                    "particle_mode": "compact-lite",
+                    "x": round(x_ratio, 5),
+                    "y": round(y_ratio, 5),
+                    "size": round(
+                        max(0.6, _safe_float(point.get("size", 1.0), 1.0)), 5
+                    ),
+                    "r": round(_clamp01(_safe_float(point.get("r", 0.4), 0.4)), 5),
+                    "g": round(_clamp01(_safe_float(point.get("g", 0.4), 0.4)), 5),
+                    "b": round(_clamp01(_safe_float(point.get("b", 0.4), 0.4)), 5),
+                    "vx": round(vx_value, 6),
+                    "vy": round(vy_value, 6),
+                    "graph_node_id": graph_node_id,
+                    "route_node_id": route_node_id,
+                    "graph_x": round(graph_x, 5),
+                    "graph_y": round(graph_y, 5),
+                    "route_x": round(route_x, 5),
+                    "route_y": round(route_y, 5),
+                    "route_probability": round(_clamp01(route_probability), 6),
+                    "influence_power": round(_clamp01(influence_power), 6),
+                    "route_resource_focus": compact_resource_type,
+                    "route_resource_focus_contribution": round(
+                        _clamp01(route_probability * influence_power),
+                        6,
+                    ),
+                    "gravity_potential": round(
+                        _clamp01(
+                            1.0
+                            - min(
+                                1.0,
+                                math.hypot((x_ratio - 0.5), (y_ratio - 0.5)) / 0.72,
+                            )
+                        ),
+                        6,
+                    ),
+                    "node_saturation": round(
+                        _clamp01(
+                            _stable_ratio(
+                                f"compact-lite:{idx}:node-saturation",
+                                idx + 41,
+                            )
+                        ),
+                        6,
+                    ),
+                    "semantic_mass": round(
+                        max(0.05, _safe_float(point.get("size", 1.0), 1.0) * 0.36),
+                        6,
+                    ),
+                    "semantic_text_chars": round(
+                        24.0
+                        + (
+                            _stable_ratio(
+                                f"compact-lite:{idx}:semantic-text",
+                                idx + 47,
+                            )
+                            * 180.0
+                        ),
+                        3,
+                    ),
+                    "message_probability": round(_clamp01(message_probability), 6),
+                    "package_entropy": round(max(0.0, package_entropy), 6),
+                    "daimoi_energy": round(
+                        _clamp01(
+                            (message_probability * 0.6) + (package_entropy * 0.25)
+                        ),
+                        6,
+                    ),
+                    "resource_daimoi": bool(compact_is_resource_emitter),
+                    "resource_type": compact_resource_type,
+                    "resource_consume_type": compact_resource_type,
+                    "top_job": (
+                        "emit_resource_packet"
+                        if compact_is_resource_emitter
+                        else "route_probe_compact"
+                    ),
+                }
+            )
 
     disable_daimoi = _safe_float(SIMULATION_DISABLE_DAIMOI, 0.0) >= 0.5
     user_embedded_daimoi: list[dict[str, Any]] = []
@@ -10953,6 +9649,10 @@ def build_simulation_state(
         "compute_jobs": compute_jobs[:32],
         "field_particles_record": "ημ.field-particles.v1",
         "field_particles": emitted_field_particles,
+        "daimoi_collision_events_record": DAIMOI_COLLISION_EVENTS_RECORD,
+        "daimoi_collision_events": [],
+        "daimoi_collision_event_seq": 0,
+        "_resource_daimoi_active_ids": [],
         "resource_daimoi": resource_daimoi,
         "resource_consumption": resource_consumption,
         "user_presence": user_presence_state,
@@ -11165,432 +9865,74 @@ def build_simulation_state(
 
 
 def _stream_particle_effective_mass(row: dict[str, Any]) -> float:
-    semantic_text_chars = max(
-        0.0, _safe_float(row.get("semantic_text_chars", 0.0), 0.0)
+    return simulation_collision_utils_module.stream_particle_effective_mass(
+        row,
+        safe_float=_safe_float,
     )
-    semantic_mass = max(0.0, _safe_float(row.get("semantic_mass", 0.0), 0.0))
-    daimoi_energy = max(0.0, _safe_float(row.get("daimoi_energy", 0.0), 0.0))
-    message_probability = max(
-        0.0,
-        _safe_float(row.get("message_probability", 0.0), 0.0),
-    )
-    package_entropy = max(0.0, _safe_float(row.get("package_entropy", 0.0), 0.0))
-
-    text_term = math.log1p(semantic_text_chars) * 0.32
-    energy_term = math.log1p((daimoi_energy * 2.8) + (message_probability * 3.5)) * 0.42
-    entropy_term = package_entropy * 0.08
-    mass_term = semantic_mass * 0.15
-    return max(0.35, min(8.5, 0.5 + text_term + energy_term + entropy_term + mass_term))
 
 
 def _stream_particle_collision_radius(row: dict[str, Any], mass_value: float) -> float:
-    size_value = max(0.35, _safe_float(row.get("size", 1.0), 1.0))
-    return max(
-        0.004, min(0.035, (size_value * 0.0044) + (math.sqrt(mass_value) * 0.0014))
+    return simulation_collision_utils_module.stream_particle_collision_radius(
+        row,
+        mass_value,
+        safe_float=_safe_float,
     )
 
 
 def _apply_stream_collision_behavior_variation(
     particle_rows: list[dict[str, Any]], *, now_seconds: float | None = None
 ) -> None:
-    if not isinstance(particle_rows, list) or not particle_rows:
-        return
-    now_value = _safe_float(now_seconds, time.time())
-    amplitude_ratio = max(0.0, SIMULATION_STREAM_NOISE_AMPLITUDE / 10.0)
-    for index, row in enumerate(particle_rows):
-        if not isinstance(row, dict):
-            continue
-        collisions = max(0, _safe_int(row.get("collision_count", 0), 0))
-        if collisions <= 0:
-            continue
-
-        is_nexus = bool(row.get("is_nexus", False))
-        collision_signal = _clamp01(
-            _safe_float(collisions, 0.0) / max(1.0, SIMULATION_STREAM_COLLISION_STATIC)
-        )
-        if collision_signal <= 1e-8:
-            continue
-
-        vx_value = _safe_float(row.get("vx", 0.0), 0.0)
-        vy_value = _safe_float(row.get("vy", 0.0), 0.0)
-        x_value = _clamp01(_safe_float(row.get("x", 0.5), 0.5))
-        y_value = _clamp01(_safe_float(row.get("y", 0.5), 0.5))
-        particle_id = str(row.get("id", "") or f"particle:{index}")
-        seed = int(hashlib.sha1(particle_id.encode("utf-8")).hexdigest()[:8], 16)
-
-        coupling_damp = 1.0 - (
-            collision_signal
-            * (0.13 if not is_nexus else 0.08)
-            * max(0.2, SIMULATION_STREAM_ANT_INFLUENCE)
-        )
-        coupling_damp = max(0.68 if not is_nexus else 0.78, min(1.0, coupling_damp))
-        vx_value *= coupling_damp
-        vy_value *= coupling_damp
-
-        phase = now_value * (0.67 + (collision_signal * 0.29))
-        noise_x = _simplex_noise_2d(
-            (x_value * 6.4) + phase + (index * 0.021),
-            (y_value * 6.1) + (phase * 0.73),
-            seed=(seed % 251) + 17,
-        )
-        noise_y = _simplex_noise_2d(
-            (x_value * 6.0) + 109.0 + (phase * 0.61),
-            (y_value * 6.3) + phase + (index * 0.019),
-            seed=(seed % 251) + 73,
-        )
-        kick_gain = (
-            (0.00056 + (collision_signal * 0.00242))
-            * max(0.2, amplitude_ratio)
-            * (1.0 if not is_nexus else 0.46)
-        )
-        vx_value += noise_x * kick_gain
-        vy_value += noise_y * kick_gain
-
-        speed = math.hypot(vx_value, vy_value)
-        min_escape_speed = (
-            (0.00062 + (collision_signal * 0.00155))
-            * max(0.2, amplitude_ratio)
-            * (1.0 if not is_nexus else 0.45)
-        )
-        if speed < min_escape_speed:
-            if speed > 1e-8:
-                ux = vx_value / speed
-                uy = vy_value / speed
-            else:
-                ux = noise_x
-                uy = noise_y
-                unorm = math.hypot(ux, uy)
-                if unorm <= 1e-8:
-                    ux, uy = 1.0, 0.0
-                else:
-                    ux /= unorm
-                    uy /= unorm
-            vx_value += ux * (min_escape_speed - speed)
-            vy_value += uy * (min_escape_speed - speed)
-
-        row["vx"] = round(vx_value, 6)
-        row["vy"] = round(vy_value, 6)
-        row["collision_escape_signal"] = round(collision_signal, 6)
+    simulation_collision_utils_module.apply_stream_collision_behavior_variation(
+        particle_rows,
+        now_seconds=now_seconds,
+        safe_float=_safe_float,
+        safe_int=_safe_int,
+        clamp01=_clamp01,
+        simplex_noise_2d=_simplex_noise_2d,
+        stream_noise_amplitude=SIMULATION_STREAM_NOISE_AMPLITUDE,
+        stream_collision_static=SIMULATION_STREAM_COLLISION_STATIC,
+        stream_ant_influence=SIMULATION_STREAM_ANT_INFLUENCE,
+    )
 
 
 def _semantic_collision_buffer_pool() -> dict[str, list[Any]]:
-    state = getattr(_SEMANTIC_COLLISION_BUFFER_LOCAL, "state", None)
-    if isinstance(state, dict):
-        return state
-    state = {
-        "x": [],
-        "y": [],
-        "vx": [],
-        "vy": [],
-        "radius": [],
-        "mass": [],
-        "collisions": [],
-    }
-    _SEMANTIC_COLLISION_BUFFER_LOCAL.state = state
-    return state
+    return simulation_collision_utils_module.semantic_collision_buffer_pool()
 
 
 def _resolve_semantic_particle_collisions_native(
     particle_rows: list[dict[str, Any]],
 ) -> bool:
-    if len(particle_rows) < 2:
-        return True
-
-    try:
-        from . import c_double_buffer_backend
-    except Exception:
-        return False
-
-    resolver_inplace = getattr(
-        c_double_buffer_backend,
-        "resolve_semantic_collisions_native_inplace",
-        None,
+    return simulation_collision_utils_module.resolve_semantic_particle_collisions_native(
+        particle_rows,
+        safe_float=_safe_float,
+        clamp01=_clamp01,
+        stream_particle_effective_mass_fn=_stream_particle_effective_mass,
+        stream_particle_collision_radius_fn=_stream_particle_collision_radius,
+        apply_stream_collision_behavior_variation_fn=_apply_stream_collision_behavior_variation,
     )
-    resolver = getattr(
-        c_double_buffer_backend, "resolve_semantic_collisions_native", None
-    )
-    if not callable(resolver_inplace) and not callable(resolver):
-        return False
-
-    pool = _semantic_collision_buffer_pool()
-    x_values = pool.get("x", [])
-    y_values = pool.get("y", [])
-    vx_values = pool.get("vx", [])
-    vy_values = pool.get("vy", [])
-    radius_values = pool.get("radius", [])
-    mass_values = pool.get("mass", [])
-    collisions = pool.get("collisions", [])
-    if not (
-        isinstance(x_values, list)
-        and isinstance(y_values, list)
-        and isinstance(vx_values, list)
-        and isinstance(vy_values, list)
-        and isinstance(radius_values, list)
-        and isinstance(mass_values, list)
-        and isinstance(collisions, list)
-    ):
-        return False
-
-    x_values.clear()
-    y_values.clear()
-    vx_values.clear()
-    vy_values.clear()
-    radius_values.clear()
-    mass_values.clear()
-    collisions.clear()
-
-    for row in particle_rows:
-        x_value = _clamp01(_safe_float(row.get("x", 0.5), 0.5))
-        y_value = _clamp01(_safe_float(row.get("y", 0.5), 0.5))
-        vx_value = _safe_float(row.get("vx", 0.0), 0.0)
-        vy_value = _safe_float(row.get("vy", 0.0), 0.0)
-        mass_value = _stream_particle_effective_mass(row)
-        radius_value = _stream_particle_collision_radius(row, mass_value)
-        x_values.append(x_value)
-        y_values.append(y_value)
-        vx_values.append(vx_value)
-        vy_values.append(vy_value)
-        mass_values.append(mass_value)
-        radius_values.append(radius_value)
-
-    if callable(resolver_inplace):
-        resolved_inplace = bool(
-            resolver_inplace(
-                x=x_values,
-                y=y_values,
-                vx=vx_values,
-                vy=vy_values,
-                radius=radius_values,
-                mass=mass_values,
-                collisions_out=collisions,
-                restitution=0.91,
-                separation_percent=0.84,
-                cell_size=0.04,
-            )
-        )
-        if not resolved_inplace or len(collisions) != len(particle_rows):
-            return False
-
-        for idx, row in enumerate(particle_rows):
-            row["x"] = round(_clamp01(_safe_float(x_values[idx], x_values[idx])), 5)
-            row["y"] = round(_clamp01(_safe_float(y_values[idx], y_values[idx])), 5)
-            row["vx"] = round(_safe_float(vx_values[idx], vx_values[idx]), 6)
-            row["vy"] = round(_safe_float(vy_values[idx], vy_values[idx]), 6)
-            row["collision_count"] = max(0, int(_safe_float(collisions[idx], 0.0)))
-        _apply_stream_collision_behavior_variation(particle_rows)
-        return True
-
-    if not callable(resolver):
-        return False
-
-    resolved = resolver(
-        x=x_values,
-        y=y_values,
-        vx=vx_values,
-        vy=vy_values,
-        radius=radius_values,
-        mass=mass_values,
-        restitution=0.91,
-        separation_percent=0.84,
-        cell_size=0.04,
-    )
-    if not (isinstance(resolved, tuple) and len(resolved) == 5):
-        return False
-
-    x_next, y_next, vx_next, vy_next, collisions = resolved
-    count = len(particle_rows)
-    if not (
-        isinstance(x_next, list)
-        and isinstance(y_next, list)
-        and isinstance(vx_next, list)
-        and isinstance(vy_next, list)
-        and isinstance(collisions, list)
-        and len(x_next) == count
-        and len(y_next) == count
-        and len(vx_next) == count
-        and len(vy_next) == count
-        and len(collisions) == count
-    ):
-        return False
-
-    for idx, row in enumerate(particle_rows):
-        row["x"] = round(_clamp01(_safe_float(x_next[idx], x_values[idx])), 5)
-        row["y"] = round(_clamp01(_safe_float(y_next[idx], y_values[idx])), 5)
-        row["vx"] = round(_safe_float(vx_next[idx], vx_values[idx]), 6)
-        row["vy"] = round(_safe_float(vy_next[idx], vy_values[idx]), 6)
-        row["collision_count"] = max(0, int(_safe_float(collisions[idx], 0.0)))
-    _apply_stream_collision_behavior_variation(particle_rows)
-    return True
 
 
 def _resolve_semantic_particle_collisions(rows: list[dict[str, Any]]) -> None:
-    if not isinstance(rows, list):
-        return
-    particle_rows = [row for row in rows if isinstance(row, dict)]
-    if len(particle_rows) < 2:
-        return
-
-    if _resolve_semantic_particle_collisions_native(particle_rows):
-        return
-
-    mass_by_id: dict[str, float] = {}
-    radius_by_id: dict[str, float] = {}
-    for row in particle_rows:
-        particle_id = str(row.get("id", "") or id(row))
-        mass_value = _stream_particle_effective_mass(row)
-        mass_by_id[particle_id] = mass_value
-        radius_by_id[particle_id] = _stream_particle_collision_radius(row, mass_value)
-
-    cell_size = 0.04
-    grid: dict[tuple[int, int], list[dict[str, Any]]] = defaultdict(list)
-    for row in particle_rows:
-        x_value = _clamp01(_safe_float(row.get("x", 0.5), 0.5))
-        y_value = _clamp01(_safe_float(row.get("y", 0.5), 0.5))
-        gx = int(x_value / cell_size)
-        gy = int(y_value / cell_size)
-        grid[(gx, gy)].append(row)
-
-    restitution = 0.91
-    separation_percent = 0.84
-    collision_count_updates: dict[str, int] = defaultdict(int)
-
-    visited_pairs: set[tuple[str, str]] = set()
-    for (gx, gy), bucket in grid.items():
-        neighbors: list[dict[str, Any]] = []
-        for nx in (gx - 1, gx, gx + 1):
-            for ny in (gy - 1, gy, gy + 1):
-                neighbors.extend(grid.get((nx, ny), []))
-
-        for row_a in bucket:
-            id_a = str(row_a.get("id", "") or id(row_a))
-            x_a = _clamp01(_safe_float(row_a.get("x", 0.5), 0.5))
-            y_a = _clamp01(_safe_float(row_a.get("y", 0.5), 0.5))
-            vx_a = _safe_float(row_a.get("vx", 0.0), 0.0)
-            vy_a = _safe_float(row_a.get("vy", 0.0), 0.0)
-            mass_a = max(0.2, _safe_float(mass_by_id.get(id_a, 1.0), 1.0))
-            inv_mass_a = 1.0 / mass_a
-            radius_a = _safe_float(radius_by_id.get(id_a, 0.01), 0.01)
-
-            for row_b in neighbors:
-                if row_a is row_b:
-                    continue
-                id_b = str(row_b.get("id", "") or id(row_b))
-                pair = (id_a, id_b) if id_a < id_b else (id_b, id_a)
-                if pair in visited_pairs:
-                    continue
-                visited_pairs.add(pair)
-
-                x_b = _clamp01(_safe_float(row_b.get("x", 0.5), 0.5))
-                y_b = _clamp01(_safe_float(row_b.get("y", 0.5), 0.5))
-                dx = x_b - x_a
-                dy = y_b - y_a
-                distance = math.hypot(dx, dy)
-
-                mass_b = max(0.2, _safe_float(mass_by_id.get(id_b, 1.0), 1.0))
-                inv_mass_b = 1.0 / mass_b
-                radius_b = _safe_float(radius_by_id.get(id_b, 0.01), 0.01)
-                min_distance = radius_a + radius_b
-                if distance >= min_distance:
-                    continue
-
-                if distance < 1e-6:
-                    seed = int(
-                        hashlib.sha1(f"{id_a}|{id_b}".encode("utf-8")).hexdigest()[:8],
-                        16,
-                    )
-                    theta = float(seed % 6283) / 1000.0
-                    nx = math.cos(theta)
-                    ny = math.sin(theta)
-                    distance = 1e-6
-                else:
-                    nx = dx / distance
-                    ny = dy / distance
-
-                vx_b = _safe_float(row_b.get("vx", 0.0), 0.0)
-                vy_b = _safe_float(row_b.get("vy", 0.0), 0.0)
-                rel_vx = vx_a - vx_b
-                rel_vy = vy_a - vy_b
-                vel_normal = (rel_vx * nx) + (rel_vy * ny)
-
-                if vel_normal < 0.0:
-                    impulse = (-(1.0 + restitution) * vel_normal) / max(
-                        1e-6, inv_mass_a + inv_mass_b
-                    )
-                    impulse_x = impulse * nx
-                    impulse_y = impulse * ny
-                    vx_a += impulse_x * inv_mass_a
-                    vy_a += impulse_y * inv_mass_a
-                    vx_b -= impulse_x * inv_mass_b
-                    vy_b -= impulse_y * inv_mass_b
-
-                    tangent_x = rel_vx - (vel_normal * nx)
-                    tangent_y = rel_vy - (vel_normal * ny)
-                    tangent_norm = math.hypot(tangent_x, tangent_y)
-                    if tangent_norm > 1e-6:
-                        tangent_x /= tangent_norm
-                        tangent_y /= tangent_norm
-                        tangent_impulse = min(
-                            abs(impulse) * 0.1,
-                            abs((rel_vx * tangent_x) + (rel_vy * tangent_y)),
-                        )
-                        vx_a -= tangent_impulse * tangent_x * inv_mass_a
-                        vy_a -= tangent_impulse * tangent_y * inv_mass_a
-                        vx_b += tangent_impulse * tangent_x * inv_mass_b
-                        vy_b += tangent_impulse * tangent_y * inv_mass_b
-
-                penetration = min_distance - distance
-                correction = (
-                    max(0.0, penetration) / max(1e-6, inv_mass_a + inv_mass_b)
-                ) * separation_percent
-                correction_x = correction * nx
-                correction_y = correction * ny
-
-                x_a -= correction_x * inv_mass_a
-                y_a -= correction_y * inv_mass_a
-                x_b += correction_x * inv_mass_b
-                y_b += correction_y * inv_mass_b
-
-                row_b["x"] = round(_clamp01(x_b), 5)
-                row_b["y"] = round(_clamp01(y_b), 5)
-                row_b["vx"] = round(vx_b, 6)
-                row_b["vy"] = round(vy_b, 6)
-                collision_count_updates[id_b] += 1
-
-                collision_count_updates[id_a] += 1
-
-            row_a["x"] = round(_clamp01(x_a), 5)
-            row_a["y"] = round(_clamp01(y_a), 5)
-            row_a["vx"] = round(vx_a, 6)
-            row_a["vy"] = round(vy_a, 6)
-
-    for row in particle_rows:
-        particle_id = str(row.get("id", "") or id(row))
-        collisions = int(collision_count_updates.get(particle_id, 0))
-        row["collision_count"] = collisions
-
-    _apply_stream_collision_behavior_variation(particle_rows)
+    simulation_collision_utils_module.resolve_semantic_particle_collisions(
+        rows,
+        safe_float=_safe_float,
+        clamp01=_clamp01,
+        stream_particle_effective_mass_fn=_stream_particle_effective_mass,
+        stream_particle_collision_radius_fn=_stream_particle_collision_radius,
+        apply_stream_collision_behavior_variation_fn=_apply_stream_collision_behavior_variation,
+        resolve_semantic_particle_collisions_native_fn=_resolve_semantic_particle_collisions_native,
+    )
 
 
 def _stream_motion_tick_scale(dt_seconds: float) -> float:
-    dt = max(0.001, _safe_float(dt_seconds, 0.08))
-    return max(0.55, min(3.0, dt / 0.0166667))
+    return simulation_stream_motion_utils_module.stream_motion_tick_scale(
+        dt_seconds,
+        safe_float=_safe_float,
+    )
 
 
 def _particle_origin_presence_id(row: dict[str, Any]) -> str:
-    if not isinstance(row, dict):
-        return ""
-    explicit_origin = str(row.get("origin_presence_id", "") or "").strip()
-    if explicit_origin:
-        return explicit_origin
-    particle_id = str(row.get("id", "") or "").strip()
-    if particle_id.startswith("field:"):
-        body = particle_id[6:]
-        if body:
-            return str(body.rsplit(":", 1)[0]).strip()
-    owner_presence = str(row.get("owner_presence_id", "") or "").strip()
-    if owner_presence:
-        return owner_presence
-    return str(row.get("presence_id", "") or "").strip()
+    return simulation_stream_motion_utils_module.particle_origin_presence_id(row)
 
 
 def _update_stream_motion_overlays(
@@ -11600,403 +9942,134 @@ def _update_stream_motion_overlays(
     now_seconds: float | None = None,
     policy: dict[str, Any] | None = None,
 ) -> None:
-    if not isinstance(presence_dynamics, dict):
-        return
+    simulation_stream_motion_utils_module.update_stream_motion_overlays(
+        presence_dynamics,
+        dt_seconds=dt_seconds,
+        now_seconds=now_seconds,
+        policy=policy,
+        safe_float=_safe_float,
+        safe_int=_safe_int,
+        clamp01=_clamp01,
+        simplex_noise_2d=_simplex_noise_2d,
+        nooi_flow_at=_nooi_flow_at,
+        dynamics_lock=_DAIMO_DYNAMICS_LOCK,
+        dynamics_cache=_DAIMO_DYNAMICS_CACHE,
+        stream_overlay_nooi_gain=SIMULATION_STREAM_OVERLAY_NOOI_GAIN,
+        stream_overlay_anchor_nooi_gain=SIMULATION_STREAM_OVERLAY_ANCHOR_NOOI_GAIN,
+    )
 
-    policy_obj = policy if isinstance(policy, dict) else {}
-    if policy_obj:
-        tick_signals = presence_dynamics.get("tick_signals", {})
-        if not isinstance(tick_signals, dict):
-            tick_signals = {}
 
-        slack_ms = _safe_float(policy_obj.get("slack_ms", float("nan")), float("nan"))
-        tick_budget_ms = _safe_float(
-            policy_obj.get("tick_budget_ms", float("nan")),
-            float("nan"),
+def _normalize_daimoi_collision_event_state(
+    presence_dynamics: dict[str, Any],
+) -> tuple[list[dict[str, Any]], int, set[str]]:
+    event_rows: list[dict[str, Any]] = []
+    event_rows_raw = presence_dynamics.get("daimoi_collision_events", [])
+    if isinstance(event_rows_raw, list):
+        for row in event_rows_raw[-SIMULATION_DAIMOI_COLLISION_EVENT_HISTORY_MAX:]:
+            if not isinstance(row, dict):
+                continue
+            event_id = str(row.get("event_id", "") or "").strip()
+            if not event_id:
+                continue
+            event_rows.append(dict(row))
+
+    event_seq = max(
+        0, _safe_int(presence_dynamics.get("daimoi_collision_event_seq", 0), 0)
+    )
+    for row in event_rows:
+        event_seq = max(event_seq, max(0, _safe_int(row.get("seq", 0), 0)))
+
+    active_ids_raw = presence_dynamics.get("_resource_daimoi_active_ids", [])
+    active_ids: set[str] = set()
+    if isinstance(active_ids_raw, list):
+        for value in active_ids_raw[-SIMULATION_DAIMOI_COLLISION_ACTIVE_ID_MAX:]:
+            particle_id = str(value or "").strip()
+            if particle_id:
+                active_ids.add(particle_id)
+
+    return event_rows, event_seq, active_ids
+
+
+def _build_daimoi_collision_event(
+    *,
+    event_seq: int,
+    kind: str,
+    row: dict[str, Any],
+    x_value: float,
+    y_value: float,
+    target_x: float | None,
+    target_y: float | None,
+    timestamp: str,
+) -> dict[str, Any]:
+    particle_id = str(row.get("id", "") or f"field:{event_seq}").strip()
+    particle_presence_id = str(row.get("presence_id", "") or "").strip()
+    owner_presence_id = str(
+        row.get("owner_presence_id", particle_presence_id) or ""
+    ).strip()
+    target_presence_id = str(
+        row.get("resource_target_presence_id", row.get("target_presence_id", "")) or ""
+    ).strip()
+    resource_type = (
+        _canonical_resource_type(
+            str(
+                row.get(
+                    "resource_type",
+                    row.get(
+                        "resource_consume_type", row.get("route_resource_focus", "cpu")
+                    ),
+                )
+                or "cpu"
+            )
         )
-        ingestion_pressure = max(
-            0.0,
-            min(1.0, _safe_float(policy_obj.get("ingestion_pressure", 0.0), 0.0)),
-        )
-        ws_particle_max = max(
+        or "cpu"
+    )
+    collision_count = max(
+        0,
+        _safe_int(
+            row.get("collision_count", row.get("collisions", 0)),
             0,
-            int(_safe_float(policy_obj.get("ws_particle_max", 0.0), 0.0)),
-        )
-        guard_mode = str(policy_obj.get("guard_mode", "") or "").strip()
+        ),
+    )
 
-        if math.isfinite(slack_ms):
-            tick_signals["slack_ms"] = slack_ms
-        if math.isfinite(tick_budget_ms):
-            tick_signals["tick_budget_ms"] = tick_budget_ms
-        tick_signals["ingestion_pressure"] = ingestion_pressure
-        if ws_particle_max > 0:
-            tick_signals["ws_particle_max"] = ws_particle_max
-        if guard_mode:
-            tick_signals["guard_mode"] = guard_mode
+    event: dict[str, Any] = {
+        "record": DAIMOI_COLLISION_EVENT_RECORD,
+        "schema_version": DAIMOI_COLLISION_EVENT_SCHEMA_VERSION,
+        "event_id": f"daimoi-collision:{event_seq}:{kind}:{particle_id}",
+        "seq": int(max(0, event_seq)),
+        "kind": str(kind or "event").strip().lower(),
+        "ts": str(timestamp or datetime.now(timezone.utc).isoformat()),
+        "particle_id": particle_id,
+        "presence_id": particle_presence_id,
+        "owner_presence_id": owner_presence_id,
+        "target_presence_id": target_presence_id,
+        "resource_type": resource_type,
+        "x": round(_clamp01(_safe_float(x_value, 0.5)), 5),
+        "y": round(_clamp01(_safe_float(y_value, 0.5)), 5),
+        "graph_node_id": str(row.get("graph_node_id", "") or "").strip(),
+        "route_node_id": str(row.get("route_node_id", "") or "").strip(),
+        "collision_count": int(collision_count),
+    }
+    emit_amount = max(0.0, _safe_float(row.get("resource_emit_amount", 0.0), 0.0))
+    if emit_amount > 1e-9:
+        event["resource_emit_amount"] = round(emit_amount, 6)
+    if isinstance(target_x, (int, float)) and math.isfinite(float(target_x)):
+        event["target_x"] = round(_clamp01(_safe_float(target_x, 0.5)), 5)
+    if isinstance(target_y, (int, float)) and math.isfinite(float(target_y)):
+        event["target_y"] = round(_clamp01(_safe_float(target_y, 0.5)), 5)
+    return event
 
-        presence_dynamics["tick_signals"] = tick_signals
 
-    rows = presence_dynamics.get("field_particles", [])
-    if not isinstance(rows, list) or not rows:
-        presence_dynamics.pop("graph_node_positions", None)
-        presence_dynamics.pop("presence_anchor_positions", None)
-        return
-
-    now_mono = _safe_float(now_seconds, 0.0)
-    if now_mono <= 0.0:
-        now_mono = time.monotonic()
-    frame_scale = _stream_motion_tick_scale(dt_seconds)
-
-    node_acc: dict[str, dict[str, float]] = {}
-    presence_acc: dict[str, dict[str, float]] = {}
-    max_nodes = 2200
-
-    for row in rows:
+def _latest_daimoi_collision_event_by_particle_id(
+    event_rows: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    lookup: dict[str, dict[str, Any]] = {}
+    for row in event_rows:
         if not isinstance(row, dict):
             continue
-
-        x_value = _clamp01(_safe_float(row.get("x", 0.5), 0.5))
-        y_value = _clamp01(_safe_float(row.get("y", 0.5), 0.5))
-        vx_value = _safe_float(row.get("vx", 0.0), 0.0)
-        vy_value = _safe_float(row.get("vy", 0.0), 0.0)
-
-        presence_id = str(row.get("presence_id", "") or "").strip()
-        if presence_id:
-            presence_bucket = presence_acc.get(presence_id)
-            if not isinstance(presence_bucket, dict):
-                presence_bucket = {
-                    "sum_x": 0.0,
-                    "sum_y": 0.0,
-                    "count": 0.0,
-                }
-                presence_acc[presence_id] = presence_bucket
-            presence_bucket["sum_x"] += x_value
-            presence_bucket["sum_y"] += y_value
-            presence_bucket["count"] += 1.0
-
-        route_probability = _clamp01(
-            _safe_float(row.get("route_probability", 0.0), 0.0)
-        )
-        influence_power = _clamp01(_safe_float(row.get("influence_power", 0.0), 0.0))
-        semantic_signal = _clamp01(
-            abs(_safe_float(row.get("drift_cost_semantic_term", 0.0), 0.0))
-            + (_safe_float(row.get("message_probability", 0.0), 0.0) * 0.4)
-            + (_safe_float(row.get("package_entropy", 0.0), 0.0) * 0.15)
-        )
-        base_weight = max(
-            0.08,
-            0.2
-            + (route_probability * 0.38)
-            + (influence_power * 0.28)
-            + (semantic_signal * 0.2),
-        )
-
-        node_refs = (
-            (
-                str(row.get("route_node_id", "") or "").strip(),
-                _safe_float(row.get("route_x", x_value), x_value),
-                _safe_float(row.get("route_y", y_value), y_value),
-                1.0,
-            ),
-            (
-                str(row.get("graph_node_id", "") or "").strip(),
-                _safe_float(row.get("graph_x", x_value), x_value),
-                _safe_float(row.get("graph_y", y_value), y_value),
-                0.76,
-            ),
-        )
-
-        for node_id, anchor_x_raw, anchor_y_raw, role_weight in node_refs:
-            if not node_id:
-                continue
-            if node_id not in node_acc and len(node_acc) >= max_nodes:
-                continue
-
-            anchor_x = _clamp01(
-                anchor_x_raw if math.isfinite(anchor_x_raw) else x_value
-            )
-            anchor_y = _clamp01(
-                anchor_y_raw if math.isfinite(anchor_y_raw) else y_value
-            )
-            weight = max(0.05, base_weight * max(0.05, _safe_float(role_weight, 1.0)))
-
-            bucket = node_acc.get(node_id)
-            if not isinstance(bucket, dict):
-                bucket = {
-                    "sum_x": 0.0,
-                    "sum_y": 0.0,
-                    "weight": 0.0,
-                    "flow_x": 0.0,
-                    "flow_y": 0.0,
-                    "flow_weight": 0.0,
-                    "anchor_x": 0.0,
-                    "anchor_y": 0.0,
-                    "anchor_weight": 0.0,
-                    "samples": 0.0,
-                }
-                node_acc[node_id] = bucket
-
-            bucket["sum_x"] += x_value * weight
-            bucket["sum_y"] += y_value * weight
-            bucket["weight"] += weight
-            bucket["flow_x"] += vx_value * weight
-            bucket["flow_y"] += vy_value * weight
-            bucket["flow_weight"] += weight
-            bucket["anchor_x"] += anchor_x * weight
-            bucket["anchor_y"] += anchor_y * weight
-            bucket["anchor_weight"] += weight
-            bucket["samples"] += 1.0
-
-    graph_positions: dict[str, dict[str, Any]] = {}
-    presence_positions: dict[str, dict[str, Any]] = {}
-
-    with _DAIMO_DYNAMICS_LOCK:
-        graph_cache = _DAIMO_DYNAMICS_CACHE.get("graph_nodes", {})
-        if not isinstance(graph_cache, dict):
-            graph_cache = {}
-
-        ranked_nodes = sorted(
-            node_acc.items(),
-            key=lambda item: (-_safe_float(item[1].get("samples", 0.0), 0.0), item[0]),
-        )
-        for node_id, acc in ranked_nodes:
-            weight_total = max(1e-6, _safe_float(acc.get("weight", 0.0), 0.0))
-            target_x = _clamp01(_safe_float(acc.get("sum_x", 0.0), 0.0) / weight_total)
-            target_y = _clamp01(_safe_float(acc.get("sum_y", 0.0), 0.0) / weight_total)
-
-            anchor_weight = max(1e-6, _safe_float(acc.get("anchor_weight", 0.0), 0.0))
-            anchor_x = _clamp01(
-                _safe_float(acc.get("anchor_x", 0.0), 0.0) / anchor_weight
-            )
-            anchor_y = _clamp01(
-                _safe_float(acc.get("anchor_y", 0.0), 0.0) / anchor_weight
-            )
-
-            flow_weight = max(1e-6, _safe_float(acc.get("flow_weight", 0.0), 0.0))
-            flow_x = _safe_float(acc.get("flow_x", 0.0), 0.0) / flow_weight
-            flow_y = _safe_float(acc.get("flow_y", 0.0), 0.0) / flow_weight
-
-            state = graph_cache.get(node_id, {})
-            if not isinstance(state, dict):
-                state = {}
-
-            x_value = _clamp01(_safe_float(state.get("x", anchor_x), anchor_x))
-            y_value = _clamp01(_safe_float(state.get("y", anchor_y), anchor_y))
-            vx_value = _safe_float(state.get("vx", 0.0), 0.0)
-            vy_value = _safe_float(state.get("vy", 0.0), 0.0)
-
-            sample_count = max(1.0, _safe_float(acc.get("samples", 1.0), 1.0))
-            density_signal = _clamp01(sample_count / 24.0)
-            node_seed = _safe_int(state.get("seed", 0), 0)
-            if node_seed <= 0:
-                node_seed = int(
-                    hashlib.sha1(f"stream-node:{node_id}".encode("utf-8")).hexdigest()[
-                        :8
-                    ],
-                    16,
-                )
-
-            drift_scale = 0.0012 + (density_signal * 0.002)
-            drift_time = now_mono * (0.18 + (density_signal * 0.16))
-            drift_x = _simplex_noise_2d(
-                (anchor_x * 7.6) + (sample_count * 0.033),
-                drift_time,
-                seed=(node_seed % 251) + 17,
-            )
-            drift_y = _simplex_noise_2d(
-                (anchor_y * 7.2) + 41.0 + (sample_count * 0.027),
-                drift_time * 1.13,
-                seed=(node_seed % 251) + 79,
-            )
-            target_x = _clamp01(target_x + (drift_x * drift_scale))
-            target_y = _clamp01(target_y + (drift_y * drift_scale))
-
-            spring_gain = 0.028 + (density_signal * 0.018)
-            anchor_gain = 0.015 + ((1.0 - density_signal) * 0.01)
-            flow_gain = 0.39 + (density_signal * 0.18)
-
-            vx_value += (
-                ((target_x - x_value) * spring_gain)
-                + ((anchor_x - x_value) * anchor_gain)
-                + (flow_x * flow_gain)
-            ) * frame_scale
-            vy_value += (
-                ((target_y - y_value) * spring_gain)
-                + ((anchor_y - y_value) * anchor_gain)
-                + (flow_y * flow_gain)
-            ) * frame_scale
-
-            nooi_dir_x, nooi_dir_y, nooi_signal = _nooi_flow_at(x_value, y_value)
-            if nooi_signal > 0.0:
-                nooi_gain = (
-                    _safe_float(SIMULATION_STREAM_OVERLAY_NOOI_GAIN, 0.0)
-                    * nooi_signal
-                    * frame_scale
-                )
-                vx_value += nooi_dir_x * nooi_gain
-                vy_value += nooi_dir_y * nooi_gain
-
-            damping_tick = math.pow(0.81, frame_scale)
-            vx_value *= damping_tick
-            vy_value *= damping_tick
-
-            speed = math.hypot(vx_value, vy_value)
-            max_speed = 0.0036 + (density_signal * 0.0039)
-            if speed > max_speed and speed > 0.0:
-                speed_scale = max_speed / speed
-                vx_value *= speed_scale
-                vy_value *= speed_scale
-
-            x_value = _clamp01(x_value + (vx_value * frame_scale))
-            y_value = _clamp01(y_value + (vy_value * frame_scale))
-
-            graph_cache[node_id] = {
-                "x": x_value,
-                "y": y_value,
-                "vx": vx_value,
-                "vy": vy_value,
-                "samples": int(sample_count),
-                "seed": node_seed,
-                "ts": now_mono,
-            }
-            graph_positions[node_id] = {
-                "x": round(x_value, 5),
-                "y": round(y_value, 5),
-                "vx": round(vx_value, 6),
-                "vy": round(vy_value, 6),
-                "samples": int(sample_count),
-            }
-
-        graph_stale_before = now_mono - 120.0
-        for node_id in list(graph_cache.keys()):
-            state = graph_cache.get(node_id)
-            if not isinstance(state, dict):
-                graph_cache.pop(node_id, None)
-                continue
-            ts_value = _safe_float(state.get("ts", now_mono), now_mono)
-            if node_id not in node_acc and ts_value < graph_stale_before:
-                graph_cache.pop(node_id, None)
-
-        _DAIMO_DYNAMICS_CACHE["graph_nodes"] = graph_cache
-
-        anchor_cache = _DAIMO_DYNAMICS_CACHE.get("presence_anchors", {})
-        if not isinstance(anchor_cache, dict):
-            anchor_cache = {}
-
-        ranked_presences = sorted(
-            presence_acc.items(),
-            key=lambda item: (-_safe_float(item[1].get("count", 0.0), 0.0), item[0]),
-        )
-        for presence_id, acc in ranked_presences[:240]:
-            count_value = max(1.0, _safe_float(acc.get("count", 1.0), 1.0))
-            target_x = _clamp01(_safe_float(acc.get("sum_x", 0.0), 0.0) / count_value)
-            target_y = _clamp01(_safe_float(acc.get("sum_y", 0.0), 0.0) / count_value)
-
-            state = anchor_cache.get(presence_id, {})
-            if not isinstance(state, dict):
-                state = {}
-
-            x_value = _clamp01(_safe_float(state.get("x", target_x), target_x))
-            y_value = _clamp01(_safe_float(state.get("y", target_y), target_y))
-            vx_value = _safe_float(state.get("vx", 0.0), 0.0)
-            vy_value = _safe_float(state.get("vy", 0.0), 0.0)
-            presence_seed = _safe_int(state.get("seed", 0), 0)
-            if presence_seed <= 0:
-                presence_seed = int(
-                    hashlib.sha1(
-                        f"stream-presence:{presence_id}".encode("utf-8")
-                    ).hexdigest()[:8],
-                    16,
-                )
-
-            density_signal = _clamp01(count_value / 40.0)
-            drift_scale = 0.0011 + (density_signal * 0.0018)
-            drift_time = now_mono * (0.14 + (density_signal * 0.11))
-            target_x = _clamp01(
-                target_x
-                + (
-                    _simplex_noise_2d(
-                        (target_x * 6.3) + 17.0,
-                        drift_time,
-                        seed=(presence_seed % 251) + 23,
-                    )
-                    * drift_scale
-                )
-            )
-            target_y = _clamp01(
-                target_y
-                + (
-                    _simplex_noise_2d(
-                        (target_y * 6.1) + 53.0,
-                        drift_time * 1.09,
-                        seed=(presence_seed % 251) + 61,
-                    )
-                    * drift_scale
-                )
-            )
-            pull_gain = 0.18 + (density_signal * 0.12)
-            vx_value += (target_x - x_value) * pull_gain * frame_scale
-            vy_value += (target_y - y_value) * pull_gain * frame_scale
-
-            nooi_dir_x, nooi_dir_y, nooi_signal = _nooi_flow_at(x_value, y_value)
-            if nooi_signal > 0.0:
-                nooi_gain = (
-                    _safe_float(SIMULATION_STREAM_OVERLAY_ANCHOR_NOOI_GAIN, 0.0)
-                    * nooi_signal
-                    * frame_scale
-                )
-                vx_value += nooi_dir_x * nooi_gain
-                vy_value += nooi_dir_y * nooi_gain
-
-            vx_value *= math.pow(0.84, frame_scale)
-            vy_value *= math.pow(0.84, frame_scale)
-
-            speed = math.hypot(vx_value, vy_value)
-            max_speed = 0.016 + (density_signal * 0.01)
-            if speed > max_speed and speed > 0.0:
-                speed_scale = max_speed / speed
-                vx_value *= speed_scale
-                vy_value *= speed_scale
-
-            x_value = _clamp01(x_value + (vx_value * frame_scale))
-            y_value = _clamp01(y_value + (vy_value * frame_scale))
-
-            anchor_cache[presence_id] = {
-                "x": x_value,
-                "y": y_value,
-                "vx": vx_value,
-                "vy": vy_value,
-                "count": int(count_value),
-                "seed": presence_seed,
-                "ts": now_mono,
-            }
-            presence_positions[presence_id] = {
-                "x": round(x_value, 5),
-                "y": round(y_value, 5),
-                "count": int(count_value),
-            }
-
-        anchor_stale_before = now_mono - 90.0
-        for presence_id in list(anchor_cache.keys()):
-            state = anchor_cache.get(presence_id)
-            if not isinstance(state, dict):
-                anchor_cache.pop(presence_id, None)
-                continue
-            ts_value = _safe_float(state.get("ts", now_mono), now_mono)
-            if presence_id not in presence_acc and ts_value < anchor_stale_before:
-                anchor_cache.pop(presence_id, None)
-
-        _DAIMO_DYNAMICS_CACHE["presence_anchors"] = anchor_cache
-
-    if graph_positions:
-        presence_dynamics["graph_node_positions"] = graph_positions
-    else:
-        presence_dynamics.pop("graph_node_positions", None)
-
-    if presence_positions:
-        presence_dynamics["presence_anchor_positions"] = presence_positions
-    else:
-        presence_dynamics.pop("presence_anchor_positions", None)
+        particle_id = str(row.get("particle_id", row.get("id", "")) or "").strip()
+        if particle_id:
+            lookup[particle_id] = row
+    return lookup
 
 
 def advance_simulation_field_particles(
@@ -12013,172 +10086,165 @@ def advance_simulation_field_particles(
         return
     policy_obj = policy if isinstance(policy, dict) else {}
     disable_daimoi = _safe_float(SIMULATION_DISABLE_DAIMOI, 0.0) >= 0.5
-    rows = presence_dynamics.get("field_particles", [])
-    if not isinstance(rows, list):
-        return
-    ws_particle_max = 0
-    if policy_obj:
-        ws_particle_max = max(
-            0,
-            int(_safe_float(policy_obj.get("ws_particle_max", 0.0), 0.0)),
+    rows = simulation_field_context_utils_module.apply_ws_particle_cap(
+        presence_dynamics,
+        presence_dynamics.get("field_particles", []),
+        policy=policy_obj,
+        safe_float=_safe_float,
+    )
+    (
+        daimoi_collision_events,
+        daimoi_collision_event_seq,
+        previously_active_resource_daimoi_ids,
+    ) = _normalize_daimoi_collision_event_state(presence_dynamics)
+    collision_event_lookup = _latest_daimoi_collision_event_by_particle_id(
+        daimoi_collision_events
+    )
+    if simulation_field_context_utils_module.prepare_disabled_or_empty_state(
+        simulation,
+        presence_dynamics,
+        rows,
+        disable_daimoi=disable_daimoi,
+        dt_seconds=dt_seconds,
+        safe_float=_safe_float,
+        reset_nooi_field_state=_reset_nooi_field_state,
+        maybe_seed_random_nooi_field_vectors=_maybe_seed_random_nooi_field_vectors,
+        nooi_field=_NOOI_FIELD,
+    ):
+        if previously_active_resource_daimoi_ids:
+            fallback_timestamp = datetime.now(timezone.utc).isoformat()
+            for particle_id in sorted(previously_active_resource_daimoi_ids):
+                template = (
+                    collision_event_lookup.get(particle_id, {})
+                    if isinstance(collision_event_lookup.get(particle_id, {}), dict)
+                    else {}
+                )
+                template_x = _clamp01(_safe_float(template.get("x", 0.5), 0.5))
+                template_y = _clamp01(_safe_float(template.get("y", 0.5), 0.5))
+                template_target_x_value = _safe_float(
+                    template.get("target_x", float("nan")), float("nan")
+                )
+                template_target_y_value = _safe_float(
+                    template.get("target_y", float("nan")), float("nan")
+                )
+                template_target_x = (
+                    template_target_x_value
+                    if math.isfinite(template_target_x_value)
+                    else None
+                )
+                template_target_y = (
+                    template_target_y_value
+                    if math.isfinite(template_target_y_value)
+                    else None
+                )
+                synthetic_row = {
+                    "id": particle_id,
+                    "presence_id": str(template.get("presence_id", "") or "").strip(),
+                    "owner_presence_id": str(
+                        template.get("owner_presence_id", "") or ""
+                    ).strip(),
+                    "resource_target_presence_id": str(
+                        template.get("target_presence_id", "") or ""
+                    ).strip(),
+                    "resource_type": str(template.get("resource_type", "cpu") or "cpu"),
+                    "graph_node_id": str(
+                        template.get("graph_node_id", "") or ""
+                    ).strip(),
+                    "route_node_id": str(
+                        template.get("route_node_id", "") or ""
+                    ).strip(),
+                    "collision_count": max(
+                        0,
+                        _safe_int(template.get("collision_count", 0), 0),
+                    ),
+                }
+                daimoi_collision_event_seq += 1
+                daimoi_collision_events.append(
+                    _build_daimoi_collision_event(
+                        event_seq=daimoi_collision_event_seq,
+                        kind="absorbed",
+                        row=synthetic_row,
+                        x_value=template_x,
+                        y_value=template_y,
+                        target_x=template_target_x,
+                        target_y=template_target_y,
+                        timestamp=fallback_timestamp,
+                    )
+                )
+            if (
+                len(daimoi_collision_events)
+                > SIMULATION_DAIMOI_COLLISION_EVENT_HISTORY_MAX
+            ):
+                daimoi_collision_events = daimoi_collision_events[
+                    -SIMULATION_DAIMOI_COLLISION_EVENT_HISTORY_MAX:
+                ]
+        presence_dynamics["daimoi_collision_events_record"] = (
+            DAIMOI_COLLISION_EVENTS_RECORD
         )
-    if ws_particle_max > 0 and len(rows) > ws_particle_max:
-        rows = list(rows[:ws_particle_max])
-        presence_dynamics["field_particles"] = rows
-    if disable_daimoi:
-        if rows:
-            _reset_nooi_field_state()
-        _maybe_seed_random_nooi_field_vectors()
-        dt = max(0.001, _safe_float(dt_seconds, 0.08))
-        _NOOI_FIELD.decay(dt)
-        presence_dynamics["field_particles"] = []
-        presence_dynamics["nooi_field"] = _NOOI_FIELD.get_grid_snapshot([])
-        presence_dynamics.pop("graph_node_positions", None)
-        presence_dynamics.pop("presence_anchor_positions", None)
+        presence_dynamics["daimoi_collision_events"] = daimoi_collision_events
+        presence_dynamics["daimoi_collision_event_seq"] = int(
+            max(0, daimoi_collision_event_seq)
+        )
+        presence_dynamics["_resource_daimoi_active_ids"] = []
         simulation["presence_dynamics"] = presence_dynamics
         return
-    if not rows:
-        _maybe_seed_random_nooi_field_vectors()
-        dt = max(0.001, _safe_float(dt_seconds, 0.08))
-        _NOOI_FIELD.decay(dt)
-        presence_dynamics["nooi_field"] = _NOOI_FIELD.get_grid_snapshot([])
-        presence_dynamics.pop("graph_node_positions", None)
-        presence_dynamics.pop("presence_anchor_positions", None)
-        simulation["presence_dynamics"] = presence_dynamics
-        return
 
-    dt = max(0.001, _safe_float(dt_seconds, 0.08))
-    base_dt = max(
-        0.001,
-        _safe_float(
-            os.getenv("SIM_TICK_SECONDS", str(simulation_tick_seconds()))
-            or str(simulation_tick_seconds()),
-            simulation_tick_seconds(),
-        ),
+    friction_ctx = simulation_field_context_utils_module.stream_friction_context(
+        dt_seconds,
+        now_seconds=now_seconds,
+        safe_float=_safe_float,
+        simulation_tick_seconds=simulation_tick_seconds,
+        stream_daimoi_friction=SIMULATION_STREAM_DAIMOI_FRICTION,
+        stream_nexus_friction=SIMULATION_STREAM_NEXUS_FRICTION,
+        stream_daimoi_friction_default=_SIMULATION_STREAM_DAIMOI_FRICTION_DEFAULT,
     )
-    now_value = _safe_float(now_seconds, time.time())
-    daimoi_friction_base = max(
-        0.0,
-        min(
-            2.0,
-            _safe_float(
-                SIMULATION_STREAM_DAIMOI_FRICTION,
-                _SIMULATION_STREAM_DAIMOI_FRICTION_DEFAULT,
-            ),
-        ),
+    dt = _safe_float(friction_ctx.get("dt", 0.08), 0.08)
+    now_value = _safe_float(friction_ctx.get("now_value", now_seconds), time.time())
+    daimoi_friction_tick = _safe_float(
+        friction_ctx.get("daimoi_friction_tick", 1.0), 1.0
     )
-    nexus_friction_base = max(
-        0.0,
-        min(
-            2.0,
-            _safe_float(
-                SIMULATION_STREAM_NEXUS_FRICTION,
-                daimoi_friction_base,
-            ),
-        ),
-    )
-    daimoi_friction_tick = max(
-        0.0,
-        min(1.2, daimoi_friction_base ** (dt / base_dt)),
-    )
-    nexus_friction_tick = max(
-        0.0,
-        min(1.2, nexus_friction_base ** (dt / base_dt)),
+    nexus_friction_tick = _safe_float(friction_ctx.get("nexus_friction_tick", 1.0), 1.0)
+
+    gravity_max = simulation_field_context_utils_module.gravity_max_from_rows(
+        rows,
+        safe_float=_safe_float,
     )
 
-    gravity_max = 1e-6
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        gravity_max = max(
-            gravity_max,
-            _safe_float(row.get("gravity_potential", 0.0), 0.0),
+    presence_centers, _presence_counts = (
+        simulation_field_context_utils_module.aggregate_presence_centers(
+            rows,
+            safe_float=_safe_float,
+            clamp01=_clamp01,
         )
-
-    presence_centers: dict[str, tuple[float, float]] = {}
-    presence_counts: dict[str, int] = defaultdict(int)
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        presence_id = str(row.get("presence_id", "") or "").strip()
-        if not presence_id:
-            continue
-        x_value = _clamp01(_safe_float(row.get("x", 0.5), 0.5))
-        y_value = _clamp01(_safe_float(row.get("y", 0.5), 0.5))
-        current_x, current_y = presence_centers.get(presence_id, (0.0, 0.0))
-        presence_centers[presence_id] = (current_x + x_value, current_y + y_value)
-        presence_counts[presence_id] = int(presence_counts.get(presence_id, 0)) + 1
-
-    for presence_id, count in list(presence_counts.items()):
-        if count <= 0 or presence_id not in presence_centers:
-            continue
-        total_x, total_y = presence_centers[presence_id]
-        presence_centers[presence_id] = (total_x / count, total_y / count)
-
-    resource_consumption_state = presence_dynamics.get("resource_consumption", {})
-    if not isinstance(resource_consumption_state, dict):
-        resource_consumption_state = {}
-    resource_heartbeat_state = presence_dynamics.get("resource_heartbeat", {})
-    if not isinstance(resource_heartbeat_state, dict):
-        resource_heartbeat_state = {}
-    resource_devices_state = resource_heartbeat_state.get("devices", {})
-    if not isinstance(resource_devices_state, dict):
-        resource_devices_state = {}
-    cpu_device_state = resource_devices_state.get("cpu", {})
-    if not isinstance(cpu_device_state, dict):
-        cpu_device_state = {}
-    cpu_utilization_stream = max(
-        0.0,
-        min(
-            100.0,
-            _safe_float(cpu_device_state.get("utilization", 0.0), 0.0),
-        ),
+    )
+    sentinel_ctx = simulation_field_context_utils_module.cpu_sentinel_context(
+        presence_dynamics,
+        presence_centers,
+        safe_float=_safe_float,
+        clamp01=_clamp01,
+        cpu_sentinel_id=_RESOURCE_DAIMOI_CPU_SENTINEL_ID,
+        cpu_sentinel_attractor_start_percent=_RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_START_PERCENT,
     )
     cpu_sentinel_attractor_active_stream = bool(
-        resource_consumption_state.get("cpu_sentinel_burn_active", False)
-    ) or (
-        cpu_utilization_stream >= _RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_START_PERCENT
+        sentinel_ctx.get("cpu_sentinel_attractor_active_stream", False)
     )
-    cpu_sentinel_pressure_stream = _clamp01(
-        (cpu_utilization_stream - _RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_START_PERCENT)
-        / max(1.0, (100.0 - _RESOURCE_DAIMOI_CPU_SENTINEL_ATTRACTOR_START_PERCENT))
+    cpu_sentinel_pressure_stream = _safe_float(
+        sentinel_ctx.get("cpu_sentinel_pressure_stream", 0.0),
+        0.0,
     )
-    cpu_sentinel_center = presence_centers.get(_RESOURCE_DAIMOI_CPU_SENTINEL_ID)
-    if not (isinstance(cpu_sentinel_center, tuple) and len(cpu_sentinel_center) == 2):
-        anchor_positions = presence_dynamics.get("presence_anchor_positions", {})
-        if isinstance(anchor_positions, dict):
-            anchor_state = anchor_positions.get(_RESOURCE_DAIMOI_CPU_SENTINEL_ID)
-            if isinstance(anchor_state, dict):
-                cpu_sentinel_center = (
-                    _clamp01(_safe_float(anchor_state.get("x", 0.5), 0.5)),
-                    _clamp01(_safe_float(anchor_state.get("y", 0.5), 0.5)),
-                )
-    if not (isinstance(cpu_sentinel_center, tuple) and len(cpu_sentinel_center) == 2):
-        cpu_sentinel_center = None
+    cpu_sentinel_center = sentinel_ctx.get("cpu_sentinel_center")
 
-    node_centers: dict[str, tuple[float, float]] = {}
-    node_counts: dict[str, int] = defaultdict(int)
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        x_value = _clamp01(_safe_float(row.get("x", 0.5), 0.5))
-        y_value = _clamp01(_safe_float(row.get("y", 0.5), 0.5))
-        tokens = {
-            str(row.get("graph_node_id", "") or "").strip(),
-            str(row.get("route_node_id", "") or "").strip(),
-        }
-        for token in tokens:
-            if not token:
-                continue
-            total_x, total_y = node_centers.get(token, (0.0, 0.0))
-            node_centers[token] = (total_x + x_value, total_y + y_value)
-            node_counts[token] = int(node_counts.get(token, 0)) + 1
+    node_centers, node_counts = (
+        simulation_field_context_utils_module.aggregate_node_centers(
+            rows,
+            safe_float=_safe_float,
+            clamp01=_clamp01,
+        )
+    )
 
-    for node_id, count in list(node_counts.items()):
-        if count <= 0 or node_id not in node_centers:
-            continue
-        total_x, total_y = node_centers[node_id]
-        node_centers[node_id] = (total_x / count, total_y / count)
+    next_active_resource_daimoi_ids: set[str] = set()
+    absorbed_resource_daimoi_ids: set[str] = set()
+    tick_collision_events: list[dict[str, Any]] = []
 
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
@@ -12188,6 +10254,10 @@ def advance_simulation_field_particles(
         x_value = _clamp01(_safe_float(row.get("x", 0.5), 0.5))
         y_value = _clamp01(_safe_float(row.get("y", 0.5), 0.5))
         is_nexus = bool(row.get("is_nexus", False))
+        is_resource_daimoi = bool(row.get("resource_daimoi", False)) and (not is_nexus)
+        particle_was_resource_active = (
+            particle_id in previously_active_resource_daimoi_ids
+        )
         row["cpu_sentinel_attractor_active"] = False
         friction_tick = nexus_friction_tick if is_nexus else daimoi_friction_tick
         vx_value = (
@@ -12745,107 +10815,171 @@ def advance_simulation_field_particles(
         row["vx"] = round(vx_value, 6)
         row["vy"] = round(vy_value, 6)
 
-        # Absorption (Suck up)
-        if bool(row.get("resource_daimoi", False)):
-            target_id = str(row.get("resource_target_presence_id", "")).strip()
-            if target_id:
-                tx, ty = presence_centers.get(target_id, (0.5, 0.5))
-                dist_sq = ((tx - next_x) ** 2) + ((ty - next_y) ** 2)
-                if dist_sq < 0.0036:  # Radius approx 0.06
-                    manager = get_presence_runtime_manager()
-                    state = manager.get_state(target_id)
-                    wallet = state.setdefault("resource_wallet", {})
-                    if not isinstance(wallet, dict):
-                        wallet = {}
-                        state["resource_wallet"] = wallet
+        if is_resource_daimoi and (not particle_was_resource_active):
+            daimoi_collision_event_seq += 1
+            emit_target_id = str(
+                row.get(
+                    "resource_target_presence_id", row.get("target_presence_id", "")
+                )
+                or ""
+            ).strip()
+            emit_target_anchor = (
+                presence_centers.get(emit_target_id) if emit_target_id else None
+            )
+            emit_target_x = (
+                _safe_float(emit_target_anchor[0], float("nan"))
+                if isinstance(emit_target_anchor, tuple)
+                and len(emit_target_anchor) == 2
+                else None
+            )
+            emit_target_y = (
+                _safe_float(emit_target_anchor[1], float("nan"))
+                if isinstance(emit_target_anchor, tuple)
+                and len(emit_target_anchor) == 2
+                else None
+            )
+            emitted_event = _build_daimoi_collision_event(
+                event_seq=daimoi_collision_event_seq,
+                kind="emitted",
+                row=row,
+                x_value=next_x,
+                y_value=next_y,
+                target_x=emit_target_x,
+                target_y=emit_target_y,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+            tick_collision_events.append(emitted_event)
+            emitted_particle_id = str(
+                emitted_event.get("particle_id", "") or ""
+            ).strip()
+            if emitted_particle_id:
+                collision_event_lookup[emitted_particle_id] = emitted_event
 
-                    amount = _safe_float(row.get("resource_emit_amount", 0.0), 0.0)
-                    res_type = str(row.get("resource_type", "cpu"))
-                    mix_raw = row.get("resource_mix_vector", {})
-                    mix_vector: dict[str, float] = {}
-                    if isinstance(mix_raw, dict):
-                        for key, value in mix_raw.items():
-                            resource_name = _canonical_resource_type(str(key or ""))
-                            if not resource_name:
-                                continue
-                            mix_amount = max(0.0, _safe_float(value, 0.0))
-                            if mix_amount <= 1e-9:
-                                continue
-                            mix_vector[resource_name] = (
-                                mix_vector.get(resource_name, 0.0) + mix_amount
-                            )
-                    if not mix_vector:
-                        resource_name = _canonical_resource_type(res_type) or "cpu"
-                        mix_vector[resource_name] = max(0.0, amount)
+        next_x, next_y = (
+            simulation_field_absorption_utils_module.apply_resource_daimoi_absorption(
+                row,
+                presence_centers=presence_centers,
+                now_value=now_value,
+                next_x=next_x,
+                next_y=next_y,
+                vx_value=vx_value,
+                vy_value=vy_value,
+                get_presence_runtime_manager=get_presence_runtime_manager,
+                safe_float=_safe_float,
+                clamp01=_clamp01,
+                canonical_resource_type=_canonical_resource_type,
+                resource_daimoi_wallet_floor=_RESOURCE_DAIMOI_WALLET_FLOOR,
+                normalize_resource_wallet_denoms=_normalize_resource_wallet_denoms,
+                wallet_denoms_add_vector=_wallet_denoms_add_vector,
+            )
+        )
 
-                    primary_resource = _canonical_resource_type(res_type)
-                    if (
-                        not primary_resource
-                        or primary_resource not in mix_vector
-                        or _safe_float(mix_vector.get(primary_resource, 0.0), 0.0)
-                        <= 1e-9
-                    ):
-                        primary_resource = max(
-                            mix_vector.keys(),
-                            key=lambda name: _safe_float(
-                                mix_vector.get(name, 0.0), 0.0
-                            ),
-                        )
+        if is_resource_daimoi and bool(row.get("_absorbed", False)):
+            daimoi_collision_event_seq += 1
+            absorb_target_id = str(
+                row.get(
+                    "resource_target_presence_id", row.get("target_presence_id", "")
+                )
+                or ""
+            ).strip()
+            absorb_target_anchor = (
+                presence_centers.get(absorb_target_id) if absorb_target_id else None
+            )
+            absorb_target_x = (
+                _safe_float(absorb_target_anchor[0], float("nan"))
+                if isinstance(absorb_target_anchor, tuple)
+                and len(absorb_target_anchor) == 2
+                else None
+            )
+            absorb_target_y = (
+                _safe_float(absorb_target_anchor[1], float("nan"))
+                if isinstance(absorb_target_anchor, tuple)
+                and len(absorb_target_anchor) == 2
+                else None
+            )
+            absorbed_event = _build_daimoi_collision_event(
+                event_seq=daimoi_collision_event_seq,
+                kind="absorbed",
+                row=row,
+                x_value=next_x,
+                y_value=next_y,
+                target_x=absorb_target_x,
+                target_y=absorb_target_y,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+            tick_collision_events.append(absorbed_event)
+            absorbed_particle_id = str(
+                absorbed_event.get("particle_id", "") or ""
+            ).strip()
+            if absorbed_particle_id:
+                absorbed_resource_daimoi_ids.add(absorbed_particle_id)
+                collision_event_lookup[absorbed_particle_id] = absorbed_event
+        elif is_resource_daimoi:
+            next_active_resource_daimoi_ids.add(particle_id)
 
-                    # Check pressure for absorption probability
-                    current_bal = _safe_float(wallet.get(primary_resource, 0.0), 0.0)
-                    wallet_floor = max(
-                        0.1,
-                        _safe_float(
-                            _RESOURCE_DAIMOI_WALLET_FLOOR.get(primary_resource, 4.0),
-                            4.0,
-                        ),
-                    )
-                    pressure = _clamp01(
-                        current_bal / max(1e-6, current_bal + wallet_floor)
-                    )
-
-                    # Probability of absorption inversely related to pressure
-                    # Low pressure = High absorption chance (Suck up)
-                    # High pressure = Low absorption chance (Deflect)
-                    absorb_prob = 1.0 - (pressure * 0.85)  # Always at least 15% chance
-
-                    seed_val = int(
-                        hashlib.sha1(
-                            f"{row.get('id')}|{now_value}".encode("utf-8")
-                        ).hexdigest()[:8],
-                        16,
-                    )
-                    rng_val = (seed_val % 1000) / 1000.0
-
-                    if rng_val < absorb_prob:
-                        already_credited = bool(
-                            row.get("resource_emit_wallet_credit", False)
-                        )
-                        if not already_credited:
-                            for resource_name, mix_amount in mix_vector.items():
-                                prior = max(
-                                    0.0,
-                                    _safe_float(wallet.get(resource_name, 0.0), 0.0),
-                                )
-                                wallet[resource_name] = round(prior + mix_amount, 6)
-                            denoms = _normalize_resource_wallet_denoms(state)
-                            _wallet_denoms_add_vector(denoms, mix_vector)
-                            state["resource_wallet_denoms"] = denoms
-                        row["_absorbed"] = True
-                        row["resource_wallet_credit_reused"] = bool(already_credited)
-                    else:
-                        # Deflect
-                        row["_deflected"] = True
-                        row["vx"] = -vx_value * 0.6
-                        row["vy"] = -vy_value * 0.6
-                        # Push away slightly
-                        dx = next_x - tx
-                        dy = next_y - ty
-                        mag = math.hypot(dx, dy)
-                        if mag > 1e-6:
-                            next_x = _clamp01(next_x + (dx / mag * 0.03))
-                            next_y = _clamp01(next_y + (dy / mag * 0.03))
+    missing_resource_daimoi_ids = sorted(
+        particle_id
+        for particle_id in previously_active_resource_daimoi_ids
+        if particle_id
+        and particle_id not in next_active_resource_daimoi_ids
+        and particle_id not in absorbed_resource_daimoi_ids
+    )
+    if missing_resource_daimoi_ids:
+        missing_timestamp = datetime.now(timezone.utc).isoformat()
+        for particle_id in missing_resource_daimoi_ids:
+            template = (
+                collision_event_lookup.get(particle_id, {})
+                if isinstance(collision_event_lookup.get(particle_id, {}), dict)
+                else {}
+            )
+            template_x = _clamp01(_safe_float(template.get("x", 0.5), 0.5))
+            template_y = _clamp01(_safe_float(template.get("y", 0.5), 0.5))
+            template_target_x_value = _safe_float(
+                template.get("target_x", float("nan")), float("nan")
+            )
+            template_target_y_value = _safe_float(
+                template.get("target_y", float("nan")), float("nan")
+            )
+            template_target_x = (
+                template_target_x_value
+                if math.isfinite(template_target_x_value)
+                else None
+            )
+            template_target_y = (
+                template_target_y_value
+                if math.isfinite(template_target_y_value)
+                else None
+            )
+            synthetic_row = {
+                "id": particle_id,
+                "presence_id": str(template.get("presence_id", "") or "").strip(),
+                "owner_presence_id": str(
+                    template.get("owner_presence_id", "") or ""
+                ).strip(),
+                "resource_target_presence_id": str(
+                    template.get("target_presence_id", "") or ""
+                ).strip(),
+                "resource_type": str(template.get("resource_type", "cpu") or "cpu"),
+                "graph_node_id": str(template.get("graph_node_id", "") or "").strip(),
+                "route_node_id": str(template.get("route_node_id", "") or "").strip(),
+                "collision_count": max(
+                    0,
+                    _safe_int(template.get("collision_count", 0), 0),
+                ),
+            }
+            daimoi_collision_event_seq += 1
+            missing_event = _build_daimoi_collision_event(
+                event_seq=daimoi_collision_event_seq,
+                kind="absorbed",
+                row=synthetic_row,
+                x_value=template_x,
+                y_value=template_y,
+                target_x=template_target_x,
+                target_y=template_target_y,
+                timestamp=missing_timestamp,
+            )
+            tick_collision_events.append(missing_event)
+            collision_event_lookup[particle_id] = missing_event
 
     _resolve_semantic_particle_collisions(rows)
 
@@ -12857,8 +10991,25 @@ def advance_simulation_field_particles(
             else {}
         ),
         now_seconds=now_value,
+        presence_dynamics=presence_dynamics,
     )
     presence_dynamics["crawler_interactions"] = crawler_interactions
+
+    if tick_collision_events:
+        daimoi_collision_events.extend(tick_collision_events)
+    if len(daimoi_collision_events) > SIMULATION_DAIMOI_COLLISION_EVENT_HISTORY_MAX:
+        daimoi_collision_events = daimoi_collision_events[
+            -SIMULATION_DAIMOI_COLLISION_EVENT_HISTORY_MAX:
+        ]
+    presence_dynamics["daimoi_collision_events_record"] = DAIMOI_COLLISION_EVENTS_RECORD
+    presence_dynamics["daimoi_collision_events"] = daimoi_collision_events
+    presence_dynamics["daimoi_collision_event_seq"] = int(
+        max(0, daimoi_collision_event_seq)
+    )
+    active_ids_sorted = sorted(next_active_resource_daimoi_ids)
+    presence_dynamics["_resource_daimoi_active_ids"] = active_ids_sorted[
+        :SIMULATION_DAIMOI_COLLISION_ACTIVE_ID_MAX
+    ]
 
     # Remove absorbed
     field_particles = [r for r in rows if not r.get("_absorbed")]

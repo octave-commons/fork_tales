@@ -49,6 +49,8 @@ def _resource_kind_from_canonical(canonical_url: str) -> str:
         return "github:issue"
     if "/releases/tag/" in url or url.endswith("/releases"):
         return "github:release"
+    if "/security-advisories/" in url or "/advisories/" in url:
+        return "github:advisory"
     if "/compare/" in url:
         return "github:compare"
     return "github:repo"

@@ -1,0 +1,1288 @@
+{
+  "profile": {
+    "max_chars": 180,
+    "same_lang_gap_ms": 10,
+    "same_lang_xfade_ms": 12,
+    "switch_gap_ms": 0,
+    "switch_xfade_ms": 80,
+    "master_af": "highpass=f=90,lowpass=f=7600,equalizer=f=2800:t=q:w=1.2:g=1.0,acompressor=threshold=-24dB:ratio=1.22:attack=10:release=120,alimiter=limit=-2dB"
+  },
+  "chapters": {
+    "Chapter_01_Chapter_1": {
+      "output": "Chapter_01_Chapter_1.mp3",
+      "duration_ms": 206672,
+      "item_count": 25,
+      "jp_item_count": 1,
+      "jp_items": [
+        {
+          "start_ms": 181118,
+          "end_ms": 183643,
+          "source_text": "依存が増えすぎています",
+          "render_text": "ee-zohn gah foo-eh soo-gee-teh ee-mah-soo"
+        }
+      ]
+    },
+    "Chapter_02_Chapter_2": {
+      "output": "Chapter_02_Chapter_2.mp3",
+      "duration_ms": 363624,
+      "item_count": 74,
+      "jp_item_count": 26,
+      "jp_items": [
+        {
+          "start_ms": 9994,
+          "end_ms": 11842,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 26442,
+          "end_ms": 27376,
+          "source_text": "ここでは",
+          "render_text": "kokodeha"
+        },
+        {
+          "start_ms": 27730,
+          "end_ms": 29501,
+          "source_text": "意志が先に動く",
+          "render_text": "ishee ga sakini ugoku"
+        },
+        {
+          "start_ms": 42619,
+          "end_ms": 43350,
+          "source_text": "おはよう",
+          "render_text": "ohayoh"
+        },
+        {
+          "start_ms": 48154,
+          "end_ms": 50002,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 56156,
+          "end_ms": 58004,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 70646,
+          "end_ms": 72051,
+          "source_text": "構造的です",
+          "render_text": "kohzohteki desu"
+        },
+        {
+          "start_ms": 94774,
+          "end_ms": 96622,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 112957,
+          "end_ms": 114053,
+          "source_text": "いつも通り",
+          "render_text": "itsoomo tohri"
+        },
+        {
+          "start_ms": 113973,
+          "end_ms": 115821,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 124915,
+          "end_ms": 126763,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 143703,
+          "end_ms": 145551,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 146532,
+          "end_ms": 147018,
+          "source_text": "層",
+          "render_text": "soh"
+        },
+        {
+          "start_ms": 146938,
+          "end_ms": 147429,
+          "source_text": "レイヤー",
+          "render_text": "rayyaa"
+        },
+        {
+          "start_ms": 166144,
+          "end_ms": 167845,
+          "source_text": "おはようございます",
+          "render_text": "ohayohgozaimasu"
+        },
+        {
+          "start_ms": 168879,
+          "end_ms": 169604,
+          "source_text": "日本語",
+          "render_text": "nihongo"
+        },
+        {
+          "start_ms": 191361,
+          "end_ms": 193209,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 221958,
+          "end_ms": 223806,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 237619,
+          "end_ms": 239467,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 256230,
+          "end_ms": 257734,
+          "source_text": "依存が増えています",
+          "render_text": "izon ga fooe taymasu"
+        },
+        {
+          "start_ms": 262036,
+          "end_ms": 263884,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 279408,
+          "end_ms": 280427,
+          "source_text": "違います",
+          "render_text": "cheegai masu"
+        },
+        {
+          "start_ms": 300493,
+          "end_ms": 302341,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 312771,
+          "end_ms": 313687,
+          "source_text": "観察",
+          "render_text": "kansatsoo"
+        },
+        {
+          "start_ms": 321341,
+          "end_ms": 323189,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 344210,
+          "end_ms": 346058,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_03_Chapter_3": {
+      "output": "Chapter_03_Chapter_3.mp3",
+      "duration_ms": 170426,
+      "item_count": 27,
+      "jp_item_count": 8,
+      "jp_items": [
+        {
+          "start_ms": 8445,
+          "end_ms": 10293,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 45725,
+          "end_ms": 47573,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 55347,
+          "end_ms": 57195,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 71192,
+          "end_ms": 73040,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 92958,
+          "end_ms": 94054,
+          "source_text": "音声ですね",
+          "render_text": "onsay desune"
+        },
+        {
+          "start_ms": 100760,
+          "end_ms": 102608,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 126692,
+          "end_ms": 128540,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 154195,
+          "end_ms": 156043,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_04_Chapter_4": {
+      "output": "Chapter_04_Chapter_4.mp3",
+      "duration_ms": 126530,
+      "item_count": 19,
+      "jp_item_count": 4,
+      "jp_items": [
+        {
+          "start_ms": 7885,
+          "end_ms": 9733,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 65477,
+          "end_ms": 66202,
+          "source_text": "日本語",
+          "render_text": "nihongo"
+        },
+        {
+          "start_ms": 94525,
+          "end_ms": 96373,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 109607,
+          "end_ms": 111455,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_05_Chapter_5": {
+      "output": "Chapter_05_Chapter_5.mp3",
+      "duration_ms": 168720,
+      "item_count": 20,
+      "jp_item_count": 2,
+      "jp_items": [
+        {
+          "start_ms": 64674,
+          "end_ms": 66522,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 149970,
+          "end_ms": 151818,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_06_Chapter_6": {
+      "output": "Chapter_06_Chapter_6.mp3",
+      "duration_ms": 149429,
+      "item_count": 22,
+      "jp_item_count": 4,
+      "jp_items": [
+        {
+          "start_ms": 20983,
+          "end_ms": 22684,
+          "source_text": "おはようございます",
+          "render_text": "ohayohgozaimasu"
+        },
+        {
+          "start_ms": 88079,
+          "end_ms": 90604,
+          "source_text": "依存が増えすぎています",
+          "render_text": "ee-zohn gah foo-eh soo-gee-teh ee-mah-soo"
+        },
+        {
+          "start_ms": 95930,
+          "end_ms": 97239,
+          "source_text": "問題ですか",
+          "render_text": "mondai desuka"
+        },
+        {
+          "start_ms": 97159,
+          "end_ms": 97725,
+          "source_text": "まだ",
+          "render_text": "mada"
+        }
+      ]
+    },
+    "Chapter_07_Adjacent_Power": {
+      "output": "Chapter_07_Adjacent_Power.mp3",
+      "duration_ms": 150845,
+      "item_count": 25,
+      "jp_item_count": 6,
+      "jp_items": [
+        {
+          "start_ms": 73768,
+          "end_ms": 75616,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 76560,
+          "end_ms": 78408,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 94831,
+          "end_ms": 96679,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 96902,
+          "end_ms": 98750,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 130263,
+          "end_ms": 132111,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 132440,
+          "end_ms": 134288,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_08_Minor_Desync": {
+      "output": "Chapter_08_Minor_Desync.mp3",
+      "duration_ms": 165790,
+      "item_count": 25,
+      "jp_item_count": 7,
+      "jp_items": [
+        {
+          "start_ms": 7856,
+          "end_ms": 9704,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 12183,
+          "end_ms": 14031,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 38189,
+          "end_ms": 40037,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 73308,
+          "end_ms": 75156,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 107343,
+          "end_ms": 109191,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 118413,
+          "end_ms": 120261,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 135442,
+          "end_ms": 137290,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_09_Unlisted": {
+      "output": "Chapter_09_Unlisted.mp3",
+      "duration_ms": 236819,
+      "item_count": 44,
+      "jp_item_count": 12,
+      "jp_items": [
+        {
+          "start_ms": 19903,
+          "end_ms": 21751,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 45870,
+          "end_ms": 46243,
+          "source_text": "誰",
+          "render_text": "dare"
+        },
+        {
+          "start_ms": 63735,
+          "end_ms": 65583,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 98449,
+          "end_ms": 99420,
+          "source_text": "初めまして",
+          "render_text": "hajeeme masheete"
+        },
+        {
+          "start_ms": 100301,
+          "end_ms": 101180,
+          "source_text": "突然",
+          "render_text": "totsoozen"
+        },
+        {
+          "start_ms": 101315,
+          "end_ms": 102040,
+          "source_text": "日本語",
+          "render_text": "nihongo"
+        },
+        {
+          "start_ms": 129891,
+          "end_ms": 130347,
+          "source_text": "でも",
+          "render_text": "demo"
+        },
+        {
+          "start_ms": 130701,
+          "end_ms": 131455,
+          "source_text": "正しい",
+          "render_text": "tadasheay"
+        },
+        {
+          "start_ms": 148764,
+          "end_ms": 150612,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 155454,
+          "end_ms": 157302,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 206714,
+          "end_ms": 208562,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 221536,
+          "end_ms": 223384,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_10_The_Gate_Decides": {
+      "output": "Chapter_10_The_Gate_Decides.mp3",
+      "duration_ms": 260600,
+      "item_count": 43,
+      "jp_item_count": 11,
+      "jp_items": [
+        {
+          "start_ms": 14200,
+          "end_ms": 16048,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 60821,
+          "end_ms": 62669,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 63983,
+          "end_ms": 65831,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 93426,
+          "end_ms": 95274,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 116060,
+          "end_ms": 117908,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 145897,
+          "end_ms": 147745,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 189034,
+          "end_ms": 190882,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 213551,
+          "end_ms": 214253,
+          "source_text": "やめろよ",
+          "render_text": "yameroyo"
+        },
+        {
+          "start_ms": 215580,
+          "end_ms": 217020,
+          "source_text": "落ち着いて",
+          "render_text": "ocheetsooi te"
+        },
+        {
+          "start_ms": 223918,
+          "end_ms": 225766,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 239557,
+          "end_ms": 241405,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_11_Open": {
+      "output": "Chapter_11_Open.mp3",
+      "duration_ms": 190810,
+      "item_count": 25,
+      "jp_item_count": 5,
+      "jp_items": [
+        {
+          "start_ms": 5347,
+          "end_ms": 7195,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 22576,
+          "end_ms": 23345,
+          "source_text": "ゆっくり",
+          "render_text": "yukkuri"
+        },
+        {
+          "start_ms": 31373,
+          "end_ms": 33221,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 85905,
+          "end_ms": 87753,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 145818,
+          "end_ms": 147666,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_12_Load": {
+      "output": "Chapter_12_Load.mp3",
+      "duration_ms": 278033,
+      "item_count": 38,
+      "jp_item_count": 7,
+      "jp_items": [
+        {
+          "start_ms": 6003,
+          "end_ms": 7851,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 24574,
+          "end_ms": 25186,
+          "source_text": "歩く",
+          "render_text": "aruku"
+        },
+        {
+          "start_ms": 60750,
+          "end_ms": 62569,
+          "source_text": "記憶は傷の影",
+          "render_text": "kioku ha kizu no kage"
+        },
+        {
+          "start_ms": 108959,
+          "end_ms": 110399,
+          "source_text": "落ち着いて",
+          "render_text": "ocheetsooi te"
+        },
+        {
+          "start_ms": 136343,
+          "end_ms": 136923,
+          "source_text": "くそ",
+          "render_text": "kuso"
+        },
+        {
+          "start_ms": 177619,
+          "end_ms": 179467,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 199295,
+          "end_ms": 201143,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_13_Adjacent": {
+      "output": "Chapter_13_Adjacent.mp3",
+      "duration_ms": 241022,
+      "item_count": 28,
+      "jp_item_count": 3,
+      "jp_items": [
+        {
+          "start_ms": 2681,
+          "end_ms": 4529,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 191067,
+          "end_ms": 193312,
+          "source_text": "公開は信頼の証明です",
+          "render_text": "kohkai ha sheenrai no shohmay desu"
+        },
+        {
+          "start_ms": 213157,
+          "end_ms": 215005,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_14_Consent": {
+      "output": "Chapter_14_Consent.mp3",
+      "duration_ms": 126963,
+      "item_count": 14,
+      "jp_item_count": 1,
+      "jp_items": [
+        {
+          "start_ms": 7809,
+          "end_ms": 9657,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_15_Packet_Too_Long": {
+      "output": "Chapter_15_Packet_Too_Long.mp3",
+      "duration_ms": 140975,
+      "item_count": 21,
+      "jp_item_count": 4,
+      "jp_items": [
+        {
+          "start_ms": 36601,
+          "end_ms": 38449,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 52360,
+          "end_ms": 54208,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 85532,
+          "end_ms": 87380,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 124848,
+          "end_ms": 126696,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_16_Voice_On": {
+      "output": "Chapter_16_Voice_On.mp3",
+      "duration_ms": 101406,
+      "item_count": 13,
+      "jp_item_count": 2,
+      "jp_items": [
+        {
+          "start_ms": 13874,
+          "end_ms": 15722,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 34862,
+          "end_ms": 36710,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_17_Phase_Drift": {
+      "output": "Chapter_17_Phase_Drift.mp3",
+      "duration_ms": 172081,
+      "item_count": 24,
+      "jp_item_count": 4,
+      "jp_items": [
+        {
+          "start_ms": 12078,
+          "end_ms": 13926,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 64424,
+          "end_ms": 66272,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 123237,
+          "end_ms": 125085,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 134805,
+          "end_ms": 136653,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_18_Silence": {
+      "output": "Chapter_18_Silence.mp3",
+      "duration_ms": 175114,
+      "item_count": 22,
+      "jp_item_count": 4,
+      "jp_items": [
+        {
+          "start_ms": 39132,
+          "end_ms": 40980,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 75157,
+          "end_ms": 77005,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 134136,
+          "end_ms": 135984,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 165470,
+          "end_ms": 167318,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_19_Reintroduce": {
+      "output": "Chapter_19_Reintroduce.mp3",
+      "duration_ms": 172052,
+      "item_count": 22,
+      "jp_item_count": 3,
+      "jp_items": [
+        {
+          "start_ms": 3595,
+          "end_ms": 5443,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 30919,
+          "end_ms": 32767,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 125464,
+          "end_ms": 127312,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_20_Model": {
+      "output": "Chapter_20_Model.mp3",
+      "duration_ms": 174140,
+      "item_count": 22,
+      "jp_item_count": 3,
+      "jp_items": [
+        {
+          "start_ms": 8215,
+          "end_ms": 10063,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 60323,
+          "end_ms": 62171,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 119082,
+          "end_ms": 120930,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_21_Elsewhere": {
+      "output": "Chapter_21_Elsewhere.mp3",
+      "duration_ms": 136898,
+      "item_count": 15,
+      "jp_item_count": 1,
+      "jp_items": [
+        {
+          "start_ms": 81307,
+          "end_ms": 82392,
+          "source_text": "自然です",
+          "render_text": "sheezen desu"
+        }
+      ]
+    },
+    "Chapter_22_Define_Duct": {
+      "output": "Chapter_22_Define_Duct.mp3",
+      "duration_ms": 229288,
+      "item_count": 30,
+      "jp_item_count": 6,
+      "jp_items": [
+        {
+          "start_ms": 35657,
+          "end_ms": 37505,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 47613,
+          "end_ms": 49461,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 83320,
+          "end_ms": 85168,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 107871,
+          "end_ms": 109719,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 151773,
+          "end_ms": 153621,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 191720,
+          "end_ms": 193568,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_23_Intercept": {
+      "output": "Chapter_23_Intercept.mp3",
+      "duration_ms": 155433,
+      "item_count": 22,
+      "jp_item_count": 4,
+      "jp_items": [
+        {
+          "start_ms": 28573,
+          "end_ms": 30421,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 64420,
+          "end_ms": 66268,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 94978,
+          "end_ms": 96826,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 121930,
+          "end_ms": 123778,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_24_Single_Point": {
+      "output": "Chapter_24_Single_Point.mp3",
+      "duration_ms": 145902,
+      "item_count": 20,
+      "jp_item_count": 3,
+      "jp_items": [
+        {
+          "start_ms": 34580,
+          "end_ms": 36428,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 74404,
+          "end_ms": 76252,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 117376,
+          "end_ms": 119224,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_25_Reject": {
+      "output": "Chapter_25_Reject.mp3",
+      "duration_ms": 124281,
+      "item_count": 15,
+      "jp_item_count": 2,
+      "jp_items": [
+        {
+          "start_ms": 16347,
+          "end_ms": 18195,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 78173,
+          "end_ms": 80021,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_26_Outside": {
+      "output": "Chapter_26_Outside.mp3",
+      "duration_ms": 188242,
+      "item_count": 22,
+      "jp_item_count": 3,
+      "jp_items": [
+        {
+          "start_ms": 43874,
+          "end_ms": 45722,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 84986,
+          "end_ms": 86834,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 171860,
+          "end_ms": 173708,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_27_Probe": {
+      "output": "Chapter_27_Probe.mp3",
+      "duration_ms": 197590,
+      "item_count": 24,
+      "jp_item_count": 2,
+      "jp_items": [
+        {
+          "start_ms": 74605,
+          "end_ms": 76453,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 151553,
+          "end_ms": 153401,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_28_Envoy": {
+      "output": "Chapter_28_Envoy.mp3",
+      "duration_ms": 121673,
+      "item_count": 15,
+      "jp_item_count": 2,
+      "jp_items": [
+        {
+          "start_ms": 27628,
+          "end_ms": 29476,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 64694,
+          "end_ms": 66542,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_29_First_Step": {
+      "output": "Chapter_29_First_Step.mp3",
+      "duration_ms": 118973,
+      "item_count": 15,
+      "jp_item_count": 3,
+      "jp_items": [
+        {
+          "start_ms": 16361,
+          "end_ms": 18209,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 52655,
+          "end_ms": 54503,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 105001,
+          "end_ms": 106849,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_30_Millisecond": {
+      "output": "Chapter_30_Millisecond.mp3",
+      "duration_ms": 176967,
+      "item_count": 24,
+      "jp_item_count": 3,
+      "jp_items": [
+        {
+          "start_ms": 31761,
+          "end_ms": 33609,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 103461,
+          "end_ms": 105309,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 161095,
+          "end_ms": 162943,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_31_Chapter_31": {
+      "output": "Chapter_31_Chapter_31.mp3",
+      "duration_ms": 153599,
+      "item_count": 20,
+      "jp_item_count": 3,
+      "jp_items": [
+        {
+          "start_ms": 48403,
+          "end_ms": 50251,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 78591,
+          "end_ms": 80439,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 87167,
+          "end_ms": 89015,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_32_Faction": {
+      "output": "Chapter_32_Faction.mp3",
+      "duration_ms": 152070,
+      "item_count": 18,
+      "jp_item_count": 2,
+      "jp_items": [
+        {
+          "start_ms": 43123,
+          "end_ms": 44971,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        },
+        {
+          "start_ms": 100349,
+          "end_ms": 102197,
+          "source_text": "莉津律宗利都",
+          "render_text": "ri tsoo risshuu ri miyako"
+        }
+      ]
+    },
+    "Chapter_33_The_Space_Between_eta_mu": {
+      "output": "Chapter_33_The_Space_Between_eta_mu.mp3",
+      "duration_ms": 171939,
+      "item_count": 23,
+      "jp_item_count": 0,
+      "jp_items": []
+    },
+    "Chapter_34_Forkgate_Ranked": {
+      "output": "Chapter_34_Forkgate_Ranked.mp3",
+      "duration_ms": 126134,
+      "item_count": 16,
+      "jp_item_count": 0,
+      "jp_items": []
+    },
+    "Chapter_35_S5_Resolution_Audit": {
+      "output": "Chapter_35_S5_Resolution_Audit.mp3",
+      "duration_ms": 90685,
+      "item_count": 12,
+      "jp_item_count": 0,
+      "jp_items": []
+    },
+    "Chapter_36_Dice_Witness": {
+      "output": "Chapter_36_Dice_Witness.mp3",
+      "duration_ms": 67952,
+      "item_count": 8,
+      "jp_item_count": 0,
+      "jp_items": []
+    },
+    "Chapter_37_The_Audit_Choir": {
+      "output": "Chapter_37_The_Audit_Choir.mp3",
+      "duration_ms": 70895,
+      "item_count": 9,
+      "jp_item_count": 0,
+      "jp_items": []
+    },
+    "Chapter_38_The_Portable_Vow": {
+      "output": "Chapter_38_The_Portable_Vow.mp3",
+      "duration_ms": 55960,
+      "item_count": 8,
+      "jp_item_count": 0,
+      "jp_items": []
+    },
+    "Chapter_39_The_Fork_That_Costs": {
+      "output": "Chapter_39_The_Fork_That_Costs.mp3",
+      "duration_ms": 46005,
+      "item_count": 7,
+      "jp_item_count": 0,
+      "jp_items": []
+    },
+    "Chapter_40_The_Portable_Vow": {
+      "output": "Chapter_40_The_Portable_Vow.mp3",
+      "duration_ms": 55853,
+      "item_count": 8,
+      "jp_item_count": 0,
+      "jp_items": []
+    },
+    "Chapter_41_The_Fork_That_Costs": {
+      "output": "Chapter_41_The_Fork_That_Costs.mp3",
+      "duration_ms": 45977,
+      "item_count": 7,
+      "jp_item_count": 0,
+      "jp_items": []
+    },
+    "Chapter_42_Memory_Without_Myth": {
+      "output": "Chapter_42_Memory_Without_Myth.mp3",
+      "duration_ms": 40420,
+      "item_count": 6,
+      "jp_item_count": 0,
+      "jp_items": []
+    },
+    "Chapter_43_The_Cephalon_Witness": {
+      "output": "Chapter_43_The_Cephalon_Witness.mp3",
+      "duration_ms": 45138,
+      "item_count": 5,
+      "jp_item_count": 0,
+      "jp_items": []
+    },
+    "Chapter_44_Memory_Without_Myth": {
+      "output": "Chapter_44_Memory_Without_Myth.mp3",
+      "duration_ms": 40339,
+      "item_count": 6,
+      "jp_item_count": 0,
+      "jp_items": []
+    },
+    "Chapter_46_Permissions_of_the_Pack": {
+      "output": "Chapter_46_Permissions_of_the_Pack.mp3",
+      "duration_ms": 30336,
+      "item_count": 4,
+      "jp_item_count": 0,
+      "jp_items": []
+    },
+    "Chapter_47_The_Disagreement_Choir": {
+      "output": "Chapter_47_The_Disagreement_Choir.mp3",
+      "duration_ms": 33681,
+      "item_count": 5,
+      "jp_item_count": 0,
+      "jp_items": []
+    },
+    "Chapter_48_Permissions_of_the_Pack": {
+      "output": "Chapter_48_Permissions_of_the_Pack.mp3",
+      "duration_ms": 30135,
+      "item_count": 4,
+      "jp_item_count": 0,
+      "jp_items": []
+    },
+    "Chapter_49_Permissions_of_the_Pack": {
+      "output": "Chapter_49_Permissions_of_the_Pack.mp3",
+      "duration_ms": 30375,
+      "item_count": 4,
+      "jp_item_count": 0,
+      "jp_items": []
+    }
+  },
+  "failures": [],
+  "elapsed_s": 329.15
+}

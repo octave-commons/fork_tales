@@ -33,12 +33,9 @@ export interface CoreLayerOption {
 
 export const CORE_LAYER_OPTIONS: CoreLayerOption[] = [
   { id: "presence", label: "Presence currents" },
-  { id: "file-impact", label: "File influence" },
+  { id: "file-impact", label: "File impact" },
   { id: "file-graph", label: "Nexus graph" },
-  { id: "true-graph", label: "TrueGraph" },
-  { id: "truth-gate", label: "Truth gate" },
-  { id: "logic", label: "Logic graph" },
-  { id: "pain-field", label: "Pain field" },
+  { id: "true-graph", label: "Truth graph" },
 ];
 
 export const DEFAULT_CORE_LAYER_VISIBILITY: Record<CoreLayerId, boolean> = {

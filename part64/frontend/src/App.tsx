@@ -174,6 +174,8 @@ export default function App() {
   const [activeMusePresenceId, setActiveMusePresenceId] = useState("witness_thread");
   const [museForgeLabel, setMuseForgeLabel] = useState("");
   const [museForgeBusy, setMuseForgeBusy] = useState(false);
+  const [museForgeOpen, setMuseForgeOpen] = useState(false);
+  const [simulationControlsOpen, setSimulationControlsOpen] = useState(false);
   const [museWorkspaceContexts, setMuseWorkspaceContexts] = useState<Record<string, MuseWorkspaceContext>>(() => {
     if (typeof window === "undefined") {
       return {};
@@ -329,7 +331,7 @@ export default function App() {
   const userPresenceInputBatchIdleTimerRef = useRef<number | null>(null);
   const userPresenceInputBatchWindowTimerRef = useRef<number | null>(null);
   const [coreLayerVisibility, setCoreLayerVisibility] = useState<Record<CoreLayerId, boolean>>(DEFAULT_CORE_LAYER_VISIBILITY);
-  const [coreLayerManagerOpen, setCoreLayerManagerOpen] = useState(true);
+  const [coreLayerManagerOpen, setCoreLayerManagerOpen] = useState(false);
   const [interfaceOpacity, setInterfaceOpacity] = useState(() => {
     if (typeof window === "undefined") {
       return DEFAULT_INTERFACE_OPACITY;
@@ -1903,6 +1905,45 @@ export default function App() {
     flyCameraToRatios(anchorX, anchorY, anchor.kind);
   }, [flyCameraToRatios, overlayApi, resolveOverlayAnchorRatio]);
 
+  const handleOpenSimulationNexusFromWebGraph = useCallback((payload: {
+    nodeId: string;
+    nodeUrl?: string;
+    label: string;
+  }) => {
+    const addCandidate = (rows: string[], value: string) => {
+      const normalized = value.trim();
+      if (!normalized || rows.includes(normalized)) {
+        return;
+      }
+      rows.push(normalized);
+    };
+
+    const candidates: string[] = [];
+    addCandidate(candidates, String(payload.nodeId || ""));
+    const nodeUrl = String(payload.nodeUrl || "").trim();
+    if (nodeUrl) {
+      addCandidate(candidates, nodeUrl);
+      addCandidate(candidates, `url:${nodeUrl}`);
+      addCandidate(candidates, `web:url:${nodeUrl}`);
+      addCandidate(candidates, `web:resource:${nodeUrl}`);
+    }
+
+    const anchor = candidates
+      .map((targetId) => overlayApi?.getAnchorRatio?.("node", targetId))
+      .find((entry) => Boolean(entry));
+
+    if (!anchor) {
+      emitUiToast("Web Graph Weaver", `Nexus not visible for ${payload.label || payload.nodeId}.`);
+      return;
+    }
+
+    const result = overlayApi?.interactAt?.(anchor.x, anchor.y, { openWorldscreen: true });
+    overlayApi?.pulseAt?.(anchor.x, anchor.y, 1.02, payload.nodeId || payload.label || "web_nexus");
+    if (!result?.hitNode) {
+      emitUiToast("Web Graph Weaver", `Moved to anchor for ${payload.label || payload.nodeId}.`);
+    }
+  }, [emitUiToast, overlayApi]);
+
   useEffect(() => {
     return () => {
       stopCameraFlight();
@@ -2658,6 +2699,7 @@ export default function App() {
     deferredCoreSimulationTuning,
     deferredPanelsReady,
     flyCameraToAnchor,
+    handleOpenSimulationNexusFromWebGraph,
     handleMuseWorkspaceBindingsChange,
     handleMuseWorkspaceContextChange,
     handleMuseWorkspaceSend,
@@ -2667,8 +2709,10 @@ export default function App() {
     handleUserPresenceInput,
     handleWorldInteract,
     interactingPersonId,
+    isConnected,
     isRecording,
     isThinking,
+    museEvents,
     museWorkspaceBindings,
     museWorkspaceContexts,
     projectionStateByElement,
@@ -2729,7 +2773,11 @@ export default function App() {
             + (lowPriorityCycle ? 0.19 : 0)
             + (particleCount <= 2 ? 0.03 : 0)
           : 0;
-        const threatRadarBoost = config.id === "nexus.ui.threat_radar"
+        const threatRadarBoost = (
+          config.id === "nexus.ui.threat_radar"
+          || config.id === "nexus.ui.muse_radar.witness_thread"
+          || config.id === "nexus.ui.muse_radar.chaos"
+        )
           ? 0.62 + (lowPriorityCycle ? 0.14 : 0)
           : 0;
         const councilScore = clamp(
@@ -3562,7 +3610,7 @@ export default function App() {
       />
 
       <main
-        className="relative z-20 w-full px-1 py-2 md:px-2 md:py-4 pb-20 lg:pr-[24rem] transition-colors pointer-events-none"
+        className={`relative z-20 w-full px-1 py-2 md:px-2 md:py-4 pb-20 transition-colors pointer-events-none ${simulationControlsOpen ? "lg:pr-[21rem]" : "lg:pr-0"}`}
         style={{ opacity: interfaceOpacity }}
       >
         <header className="mb-4 border-b border-[rgba(166,205,235,0.28)] pb-3 flex flex-col gap-2 bg-[rgba(8,14,22,0.18)] rounded-xl px-3 shadow-[0_6px_16px_rgba(2,8,14,0.16)] pointer-events-auto">
@@ -3586,103 +3634,133 @@ export default function App() {
 
         <aside
           data-core-wheel="block"
-          className="fixed inset-x-2 bottom-20 z-[74] max-h-[46vh] overflow-y-auto rounded-xl border border-[rgba(137,198,235,0.36)] bg-[linear-gradient(180deg,rgba(7,17,27,0.92),rgba(6,15,24,0.96))] p-3 shadow-[0_12px_30px_rgba(2,8,14,0.34)] pointer-events-auto lg:inset-x-auto lg:bottom-4 lg:right-2 lg:top-24 lg:w-[23rem] lg:max-h-[calc(100vh-8rem)]"
+          className={`fixed inset-x-2 bottom-20 z-[74] max-h-[46vh] overflow-y-auto rounded-xl border border-[rgba(137,198,235,0.36)] bg-[linear-gradient(180deg,rgba(7,17,27,0.92),rgba(6,15,24,0.96))] shadow-[0_12px_30px_rgba(2,8,14,0.34)] pointer-events-auto lg:inset-x-auto lg:bottom-auto lg:right-2 lg:top-24 ${simulationControlsOpen ? "p-3 lg:w-[20rem] lg:max-h-[calc(100vh-8rem)]" : "p-2 lg:w-[3.6rem] lg:max-h-[3.6rem]"}`}
         >
           <div className="mb-2 flex items-center justify-between gap-2">
-            <p className="text-[11px] uppercase tracking-[0.12em] text-[#a3d3ef]">Simulation Controls</p>
-            <p className="text-[10px] text-[#beddf0]">ui opacity <code>{Math.round(interfaceOpacity * 100)}%</code></p>
-          </div>
-
-          <CoreControlPanel
-            projectionPerspective={projectionPerspective}
-            autopilotEnabled={autopilotEnabled}
-            autopilotStatus={autopilotStatus}
-            autopilotSummary={autopilotSummary}
-            interfaceOpacity={interfaceOpacity}
-            coreCameraZoom={coreCameraZoom}
-            coreCameraPitch={coreCameraPitch}
-            coreCameraYaw={coreCameraYaw}
-            coreRenderedCameraPosition={coreRenderedCameraPosition}
-            coreFlightEnabled={coreFlightEnabled}
-            coreFlightSpeed={coreFlightSpeed}
-            coreOrbitEnabled={coreOrbitEnabled}
-            coreOrbitSpeed={coreOrbitSpeed}
-            coreSimulationTuning={coreSimulationTuning}
-            coreVisualTuning={coreVisualTuning}
-            coreOverlayView={coreOverlayView}
-            activeChatLens={activeChatLens}
-            latestAutopilotEvent={latestAutopilotEvent}
-            projectionOptions={projectionOptions}
-            mouseDaimonTuning={mouseDaimonTuning}
-            onToggleAutopilot={toggleAutopilot}
-            onToggleCoreFlight={toggleCoreFlight}
-            onToggleCoreOrbit={toggleCoreOrbit}
-            onNudgeCoreFlightSpeed={nudgeCoreFlightSpeed}
-            onNudgeCoreOrbitSpeed={nudgeCoreOrbitSpeed}
-            onApplyCoreLayerPreset={applyCoreLayerPreset}
-            onNudgeCoreZoom={nudgeCoreZoom}
-            onResetCoreCamera={resetCoreCamera}
-            onSelectPerspective={setUiPerspective}
-            onSetInterfaceOpacity={setInterfaceOpacityDial}
-            onResetInterfaceOpacity={resetInterfaceOpacity}
-            onBoostCoreVisibility={boostCoreVisibility}
-            onResetCoreVisualTuning={resetCoreVisualTuning}
-            onSetCoreVisualDial={setCoreVisualDial}
-            onResetCoreSimulationTuning={resetCoreSimulationTuning}
-            onSetCoreSimulationDial={setCoreSimulationDial}
-            onSetCoreOrbitSpeed={(value) => setCoreOrbitSpeed(clamp(value, CORE_ORBIT_SPEED_MIN, CORE_ORBIT_SPEED_MAX))}
-            onSetMouseDaimonTuning={updateMouseDaimonTuning}
-            onOpenRuntimeConfig={openRuntimeConfigPanel}
-          />
-
-          <div className="mt-3">
-            <CoreLayerManagerOverlay
-              inline
-              activeLayerCount={activeCoreLayerCount}
-              isOpen={coreLayerManagerOpen}
-              layerVisibility={coreLayerVisibility}
-              onToggleOpen={() => setCoreLayerManagerOpen((prev) => !prev)}
-              onSetAllLayers={setAllCoreLayers}
-              onSetLayerEnabled={setCoreLayerEnabled}
-            />
-          </div>
-
-          <div className="mt-3 rounded-lg border border-[rgba(106,203,242,0.3)] bg-[rgba(8,19,29,0.38)] px-3 py-2">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-[11px] uppercase tracking-[0.12em] text-[#9ec7dd]">Muse Forge</p>
-              <p className="text-[10px] text-[#b8d9ef]">
-                runtime: <code>{museRuntimeSnapshot?.muse_count ?? 0}</code> muses | seq <code>{museRuntimeSnapshot?.event_seq ?? 0}</code>
-              </p>
-            </div>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <input
-                type="text"
-                value={museForgeLabel}
-                onChange={(event) => setMuseForgeLabel(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    void handleCreateMuse();
-                  }
-                }}
-                placeholder="create muse label (e.g. Archive Witness)"
-                className="min-w-[220px] flex-1 rounded-md border border-[rgba(106,203,242,0.34)] bg-[rgba(10,23,34,0.86)] px-3 py-1.5 text-xs text-[#e6f5ff]"
-              />
+            <p className="text-[10px] uppercase tracking-[0.12em] text-[#a3d3ef]">
+              {simulationControlsOpen ? "Simulation Controls" : "Controls"}
+            </p>
+            <div className="flex items-center gap-2">
+              {simulationControlsOpen ? (
+                <p className="text-[10px] text-[#beddf0]">ui opacity <code>{Math.round(interfaceOpacity * 100)}%</code></p>
+              ) : null}
               <button
                 type="button"
-                disabled={museForgeBusy || !museForgePreviewId}
-                onClick={() => {
-                  void handleCreateMuse();
-                }}
-                className="rounded-md border border-[rgba(166,226,46,0.45)] bg-[rgba(166,226,46,0.16)] px-3 py-1.5 text-xs font-semibold text-[#e9ffd3] disabled:opacity-45"
+                onClick={() => setSimulationControlsOpen((prev) => !prev)}
+                className="rounded border border-[rgba(157,204,236,0.36)] px-2 py-0.5 text-[10px] font-semibold text-[#cde7fa] hover:bg-[rgba(97,151,191,0.24)]"
               >
-                {museForgeBusy ? "creating..." : "Create Muse"}
+                {simulationControlsOpen ? "close" : "open"}
               </button>
             </div>
-            <p className="mt-1 text-[10px] text-[#9fc4dd]">
-              next id: <code>{museForgePreviewId || "(type label)"}</code>
-            </p>
           </div>
+
+          {simulationControlsOpen ? (
+            <>
+              <CoreControlPanel
+                projectionPerspective={projectionPerspective}
+                autopilotEnabled={autopilotEnabled}
+                autopilotStatus={autopilotStatus}
+                autopilotSummary={autopilotSummary}
+                interfaceOpacity={interfaceOpacity}
+                coreCameraZoom={coreCameraZoom}
+                coreCameraPitch={coreCameraPitch}
+                coreCameraYaw={coreCameraYaw}
+                coreRenderedCameraPosition={coreRenderedCameraPosition}
+                coreFlightEnabled={coreFlightEnabled}
+                coreFlightSpeed={coreFlightSpeed}
+                coreOrbitEnabled={coreOrbitEnabled}
+                coreOrbitSpeed={coreOrbitSpeed}
+                coreSimulationTuning={coreSimulationTuning}
+                coreVisualTuning={coreVisualTuning}
+                coreOverlayView={coreOverlayView}
+                activeChatLens={activeChatLens}
+                latestAutopilotEvent={latestAutopilotEvent}
+                projectionOptions={projectionOptions}
+                mouseDaimonTuning={mouseDaimonTuning}
+                onToggleAutopilot={toggleAutopilot}
+                onToggleCoreFlight={toggleCoreFlight}
+                onToggleCoreOrbit={toggleCoreOrbit}
+                onNudgeCoreFlightSpeed={nudgeCoreFlightSpeed}
+                onNudgeCoreOrbitSpeed={nudgeCoreOrbitSpeed}
+                onApplyCoreLayerPreset={applyCoreLayerPreset}
+                onNudgeCoreZoom={nudgeCoreZoom}
+                onResetCoreCamera={resetCoreCamera}
+                onSelectPerspective={setUiPerspective}
+                onSetInterfaceOpacity={setInterfaceOpacityDial}
+                onResetInterfaceOpacity={resetInterfaceOpacity}
+                onBoostCoreVisibility={boostCoreVisibility}
+                onResetCoreVisualTuning={resetCoreVisualTuning}
+                onSetCoreVisualDial={setCoreVisualDial}
+                onResetCoreSimulationTuning={resetCoreSimulationTuning}
+                onSetCoreSimulationDial={setCoreSimulationDial}
+                onSetCoreOrbitSpeed={(value) => setCoreOrbitSpeed(clamp(value, CORE_ORBIT_SPEED_MIN, CORE_ORBIT_SPEED_MAX))}
+                onSetMouseDaimonTuning={updateMouseDaimonTuning}
+                onOpenRuntimeConfig={openRuntimeConfigPanel}
+              />
+
+              <div className="mt-3">
+                <CoreLayerManagerOverlay
+                  inline
+                  activeLayerCount={activeCoreLayerCount}
+                  isOpen={coreLayerManagerOpen}
+                  layerVisibility={coreLayerVisibility}
+                  onToggleOpen={() => setCoreLayerManagerOpen((prev) => !prev)}
+                  onSetAllLayers={setAllCoreLayers}
+                  onSetLayerEnabled={setCoreLayerEnabled}
+                />
+              </div>
+
+              <div className="mt-3 rounded-lg border border-[rgba(106,203,242,0.3)] bg-[rgba(8,19,29,0.38)] px-3 py-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-[11px] uppercase tracking-[0.12em] text-[#9ec7dd]">Muse Forge</p>
+                  <div className="flex items-center gap-2">
+                    <p className="text-[10px] text-[#b8d9ef]">
+                      runtime: <code>{museRuntimeSnapshot?.muse_count ?? 0}</code> muses | seq <code>{museRuntimeSnapshot?.event_seq ?? 0}</code>
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setMuseForgeOpen((prev) => !prev)}
+                      className="rounded border border-[rgba(157,204,236,0.36)] px-2 py-0.5 text-[10px] font-semibold text-[#cde7fa] hover:bg-[rgba(97,151,191,0.24)]"
+                    >
+                      {museForgeOpen ? "hide forge" : "show forge"}
+                    </button>
+                  </div>
+                </div>
+                {museForgeOpen ? (
+                  <>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <input
+                        type="text"
+                        value={museForgeLabel}
+                        onChange={(event) => setMuseForgeLabel(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            void handleCreateMuse();
+                          }
+                        }}
+                        placeholder="create muse label (e.g. Archive Witness)"
+                        className="min-w-[220px] flex-1 rounded-md border border-[rgba(106,203,242,0.34)] bg-[rgba(10,23,34,0.86)] px-3 py-1.5 text-xs text-[#e6f5ff]"
+                      />
+                      <button
+                        type="button"
+                        disabled={museForgeBusy || !museForgePreviewId}
+                        onClick={() => {
+                          void handleCreateMuse();
+                        }}
+                        className="rounded-md border border-[rgba(166,226,46,0.45)] bg-[rgba(166,226,46,0.16)] px-3 py-1.5 text-xs font-semibold text-[#e9ffd3] disabled:opacity-45"
+                      >
+                        {museForgeBusy ? "creating..." : "Create Muse"}
+                      </button>
+                    </div>
+                    <p className="mt-1 text-[10px] text-[#9fc4dd]">
+                      next id: <code>{museForgePreviewId || "(type label)"}</code>
+                    </p>
+                  </>
+                ) : null}
+              </div>
+            </>
+          ) : null}
         </aside>
 
         <WorldPanelsViewport

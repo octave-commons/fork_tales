@@ -202,6 +202,7 @@ function mergeSimulationPatch(
       : [];
     if (patchParticles.length > 0 && previousParticles.length > 0) {
       const previousById = new Map<string, (typeof previousParticles)[number]>();
+      const previousIndexById = new Map<string, number>();
       previousParticles.forEach((row, index) => {
         if (!row || typeof row !== 'object') {
           return;
@@ -212,26 +213,79 @@ function mergeSimulationPatch(
           return;
         }
         previousById.set(rowId, rowRecord);
+        previousIndexById.set(rowId, index);
       });
 
-      next.presence_dynamics.field_particles = patchParticles.map((row, index) => {
+      const mergedParticles = [...previousParticles];
+      patchParticles.forEach((row, index) => {
         if (!row || typeof row !== 'object') {
-          return row;
+          return;
         }
         const rowRecord = row as (typeof patchParticles)[number];
         const rowId = String(rowRecord.id ?? rowRecord.presence_id ?? `particle:${index}`).trim();
-        const previousRow = previousById.get(rowId);
-        if (!previousRow) {
-          return row;
+        if (!rowId) {
+          return;
         }
-        return {
-          ...previousRow,
-          ...rowRecord,
-        } as (typeof patchParticles)[number];
+        const previousRow = previousById.get(rowId);
+        const mergedRow = previousRow
+          ? ({
+              ...previousRow,
+              ...rowRecord,
+            } as (typeof patchParticles)[number])
+          : rowRecord;
+
+        const existingIndex = previousIndexById.get(rowId);
+        if (existingIndex !== undefined) {
+          mergedParticles[existingIndex] = mergedRow;
+          previousById.set(rowId, mergedRow);
+          return;
+        }
+        previousIndexById.set(rowId, mergedParticles.length);
+        previousById.set(rowId, mergedRow);
+        mergedParticles.push(mergedRow);
       });
+
+      next.presence_dynamics.field_particles = mergedParticles;
     }
   }
   return next;
+}
+
+function isBootstrapSimulation(simulation: SimulationState | null | undefined): boolean {
+  if (!simulation) {
+    return false;
+  }
+
+  const simulationRecord = String(
+    (simulation as unknown as Record<string, unknown>).record ?? '',
+  )
+    .trim()
+    .toLowerCase();
+  if (simulationRecord === 'eta-mu.ws.simulation-fast-bootstrap.v1') {
+    return true;
+  }
+
+  const totalCount = Number(simulation.total ?? 0);
+  const pointCount = Array.isArray(simulation.points) ? simulation.points.length : 0;
+  if (Number.isFinite(totalCount) && totalCount > 0) {
+    return false;
+  }
+  if (pointCount > 0) {
+    return false;
+  }
+
+  const dynamics = simulation.presence_dynamics;
+  if (!isRecord(dynamics)) {
+    return false;
+  }
+  const summary = dynamics.daimoi_probabilistic;
+  if (!isRecord(summary)) {
+    return false;
+  }
+  const disabledReason = String(summary.disabled_reason ?? '')
+    .trim()
+    .toLowerCase();
+  return disabledReason === 'ws_fast_bootstrap' || disabledReason === 'ws_bootstrap_cache_miss';
 }
 
 function decodePackedWsNode(node: unknown, keyTable: string[]): unknown {
@@ -309,6 +363,7 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
 
   const wsRef = useRef<WebSocket | null>(null);
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const retryBackoffMsRef = useRef(1000);
   const projectionFetchTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const simulationFallbackInFlightRef = useRef(false);
   const simulationFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -402,6 +457,7 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
     const ws = new WebSocket(url);
 
     ws.onopen = () => {
+      retryBackoffMsRef.current = 1000;
       setState((prev) => {
         const next = { ...prev, isConnected: true };
         stateRef.current = next;
@@ -441,6 +497,16 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
           const projectionPayload = (msg.projection ?? simulationPayload?.projection ?? null) as
             | UIProjectionBundle
             | null;
+          const previousSimulation =
+            pendingPatchRef.current.simulation ?? stateRef.current.simulation;
+          if (
+            simulationPayload
+            && isBootstrapSimulation(simulationPayload)
+            && previousSimulation
+            && !isBootstrapSimulation(previousSimulation)
+          ) {
+            return;
+          }
           enqueueStatePatch({
             simulation: simulationPayload,
             ...(projectionPayload ? { projection: projectionPayload } : {}),
@@ -560,9 +626,12 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
       if (!shouldReconnectRef.current) {
         return;
       }
+      const retryDelayMs = retryBackoffMsRef.current;
+      retryBackoffMsRef.current = Math.min(15000, Math.round(retryDelayMs * 1.8));
+      clearTimeout(retryTimeoutRef.current);
       retryTimeoutRef.current = window.setTimeout(() => {
         connectRef.current?.();
-      }, 3000);
+      }, retryDelayMs);
     };
 
     wsRef.current = ws;
@@ -574,6 +643,7 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
 
   useEffect(() => {
     shouldReconnectRef.current = true;
+    retryBackoffMsRef.current = 1000;
     connect();
     const controller = new AbortController();
 
@@ -800,7 +870,7 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
         scheduleNext(3500);
         return;
       }
-      if (stateRef.current.simulation) {
+      if (stateRef.current.simulation && !isBootstrapSimulation(stateRef.current.simulation)) {
         return;
       }
 

@@ -136,8 +136,9 @@ describe("WorldPanelsViewport", () => {
     const props = makeProps();
     render(<WorldPanelsViewport {...props} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "config" }));
-    fireEvent.click(screen.getByRole("button", { name: "edit rank" }));
+    fireEvent.click(screen.getByRole("button", { name: "tools" }));
+    fireEvent.click(screen.getByRole("button", { name: "cfg" }));
+    fireEvent.click(screen.getByRole("button", { name: "rank" }));
 
     expect(props.onActivatePanel).toHaveBeenCalledWith("nexus.ui.runtime_config");
     expect(props.onSelectPanel).toHaveBeenCalledWith("nexus.ui.runtime_config");
@@ -173,6 +174,7 @@ describe("WorldPanelsViewport", () => {
 
     const view = render(<WorldPanelsViewport {...props} />);
 
+    fireEvent.click(screen.getByRole("button", { name: "expand rail" }));
     fireEvent.click(screen.getByRole("button", { name: /Anchor Registry/ }));
     const trayCard = view.container.querySelector(".world-unity-tray-card");
     if (!(trayCard instanceof HTMLElement)) {
@@ -190,7 +192,7 @@ describe("WorldPanelsViewport", () => {
     expect((syncCall?.[1] as RequestInit | undefined)?.method).toBe("POST");
     expect((syncCall?.[1] as RequestInit | undefined)?.body).toBe("{}");
 
-    fireEvent.click(within(trayCard).getByRole("button", { name: "guide" }));
+    fireEvent.click(within(trayCard).getByRole("button", { name: "cue" }));
 
     expect(props.onActivatePanel).toHaveBeenCalledWith(analysisPanel.id);
     expect(props.onSelectPanel).toHaveBeenCalledWith(analysisPanel.id);
@@ -232,6 +234,8 @@ describe("WorldPanelsViewport", () => {
 
     render(<WorldPanelsViewport {...props} />);
 
+    fireEvent.click(screen.getByRole("button", { name: "expand rail" }));
+    fireEvent.click(screen.getByRole("button", { name: "filters" }));
     fireEvent.click(screen.getByRole("button", { name: /block\s+1/i }));
     expect(screen.getByRole("button", { name: /Blocked Lens/ })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Running Lens/ })).toBeNull();

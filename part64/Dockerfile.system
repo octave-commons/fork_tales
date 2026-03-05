@@ -2,8 +2,15 @@ FROM python:3.12-slim-trixie
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV CDB_ORT_GPU_CAPI_DIR=/opt/ort-gpu/onnxruntime/capi
+ENV CDB_ORT_GPU_INCLUDE_DIR=/app/onnxruntime-linux-x64-1.22.0/include
+ENV LD_LIBRARY_PATH=/opt/ort-gpu/onnxruntime/capi:/usr/local/lib/python3.12/site-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.12/site-packages/nvidia/cuda_nvrtc/lib:/usr/local/lib/python3.12/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.12/site-packages/nvidia/cudnn/lib:/usr/local/lib/python3.12/site-packages/nvidia/cufft/lib:/usr/local/lib/python3.12/site-packages/nvidia/curand/lib:/usr/local/lib/python3.12/site-packages/nvidia/nvjitlink/lib:${LD_LIBRARY_PATH}
 
 WORKDIR /app
+
+# Create non-root user matching host UID for volume permissions
+RUN getent group 1000 >/dev/null || groupadd -g 1000 appuser \
+    && useradd -m -u 1000 -g 1000 appuser
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends nodejs npm espeak-ng redis-tools gcc g++ libc6-dev procps patchelf libze1 libtbb12 \
@@ -13,14 +20,22 @@ RUN apt-get update \
 COPY code/package.json code/package-lock.json /app/code/
 RUN npm --prefix /app/code ci --omit=dev
 
-RUN pip3 install --no-cache-dir chromadb psutil tensorflow-cpu==2.16.1 onnxruntime-openvino==1.22.0 "tokenizers>=0.20.3" \
+RUN pip3 install --no-cache-dir chromadb psutil tensorflow-cpu==2.16.1 onnxruntime-openvino==1.22.0 "tokenizers>=0.20.3" fastapi uvicorn httpx websockets \
+    && pip3 install --no-cache-dir nvidia-cuda-runtime-cu12 nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-cufft-cu12 nvidia-curand-cu12 nvidia-cuda-nvrtc-cu12 \
+    && pip3 install --no-cache-dir --no-deps --target /opt/ort-gpu onnxruntime-gpu==1.22.0 \
+    && ln -sf libonnxruntime.so.1.22.0 /opt/ort-gpu/onnxruntime/capi/libonnxruntime.so \
+    && ln -sf libonnxruntime.so.1.22.0 /opt/ort-gpu/onnxruntime/capi/libonnxruntime.so.1 \
     && (pip3 uninstall -y onnxruntime || true) \
     && pip3 install --no-cache-dir --force-reinstall --no-deps onnxruntime-openvino==1.22.0 \
     && python3 -c "from pathlib import Path; import subprocess; capi=Path('/usr/local/lib/python3.12/site-packages/onnxruntime/capi'); raw=list(capi.glob('onnxruntime_pybind11_state*.so'))+list(capi.glob('libonnxruntime.so*')); targets=sorted({str(path.resolve()) for path in raw if path.exists()}); [subprocess.run(['patchelf','--clear-execstack',path], check=True) for path in targets]; assert targets" \
-    && python3 -c "import onnxruntime as ort; p=ort.get_available_providers(); assert 'OpenVINOExecutionProvider' in p, p"
+    && python3 -c "import onnxruntime as ort; p=ort.get_available_providers(); assert 'OpenVINOExecutionProvider' in p, p" \
+    && python3 -c "from pathlib import Path; capi=Path('/opt/ort-gpu/onnxruntime/capi'); assert (capi/'libonnxruntime.so').exists(); assert (capi/'libonnxruntime_providers_cuda.so').exists()"
 
 COPY . /app
 
 EXPOSE 8787 8793
+
+# Switch to non-root user
+USER appuser
 
 CMD ["pm2-runtime", "start", "ecosystem.config.cjs", "--only", "eta-mu-world,eta-mu-io,web-graph-weaver"]

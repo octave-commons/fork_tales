@@ -19,6 +19,8 @@ export const PANEL_TOOL_HINTS: Record<string, string[]> = {
   "nexus.ui.chat.symmetry": ["chat", "nearby", "pin"],
   "nexus.ui.web_graph_weaver": ["crawl", "queue", "graph"],
   "nexus.ui.threat_radar": ["threat", "security", "review"],
+  "nexus.ui.muse_radar.witness_thread": ["threat", "github", "muse"],
+  "nexus.ui.muse_radar.chaos": ["threat", "global", "muse"],
   "nexus.ui.inspiration_atlas": ["search", "curate", "seed"],
   "nexus.ui.entity_vitals": ["vitals", "telemetry", "watch"],
   "nexus.ui.projection_ledger": ["projection", "trace", "audit"],

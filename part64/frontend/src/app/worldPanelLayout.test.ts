@@ -68,8 +68,9 @@ describe("worldPanelLayout helpers", () => {
     expect(PANEL_ANCHOR_PRESETS["nexus.ui.world_log"]?.pinnedByDefault).toBe(true);
     expect(PANEL_ANCHOR_PRESETS["nexus.ui.world_log"]?.anchorId).toBe("witness_thread");
     expect(PANEL_ANCHOR_PRESETS["nexus.ui.glass_viewport"]?.anchorId).toBe("view_lens_keeper");
-    expect(PANEL_ANCHOR_PRESETS["nexus.ui.threat_radar"]?.pinnedByDefault).toBe(true);
-    expect(PANEL_ANCHOR_PRESETS["nexus.ui.threat_radar"]?.anchorId).toBe("witness_thread");
+    expect(PANEL_ANCHOR_PRESETS["nexus.ui.muse_radar.witness_thread"]?.pinnedByDefault).toBe(true);
+    expect(PANEL_ANCHOR_PRESETS["nexus.ui.muse_radar.witness_thread"]?.anchorId).toBe("witness_thread");
+    expect(PANEL_ANCHOR_PRESETS["nexus.ui.muse_radar.chaos"]?.anchorId).toBe("chaos");
   });
 
   it("normalizes unit values with fallback and clamping", () => {

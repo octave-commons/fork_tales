@@ -1850,6 +1850,7 @@ def build_eta_mu_file_graph(
     vault_root: Path,
     *,
     inbox_snapshot: dict[str, Any] | None = None,
+    include_embedding_state: bool = True,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any]:
     def _emit_progress(stage: str, detail: dict[str, Any] | None = None) -> None:
@@ -1941,14 +1942,23 @@ def build_eta_mu_file_graph(
     archive_count = 0
     compressed_bytes_total = 0
 
-    _emit_progress("embedding_state_start")
-    embedding_state = _load_embeddings_db_state(vault_root)
-    _emit_progress(
-        "embedding_state_done",
-        {
-            "embedding_entry_count": len(embedding_state),
-        },
-    )
+    embedding_state: dict[str, dict[str, Any]] = {}
+    if include_embedding_state:
+        _emit_progress("embedding_state_start")
+        embedding_state = _load_embeddings_db_state(vault_root)
+        _emit_progress(
+            "embedding_state_done",
+            {
+                "embedding_entry_count": len(embedding_state),
+            },
+        )
+    else:
+        _emit_progress(
+            "embedding_state_skipped",
+            {
+                "reason": "disabled",
+            },
+        )
 
     active_layer_patterns = _split_csv_items(ETA_MU_FILE_GRAPH_ACTIVE_EMBED_LAYERS)
     if not active_layer_patterns:
@@ -2923,6 +2933,7 @@ def collect_catalog(
     sync_inbox: bool = True,
     include_pi_archive: bool = True,
     include_world_log: bool = True,
+    include_embedding_state: bool = True,
     progress_callback: Callable[[str, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any]:
     from .simulation import (
@@ -2961,6 +2972,7 @@ def collect_catalog(
             "sync_inbox": bool(sync_inbox),
             "include_pi_archive": bool(include_pi_archive),
             "include_world_log": bool(include_world_log),
+            "include_embedding_state": bool(include_embedding_state),
         },
     )
 
@@ -3005,6 +3017,7 @@ def collect_catalog(
     file_graph = build_eta_mu_file_graph(
         vault_root,
         inbox_snapshot=inbox_snapshot,
+        include_embedding_state=include_embedding_state,
         progress_callback=lambda stage, detail: _emit_progress(
             f"file_graph_{str(stage or '').strip().lower()}",
             detail,

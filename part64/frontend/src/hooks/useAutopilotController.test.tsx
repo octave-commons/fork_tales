@@ -278,7 +278,10 @@ describe("useAutopilotController", () => {
       });
     });
 
-    const directed = result.current.handleAutopilotUserInput("run drift scan now");
+    const ignored = result.current.handleAutopilotUserInput("run drift scan now");
+    expect(ignored).toBe(false);
+
+    const directed = result.current.handleAutopilotUserInput("autopilot: run drift scan now");
     expect(directed).toBe(true);
 
     const inferred = await instance.hooks.hypothesize({
@@ -311,6 +314,36 @@ describe("useAutopilotController", () => {
       expect(result.current.autopilotSummary).toBe("paused by user");
     });
     expect(emitSystemMessage).toHaveBeenCalledWith("autopilot paused by user");
+  });
+
+  it("treats websocket disconnect as yellow when study endpoint still responds", async () => {
+    const emitSystemMessage = vi.fn();
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/study?limit=4")) {
+        return mockJsonResponse({
+          signals: {
+            blocked_gate_count: 0,
+            active_drift_count: 0,
+            queue_pending_count: 0,
+            truth_gate_blocked: false,
+          },
+        });
+      }
+      return mockJsonResponse({ ok: true });
+    });
+
+    renderHook(() => useAutopilotController({
+      catalog: null,
+      simulation: null,
+      isConnected: false,
+      emitSystemMessage,
+    }));
+    const instance = latestAutopilotInstance();
+
+    const context = await instance.hooks.sense();
+    expect(context.health).toBe("yellow");
+    expect(context.healthReasons.join(" ")).toContain("study endpoint still reachable");
   });
 
   it("records autopilot events and tick errors in summary", async () => {

@@ -28,6 +28,7 @@ _MAX_CONVERSATION_BODY_CHARS = 6000
 _MAX_CONVERSATION_TEXT_CHARS = 48000
 _MAX_SUMMARY_CHARS = 320
 _MAX_EXCERPT_CHARS = 9000
+_SIMHASH_TOKEN_RE = re.compile(r"[a-z0-9_][a-z0-9_.-]{1,63}")
 
 
 def _now_iso() -> str:
@@ -110,6 +111,46 @@ def _position_from_token(token: str) -> tuple[float, float]:
     return x, y
 
 
+def _simhash64(text: Any) -> str:
+    lowered = _safe_str(text).lower()
+    if not lowered:
+        return ""
+
+    token_counts: dict[str, int] = {}
+    for token in _SIMHASH_TOKEN_RE.findall(lowered)[:4096]:
+        token_counts[token] = token_counts.get(token, 0) + 1
+    if not token_counts:
+        return ""
+
+    accum = [0 for _ in range(64)]
+    for token, count in token_counts.items():
+        digest = hashlib.sha1(token.encode("utf-8")).digest()
+        value = int.from_bytes(digest[:8], "big", signed=False)
+        weight = max(1, int(count))
+        for bit_index in range(64):
+            bit = (value >> bit_index) & 1
+            accum[bit_index] += weight if bit else -weight
+
+    simhash_value = 0
+    for bit_index, score in enumerate(accum):
+        if score >= 0:
+            simhash_value |= 1 << bit_index
+    return f"{simhash_value:016x}"
+
+
+def _hamming_distance64_hex(left: Any, right: Any) -> int:
+    left_token = _safe_str(left).lower()
+    right_token = _safe_str(right).lower()
+    if not left_token or not right_token:
+        return 64
+    try:
+        left_value = int(left_token, 16)
+        right_value = int(right_token, 16)
+    except ValueError:
+        return 64
+    return int((left_value ^ right_value).bit_count())
+
+
 class GithubPresence:
     def __init__(
         self,
@@ -153,7 +194,16 @@ class GithubPresence:
             "repo_cooldown_s": 300,
             "url_cooldown_s": 1800,
             "sweep_interval_seconds": 600,
-            "endpoint_order": ["pulls", "issues", "releases"],
+            "endpoint_order": ["pulls", "issues", "releases", "advisories"],
+            "regime_budget_enabled": True,
+            "regime_policy_refresh_s": 180,
+            "regime_policy_window_ticks": 1440,
+            "regime_policy_state_bins": 8,
+            "regime_policy_threat_limit": 160,
+            "frontier_exploration_ratio": 0.0,
+            "frontier_value_window_ticks": 7200,
+            "near_duplicate_dedupe_enabled": True,
+            "near_duplicate_hamming_max": 3,
         }
         if not self.config_path.exists():
             return defaults
@@ -182,6 +232,11 @@ class GithubPresence:
             "last_sweep_ts": 0.0,
             "config_checked_ts": 0.0,
             "global_rate_limit_reset": 0.0,
+            "repo_frontier_cursor": 0,
+            "last_frontier_plan": {},
+            "last_regime_policy": {},
+            "last_regime_budget": {},
+            "last_regime_budget_signature": "",
             "repo_cooldowns": {},
             "repo_endpoint_cursor": {},
             "url_state": {},
@@ -195,6 +250,7 @@ class GithubPresence:
                 "failed": 0,
                 "cooldown_blocked": 0,
                 "atoms_emitted": 0,
+                "duplicate_suppressed": 0,
             },
         }
 
@@ -407,18 +463,23 @@ class GithubPresence:
         return float(backoff)
 
     def _endpoint_order(self) -> list[str]:
-        order = self.config.get("endpoint_order", ["pulls", "issues", "releases"])
+        order = self.config.get(
+            "endpoint_order", ["pulls", "issues", "releases", "advisories"]
+        )
         if not isinstance(order, list):
-            return ["pulls", "issues", "releases"]
+            return ["pulls", "issues", "releases", "advisories"]
         cleaned = []
         seen: set[str] = set()
         for row in order:
             token = _safe_str(row).lower()
-            if token not in {"pulls", "issues", "releases"} or token in seen:
+            if (
+                token not in {"pulls", "issues", "releases", "advisories"}
+                or token in seen
+            ):
                 continue
             seen.add(token)
             cleaned.append(token)
-        return cleaned or ["pulls", "issues", "releases"]
+        return cleaned or ["pulls", "issues", "releases", "advisories"]
 
     def _next_endpoint_kind(self, repo: str) -> str:
         cursors = self.state.get("repo_endpoint_cursor", {})
@@ -442,6 +503,11 @@ class GithubPresence:
             )
         if endpoint_kind == "releases":
             return f"https://api.github.com/repos/{repo}/releases?per_page={per_page}"
+        if endpoint_kind == "advisories":
+            return (
+                f"https://api.github.com/repos/{repo}/security-advisories"
+                f"?state=published&per_page={per_page}"
+            )
         return (
             f"https://api.github.com/repos/{repo}/pulls"
             f"?state=all&sort=updated&direction=desc&per_page={per_page}"
@@ -462,8 +528,11 @@ class GithubPresence:
                 # GitHub issues endpoint includes PRs; skip in issue sweep.
                 continue
 
-            canonical = canonical_github_url(_safe_str(row.get("html_url", "")))
+            html_url = _safe_str(row.get("html_url", ""))
             api_url = _safe_str(row.get("url", ""))
+            canonical = canonical_github_url(html_url)
+            if endpoint_kind == "advisories":
+                canonical = canonical_github_url(api_url) or canonical
             if not canonical or not api_url:
                 continue
 
@@ -471,10 +540,15 @@ class GithubPresence:
                 kind = "github:pr"
             elif endpoint_kind == "issues":
                 kind = "github:issue"
+            elif endpoint_kind == "advisories":
+                kind = "github:advisory"
             else:
                 kind = "github:release"
 
-            atoms = extract_github_atoms(canonical, row, self.config)
+            payload_row = dict(row)
+            payload_row.setdefault("repo", repo)
+            payload_row.setdefault("full_name", repo)
+            atoms = extract_github_atoms(canonical, payload_row, self.config)
             score = compute_importance_score(row, atoms)
             candidates.append(
                 {
@@ -483,9 +557,14 @@ class GithubPresence:
                     "canonical_url": canonical,
                     "api_url": api_url,
                     "number": max(0, _safe_int(row.get("number", 0), 0)),
-                    "title": _safe_str(row.get("title", row.get("name", "")))[:240],
+                    "title": _safe_str(
+                        row.get("title", row.get("summary", row.get("name", "")))
+                    )[:240],
                     "updated_at": _safe_str(
-                        row.get("updated_at", row.get("published_at", ""))
+                        row.get(
+                            "updated_at",
+                            row.get("published_at", row.get("created_at", "")),
+                        )
                     ),
                     "labels": [
                         _safe_str(lbl.get("name", ""))
@@ -564,6 +643,322 @@ class GithubPresence:
             _MAX_CONVERSATION_BODY_CHARS,
         )
         return max(280, min(_MAX_CONVERSATION_BODY_CHARS, configured))
+
+    def _near_duplicate_dedupe_enabled(self) -> bool:
+        return _safe_bool(self.config.get("near_duplicate_dedupe_enabled", True), True)
+
+    def _near_duplicate_hamming_max(self) -> int:
+        configured = _safe_int(self.config.get("near_duplicate_hamming_max", 3), 3)
+        return max(0, min(32, configured))
+
+    def _frontier_exploration_ratio(self) -> float:
+        configured = _safe_float(
+            self.config.get("frontier_exploration_ratio", 0.0), 0.0
+        )
+        return max(0.0, min(0.9, configured))
+
+    def _frontier_value_window_ticks(self) -> float:
+        configured = _safe_float(
+            self.config.get("frontier_value_window_ticks", 7200), 7200
+        )
+        return max(60.0, min(7.0 * 24.0 * 3600.0, configured))
+
+    def _repo_frontier_score(self, repo: str, *, now_ts: float) -> float:
+        resources = self.state.get("resources", {})
+        if not isinstance(resources, dict):
+            return 0.0
+
+        repo_token = _canonical_repo_name(repo)
+        if not repo_token:
+            return 0.0
+
+        window_ticks = self._frontier_value_window_ticks()
+        best_score = 0.0
+        for resource in resources.values():
+            if not isinstance(resource, dict):
+                continue
+            if _canonical_repo_name(resource.get("repo", "")) != repo_token:
+                continue
+
+            fetched_ts = max(0.0, _safe_float(resource.get("fetched_ts", 0.0), 0.0))
+            age = max(0.0, now_ts - fetched_ts)
+            if age > window_ticks:
+                continue
+
+            recency_weight = max(0.0, 1.0 - (age / window_ticks))
+            importance_score = max(0, _safe_int(resource.get("importance_score", 0), 0))
+            kind = _safe_str(resource.get("kind", "")).lower()
+
+            kind_bonus = 0.0
+            if kind == "github:advisory":
+                kind_bonus = 2.0
+            elif kind == "github:release":
+                kind_bonus = 1.0
+
+            cve_count = 0
+            dependency_touches = 0
+            atoms = (
+                resource.get("atoms", [])
+                if isinstance(resource.get("atoms", []), list)
+                else []
+            )
+            for atom in atoms:
+                if not isinstance(atom, dict):
+                    continue
+                atom_kind = _safe_str(atom.get("kind", "")).lower()
+                if atom_kind == "references_cve":
+                    cve_count += 1
+                elif atom_kind == "changes_dependency":
+                    dependency_touches += 1
+
+            signal_bonus = min(4.0, float(cve_count) * 1.4) + min(
+                2.0, float(dependency_touches)
+            )
+            row_score = (
+                (float(importance_score) * 0.45)
+                + (recency_weight * 4.0)
+                + kind_bonus
+                + signal_bonus
+            )
+            if row_score > best_score:
+                best_score = row_score
+
+        return round(max(0.0, best_score), 6)
+
+    def _plan_repo_frontier(
+        self,
+        repos: list[str],
+        *,
+        now_ts: float,
+        max_repos: int,
+    ) -> dict[str, Any]:
+        normalized = sorted(
+            {_canonical_repo_name(repo) for repo in repos if _canonical_repo_name(repo)}
+        )
+        if not normalized:
+            return {
+                "selected": [],
+                "priority": [],
+                "explore": [],
+                "scores": {},
+                "exploration_ratio": round(self._frontier_exploration_ratio(), 6),
+            }
+
+        target_count = max(1, min(max_repos, len(normalized)))
+        scored = [
+            (self._repo_frontier_score(repo, now_ts=now_ts), repo)
+            for repo in normalized
+        ]
+        scored.sort(
+            key=lambda row: (
+                -_safe_float(row[0], 0.0),
+                str(row[1]),
+            )
+        )
+
+        exploration_ratio = self._frontier_exploration_ratio()
+        if target_count <= 1 or exploration_ratio <= 0.0:
+            selected = [repo for _score, repo in scored[:target_count]]
+            return {
+                "selected": selected,
+                "priority": list(selected),
+                "explore": [],
+                "scores": {
+                    repo: round(max(0.0, _safe_float(score, 0.0)), 6)
+                    for score, repo in scored
+                },
+                "exploration_ratio": round(exploration_ratio, 6),
+            }
+
+        explore_count = int(round(float(target_count) * exploration_ratio))
+        if explore_count <= 0:
+            explore_count = 1
+        explore_count = min(target_count - 1, explore_count)
+        priority_count = max(1, target_count - explore_count)
+
+        priority_repos = [repo for _score, repo in scored[:priority_count]]
+        explore_pool = [repo for _score, repo in scored[priority_count:]]
+
+        cursor = max(0, _safe_int(self.state.get("repo_frontier_cursor", 0), 0))
+        selected_explore: list[str] = []
+        if explore_pool and explore_count > 0:
+            offset = cursor % len(explore_pool)
+            rotated = [*explore_pool[offset:], *explore_pool[:offset]]
+            selected_explore = rotated[:explore_count]
+            self.state["repo_frontier_cursor"] = int(cursor + explore_count)
+
+        selected = [*priority_repos, *selected_explore]
+        if len(selected) < target_count:
+            for _score, repo in scored:
+                if repo in selected:
+                    continue
+                selected.append(repo)
+                if len(selected) >= target_count:
+                    break
+
+        return {
+            "selected": selected,
+            "priority": priority_repos,
+            "explore": selected_explore,
+            "scores": {
+                repo: round(max(0.0, _safe_float(score, 0.0)), 6)
+                for score, repo in scored
+            },
+            "exploration_ratio": round(exploration_ratio, 6),
+        }
+
+    def _regime_budget_enabled(self) -> bool:
+        return _safe_bool(self.config.get("regime_budget_enabled", True), True)
+
+    def _regime_policy_refresh_s(self) -> float:
+        configured = _safe_float(self.config.get("regime_policy_refresh_s", 180), 180.0)
+        return max(15.0, min(3600.0, configured))
+
+    def _regime_policy_query_args(self) -> dict[str, Any]:
+        return {
+            "window_ticks": max(
+                60,
+                min(
+                    20_000,
+                    _safe_int(
+                        self.config.get("regime_policy_window_ticks", 1440), 1440
+                    ),
+                ),
+            ),
+            "state_bins": max(
+                3,
+                min(
+                    48,
+                    _safe_int(self.config.get("regime_policy_state_bins", 8), 8),
+                ),
+            ),
+            "threat_limit": max(
+                32,
+                min(
+                    512,
+                    _safe_int(self.config.get("regime_policy_threat_limit", 160), 160),
+                ),
+            ),
+            "llm_enabled": False,
+        }
+
+    def _regime_policy_snapshot(self, *, now_ts: float) -> dict[str, Any]:
+        cached = self.state.get("last_regime_policy", {})
+        cached = cached if isinstance(cached, dict) else {}
+        if not self._regime_budget_enabled():
+            return cached
+
+        cached_ts = max(0.0, _safe_float(cached.get("computed_ts", 0.0), 0.0))
+        if cached and (now_ts - cached_ts) < self._regime_policy_refresh_s():
+            return cached
+
+        try:
+            from .graph_queries import run_named_graph_query
+
+            regime_graph = {
+                "nodes": self._resource_nodes_for_graph(),
+                "edges": [],
+            }
+            query_args = self._regime_policy_query_args()
+            payload = run_named_graph_query(
+                regime_graph,
+                "cyber_regime_state",
+                args=query_args,
+            )
+            result = payload.get("result", {})
+            result = result if isinstance(result, dict) else {}
+            policy = result.get("policy", {})
+            policy = policy if isinstance(policy, dict) else {}
+
+            regime_state = _safe_str(result.get("state", "baseline")) or "baseline"
+            snapshot = {
+                "computed_ts": round(max(0.0, now_ts), 6),
+                "state": regime_state,
+                "posterior": (
+                    result.get("posterior", {})
+                    if isinstance(result.get("posterior", {}), dict)
+                    else {}
+                ),
+                "risk_score_threshold": max(
+                    0,
+                    _safe_int(policy.get("risk_score_threshold", 8), 8),
+                ),
+                "crawl_budget_multiplier": round(
+                    max(
+                        0.35,
+                        min(
+                            4.0,
+                            _safe_float(
+                                policy.get("crawl_budget_multiplier", 1.0), 1.0
+                            ),
+                        ),
+                    ),
+                    6,
+                ),
+                "query_expansion_multiplier": round(
+                    max(
+                        0.35,
+                        min(
+                            4.0,
+                            _safe_float(
+                                policy.get("query_expansion_multiplier", 1.0),
+                                1.0,
+                            ),
+                        ),
+                    ),
+                    6,
+                ),
+                "pressure": round(
+                    max(0.0, min(1.0, _safe_float(policy.get("pressure", 0.0), 0.0))),
+                    6,
+                ),
+                "window_ticks": int(
+                    max(1, _safe_int(query_args.get("window_ticks", 1440), 1440))
+                ),
+                "state_bins": int(
+                    max(1, _safe_int(query_args.get("state_bins", 8), 8))
+                ),
+                "threat_limit": int(
+                    max(1, _safe_int(query_args.get("threat_limit", 160), 160))
+                ),
+            }
+            self.state["last_regime_policy"] = snapshot
+
+            previous_state = _safe_str(cached.get("state", ""))
+            previous_crawl = _safe_float(
+                cached.get("crawl_budget_multiplier", 1.0), 1.0
+            )
+            previous_query = _safe_float(
+                cached.get("query_expansion_multiplier", 1.0),
+                1.0,
+            )
+            state_changed = bool(
+                regime_state != previous_state
+                or abs(snapshot["crawl_budget_multiplier"] - previous_crawl) >= 0.05
+                or abs(snapshot["query_expansion_multiplier"] - previous_query) >= 0.05
+            )
+            if state_changed:
+                self._append_event(
+                    "github_regime_policy_updated",
+                    {
+                        "state": regime_state,
+                        "crawl_budget_multiplier": snapshot["crawl_budget_multiplier"],
+                        "query_expansion_multiplier": snapshot[
+                            "query_expansion_multiplier"
+                        ],
+                        "risk_score_threshold": snapshot["risk_score_threshold"],
+                        "pressure": snapshot["pressure"],
+                    },
+                )
+            return snapshot
+        except Exception as exc:
+            self._append_event(
+                "github_regime_policy_failed",
+                {
+                    "error": f"{exc.__class__.__name__}",
+                },
+            )
+            return cached
 
     def _conversation_rows_from_payload(
         self,
@@ -951,12 +1346,19 @@ class GithubPresence:
             if context_excerpt
             else ""
         )
+        simhash64 = _simhash64(
+            context_excerpt
+            or context_summary
+            or title
+            or _safe_str(payload.get("body", ""))
+        )
 
         row = {
             "id": res_id,
             "canonical_url": canonical_url,
             "fetched_ts": round(max(0.0, now_ts), 6),
             "content_hash": content_hash,
+            "simhash64": simhash64,
             "title": title,
             "kind": _safe_str(kind_hint),
             "repo": repo,
@@ -996,6 +1398,125 @@ class GithubPresence:
         resources = self.state.get("resources", {})
         if not isinstance(resources, dict):
             resources = {}
+
+        kind_token = _safe_str(kind_hint).lower()
+        dedupe_kinds = {"github:issue", "github:release", "github:advisory"}
+        if (
+            self._near_duplicate_dedupe_enabled()
+            and simhash64
+            and kind_token in dedupe_kinds
+        ):
+            repo_token = _safe_str(repo).lower()
+            threshold = self._near_duplicate_hamming_max()
+            duplicate_id = ""
+            duplicate_distance = 65
+            duplicate_row: dict[str, Any] | None = None
+
+            for existing_id, existing_row in resources.items():
+                if not isinstance(existing_row, dict):
+                    continue
+                candidate_id = _safe_str(existing_id)
+                if not candidate_id or candidate_id == res_id:
+                    continue
+                if _safe_str(existing_row.get("repo", "")).lower() != repo_token:
+                    continue
+                if _safe_str(existing_row.get("kind", "")).lower() != kind_token:
+                    continue
+
+                existing_simhash = _safe_str(existing_row.get("simhash64", ""))
+                if not existing_simhash:
+                    existing_simhash = _simhash64(
+                        _safe_str(existing_row.get("text_excerpt", ""))
+                        or _safe_str(existing_row.get("summary", ""))
+                        or _safe_str(existing_row.get("title", ""))
+                    )
+                    if existing_simhash:
+                        existing_row["simhash64"] = existing_simhash
+
+                distance = _hamming_distance64_hex(simhash64, existing_simhash)
+                if distance > threshold:
+                    continue
+
+                existing_score = max(
+                    0, _safe_int(existing_row.get("importance_score", 0), 0)
+                )
+                duplicate_score = (
+                    max(0, _safe_int(duplicate_row.get("importance_score", 0), 0))
+                    if isinstance(duplicate_row, dict)
+                    else -1
+                )
+                should_replace_candidate = (
+                    not duplicate_id
+                    or distance < duplicate_distance
+                    or (
+                        distance == duplicate_distance
+                        and existing_score > duplicate_score
+                    )
+                    or (
+                        distance == duplicate_distance
+                        and existing_score == duplicate_score
+                        and candidate_id < duplicate_id
+                    )
+                )
+                if should_replace_candidate:
+                    duplicate_id = candidate_id
+                    duplicate_distance = distance
+                    duplicate_row = existing_row
+
+            if duplicate_id and isinstance(duplicate_row, dict):
+                existing_score = max(
+                    0, _safe_int(duplicate_row.get("importance_score", 0), 0)
+                )
+                existing_fetched_ts = max(
+                    0.0, _safe_float(duplicate_row.get("fetched_ts", 0.0), 0.0)
+                )
+                new_score = max(0, _safe_int(row.get("importance_score", 0), 0))
+                new_fetched_ts = max(0.0, _safe_float(row.get("fetched_ts", 0.0), 0.0))
+                replace_existing = new_score > existing_score or (
+                    new_score == existing_score
+                    and (
+                        new_fetched_ts > existing_fetched_ts
+                        or (
+                            new_fetched_ts == existing_fetched_ts
+                            and _safe_str(row.get("canonical_url", ""))
+                            < _safe_str(duplicate_row.get("canonical_url", ""))
+                        )
+                    )
+                )
+
+                if replace_existing:
+                    resources.pop(duplicate_id, None)
+                    row["near_duplicate_hamming"] = int(duplicate_distance)
+                    row["duplicate_of"] = duplicate_id
+                    self._append_event(
+                        "github_resource_deduped",
+                        {
+                            "repo": repo,
+                            "canonical_url": canonical_url,
+                            "res_id": res_id,
+                            "action": "replaced",
+                            "duplicate_of": duplicate_id,
+                            "hamming": int(duplicate_distance),
+                        },
+                    )
+                else:
+                    self.state.setdefault("metrics", {}).setdefault(
+                        "duplicate_suppressed", 0
+                    )
+                    self.state["metrics"]["duplicate_suppressed"] += 1
+                    self._append_event(
+                        "github_resource_deduped",
+                        {
+                            "repo": repo,
+                            "canonical_url": canonical_url,
+                            "res_id": res_id,
+                            "action": "suppressed",
+                            "duplicate_of": duplicate_id,
+                            "hamming": int(duplicate_distance),
+                        },
+                    )
+                    return None
+
         resources[res_id] = row
         self.state["resources"] = resources
         self._trim_state()
@@ -1197,6 +1718,9 @@ class GithubPresence:
             payload = item_result.get("payload", {})
             if not isinstance(payload, dict):
                 continue
+            payload = dict(payload)
+            payload.setdefault("repo", repo)
+            payload.setdefault("full_name", repo)
 
             filenames_touched: list[str] = []
             diff_keyword_hits: list[dict[str, Any]] = []
@@ -1320,10 +1844,103 @@ class GithubPresence:
             )
             return []
 
-        max_repos = max(1, _safe_int(self.config.get("max_repos", 8), 8))
-        fetch_budget = max(
+        base_max_repos = max(1, _safe_int(self.config.get("max_repos", 8), 8))
+        base_fetch_budget = max(
             1, _safe_int(self.config.get("max_github_fetches_per_tick", 2), 2)
         )
+        max_repos = int(base_max_repos)
+        fetch_budget = int(base_fetch_budget)
+
+        regime_snapshot = self._regime_policy_snapshot(now_ts=now_value)
+        regime_snapshot = regime_snapshot if isinstance(regime_snapshot, dict) else {}
+        regime_state = _safe_str(regime_snapshot.get("state", ""))
+        regime_crawl_multiplier = max(
+            0.35,
+            min(
+                4.0,
+                _safe_float(regime_snapshot.get("crawl_budget_multiplier", 1.0), 1.0),
+            ),
+        )
+        regime_query_multiplier = max(
+            0.35,
+            min(
+                4.0,
+                _safe_float(
+                    regime_snapshot.get("query_expansion_multiplier", 1.0),
+                    1.0,
+                ),
+            ),
+        )
+        if self._regime_budget_enabled() and regime_state:
+            fetch_budget = max(
+                1,
+                min(
+                    512,
+                    int(
+                        round(float(base_fetch_budget) * float(regime_crawl_multiplier))
+                    ),
+                ),
+            )
+            max_repos = max(
+                1,
+                min(
+                    max(1, len(repos)),
+                    int(round(float(base_max_repos) * float(regime_query_multiplier))),
+                ),
+            )
+
+        regime_budget_row = {
+            "ts": round(now_value, 6),
+            "enabled": bool(self._regime_budget_enabled()),
+            "state": regime_state or "",
+            "risk_score_threshold": max(
+                0,
+                _safe_int(regime_snapshot.get("risk_score_threshold", 0), 0),
+            ),
+            "pressure": round(
+                max(
+                    0.0,
+                    min(1.0, _safe_float(regime_snapshot.get("pressure", 0.0), 0.0)),
+                ),
+                6,
+            ),
+            "crawl_budget_multiplier": round(regime_crawl_multiplier, 6),
+            "query_expansion_multiplier": round(regime_query_multiplier, 6),
+            "base_fetch_budget": int(base_fetch_budget),
+            "effective_fetch_budget": int(fetch_budget),
+            "base_max_repos": int(base_max_repos),
+            "effective_max_repos": int(max_repos),
+        }
+        self.state["last_regime_budget"] = regime_budget_row
+        regime_signature = (
+            f"{regime_budget_row['state']}|"
+            f"{regime_budget_row['base_fetch_budget']}|"
+            f"{regime_budget_row['effective_fetch_budget']}|"
+            f"{regime_budget_row['base_max_repos']}|"
+            f"{regime_budget_row['effective_max_repos']}"
+        )
+        if regime_signature != _safe_str(
+            self.state.get("last_regime_budget_signature", "")
+        ):
+            self.state["last_regime_budget_signature"] = regime_signature
+            self._append_event(
+                "github_regime_budget_applied",
+                {
+                    "state": regime_budget_row["state"],
+                    "crawl_budget_multiplier": regime_budget_row[
+                        "crawl_budget_multiplier"
+                    ],
+                    "query_expansion_multiplier": regime_budget_row[
+                        "query_expansion_multiplier"
+                    ],
+                    "base_fetch_budget": regime_budget_row["base_fetch_budget"],
+                    "effective_fetch_budget": regime_budget_row[
+                        "effective_fetch_budget"
+                    ],
+                    "base_max_repos": regime_budget_row["base_max_repos"],
+                    "effective_max_repos": regime_budget_row["effective_max_repos"],
+                },
+            )
 
         repo_cooldowns = self.state.get("repo_cooldowns", {})
         if not isinstance(repo_cooldowns, dict):
@@ -1331,11 +1948,84 @@ class GithubPresence:
             self.state["repo_cooldowns"] = repo_cooldowns
 
         touched_rows: list[dict[str, Any]] = []
-        for repo in sorted(repos)[:max_repos]:
+        available_repos = [
+            repo
+            for repo in sorted(repos)
+            if now_value >= _safe_float(repo_cooldowns.get(repo, 0.0), 0.0)
+        ]
+        frontier_plan = self._plan_repo_frontier(
+            available_repos,
+            now_ts=now_value,
+            max_repos=max_repos,
+        )
+        selected_repos = [
+            _canonical_repo_name(repo)
+            for repo in frontier_plan.get("selected", [])
+            if _canonical_repo_name(repo)
+        ]
+        priority_repos = [
+            _canonical_repo_name(repo)
+            for repo in frontier_plan.get("priority", [])
+            if _canonical_repo_name(repo)
+        ]
+        explore_repos = [
+            _canonical_repo_name(repo)
+            for repo in frontier_plan.get("explore", [])
+            if _canonical_repo_name(repo)
+        ]
+        frontier_scores = (
+            frontier_plan.get("scores", {})
+            if isinstance(frontier_plan.get("scores", {}), dict)
+            else {}
+        )
+        self.state["last_frontier_plan"] = {
+            "ts": round(now_value, 6),
+            "selected": selected_repos,
+            "priority": priority_repos,
+            "explore": explore_repos,
+            "scores": {
+                _canonical_repo_name(repo): round(
+                    max(0.0, _safe_float(score, 0.0)),
+                    6,
+                )
+                for repo, score in frontier_scores.items()
+                if _canonical_repo_name(repo)
+            },
+            "exploration_ratio": round(
+                max(
+                    0.0,
+                    min(
+                        0.9,
+                        _safe_float(frontier_plan.get("exploration_ratio", 0.0), 0.0),
+                    ),
+                ),
+                6,
+            ),
+        }
+        self._append_event(
+            "github_frontier_plan",
+            {
+                "selected": selected_repos,
+                "priority": priority_repos,
+                "explore": explore_repos,
+                "exploration_ratio": round(
+                    max(
+                        0.0,
+                        min(
+                            0.9,
+                            _safe_float(
+                                frontier_plan.get("exploration_ratio", 0.0), 0.0
+                            ),
+                        ),
+                    ),
+                    6,
+                ),
+            },
+        )
+
+        for repo in selected_repos:
             if fetch_budget <= 0:
                 break
-            if now_value < _safe_float(repo_cooldowns.get(repo, 0.0), 0.0):
-                continue
             before = fetch_budget
             fetch_budget = self._sweep_repo(
                 repo, now_ts=now_value, fetch_budget=fetch_budget
@@ -1452,6 +2142,7 @@ class GithubPresence:
                         6,
                     ),
                     "content_hash": _safe_str(row.get("content_hash", "")),
+                    "simhash64": _safe_str(row.get("simhash64", "")),
                     "text_excerpt_hash": _safe_str(row.get("text_excerpt_hash", "")),
                     "text_excerpt": _bounded_text(
                         row.get("text_excerpt", ""), _MAX_EXCERPT_CHARS
@@ -1518,6 +2209,10 @@ class GithubPresence:
                     "api_endpoint": _safe_str(row.get("api_endpoint", "")),
                     "state": _safe_str(row.get("state", "")),
                     "merged_at": _safe_str(row.get("merged_at", "")),
+                    "duplicate_of": _safe_str(row.get("duplicate_of", "")),
+                    "near_duplicate_hamming": max(
+                        0, _safe_int(row.get("near_duplicate_hamming", 0), 0)
+                    ),
                 }
             )
         return nodes
@@ -1628,6 +2323,16 @@ class GithubPresence:
                 if _canonical_repo_name(row)
             }
         )
+        regime_policy = (
+            self.state.get("last_regime_policy", {})
+            if isinstance(self.state.get("last_regime_policy", {}), dict)
+            else {}
+        )
+        regime_budget = (
+            self.state.get("last_regime_budget", {})
+            if isinstance(self.state.get("last_regime_budget", {}), dict)
+            else {}
+        )
 
         status = {
             "queue_length": 0,
@@ -1644,6 +2349,17 @@ class GithubPresence:
                     0,
                 ),
             ),
+            "duplicate_suppressed": max(
+                0,
+                _safe_int(
+                    (
+                        self.state.get("metrics", {})
+                        if isinstance(self.state.get("metrics", {}), dict)
+                        else {}
+                    ).get("duplicate_suppressed", 0),
+                    0,
+                ),
+            ),
             "last_sweep_ts": round(
                 max(0.0, _safe_float(self.state.get("last_sweep_ts", 0.0), 0.0)),
                 6,
@@ -1657,6 +2373,88 @@ class GithubPresence:
                 6,
             ),
             "enabled": bool(self.config.get("enabled", True)),
+            "frontier_exploration_ratio": round(
+                max(0.0, min(0.9, self._frontier_exploration_ratio())),
+                6,
+            ),
+            "regime_budget_enabled": bool(self._regime_budget_enabled()),
+            "regime_state": _safe_str(regime_policy.get("state", "")),
+            "regime_pressure": round(
+                max(
+                    0.0, min(1.0, _safe_float(regime_policy.get("pressure", 0.0), 0.0))
+                ),
+                6,
+            ),
+            "regime_risk_score_threshold": max(
+                0,
+                _safe_int(regime_policy.get("risk_score_threshold", 0), 0),
+            ),
+            "regime_crawl_budget_multiplier": round(
+                max(
+                    0.0,
+                    _safe_float(regime_policy.get("crawl_budget_multiplier", 1.0), 1.0),
+                ),
+                6,
+            ),
+            "regime_query_expansion_multiplier": round(
+                max(
+                    0.0,
+                    _safe_float(
+                        regime_policy.get("query_expansion_multiplier", 1.0),
+                        1.0,
+                    ),
+                ),
+                6,
+            ),
+            "regime_base_fetch_budget": max(
+                0,
+                _safe_int(regime_budget.get("base_fetch_budget", 0), 0),
+            ),
+            "regime_effective_fetch_budget": max(
+                0,
+                _safe_int(regime_budget.get("effective_fetch_budget", 0), 0),
+            ),
+            "regime_base_max_repos": max(
+                0,
+                _safe_int(regime_budget.get("base_max_repos", 0), 0),
+            ),
+            "regime_effective_max_repos": max(
+                0,
+                _safe_int(regime_budget.get("effective_max_repos", 0), 0),
+            ),
+            "frontier_selected_repos": [
+                _canonical_repo_name(repo)
+                for repo in (
+                    (
+                        self.state.get("last_frontier_plan", {})
+                        if isinstance(self.state.get("last_frontier_plan", {}), dict)
+                        else {}
+                    ).get("selected", [])
+                )
+                if _canonical_repo_name(repo)
+            ][:16],
+            "frontier_priority_repos": [
+                _canonical_repo_name(repo)
+                for repo in (
+                    (
+                        self.state.get("last_frontier_plan", {})
+                        if isinstance(self.state.get("last_frontier_plan", {}), dict)
+                        else {}
+                    ).get("priority", [])
+                )
+                if _canonical_repo_name(repo)
+            ][:16],
+            "frontier_explore_repos": [
+                _canonical_repo_name(repo)
+                for repo in (
+                    (
+                        self.state.get("last_frontier_plan", {})
+                        if isinstance(self.state.get("last_frontier_plan", {}), dict)
+                        else {}
+                    ).get("explore", [])
+                )
+                if _canonical_repo_name(repo)
+            ][:16],
         }
 
         return {
@@ -1687,6 +2485,17 @@ class GithubPresence:
                 "edges_total": len(edges),
                 "url_nodes_total": web_role_counts.get("web:url", 0),
                 "github_resource_count": web_role_counts.get("web:resource", 0),
+                "duplicate_suppressed": max(
+                    0,
+                    _safe_int(
+                        (
+                            self.state.get("metrics", {})
+                            if isinstance(self.state.get("metrics", {}), dict)
+                            else {}
+                        ).get("duplicate_suppressed", 0),
+                        0,
+                    ),
+                ),
             },
         }
 

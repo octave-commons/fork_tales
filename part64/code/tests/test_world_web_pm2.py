@@ -15,6 +15,7 @@ from typing import Any, cast
 
 import code.world_web as world_web_module
 import code.world_web.server as world_web_server
+from starlette.requests import Request
 
 from code.world_pm2 import parse_args as parse_pm2_args
 from code.world_web import (
@@ -293,6 +294,229 @@ def test_simulation_ws_lite_field_particles_respects_max_rows() -> None:
     assert len(compact) == 2
     assert compact[0].get("id") == "dm:1"
     assert compact[1].get("id") == "dm:2"
+
+
+def test_simulation_ws_extract_stream_particles_preserves_resource_fields() -> None:
+    payload = {
+        "presence_dynamics": {
+            "field_particles": [
+                {
+                    "id": "dm:resource-1",
+                    "presence_id": "presence.muse.stability",
+                    "owner_presence_id": "presence.muse.stability",
+                    "target_presence_id": "presence.gates.of.truth",
+                    "x": 0.2,
+                    "y": 0.4,
+                    "vx": 0.01,
+                    "vy": -0.01,
+                    "graph_node_id": "node:a",
+                    "route_node_id": "node:b",
+                    "resource_daimoi": True,
+                    "resource_type": "cpu",
+                    "resource_consume_type": "cpu",
+                    "top_job": "emit_resource_packet",
+                }
+            ]
+        }
+    }
+
+    rows = world_web_server._simulation_ws_extract_stream_particles(
+        payload,
+        node_positions={"node:a": (0.2, 0.4), "node:b": (0.7, 0.8)},
+        node_text_chars={"node:a": 12.0, "node:b": 21.0},
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.get("resource_daimoi") is True
+    assert row.get("resource_type") == "cpu"
+    assert row.get("resource_consume_type") == "cpu"
+    assert row.get("top_job") == "emit_resource_packet"
+    assert row.get("owner_presence_id") == "presence.muse.stability"
+    assert row.get("target_presence_id") == "presence.gates.of.truth"
+
+
+def test_advance_simulation_field_particles_tracks_daimoi_emit_and_absorb_events() -> (
+    None
+):
+    target_presence_id = "presence.daimoi.collision.target"
+
+    simulation_payload = {
+        "crawler_graph": {},
+        "presence_dynamics": {
+            "field_particles": [
+                {
+                    "id": "dm:resource:1",
+                    "presence_id": "presence.resource.core",
+                    "owner_presence_id": "presence.resource.core",
+                    "target_presence_id": target_presence_id,
+                    "resource_target_presence_id": target_presence_id,
+                    "resource_daimoi": True,
+                    "resource_type": "cpu",
+                    "resource_emit_amount": 0.24,
+                    "x": 0.5,
+                    "y": 0.5,
+                    "vx": 0.0,
+                    "vy": 0.0,
+                    "size": 1.2,
+                    "r": 0.8,
+                    "g": 0.58,
+                    "b": 0.36,
+                    "graph_node_id": "node:1",
+                    "route_node_id": "node:2",
+                },
+                {
+                    "id": "dm:target-anchor",
+                    "presence_id": target_presence_id,
+                    "x": 0.5,
+                    "y": 0.5,
+                    "vx": 0.0,
+                    "vy": 0.0,
+                    "size": 1.0,
+                    "r": 0.4,
+                    "g": 0.55,
+                    "b": 0.7,
+                    "is_nexus": True,
+                },
+            ],
+            "daimoi_collision_events": [],
+            "daimoi_collision_event_seq": 0,
+            "_resource_daimoi_active_ids": [],
+        },
+    }
+
+    world_web_server.advance_simulation_field_particles(
+        simulation_payload,
+        dt_seconds=0.001,
+        now_seconds=12345.0,
+        policy={},
+    )
+
+    dynamics = simulation_payload.get("presence_dynamics", {})
+    assert isinstance(dynamics, dict)
+    event_rows = dynamics.get("daimoi_collision_events", [])
+    assert isinstance(event_rows, list)
+    assert len(event_rows) >= 2
+    event_kinds = [str(row.get("kind", "")).strip().lower() for row in event_rows]
+    assert "emitted" in event_kinds
+    assert "absorbed" in event_kinds
+    assert int(dynamics.get("daimoi_collision_event_seq", 0)) >= 2
+    assert str(dynamics.get("daimoi_collision_events_record", "")).strip()
+    assert all(str(row.get("event_id", "")).strip() for row in event_rows)
+
+    active_ids = dynamics.get("_resource_daimoi_active_ids", [])
+    assert isinstance(active_ids, list)
+    assert "dm:resource:1" not in active_ids
+
+
+def test_advance_simulation_field_particles_emits_absorb_when_active_resource_disappears() -> (
+    None
+):
+    simulation_payload = {
+        "crawler_graph": {},
+        "presence_dynamics": {
+            "field_particles": [
+                {
+                    "id": "dm:nexus-anchor",
+                    "presence_id": "presence.anchor",
+                    "x": 0.5,
+                    "y": 0.5,
+                    "vx": 0.0,
+                    "vy": 0.0,
+                    "is_nexus": True,
+                }
+            ],
+            "daimoi_collision_events": [
+                {
+                    "event_id": "daimoi-collision:1:emitted:dm:resource:missing",
+                    "seq": 1,
+                    "kind": "emitted",
+                    "particle_id": "dm:resource:missing",
+                    "presence_id": "presence.resource.core",
+                    "owner_presence_id": "presence.resource.core",
+                    "target_presence_id": "presence.target",
+                    "resource_type": "cpu",
+                    "x": 0.41,
+                    "y": 0.57,
+                    "target_x": 0.5,
+                    "target_y": 0.5,
+                }
+            ],
+            "daimoi_collision_event_seq": 1,
+            "_resource_daimoi_active_ids": ["dm:resource:missing"],
+        },
+    }
+
+    world_web_server.advance_simulation_field_particles(
+        simulation_payload,
+        dt_seconds=0.08,
+        now_seconds=22345.0,
+        policy={},
+    )
+
+    dynamics = simulation_payload.get("presence_dynamics", {})
+    assert isinstance(dynamics, dict)
+    event_rows = dynamics.get("daimoi_collision_events", [])
+    assert isinstance(event_rows, list)
+    absorbed_rows = [
+        row
+        for row in event_rows
+        if isinstance(row, dict)
+        and str(row.get("particle_id", "")).strip() == "dm:resource:missing"
+        and str(row.get("kind", "")).strip().lower() == "absorbed"
+    ]
+    assert absorbed_rows
+    assert int(dynamics.get("daimoi_collision_event_seq", 0)) >= 2
+    assert dynamics.get("_resource_daimoi_active_ids", []) == []
+
+
+def test_advance_simulation_field_particles_emits_absorb_when_rows_are_empty() -> None:
+    simulation_payload = {
+        "crawler_graph": {},
+        "presence_dynamics": {
+            "field_particles": [],
+            "daimoi_collision_events": [
+                {
+                    "event_id": "daimoi-collision:4:emitted:dm:resource:stale",
+                    "seq": 4,
+                    "kind": "emitted",
+                    "particle_id": "dm:resource:stale",
+                    "presence_id": "presence.resource.core",
+                    "owner_presence_id": "presence.resource.core",
+                    "target_presence_id": "presence.target",
+                    "resource_type": "cpu",
+                    "x": 0.33,
+                    "y": 0.66,
+                    "target_x": 0.48,
+                    "target_y": 0.52,
+                }
+            ],
+            "daimoi_collision_event_seq": 4,
+            "_resource_daimoi_active_ids": ["dm:resource:stale"],
+        },
+    }
+
+    world_web_server.advance_simulation_field_particles(
+        simulation_payload,
+        dt_seconds=0.08,
+        now_seconds=32345.0,
+        policy={},
+    )
+
+    dynamics = simulation_payload.get("presence_dynamics", {})
+    assert isinstance(dynamics, dict)
+    event_rows = dynamics.get("daimoi_collision_events", [])
+    assert isinstance(event_rows, list)
+    absorbed_rows = [
+        row
+        for row in event_rows
+        if isinstance(row, dict)
+        and str(row.get("particle_id", "")).strip() == "dm:resource:stale"
+        and str(row.get("kind", "")).strip().lower() == "absorbed"
+    ]
+    assert absorbed_rows
+    assert int(dynamics.get("daimoi_collision_event_seq", 0)) >= 5
+    assert dynamics.get("_resource_daimoi_active_ids", []) == []
 
 
 def test_github_conversation_payload_includes_root_and_issue_comments(
@@ -802,12 +1026,1860 @@ def test_threat_radar_panel_and_report_route_contract_present() -> None:
     panel_source = panel_path.read_text("utf-8")
     server_source = server_path.read_text("utf-8")
 
-    assert 'id: "nexus.ui.threat_radar"' in panel_builder_source
-    assert "<ThreatRadarPanel />" in panel_builder_source
+    # Panel IDs were renamed to muse_radar.witness_thread and muse_radar.chaos
+    # Check for the new panel IDs and the ThreatRadarPanel component
+    assert 'id: "nexus.ui.muse_radar.witness_thread"' in panel_builder_source
+    assert 'id: "nexus.ui.muse_radar.chaos"' in panel_builder_source
+    assert "<ThreatRadarPanel" in panel_builder_source
     assert "/api/muse/threat-radar/report" in panel_source
     assert "/api/github/conversation" in panel_source
     assert 'if parsed.path == "/api/muse/threat-radar/report":' in server_source
     assert '"record": "eta-mu.muse-threat-radar-report.v1"' in server_source
+    assert 'radar in {"github", "local"}' in server_source
+    assert 'radar in {"global", "hormuz"}' in server_source
+    assert 'query_name = "hormuz_threat_radar"' in server_source
+    assert 'query_name = "geopolitical_news_radar"' in server_source
+    assert 'query_name = "cyber_risk_radar"' in server_source
+
+
+def test_muse_tool_callback_graph_query_cyber_regime_state_dispatches_args(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+
+        captured: dict[str, Any] = {}
+
+        def _fake_run_named_graph_query(
+            nexus_graph: dict[str, Any],
+            query_name: str,
+            *,
+            args: dict[str, Any] | None = None,
+            simulation: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            captured["nexus_graph"] = nexus_graph
+            captured["query_name"] = query_name
+            captured["args"] = dict(args or {})
+            captured["simulation"] = simulation
+            return {
+                "snapshot_hash": "snap:cyber-regime",
+                "result": {
+                    "count": 1,
+                    "state": "baseline",
+                },
+            }
+
+        monkeypatch.setattr(
+            server_module,
+            "run_named_graph_query",
+            _fake_run_named_graph_query,
+        )
+
+        payload = handler._muse_tool_callback(
+            tool_name="graph_query:cyber_regime_state 300 6 openai/codex"
+        )
+
+        assert payload.get("ok") is True
+        assert captured.get("query_name") == "cyber_regime_state"
+        args = captured.get("args", {})
+        assert int(args.get("window_ticks", 0) or 0) == 300
+        assert int(args.get("state_bins", 0) or 0) == 6
+        assert str(args.get("repo", "") or "") == "openai/codex"
+
+
+def test_muse_threat_radar_report_route_dispatches_cyber_risk_query(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = (
+            "/api/muse/threat-radar/report?"
+            "radar=cyber&window_ticks=300&limit=5&state_bins=7"
+            "&threat_limit=33&repo=openai/codex&apply_regime_threshold=0"
+        )
+
+        captured: dict[str, Any] = {}
+        sent: dict[str, Any] = {}
+
+        def _fake_runtime_catalog_base(
+            *,
+            allow_inline_collect: bool = False,
+            strict_collect: bool = False,
+        ) -> dict[str, Any]:
+            _ = (allow_inline_collect, strict_collect)
+            return {
+                "generated_at": "2026-03-02T04:35:00+00:00",
+                "file_graph": {},
+                "crawler_graph": {},
+                "logical_graph": {},
+            }
+
+        def _fake_run_named_graph_query(
+            nexus_graph: dict[str, Any],
+            query_name: str,
+            *,
+            args: dict[str, Any] | None = None,
+            simulation: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            captured["nexus_graph"] = nexus_graph
+            captured["query_name"] = query_name
+            captured["args"] = dict(args or {})
+            captured["simulation"] = simulation
+            return {
+                "snapshot_hash": "snap:cyber-risk-radar",
+                "result": {
+                    "count": 1,
+                    "threats": [
+                        {
+                            "risk_score": 11,
+                            "title": "critical advisory",
+                        }
+                    ],
+                },
+            }
+
+        def _capture_send_json(payload: dict[str, Any], status: int = 200) -> None:
+            sent["payload"] = payload
+            sent["status"] = status
+
+        monkeypatch.setattr(
+            handler, "_runtime_catalog_base", _fake_runtime_catalog_base
+        )
+        monkeypatch.setattr(
+            handler,
+            "_muse_threat_radar_status",
+            lambda: {"last_status": "ok"},
+        )
+        monkeypatch.setattr(handler, "_send_json", _capture_send_json)
+        monkeypatch.setattr(
+            server_module.simulation_module,
+            "_build_canonical_nexus_graph",
+            lambda *_args, **_kwargs: {"nodes": [], "edges": []},
+        )
+        monkeypatch.setattr(
+            server_module,
+            "run_named_graph_query",
+            _fake_run_named_graph_query,
+        )
+
+        handler.do_GET()
+
+        assert captured.get("query_name") == "cyber_risk_radar"
+        args = captured.get("args", {})
+        assert int(args.get("window_ticks", 0) or 0) == 300
+        assert int(args.get("limit", 0) or 0) == 5
+        assert int(args.get("state_bins", 0) or 0) == 7
+        assert int(args.get("threat_limit", 0) or 0) == 33
+        assert str(args.get("repo", "") or "") == "openai/codex"
+        assert args.get("apply_regime_threshold") is False
+        assert int(args.get("min_weak_label_score", 0) or 0) == 1
+
+        payload = sent.get("payload", {})
+        assert payload.get("ok") is True
+        assert payload.get("radar") == "cyber"
+        assert payload.get("query") == "cyber_risk_radar"
+        runtime = payload.get("runtime", {})
+        assert runtime.get("scope") == "cyber"
+        assert runtime.get("label") == "Cyber Risk Radar"
+
+
+def test_muse_threat_radar_report_route_returns_not_modified_for_snapshot_match(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = (
+            "/api/muse/threat-radar/report?radar=global&window_ticks=120&limit=4"
+        )
+
+        call_count = {"run_named_graph_query": 0}
+        sent_rows: list[dict[str, Any]] = []
+
+        def _fake_runtime_catalog_base(
+            *,
+            allow_inline_collect: bool = False,
+            strict_collect: bool = False,
+        ) -> dict[str, Any]:
+            _ = (allow_inline_collect, strict_collect)
+            return {
+                "generated_at": "2026-03-02T06:00:00+00:00",
+                "file_graph": {},
+                "crawler_graph": {},
+                "logical_graph": {},
+            }
+
+        def _fake_run_named_graph_query(
+            nexus_graph: dict[str, Any],
+            query_name: str,
+            *,
+            args: dict[str, Any] | None = None,
+            simulation: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            _ = (nexus_graph, query_name, args, simulation)
+            call_count["run_named_graph_query"] += 1
+            return {
+                "snapshot_hash": "snap:global-v1",
+                "result": {
+                    "count": 1,
+                    "threats": [{"title": "Global advisory", "risk_score": 5}],
+                },
+            }
+
+        def _capture_send_json(payload: dict[str, Any], status: int = 200) -> None:
+            sent_rows.append({"payload": payload, "status": status})
+
+        with server_module._MUSE_THREAT_RADAR_REPORT_CACHE_LOCK:
+            server_module._MUSE_THREAT_RADAR_REPORT_CACHE.clear()
+
+        monkeypatch.setattr(
+            handler, "_runtime_catalog_base", _fake_runtime_catalog_base
+        )
+        monkeypatch.setattr(
+            handler,
+            "_muse_threat_radar_status",
+            lambda: {"last_status": "ok"},
+        )
+        monkeypatch.setattr(handler, "_send_json", _capture_send_json)
+        monkeypatch.setattr(
+            server_module.simulation_module,
+            "_build_canonical_nexus_graph",
+            lambda *_args, **_kwargs: {"nodes": [], "edges": []},
+        )
+        monkeypatch.setattr(
+            server_module,
+            "run_named_graph_query",
+            _fake_run_named_graph_query,
+        )
+
+        handler.do_GET()
+        first_payload = sent_rows[-1]["payload"]
+        assert first_payload.get("ok") is True
+        assert first_payload.get("not_modified") is not True
+        assert first_payload.get("snapshot_hash") == "snap:global-v1"
+        assert call_count["run_named_graph_query"] == 1
+
+        handler.path = (
+            "/api/muse/threat-radar/report?radar=global&window_ticks=120"
+            "&limit=4&since_snapshot_hash=snap:global-v1"
+        )
+        handler.do_GET()
+
+        second_payload = sent_rows[-1]["payload"]
+        assert second_payload.get("ok") is True
+        assert second_payload.get("not_modified") is True
+        assert second_payload.get("snapshot_hash") == "snap:global-v1"
+        assert "result" not in second_payload
+        assert call_count["run_named_graph_query"] == 1
+
+
+def test_muse_threat_radar_report_route_filters_github_rows_from_global(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = (
+            "/api/muse/threat-radar/report?radar=global&window_ticks=120&limit=8"
+        )
+
+        sent: dict[str, Any] = {}
+        captured_query: dict[str, Any] = {}
+
+        def _fake_runtime_catalog_base(
+            *,
+            allow_inline_collect: bool = False,
+            strict_collect: bool = False,
+        ) -> dict[str, Any]:
+            _ = (allow_inline_collect, strict_collect)
+            return {
+                "generated_at": "2026-03-02T06:00:00+00:00",
+                "file_graph": {},
+                "crawler_graph": {},
+                "logical_graph": {},
+            }
+
+        def _fake_run_named_graph_query(
+            nexus_graph: dict[str, Any],
+            query_name: str,
+            *,
+            args: dict[str, Any] | None = None,
+            simulation: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            _ = (nexus_graph, query_name, args, simulation)
+            captured_query["query_name"] = query_name
+            captured_query["args"] = dict(args or {})
+            return {
+                "snapshot_hash": "snap:global-filter",
+                "result": {
+                    "count": 2,
+                    "critical_count": 1,
+                    "high_count": 1,
+                    "medium_count": 0,
+                    "low_count": 0,
+                    "threats": [
+                        {
+                            "kind": "web:article",
+                            "title": "GitHub API local row",
+                            "canonical_url": "https://api.github.com/repos/openai/codex/issues/9001",
+                            "risk_score": 9,
+                            "risk_level": "critical",
+                        },
+                        {
+                            "kind": "maritime:ukmto_advisory",
+                            "title": "Global maritime row",
+                            "canonical_url": "https://www.ukmto.org/advisory/003-26",
+                            "risk_score": 6,
+                            "risk_level": "high",
+                        },
+                    ],
+                },
+            }
+
+        def _capture_send_json(payload: dict[str, Any], status: int = 200) -> None:
+            sent["payload"] = payload
+            sent["status"] = status
+
+        with server_module._MUSE_THREAT_RADAR_REPORT_CACHE_LOCK:
+            server_module._MUSE_THREAT_RADAR_REPORT_CACHE.clear()
+
+        monkeypatch.setattr(
+            handler,
+            "_runtime_catalog_base",
+            _fake_runtime_catalog_base,
+        )
+        monkeypatch.setattr(
+            handler,
+            "_muse_threat_radar_status",
+            lambda: {"last_status": "ok"},
+        )
+        monkeypatch.setattr(handler, "_send_json", _capture_send_json)
+        monkeypatch.setattr(
+            server_module.simulation_module,
+            "_build_canonical_nexus_graph",
+            lambda *_args, **_kwargs: {"nodes": [], "edges": []},
+        )
+        monkeypatch.setattr(
+            server_module,
+            "run_named_graph_query",
+            _fake_run_named_graph_query,
+        )
+
+        handler.do_GET()
+
+        payload = sent.get("payload", {})
+        assert payload.get("ok") is True
+        assert payload.get("radar") == "global"
+        result = payload.get("result", {})
+        assert int(result.get("count", 0) or 0) == 1
+        assert int(result.get("critical_count", 0) or 0) == 0
+        assert int(result.get("high_count", 0) or 0) == 1
+        rows = result.get("threats", [])
+        assert isinstance(rows, list)
+        assert len(rows) == 1
+        assert str(rows[0].get("kind", "") or "") == "maritime:ukmto_advisory"
+        assert "github" not in str(rows[0].get("canonical_url", "") or "").lower()
+        assert (
+            str(captured_query.get("query_name", "") or "") == "geopolitical_news_radar"
+        )
+        query_args = captured_query.get("args", {})
+        assert isinstance(query_args, dict)
+        assert query_args.get("include_provisional") is False
+
+
+def test_muse_threat_radar_report_route_tracks_seed_only_global_streak(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = (
+            "/api/muse/threat-radar/report?radar=global&window_ticks=120&limit=8"
+        )
+
+        sent: dict[str, Any] = {}
+
+        def _fake_runtime_catalog_base(
+            *,
+            allow_inline_collect: bool = False,
+            strict_collect: bool = False,
+        ) -> dict[str, Any]:
+            return {
+                "generated_at": "2026-03-04T17:55:00Z",
+                "file_graph": {"nodes": [], "edges": []},
+                "crawler_graph": {
+                    "nodes": [],
+                    "edges": [],
+                    "status": {"queue_length": 0, "active_fetches": 0},
+                    "events": [],
+                },
+                "logical_graph": {"nodes": [], "edges": []},
+            }
+
+        def _capture_send_json(payload: dict[str, Any], status: int = 200) -> None:
+            sent["payload"] = payload
+            sent["status"] = status
+
+        def _fake_run_named_graph_query(
+            _graph: dict[str, Any],
+            _query_name: str,
+            *,
+            args: dict[str, Any] | None = None,
+            simulation: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            _ = args, simulation
+            return {
+                "query": "geopolitical_news_radar",
+                "snapshot_hash": "snap:global-seed-only",
+                "result": {
+                    "count": 1,
+                    "critical_count": 0,
+                    "high_count": 0,
+                    "medium_count": 0,
+                    "low_count": 1,
+                    "threats": [
+                        {
+                            "kind": "feed:rss",
+                            "title": "Hacker News Frontpage RSS",
+                            "canonical_url": "https://hnrss.org/frontpage",
+                            "risk_score": 2,
+                            "risk_level": "low",
+                            "provisional": True,
+                            "labels": ["watchlist_seed", "pending_fetch", "rss_seed"],
+                        }
+                    ],
+                    "quality": {
+                        "seed_only": True,
+                        "needs_crawl_evidence": True,
+                    },
+                },
+            }
+
+        with server_module._MUSE_THREAT_RADAR_LOCK:
+            server_module._MUSE_THREAT_RADAR_STATE["global_seed_only_streak"] = 0
+            server_module._MUSE_THREAT_RADAR_STATE["global_seed_only_alert"] = False
+            server_module._MUSE_THREAT_RADAR_STATE["last_non_provisional_global_at"] = (
+                ""
+            )
+
+        with server_module._MUSE_THREAT_RADAR_REPORT_CACHE_LOCK:
+            server_module._MUSE_THREAT_RADAR_REPORT_CACHE.clear()
+
+        monkeypatch.setattr(
+            handler, "_runtime_catalog_base", _fake_runtime_catalog_base
+        )
+        monkeypatch.setattr(handler, "_send_json", _capture_send_json)
+        monkeypatch.setattr(
+            server_module.simulation_module,
+            "_build_canonical_nexus_graph",
+            lambda *_args, **_kwargs: {"nodes": [], "edges": []},
+        )
+        monkeypatch.setattr(
+            server_module,
+            "run_named_graph_query",
+            _fake_run_named_graph_query,
+        )
+
+        handler.do_GET()
+        handler.do_GET()
+        handler.do_GET()
+
+        payload = sent.get("payload", {})
+        result = payload.get("result", {})
+        quality = result.get("quality", {})
+        assert payload.get("ok") is True
+        assert payload.get("radar") == "global"
+        assert bool(quality.get("seed_only", False)) is True
+        assert int(quality.get("seed_only_streak", 0) or 0) == 3
+        assert bool(quality.get("seed_only_alert", False)) is True
+
+        runtime = payload.get("runtime", {})
+        state = runtime.get("state", {}) if isinstance(runtime, dict) else {}
+        assert int(state.get("global_seed_only_streak", 0) or 0) == 3
+        assert bool(state.get("global_seed_only_alert", False)) is True
+
+
+def test_muse_threat_radar_report_route_filters_non_github_rows_from_local(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = (
+            "/api/muse/threat-radar/report?radar=local&window_ticks=120&limit=8"
+        )
+
+        sent: dict[str, Any] = {}
+        captured_query: dict[str, Any] = {}
+
+        def _fake_runtime_catalog_base(
+            *,
+            allow_inline_collect: bool = False,
+            strict_collect: bool = False,
+        ) -> dict[str, Any]:
+            _ = (allow_inline_collect, strict_collect)
+            return {
+                "generated_at": "2026-03-02T06:00:00+00:00",
+                "file_graph": {},
+                "crawler_graph": {},
+                "logical_graph": {},
+            }
+
+        def _fake_run_named_graph_query(
+            nexus_graph: dict[str, Any],
+            query_name: str,
+            *,
+            args: dict[str, Any] | None = None,
+            simulation: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            _ = (nexus_graph, simulation)
+            captured_query["query_name"] = query_name
+            captured_query["args"] = dict(args or {})
+            return {
+                "snapshot_hash": "snap:local-filter",
+                "result": {
+                    "count": 2,
+                    "critical_count": 1,
+                    "high_count": 1,
+                    "medium_count": 0,
+                    "low_count": 0,
+                    "threats": [
+                        {
+                            "kind": "web:article",
+                            "title": "GitHub API issue",
+                            "canonical_url": "https://api.github.com/repos/openai/codex/issues/9002",
+                            "risk_score": 9,
+                            "risk_level": "critical",
+                            "repo": "openai/codex",
+                        },
+                        {
+                            "kind": "maritime:ukmto_advisory",
+                            "title": "Global maritime row",
+                            "canonical_url": "https://www.ukmto.org/advisory/003-27",
+                            "risk_score": 6,
+                            "risk_level": "high",
+                        },
+                    ],
+                },
+            }
+
+        def _capture_send_json(payload: dict[str, Any], status: int = 200) -> None:
+            sent["payload"] = payload
+            sent["status"] = status
+
+        with server_module._MUSE_THREAT_RADAR_REPORT_CACHE_LOCK:
+            server_module._MUSE_THREAT_RADAR_REPORT_CACHE.clear()
+
+        monkeypatch.setattr(
+            handler,
+            "_runtime_catalog_base",
+            _fake_runtime_catalog_base,
+        )
+        monkeypatch.setattr(
+            handler,
+            "_muse_threat_radar_status",
+            lambda: {"last_status": "ok"},
+        )
+        monkeypatch.setattr(handler, "_send_json", _capture_send_json)
+        monkeypatch.setattr(
+            server_module.simulation_module,
+            "_build_canonical_nexus_graph",
+            lambda *_args, **_kwargs: {"nodes": [], "edges": []},
+        )
+        monkeypatch.setattr(
+            server_module,
+            "run_named_graph_query",
+            _fake_run_named_graph_query,
+        )
+
+        handler.do_GET()
+
+        payload = sent.get("payload", {})
+        assert payload.get("ok") is True
+        assert payload.get("radar") == "local"
+        result = payload.get("result", {})
+        assert int(result.get("count", 0) or 0) == 1
+        assert int(result.get("critical_count", 0) or 0) == 1
+        assert int(result.get("high_count", 0) or 0) == 0
+        rows = result.get("threats", [])
+        assert isinstance(rows, list)
+        assert len(rows) == 1
+        assert "github" in str(rows[0].get("canonical_url", "") or "").lower()
+        assert str(captured_query.get("query_name", "") or "") == "github_threat_radar"
+        query_args = captured_query.get("args", {})
+        assert isinstance(query_args, dict)
+        assert int(query_args.get("min_weak_label_score", 0) or 0) == 1
+
+
+def test_api_catalog_route_disables_inline_collect_and_projection(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = "/api/catalog?perspective=hybrid"
+
+        captured: dict[str, Any] = {}
+        sent: dict[str, Any] = {}
+
+        def _fake_runtime_catalog(**kwargs: Any) -> tuple[Any, ...]:
+            captured["kwargs"] = dict(kwargs)
+            return (
+                {
+                    "generated_at": "2026-03-02T06:50:00+00:00",
+                    "items": [],
+                    "counts": {},
+                },
+                {},
+                {},
+                {},
+                {},
+            )
+
+        def _capture_send_bytes(
+            body: bytes,
+            content_type: str,
+            *,
+            status: int = 200,
+            extra_headers: dict[str, str] | None = None,
+        ) -> None:
+            sent["body"] = body
+            sent["content_type"] = content_type
+            sent["status"] = status
+            sent["extra_headers"] = dict(extra_headers or {})
+
+        monkeypatch.setattr(
+            server_module,
+            "_runtime_catalog_http_cached_body",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_runtime_catalog_http_cache_store",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_trim_catalog",
+            lambda catalog: catalog,
+        )
+        monkeypatch.setattr(handler, "_runtime_catalog", _fake_runtime_catalog)
+        monkeypatch.setattr(handler, "_send_bytes", _capture_send_bytes)
+
+        handler.do_GET()
+
+        kwargs = captured.get("kwargs", {})
+        assert kwargs.get("perspective") == "hybrid"
+        assert kwargs.get("allow_inline_collect") is False
+        assert kwargs.get("include_projection") is False
+        assert kwargs.get("include_runtime_fields") is False
+
+        payload = json.loads(bytes(sent.get("body", b"{}") or b"{}").decode("utf-8"))
+        assert payload.get("generated_at") == "2026-03-02T06:50:00+00:00"
+
+
+def test_api_simulation_returns_busy_when_build_lock_times_out(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    class _FakeBuildLock:
+        def __init__(self) -> None:
+            self.calls: list[tuple[bool, float]] = []
+
+        def acquire(
+            self,
+            blocking: bool = True,
+            timeout: float = -1,
+        ) -> bool:
+            self.calls.append((bool(blocking), float(timeout)))
+            return False
+
+        def release(self) -> None:
+            raise AssertionError(
+                "release should not be called when lock never acquired"
+            )
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = "/api/simulation?perspective=hybrid&payload=trimmed"
+        handler.server = cast(
+            Any,
+            type("_ServerStub", (), {"server_address": ("127.0.0.1", 8787)})(),
+        )
+
+        sent: dict[str, Any] = {}
+        captured: dict[str, Any] = {}
+        fake_lock = _FakeBuildLock()
+
+        monkeypatch.setattr(
+            server_module, "_simulation_http_is_cold_start", lambda: False
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_compact_cached_body",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_compact_stale_fallback_body",
+            lambda **_kwargs: (None, ""),
+        )
+        monkeypatch.setattr(
+            handler,
+            "_runtime_catalog",
+            lambda **_kwargs: (
+                captured.update({"runtime_catalog_kwargs": dict(_kwargs)})
+                or ({"file_graph": {}}, {}, {}, {}, {})
+            ),
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cache_key",
+            lambda **_kwargs: "simulation-cache-key",
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cached_body",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_disk_cache_load",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_failure_backoff_snapshot",
+            lambda: (0.0, "", 0),
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_wait_for_exact_cache",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_SIMULATION_HTTP_BUILD_LOCK",
+            fake_lock,
+        )
+
+        def _capture_send_json(payload: dict[str, Any], status: int = 200) -> None:
+            sent["payload"] = payload
+            sent["status"] = status
+
+        monkeypatch.setattr(handler, "_send_json", _capture_send_json)
+        monkeypatch.setattr(
+            handler,
+            "_send_bytes",
+            lambda *_args, **_kwargs: sent.update({"bytes_sent": True}),
+        )
+
+        handler.do_GET()
+
+        assert sent.get("bytes_sent") is None
+        assert sent.get("status") == server_module.HTTPStatus.SERVICE_UNAVAILABLE
+        payload = sent.get("payload", {})
+        assert payload.get("error") == "simulation_build_busy"
+        assert payload.get("detail") == "build_lock_timeout"
+
+        runtime_catalog_kwargs = captured.get("runtime_catalog_kwargs", {})
+        assert runtime_catalog_kwargs.get("allow_inline_collect") is False
+        assert runtime_catalog_kwargs.get("include_projection") is False
+        assert runtime_catalog_kwargs.get("include_runtime_fields") is False
+
+        assert len(fake_lock.calls) >= 2
+        assert fake_lock.calls[0] == (False, -1.0)
+        assert fake_lock.calls[1][0] is True
+
+
+def test_api_simulation_rebuilds_live_payload_during_cold_start(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = "/api/simulation?perspective=hybrid&payload=trimmed"
+
+        sent: dict[str, Any] = {}
+        runtime_calls: dict[str, Any] = {"catalog": 0, "simulation": {}}
+
+        monkeypatch.setattr(
+            server_module, "_simulation_http_is_cold_start", lambda: True
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_compact_cached_body",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_compact_stale_fallback_body",
+            lambda **_kwargs: (None, ""),
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_disk_cache_load",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cached_body",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_failure_backoff_snapshot",
+            lambda: (0.0, "", 0),
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_wait_for_exact_cache",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cache_key",
+            lambda **_kwargs: "simulation-cache-key",
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cache_store",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_disk_cache_store",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_failure_clear",
+            lambda: None,
+        )
+
+        def _runtime_catalog(
+            **_kwargs: Any,
+        ) -> tuple[
+            dict[str, Any],
+            dict[str, Any],
+            dict[str, Any],
+            dict[str, Any],
+            dict[str, Any],
+        ]:
+            runtime_calls["catalog"] += 1
+            return (
+                {"counts": {"audio": 1, "image": 2, "video": 0}, "items": []},
+                {},
+                {},
+                {},
+                {},
+            )
+
+        def _runtime_simulation(
+            *_args: Any, **_kwargs: Any
+        ) -> tuple[dict[str, Any], dict[str, Any]]:
+            runtime_calls["simulation"] = dict(_kwargs)
+            projection = {"contract": "家_映.v1", "perspective": "hybrid"}
+            return (
+                {
+                    "ok": True,
+                    "timestamp": "2026-03-02T00:00:00Z",
+                    "generated_at": "2026-03-02T00:00:00Z",
+                    "total": 3,
+                    "audio": 1,
+                    "image": 2,
+                    "video": 0,
+                    "points": [],
+                    "presence_dynamics": {},
+                },
+                projection,
+            )
+
+        monkeypatch.setattr(handler, "_runtime_catalog", _runtime_catalog)
+        monkeypatch.setattr(handler, "_runtime_simulation", _runtime_simulation)
+
+        def _capture_send_bytes(
+            body: bytes,
+            content_type: str,
+            *,
+            status: int = 200,
+            extra_headers: dict[str, str] | None = None,
+        ) -> None:
+            sent["body"] = body
+            sent["content_type"] = content_type
+            sent["status"] = status
+            sent["extra_headers"] = dict(extra_headers or {})
+
+        monkeypatch.setattr(handler, "_send_bytes", _capture_send_bytes)
+
+        handler.do_GET()
+
+        assert runtime_calls["catalog"] == 1
+        runtime_simulation_kwargs = runtime_calls["simulation"]
+        assert runtime_simulation_kwargs.get("include_particle_dynamics") is False
+        assert runtime_simulation_kwargs.get("include_unified_graph") is False
+        assert sent.get("status") == 200
+        headers = sent.get("extra_headers", {})
+        assert "X-Eta-Mu-Simulation-Fallback" not in headers
+        payload = json.loads(bytes(sent.get("body", b"{}")).decode("utf-8"))
+        assert payload.get("ok") is True
+        assert int(payload.get("total", -1)) == 3
+        projection = payload.get("projection", {})
+        assert isinstance(projection, dict)
+        assert projection.get("contract") == "家_映.v1"
+
+
+def test_api_simulation_rebuilds_live_payload_when_catalog_runtime_is_fallback(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = "/api/simulation?perspective=hybrid&payload=trimmed"
+
+        sent: dict[str, Any] = {}
+        runtime_simulation_called = {"value": False}
+
+        monkeypatch.setattr(
+            server_module, "_simulation_http_is_cold_start", lambda: False
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_compact_cached_body",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_compact_stale_fallback_body",
+            lambda **_kwargs: (None, ""),
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_disk_cache_load",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cached_body",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_failure_backoff_snapshot",
+            lambda: (0.0, "", 0),
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_wait_for_exact_cache",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cache_key",
+            lambda **_kwargs: "simulation-cache-key",
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cache_store",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_disk_cache_store",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_failure_clear",
+            lambda: None,
+        )
+
+        monkeypatch.setattr(
+            handler,
+            "_runtime_catalog",
+            lambda **_kwargs: (
+                {
+                    "runtime_state": "fallback",
+                    "counts": {"audio": 2, "image": 1, "video": 0},
+                    "items": [],
+                },
+                {},
+                {},
+                {},
+                {},
+            ),
+        )
+
+        def _runtime_simulation(
+            *_args: Any, **_kwargs: Any
+        ) -> tuple[dict[str, Any], dict[str, Any]]:
+            runtime_simulation_called["value"] = True
+            projection = {"contract": "家_映.v1", "perspective": "hybrid"}
+            return (
+                {
+                    "ok": True,
+                    "timestamp": "2026-03-02T00:00:01Z",
+                    "generated_at": "2026-03-02T00:00:01Z",
+                    "total": 3,
+                    "audio": 2,
+                    "image": 1,
+                    "video": 0,
+                    "points": [],
+                    "presence_dynamics": {},
+                },
+                projection,
+            )
+
+        monkeypatch.setattr(handler, "_runtime_simulation", _runtime_simulation)
+
+        def _capture_send_bytes(
+            body: bytes,
+            content_type: str,
+            *,
+            status: int = 200,
+            extra_headers: dict[str, str] | None = None,
+        ) -> None:
+            sent["body"] = body
+            sent["content_type"] = content_type
+            sent["status"] = status
+            sent["extra_headers"] = dict(extra_headers or {})
+
+        monkeypatch.setattr(handler, "_send_bytes", _capture_send_bytes)
+
+        handler.do_GET()
+
+        assert runtime_simulation_called["value"] is True
+        assert sent.get("status") == 200
+        headers = sent.get("extra_headers", {})
+        assert "X-Eta-Mu-Simulation-Fallback" not in headers
+        payload = json.loads(bytes(sent.get("body", b"{}")).decode("utf-8"))
+        assert payload.get("ok") is True
+        assert int(payload.get("total", -1)) == 3
+
+
+def test_api_simulation_retries_catalog_collect_when_runtime_state_is_fallback(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = "/api/simulation?perspective=hybrid&payload=trimmed"
+
+        sent: dict[str, Any] = {}
+        runtime_catalog_calls: list[dict[str, Any]] = []
+
+        monkeypatch.setattr(
+            server_module, "_simulation_http_is_cold_start", lambda: False
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_compact_cached_body",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_compact_stale_fallback_body",
+            lambda **_kwargs: (None, ""),
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_disk_cache_load",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cached_body",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_failure_backoff_snapshot",
+            lambda: (0.0, "", 0),
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_wait_for_exact_cache",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cache_key",
+            lambda **_kwargs: "simulation-cache-key",
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cache_store",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_compact_cache_store",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_disk_cache_store",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_failure_clear",
+            lambda: None,
+        )
+
+        def _runtime_catalog(
+            **kwargs: Any,
+        ) -> tuple[
+            dict[str, Any],
+            dict[str, Any],
+            dict[str, Any],
+            dict[str, Any],
+            dict[str, Any],
+        ]:
+            runtime_catalog_calls.append(dict(kwargs))
+            if len(runtime_catalog_calls) == 1:
+                return (
+                    {
+                        "runtime_state": "fallback",
+                        "counts": {"audio": 2, "image": 1, "video": 0},
+                        "items": [],
+                    },
+                    {},
+                    {},
+                    {},
+                    {},
+                )
+            return (
+                {
+                    "runtime_state": "ready",
+                    "counts": {"audio": 2, "image": 1, "video": 0},
+                    "items": [],
+                    "file_graph": {
+                        "file_nodes": [{"id": "file:1"}],
+                        "nodes": [{"id": "file:1"}],
+                        "edges": [],
+                    },
+                    "crawler_graph": {
+                        "crawler_nodes": [{"id": "crawl:1"}],
+                        "nodes": [{"id": "crawl:1"}],
+                        "edges": [],
+                    },
+                },
+                {},
+                {},
+                {},
+                {},
+            )
+
+        monkeypatch.setattr(handler, "_runtime_catalog", _runtime_catalog)
+
+        monkeypatch.setattr(
+            handler,
+            "_runtime_simulation",
+            lambda *_args, **_kwargs: (
+                {
+                    "ok": True,
+                    "timestamp": "2026-03-03T00:00:01Z",
+                    "generated_at": "2026-03-03T00:00:01Z",
+                    "total": 12,
+                    "file_graph": {
+                        "file_nodes": [{"id": "file:1"}],
+                        "nodes": [{"id": "file:1"}],
+                        "edges": [],
+                    },
+                    "crawler_graph": {
+                        "crawler_nodes": [{"id": "crawl:1"}],
+                        "nodes": [{"id": "crawl:1"}],
+                        "edges": [],
+                    },
+                    "presence_dynamics": {},
+                },
+                {"contract": "家_映.v1", "perspective": "hybrid"},
+            ),
+        )
+
+        def _capture_send_bytes(
+            body: bytes,
+            content_type: str,
+            *,
+            status: int = 200,
+            extra_headers: dict[str, str] | None = None,
+        ) -> None:
+            sent["body"] = body
+            sent["content_type"] = content_type
+            sent["status"] = status
+            sent["extra_headers"] = dict(extra_headers or {})
+
+        monkeypatch.setattr(handler, "_send_bytes", _capture_send_bytes)
+
+        handler.do_GET()
+
+        assert len(runtime_catalog_calls) >= 2
+        assert runtime_catalog_calls[0].get("allow_inline_collect") is False
+        assert runtime_catalog_calls[1].get("allow_inline_collect") is True
+        assert runtime_catalog_calls[1].get("strict_collect") is True
+        assert sent.get("status") == 200
+        payload = json.loads(bytes(sent.get("body", b"{}")).decode("utf-8"))
+        assert payload.get("ok") is True
+        file_graph = payload.get("file_graph", {})
+        assert isinstance(file_graph, dict)
+        assert len(file_graph.get("file_nodes", [])) >= 1
+
+
+def test_api_simulation_skips_graphless_compact_cache_and_rebuilds(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = "/api/simulation?perspective=hybrid&payload=trimmed"
+
+        sent: dict[str, Any] = {}
+        runtime_simulation_called = {"value": False}
+
+        graphless_cached_body = json.dumps(
+            {
+                "ok": True,
+                "timestamp": "2026-03-03T00:00:00Z",
+                "generated_at": "2026-03-03T00:00:00Z",
+                "total": 12,
+                "file_graph": {"file_nodes": [], "nodes": [], "edges": []},
+                "crawler_graph": {"crawler_nodes": [], "nodes": [], "edges": []},
+                "presence_dynamics": {},
+            }
+        ).encode("utf-8")
+
+        monkeypatch.setattr(
+            server_module, "_simulation_http_is_cold_start", lambda: False
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_compact_cached_body",
+            lambda **_kwargs: graphless_cached_body,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_compact_stale_fallback_body",
+            lambda **_kwargs: (None, ""),
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_disk_cache_load",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cached_body",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_failure_backoff_snapshot",
+            lambda: (0.0, "", 0),
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_wait_for_exact_cache",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cache_key",
+            lambda **_kwargs: "simulation-cache-key",
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cache_store",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_compact_cache_store",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_disk_cache_store",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_failure_clear",
+            lambda: None,
+        )
+
+        monkeypatch.setattr(
+            handler,
+            "_runtime_catalog",
+            lambda **_kwargs: (
+                {
+                    "counts": {"audio": 1, "image": 0, "video": 0},
+                    "items": [],
+                    "file_graph": {
+                        "file_nodes": [{"id": "file:1"}],
+                        "nodes": [{"id": "file:1"}],
+                        "edges": [],
+                    },
+                    "crawler_graph": {
+                        "crawler_nodes": [{"id": "crawl:1"}],
+                        "nodes": [{"id": "crawl:1"}],
+                        "edges": [],
+                    },
+                },
+                {},
+                {},
+                {},
+                {},
+            ),
+        )
+
+        def _runtime_simulation(
+            *_args: Any, **_kwargs: Any
+        ) -> tuple[dict[str, Any], dict[str, Any]]:
+            runtime_simulation_called["value"] = True
+            projection = {"contract": "家_映.v1", "perspective": "hybrid"}
+            return (
+                {
+                    "ok": True,
+                    "timestamp": "2026-03-03T00:00:01Z",
+                    "generated_at": "2026-03-03T00:00:01Z",
+                    "total": 12,
+                    "audio": 1,
+                    "image": 0,
+                    "video": 0,
+                    "points": [],
+                    "file_graph": {
+                        "file_nodes": [{"id": "file:1"}],
+                        "nodes": [{"id": "file:1"}],
+                        "edges": [],
+                    },
+                    "crawler_graph": {
+                        "crawler_nodes": [{"id": "crawl:1"}],
+                        "nodes": [{"id": "crawl:1"}],
+                        "edges": [],
+                    },
+                    "presence_dynamics": {},
+                },
+                projection,
+            )
+
+        monkeypatch.setattr(handler, "_runtime_simulation", _runtime_simulation)
+
+        def _capture_send_bytes(
+            body: bytes,
+            content_type: str,
+            *,
+            status: int = 200,
+            extra_headers: dict[str, str] | None = None,
+        ) -> None:
+            sent["body"] = body
+            sent["content_type"] = content_type
+            sent["status"] = status
+            sent["extra_headers"] = dict(extra_headers or {})
+
+        monkeypatch.setattr(handler, "_send_bytes", _capture_send_bytes)
+
+        handler.do_GET()
+
+        assert runtime_simulation_called["value"] is True
+        assert sent.get("status") == 200
+        payload = json.loads(bytes(sent.get("body", b"{}")).decode("utf-8"))
+        file_graph = payload.get("file_graph", {})
+        assert isinstance(file_graph, dict)
+        file_nodes = file_graph.get("file_nodes", [])
+        assert isinstance(file_nodes, list)
+        assert len(file_nodes) >= 1
+        headers = sent.get("extra_headers", {})
+        assert headers.get("X-Eta-Mu-Simulation-Fallback") != "compact-cache"
+
+
+def test_api_simulation_trimmed_stale_fallback_ignores_legacy_ws_cache_keys(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = "/api/simulation?perspective=hybrid&payload=trimmed"
+
+        sent: dict[str, Any] = {}
+        runtime_simulation_called = {"value": False}
+        cached_calls: list[dict[str, Any]] = []
+
+        ws_legacy_stale_body = json.dumps(
+            {
+                "ok": True,
+                "record": "ws-legacy-stale",
+                "timestamp": "2026-03-03T00:00:00Z",
+                "generated_at": "2026-03-03T00:00:00Z",
+                "total": 9,
+                "file_graph": {
+                    "file_nodes": [{"id": "file:legacy"}],
+                    "nodes": [{"id": "file:legacy"}],
+                    "edges": [],
+                },
+                "crawler_graph": {
+                    "crawler_nodes": [{"id": "crawler:legacy"}],
+                    "nodes": [{"id": "crawler:legacy"}],
+                    "edges": [],
+                },
+                "presence_dynamics": {
+                    "field_particles": [
+                        {
+                            "id": "compact-lite:0",
+                            "particle_mode": "compact-lite",
+                            "x": 0.2,
+                            "y": 0.4,
+                        }
+                    ],
+                    "daimoi_probabilistic": {
+                        "backend": "compact-lite",
+                        "disabled": True,
+                        "disabled_reason": "include_particle_dynamics=false",
+                    },
+                },
+            }
+        ).encode("utf-8")
+
+        monkeypatch.setattr(
+            server_module, "_simulation_http_is_cold_start", lambda: False
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_compact_cached_body",
+            lambda **_kwargs: None,
+        )
+
+        def _fake_cached_body(**kwargs: Any) -> bytes | None:
+            cached_calls.append(dict(kwargs))
+            perspective = str(kwargs.get("perspective", "") or "")
+            require_exact_key = bool(kwargs.get("require_exact_key", False))
+            if not require_exact_key and perspective == "hybrid":
+                return ws_legacy_stale_body
+            return None
+
+        monkeypatch.setattr(
+            server_module, "_simulation_http_cached_body", _fake_cached_body
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_disk_cache_load",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_failure_backoff_snapshot",
+            lambda: (0.0, "", 0),
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_wait_for_exact_cache",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cache_key",
+            lambda **_kwargs: "simulation-cache-key",
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cache_store",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_compact_cache_store",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_disk_cache_store",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_failure_clear",
+            lambda: None,
+        )
+
+        monkeypatch.setattr(
+            handler,
+            "_runtime_catalog",
+            lambda **_kwargs: (
+                {
+                    "counts": {"audio": 1, "image": 0, "video": 0},
+                    "items": [],
+                    "file_graph": {
+                        "file_nodes": [{"id": "file:1"}],
+                        "nodes": [{"id": "file:1"}],
+                        "edges": [],
+                    },
+                    "crawler_graph": {
+                        "crawler_nodes": [{"id": "crawl:1"}],
+                        "nodes": [{"id": "crawl:1"}],
+                        "edges": [],
+                    },
+                },
+                {},
+                {},
+                {},
+                {},
+            ),
+        )
+
+        def _runtime_simulation(
+            *_args: Any,
+            **_kwargs: Any,
+        ) -> tuple[dict[str, Any], dict[str, Any]]:
+            runtime_simulation_called["value"] = True
+            projection = {"contract": "家_映.v1", "perspective": "hybrid"}
+            return (
+                {
+                    "ok": True,
+                    "timestamp": "2026-03-03T00:00:01Z",
+                    "generated_at": "2026-03-03T00:00:01Z",
+                    "record": "fresh-runtime",
+                    "total": 12,
+                    "audio": 1,
+                    "image": 0,
+                    "video": 0,
+                    "points": [],
+                    "file_graph": {
+                        "file_nodes": [{"id": "file:1"}],
+                        "nodes": [{"id": "file:1"}],
+                        "edges": [],
+                    },
+                    "crawler_graph": {
+                        "crawler_nodes": [{"id": "crawl:1"}],
+                        "nodes": [{"id": "crawl:1"}],
+                        "edges": [],
+                    },
+                    "presence_dynamics": {},
+                },
+                projection,
+            )
+
+        monkeypatch.setattr(handler, "_runtime_simulation", _runtime_simulation)
+
+        def _capture_send_bytes(
+            body: bytes,
+            content_type: str,
+            *,
+            status: int = 200,
+            extra_headers: dict[str, str] | None = None,
+        ) -> None:
+            sent["body"] = body
+            sent["content_type"] = content_type
+            sent["status"] = status
+            sent["extra_headers"] = dict(extra_headers or {})
+
+        monkeypatch.setattr(handler, "_send_bytes", _capture_send_bytes)
+
+        handler.do_GET()
+
+        assert runtime_simulation_called["value"] is True
+        assert sent.get("status") == 200
+        payload = json.loads(bytes(sent.get("body", b"{}")).decode("utf-8"))
+        assert payload.get("record") == "fresh-runtime"
+
+        stale_lookup_calls = [
+            row for row in cached_calls if not bool(row.get("require_exact_key", False))
+        ]
+        assert any(
+            str(row.get("perspective", "")) == "hybrid|profile:compact"
+            for row in stale_lookup_calls
+        )
+        assert not any(
+            str(row.get("perspective", "")) == "hybrid" for row in stale_lookup_calls
+        )
+
+
+def test_api_ui_projection_rebuilds_live_projection_without_placeholder(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = "/api/ui/projection?perspective=hybrid"
+
+        sent: dict[str, Any] = {}
+        runtime_calls: dict[str, Any] = {"catalog": 0, "simulation": {}}
+
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cached_body",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_disk_cache_load",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            handler,
+            "_runtime_catalog",
+            lambda **_kwargs: (
+                runtime_calls.__setitem__(
+                    "catalog", runtime_calls.get("catalog", 0) + 1
+                )
+                or {
+                    "runtime_state": "fallback",
+                    "counts": {"audio": 1, "image": 0, "video": 0},
+                    "items": [],
+                },
+                {},
+                {},
+                {},
+                {},
+            ),
+        )
+
+        def _runtime_simulation(
+            *_args: Any, **_kwargs: Any
+        ) -> tuple[dict[str, Any], dict[str, Any]]:
+            runtime_calls["simulation"] = dict(_kwargs)
+            projection = {"contract": "家_映.v1", "perspective": "hybrid"}
+            return (
+                {
+                    "ok": True,
+                    "timestamp": "2026-03-02T00:00:02Z",
+                    "generated_at": "2026-03-02T00:00:02Z",
+                    "total": 1,
+                    "audio": 1,
+                    "image": 0,
+                    "video": 0,
+                    "points": [],
+                    "presence_dynamics": {},
+                },
+                projection,
+            )
+
+        monkeypatch.setattr(handler, "_runtime_simulation", _runtime_simulation)
+
+        def _capture_send_json(payload: dict[str, Any], status: int = 200) -> None:
+            sent["payload"] = payload
+            sent["status"] = status
+
+        monkeypatch.setattr(handler, "_send_json", _capture_send_json)
+
+        handler.do_GET()
+
+        assert runtime_calls.get("catalog", 0) == 1
+        runtime_simulation_kwargs = runtime_calls.get("simulation", {})
+        assert runtime_simulation_kwargs.get("include_unified_graph") is False
+        assert runtime_simulation_kwargs.get("include_particle_dynamics") is False
+        assert sent.get("status") == 200
+        payload = sent.get("payload", {})
+        assert payload.get("ok") is True
+        assert "fallback" not in payload
+        assert isinstance(payload.get("projection"), dict)
+        assert payload.get("projection", {}).get("contract") == "家_映.v1"
+
+
+def test_api_ui_projection_rebuilds_live_projection_when_catalog_runtime_fallback(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = "/api/ui/projection?perspective=hybrid"
+
+        sent: dict[str, Any] = {}
+        runtime_simulation_called = {"value": False}
+
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cached_body",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_disk_cache_load",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            handler,
+            "_runtime_catalog",
+            lambda **_kwargs: (
+                {"runtime_state": "fallback", "items": []},
+                {},
+                {},
+                {},
+                {},
+            ),
+        )
+
+        def _runtime_simulation(
+            *_args: Any, **_kwargs: Any
+        ) -> tuple[dict[str, Any], dict[str, Any]]:
+            runtime_simulation_called["value"] = True
+            return (
+                {
+                    "ok": True,
+                    "timestamp": "2026-03-02T00:00:03Z",
+                    "generated_at": "2026-03-02T00:00:03Z",
+                    "total": 0,
+                    "audio": 0,
+                    "image": 0,
+                    "video": 0,
+                    "points": [],
+                    "presence_dynamics": {},
+                },
+                {"contract": "家_映.v1", "perspective": "hybrid"},
+            )
+
+        monkeypatch.setattr(handler, "_runtime_simulation", _runtime_simulation)
+
+        def _capture_send_json(payload: dict[str, Any], status: int = 200) -> None:
+            sent["payload"] = payload
+            sent["status"] = status
+
+        monkeypatch.setattr(handler, "_send_json", _capture_send_json)
+
+        handler.do_GET()
+
+        assert runtime_simulation_called["value"] is True
+        assert sent.get("status") == 200
+        payload = sent.get("payload", {})
+        assert payload.get("ok") is True
+        assert "fallback" not in payload
+        assert payload.get("projection", {}).get("contract") == "家_映.v1"
 
 
 def test_stability_observatory_panel_npu_widget_contract_present() -> None:
@@ -840,6 +2912,814 @@ def test_world_web_module_entrypoint_help() -> None:
     assert proc.returncode == 0
     assert "--host" in proc.stdout
     assert "--port" in proc.stdout
+
+
+def test_world_web_parse_args_transport_env_defaults(monkeypatch: Any) -> None:
+    monkeypatch.setenv("WORLD_WEB_TRANSPORT", "asgi")
+    monkeypatch.setenv("WORLD_WEB_LEGACY_PORT", "18787")
+    args = world_web_server.parse_args([])
+    assert args.transport == "asgi"
+    assert args.legacy_port == 18787
+
+
+def test_world_web_safe_int_helper_handles_invalid_values() -> None:
+    assert world_web_server._safe_int("42", 0) == 42
+    assert world_web_server._safe_int("invalid", 7) == 7
+
+
+def test_world_web_main_dispatches_asgi_transport(monkeypatch: Any) -> None:
+    called: dict[str, Any] = {}
+
+    def _fake_legacy(*_args: Any, **_kwargs: Any) -> None:
+        called["legacy"] = True
+
+    def _fake_asgi(
+        part_root: Path,
+        vault_root: Path,
+        host: str,
+        port: int,
+        *,
+        legacy_port: int,
+    ) -> None:
+        called["part_root"] = part_root
+        called["vault_root"] = vault_root
+        called["host"] = host
+        called["port"] = port
+        called["legacy_port"] = legacy_port
+
+    monkeypatch.setattr(world_web_server, "serve", _fake_legacy)
+    monkeypatch.setattr(world_web_server, "serve_asgi", _fake_asgi)
+
+    code = world_web_server.main(
+        [
+            "--transport",
+            "asgi",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "8787",
+            "--legacy-port",
+            "18787",
+        ]
+    )
+    assert code == 0
+    assert called.get("legacy") is None
+    assert called.get("host") == "0.0.0.0"
+    assert called.get("port") == 8787
+    assert called.get("legacy_port") == 18787
+
+
+def test_weaver_get_route_proxies_to_weaver_service(monkeypatch: Any) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = "/api/weaver/status?detail=1"
+        handler.headers = cast(Any, {"Accept": "application/json"})
+
+        sent: dict[str, Any] = {}
+        captured: dict[str, Any] = {}
+
+        class _FakeResponse:
+            status = 200
+            headers = {"Content-Type": "application/json; charset=utf-8"}
+
+            def __enter__(self) -> "_FakeResponse":
+                return self
+
+            def __exit__(self, *_args: Any) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return b'{"ok":true,"status":"healthy"}'
+
+        def _fake_urlopen(req: Any, timeout: float = 0.0) -> _FakeResponse:
+            captured["url"] = req.full_url
+            captured["method"] = req.get_method()
+            captured["timeout"] = timeout
+            return _FakeResponse()
+
+        def _capture_send_bytes(
+            body: bytes,
+            content_type: str,
+            status: int = 200,
+            *,
+            extra_headers: dict[str, str] | None = None,
+        ) -> None:
+            sent["body"] = body
+            sent["content_type"] = content_type
+            sent["status"] = status
+            sent["extra_headers"] = dict(extra_headers or {})
+
+        monkeypatch.setattr(server_module, "urlopen", _fake_urlopen)
+        monkeypatch.setattr(handler, "_send_bytes", _capture_send_bytes)
+
+        handler.do_GET()
+
+        assert captured.get("method") == "GET"
+        assert str(captured.get("url", "")).endswith("/api/weaver/status?detail=1")
+        assert sent.get("status") == 200
+        assert sent.get("content_type") == "application/json; charset=utf-8"
+
+
+def test_weaver_post_route_proxies_payload(monkeypatch: Any) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = "/api/weaver/control"
+        handler.headers = cast(
+            Any,
+            {
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Content-Length": "31",
+            },
+        )
+
+        sent: dict[str, Any] = {}
+        captured: dict[str, Any] = {}
+        payload = b'{"action":"pause","reason":"test"}'
+
+        class _FakeResponse:
+            status = 200
+            headers = {"Content-Type": "application/json; charset=utf-8"}
+
+            def __enter__(self) -> "_FakeResponse":
+                return self
+
+            def __exit__(self, *_args: Any) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return b'{"ok":true}'
+
+        def _fake_urlopen(req: Any, timeout: float = 0.0) -> _FakeResponse:
+            captured["url"] = req.full_url
+            captured["method"] = req.get_method()
+            captured["timeout"] = timeout
+            captured["body"] = req.data
+            return _FakeResponse()
+
+        def _capture_send_bytes(
+            body: bytes,
+            content_type: str,
+            status: int = 200,
+            *,
+            extra_headers: dict[str, str] | None = None,
+        ) -> None:
+            sent["body"] = body
+            sent["content_type"] = content_type
+            sent["status"] = status
+            sent["extra_headers"] = dict(extra_headers or {})
+
+        monkeypatch.setattr(server_module, "urlopen", _fake_urlopen)
+        monkeypatch.setattr(handler, "_send_bytes", _capture_send_bytes)
+        monkeypatch.setattr(handler, "_read_raw_body", lambda: payload)
+
+        handler.do_POST()
+
+        assert captured.get("method") == "POST"
+        assert str(captured.get("url", "")).endswith("/api/weaver/control")
+        assert captured.get("body") == payload
+        assert sent.get("status") == 200
+
+
+def test_asgi_native_dispatch_selection_contract() -> None:
+    from code.world_web import asgi_transport
+
+    async def _empty_receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    def _request(path_and_query: str) -> Request:
+        path, _, query = path_and_query.partition("?")
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode("utf-8"),
+            "query_string": query.encode("utf-8"),
+            "headers": [],
+            "client": ("127.0.0.1", 1),
+            "server": ("127.0.0.1", 8787),
+        }
+        return Request(scope, _empty_receive)
+
+    assert (
+        asgi_transport._native_dispatch_enabled_for_request(
+            _request("/api/simulation?payload=trimmed")
+        )
+        is True
+    )
+    assert (
+        asgi_transport._native_dispatch_enabled_for_request(
+            _request("/api/simulation?payload=full")
+        )
+        is False
+    )
+    assert (
+        asgi_transport._native_dispatch_enabled_for_request(
+            _request("/api/simulation?compact=1")
+        )
+        is True
+    )
+    assert (
+        asgi_transport._native_dispatch_enabled_for_request(
+            _request("/api/weaver/status")
+        )
+        is True
+    )
+    assert (
+        asgi_transport._native_dispatch_enabled_for_request(
+            _request("/api/simulation/refresh-status")
+        )
+        is True
+    )
+    assert (
+        asgi_transport._native_dispatch_enabled_for_request(
+            _request("/api/simulation/refresh")
+        )
+        is True
+    )
+    assert (
+        asgi_transport._native_dispatch_enabled_for_request(
+            _request("/api/muse/runtime")
+        )
+        is False
+    )
+
+
+def test_api_simulation_full_uses_stale_snapshot_and_schedules_async_refresh(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = "/api/simulation?perspective=hybrid&payload=full"
+
+        sent: dict[str, Any] = {}
+        captured: dict[str, Any] = {}
+
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_failure_backoff_snapshot",
+            lambda: (0.0, "", 0),
+        )
+        monkeypatch.setattr(
+            handler,
+            "_runtime_catalog",
+            lambda **_kwargs: (
+                {"file_graph": {}},
+                {},
+                {},
+                {"user_inputs_120s": 0},
+                {},
+            ),
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cache_key",
+            lambda **_kwargs: "simulation-cache-key",
+        )
+
+        def _fake_cached_body(**kwargs: Any) -> bytes | None:
+            if bool(kwargs.get("require_exact_key", False)):
+                return None
+            perspective = str(kwargs.get("perspective", "") or "")
+            if perspective == "hybrid|profile:full":
+                return b'{"ok":true,"record":"stale"}'
+            return None
+
+        monkeypatch.setattr(
+            server_module, "_simulation_http_cached_body", _fake_cached_body
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_disk_cache_load",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            handler,
+            "_runtime_simulation",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("full simulation should not run synchronously")
+            ),
+        )
+
+        def _fake_start_refresh(**kwargs: Any) -> tuple[bool, dict[str, Any]]:
+            captured["refresh_kwargs"] = dict(kwargs)
+            return (
+                True,
+                {
+                    "running": True,
+                    "status": "running",
+                    "job_id": "sim-full:abc",
+                    "updated_at": "2026-03-02T00:00:00Z",
+                },
+            )
+
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_full_async_refresh_start",
+            _fake_start_refresh,
+        )
+
+        def _capture_send_bytes(
+            body: bytes,
+            content_type: str,
+            status: int = 200,
+            *,
+            extra_headers: dict[str, str] | None = None,
+        ) -> None:
+            sent["body"] = body
+            sent["content_type"] = content_type
+            sent["status"] = status
+            sent["extra_headers"] = dict(extra_headers or {})
+
+        monkeypatch.setattr(handler, "_send_bytes", _capture_send_bytes)
+        monkeypatch.setattr(
+            handler,
+            "_send_json",
+            lambda payload, status=200: sent.update(
+                {"json_payload": payload, "json_status": status}
+            ),
+        )
+
+        handler.do_GET()
+
+        assert sent.get("json_payload") is None
+        assert sent.get("status") == 200
+        headers = cast(dict[str, str], sent.get("extra_headers", {}))
+        assert headers.get("X-Eta-Mu-Simulation-Fallback") == "stale-cache"
+        assert headers.get("X-Eta-Mu-Simulation-Error") == "full_async_refresh"
+        assert headers.get("X-Eta-Mu-Simulation-Refresh") == "scheduled"
+        assert headers.get("X-Eta-Mu-Simulation-Refresh-Job") == "sim-full:abc"
+
+        payload = json.loads(bytes(sent.get("body", b"{}")).decode("utf-8"))
+        assert payload.get("record") == "stale"
+
+        refresh_kwargs = cast(dict[str, Any], captured.get("refresh_kwargs", {}))
+        assert refresh_kwargs.get("trigger") == "full-cache-miss"
+        assert str(refresh_kwargs.get("cache_key", "")).endswith("|profile:full")
+
+
+def test_api_simulation_full_returns_accepted_when_refresh_scheduled_without_stale(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = "/api/simulation?perspective=hybrid&payload=full"
+
+        sent: dict[str, Any] = {}
+
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_failure_backoff_snapshot",
+            lambda: (0.0, "", 0),
+        )
+        monkeypatch.setattr(
+            handler,
+            "_runtime_catalog",
+            lambda **_kwargs: (
+                {"file_graph": {}},
+                {},
+                {},
+                {"user_inputs_120s": 0},
+                {},
+            ),
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cache_key",
+            lambda **_kwargs: "simulation-cache-key",
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cached_body",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_disk_cache_load",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            handler,
+            "_send_bytes",
+            lambda *_args, **_kwargs: sent.update({"bytes_sent": True}),
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_full_async_refresh_start",
+            lambda **_kwargs: (
+                True,
+                {
+                    "running": True,
+                    "status": "running",
+                    "job_id": "sim-full:def",
+                    "updated_at": "2026-03-02T00:00:00Z",
+                },
+            ),
+        )
+
+        def _capture_send_json(payload: dict[str, Any], status: int = 200) -> None:
+            sent["payload"] = payload
+            sent["status"] = status
+
+        monkeypatch.setattr(handler, "_send_json", _capture_send_json)
+
+        handler.do_GET()
+
+        assert sent.get("bytes_sent") is None
+        assert sent.get("status") == server_module.HTTPStatus.ACCEPTED
+        payload = cast(dict[str, Any], sent.get("payload", {}))
+        assert payload.get("record") == "eta-mu.simulation.refresh.v1"
+        assert payload.get("status") == "scheduled"
+        refresh = cast(dict[str, Any], payload.get("refresh", {}))
+        assert refresh.get("job_id") == "sim-full:def"
+
+
+def test_api_simulation_refresh_status_reports_async_state(monkeypatch: Any) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = "/api/simulation/refresh-status?perspective=hybrid"
+
+        sent: dict[str, Any] = {}
+
+        started_monotonic = time.monotonic() - 4.5
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_full_async_refresh_snapshot",
+            lambda: {
+                "running": True,
+                "status": "running",
+                "job_id": "sim-full:xyz",
+                "trigger": "full-cache-miss",
+                "perspective": "hybrid",
+                "cache_perspective": "hybrid|profile:full",
+                "cache_key": "simulation-cache-key|profile:full",
+                "started_at": "2026-03-02T00:00:00Z",
+                "started_monotonic": started_monotonic,
+                "updated_at": "2026-03-02T00:00:04Z",
+                "completed_at": "",
+                "error": "",
+            },
+        )
+
+        def _fake_cached_body(**kwargs: Any) -> bytes | None:
+            perspective = str(kwargs.get("perspective", "") or "")
+            max_age_seconds = float(kwargs.get("max_age_seconds", 0.0) or 0.0)
+            if perspective != "hybrid|profile:full":
+                return None
+            if max_age_seconds <= server_module._SIMULATION_HTTP_CACHE_SECONDS + 1e-6:
+                return None
+            return b'{"ok":true,"record":"stale"}'
+
+        monkeypatch.setattr(
+            server_module, "_simulation_http_cached_body", _fake_cached_body
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_disk_cache_has_payload",
+            lambda *_args, **_kwargs: True,
+        )
+
+        def _capture_send_json(payload: dict[str, Any], status: int = 200) -> None:
+            sent["payload"] = payload
+            sent["status"] = status
+
+        monkeypatch.setattr(handler, "_send_json", _capture_send_json)
+
+        handler.do_GET()
+
+        assert sent.get("status") == 200
+        payload = cast(dict[str, Any], sent.get("payload", {}))
+        assert payload.get("record") == "eta-mu.simulation.refresh-status.v1"
+        assert payload.get("perspective") == "hybrid"
+        availability = cast(dict[str, Any], payload.get("availability", {}))
+        assert availability.get("fresh_cache") is False
+        assert availability.get("stale_cache") is True
+        assert availability.get("disk_cache") is True
+
+        refresh = cast(dict[str, Any], payload.get("refresh", {}))
+        assert refresh.get("job_id") == "sim-full:xyz"
+        assert refresh.get("status") == "running"
+        assert "started_monotonic" not in refresh
+        assert float(refresh.get("running_for_seconds", 0.0) or 0.0) >= 1.0
+
+
+def test_api_simulation_refresh_start_schedules_async_job(monkeypatch: Any) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = "/api/simulation/refresh"
+
+        sent: dict[str, Any] = {}
+        captured: dict[str, Any] = {}
+
+        monkeypatch.setattr(
+            handler,
+            "_read_json_body",
+            lambda: {
+                "action": "start",
+                "perspective": "hybrid",
+                "trigger": "operator",
+            },
+        )
+
+        def _fake_schedule(**kwargs: Any) -> tuple[bool, dict[str, Any]]:
+            captured["kwargs"] = dict(kwargs)
+            return (
+                True,
+                {
+                    "running": True,
+                    "status": "running",
+                    "job_id": "sim-full:manual",
+                },
+            )
+
+        monkeypatch.setattr(
+            handler, "_schedule_full_simulation_async_refresh", _fake_schedule
+        )
+
+        def _capture_send_json(payload: dict[str, Any], status: int = 200) -> None:
+            sent["payload"] = payload
+            sent["status"] = status
+
+        monkeypatch.setattr(handler, "_send_json", _capture_send_json)
+
+        handler.do_POST()
+
+        assert sent.get("status") == server_module.HTTPStatus.ACCEPTED
+        payload = cast(dict[str, Any], sent.get("payload", {}))
+        assert payload.get("record") == "eta-mu.simulation.refresh.command.v1"
+        assert payload.get("action") == "start"
+        assert payload.get("status") == "scheduled"
+        assert payload.get("perspective") == "hybrid"
+        refresh = cast(dict[str, Any], payload.get("refresh", {}))
+        assert refresh.get("job_id") == "sim-full:manual"
+
+        kwargs = cast(dict[str, Any], captured.get("kwargs", {}))
+        assert kwargs.get("perspective") == "hybrid"
+        assert kwargs.get("cache_perspective") == "hybrid|profile:full"
+        assert str(kwargs.get("trigger", "")).startswith("manual:")
+        assert kwargs.get("allow_throttle_bypass") is False
+
+
+def test_api_simulation_refresh_start_returns_throttled_retry_hint(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = "/api/simulation/refresh"
+
+        sent: dict[str, Any] = {}
+
+        monkeypatch.setattr(
+            handler,
+            "_read_json_body",
+            lambda: {
+                "action": "start",
+                "perspective": "hybrid",
+                "trigger": "operator",
+            },
+        )
+        monkeypatch.setattr(
+            handler,
+            "_schedule_full_simulation_async_refresh",
+            lambda **_kwargs: (
+                False,
+                {
+                    "running": False,
+                    "status": "throttled",
+                    "throttle_remaining_seconds": 3.25,
+                    "job_id": "sim-full:manual",
+                },
+            ),
+        )
+
+        def _capture_send_json(payload: dict[str, Any], status: int = 200) -> None:
+            sent["payload"] = payload
+            sent["status"] = status
+
+        monkeypatch.setattr(handler, "_send_json", _capture_send_json)
+
+        handler.do_POST()
+
+        assert sent.get("status") == server_module.HTTPStatus.TOO_MANY_REQUESTS
+        payload = cast(dict[str, Any], sent.get("payload", {}))
+        assert payload.get("record") == "eta-mu.simulation.refresh.command.v1"
+        assert payload.get("status") == "throttled"
+        assert float(payload.get("retry_after_seconds", 0.0) or 0.0) >= 3.0
+
+
+def test_api_simulation_full_returns_throttled_when_refresh_backpressured(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = "/api/simulation?perspective=hybrid&payload=full"
+
+        sent: dict[str, Any] = {}
+
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_failure_backoff_snapshot",
+            lambda: (0.0, "", 0),
+        )
+        monkeypatch.setattr(
+            handler,
+            "_runtime_catalog",
+            lambda **_kwargs: (
+                {"file_graph": {}},
+                {},
+                {},
+                {"user_inputs_120s": 0},
+                {},
+            ),
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cache_key",
+            lambda **_kwargs: "simulation-cache-key",
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_cached_body",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_disk_cache_load",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            handler,
+            "_schedule_full_simulation_async_refresh",
+            lambda **_kwargs: (
+                False,
+                {
+                    "running": False,
+                    "status": "throttled",
+                    "throttle_remaining_seconds": 4.0,
+                    "job_id": "sim-full:throttle",
+                },
+            ),
+        )
+        monkeypatch.setattr(
+            handler,
+            "_send_bytes",
+            lambda *_args, **_kwargs: sent.update({"bytes_sent": True}),
+        )
+
+        def _capture_send_json(payload: dict[str, Any], status: int = 200) -> None:
+            sent["payload"] = payload
+            sent["status"] = status
+
+        monkeypatch.setattr(handler, "_send_json", _capture_send_json)
+
+        handler.do_GET()
+
+        assert sent.get("bytes_sent") is None
+        assert sent.get("status") == server_module.HTTPStatus.TOO_MANY_REQUESTS
+        payload = cast(dict[str, Any], sent.get("payload", {}))
+        assert payload.get("record") == "eta-mu.simulation.refresh.v1"
+        assert payload.get("status") == "throttled"
+        assert float(payload.get("retry_after_seconds", 0.0) or 0.0) >= 3.5
+
+
+def test_api_simulation_refresh_cancel_reports_canceled(monkeypatch: Any) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = "/api/simulation/refresh"
+
+        sent: dict[str, Any] = {}
+
+        monkeypatch.setattr(
+            handler,
+            "_read_json_body",
+            lambda: {
+                "action": "cancel",
+                "job_id": "sim-full:manual",
+                "reason": "operator_cancel",
+            },
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_simulation_http_full_async_refresh_cancel",
+            lambda **_kwargs: (
+                True,
+                {
+                    "running": False,
+                    "status": "canceled",
+                    "job_id": "sim-full:manual",
+                    "error": "operator_cancel",
+                },
+            ),
+        )
+
+        def _capture_send_json(payload: dict[str, Any], status: int = 200) -> None:
+            sent["payload"] = payload
+            sent["status"] = status
+
+        monkeypatch.setattr(handler, "_send_json", _capture_send_json)
+
+        handler.do_POST()
+
+        assert sent.get("status") == server_module.HTTPStatus.OK
+        payload = cast(dict[str, Any], sent.get("payload", {}))
+        assert payload.get("record") == "eta-mu.simulation.refresh.command.v1"
+        assert payload.get("action") == "cancel"
+        assert payload.get("status") == "canceled"
+        refresh = cast(dict[str, Any], payload.get("refresh", {}))
+        assert refresh.get("status") == "canceled"
 
 
 def test_voice_lines_canonical_payload() -> None:
@@ -928,6 +3808,24 @@ def test_chat_reply_multi_entity_llm_falls_back_per_presence() -> None:
     assert payload["trace"]["entities"][0]["status"] == "fallback"
     assert len(payload["trace"]["failures"]) == 1
     assert payload["trace"]["failures"][0]["fallback_used"] is True
+
+
+def test_chat_reply_multi_entity_unknown_presence_id_uses_requested_presence() -> None:
+    def fake_generate(_prompt: str) -> tuple[str | None, str]:
+        return "Chaos lane acknowledged.", "test-model"
+
+    payload = build_chat_reply(
+        [{"role": "user", "text": "status"}],
+        mode="llm",
+        multi_entity=True,
+        presence_ids=["chaos"],
+        generate_text_fn=fake_generate,
+    )
+
+    assert payload["mode"] == "llm"
+    assert payload["model"] == "test-model"
+    assert payload["trace"]["entities"][0]["presence_id"] == "chaos"
+    assert payload["trace"]["entities"][0]["presence_en"] == "Chaos"
 
 
 def test_witness_lineage_payload_raises_missing_upstream_drift(
@@ -1727,6 +4625,9 @@ def test_catalog_library_and_dashboard_render() -> None:
         assert len(simulation["points"]) == simulation["total"]
         assert isinstance(simulation.get("myth"), dict)
         assert isinstance(simulation.get("world"), dict)
+        presence_dynamics = simulation.get("presence_dynamics", {})
+        assert isinstance(presence_dynamics, dict)
+        assert presence_dynamics.get("_resource_daimoi_active_ids") == []
         first = simulation["points"][0]
         assert "x" in first and "y" in first and "size" in first
 
@@ -2493,20 +5394,18 @@ def test_runtime_catalog_refresh_is_not_blocked_by_inbox_sync(
                 "is_empty": True,
             }
 
-        def _fast_collect(
-            part_root: Path,
-            vault_root: Path,
-            *,
-            sync_inbox: bool,
-            include_pi_archive: bool,
-            include_world_log: bool,
-        ) -> dict[str, Any]:
-            assert sync_inbox is False
-            assert include_pi_archive is False
-            assert include_world_log is False
+        monkeypatch.setattr(server_module, "sync_eta_mu_inbox", _slow_sync)
+        monkeypatch.setattr(server_module, "_RUNTIME_ETA_MU_SYNC_SECONDS", 0.0)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+
+        # Monkeypatch the instance method since __new__ bypasses __init__
+        # and leaves part_root/vault_root uninitialized.
+        def _fast_collect_for_handler() -> dict[str, Any]:
             return {
                 "generated_at": "2026-02-18T00:00:00+00:00",
-                "part_roots": [str(part_root), str(vault_root)],
+                "part_roots": [str(part), str(vault)],
                 "counts": {"audio": 1},
                 "items": [
                     {
@@ -2526,12 +5425,7 @@ def test_runtime_catalog_refresh_is_not_blocked_by_inbox_sync(
                 },
             }
 
-        monkeypatch.setattr(server_module, "sync_eta_mu_inbox", _slow_sync)
-        monkeypatch.setattr(server_module, "collect_catalog", _fast_collect)
-        monkeypatch.setattr(server_module, "_RUNTIME_ETA_MU_SYNC_SECONDS", 0.0)
-
-        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
-        handler = handler_cls.__new__(handler_cls)
+        monkeypatch.setattr(handler, "_collect_catalog_fast", _fast_collect_for_handler)
 
         started = time.monotonic()
         handler._schedule_runtime_catalog_refresh()
@@ -2547,8 +5441,10 @@ def test_runtime_catalog_refresh_is_not_blocked_by_inbox_sync(
             time.sleep(0.02)
 
         elapsed = time.monotonic() - started
-        assert isinstance(cached_catalog, dict)
-        assert elapsed < 0.5
+        assert isinstance(cached_catalog, dict), (
+            f"catalog not set within {elapsed:.2f}s"
+        )
+        assert elapsed < 0.5, f"expected fast catalog refresh, got {elapsed:.2f}s"
         assert len(cached_catalog.get("items", [])) == 1
 
 
@@ -2658,6 +5554,260 @@ def test_runtime_catalog_base_warms_cache_inline_when_empty(
             cached = server_module._RUNTIME_CATALOG_CACHE.get("catalog")
         assert isinstance(cached, dict)
         assert len(cached.get("items", [])) == 1
+
+
+def test_collect_catalog_fast_disables_embedding_state(monkeypatch: Any) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+
+        captured: dict[str, Any] = {}
+
+        def _fake_collect_catalog(
+            part_root: Path,
+            vault_root: Path,
+            **kwargs: Any,
+        ) -> dict[str, Any]:
+            captured["part_root"] = part_root
+            captured["vault_root"] = vault_root
+            captured["kwargs"] = dict(kwargs)
+            return {
+                "generated_at": "2026-03-02T07:30:00+00:00",
+                "counts": {},
+                "items": [],
+            }
+
+        monkeypatch.setattr(server_module, "collect_catalog", _fake_collect_catalog)
+
+        payload = handler._collect_catalog_fast()
+        assert payload.get("generated_at") == "2026-03-02T07:30:00+00:00"
+
+        kwargs = captured.get("kwargs", {})
+        assert kwargs.get("sync_inbox") is False
+        assert kwargs.get("include_pi_archive") is False
+        assert kwargs.get("include_world_log") is False
+        assert kwargs.get("include_embedding_state") is False
+
+
+def test_runtime_catalog_base_defers_collect_when_inline_disabled(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        with server_module._RUNTIME_CATALOG_CACHE_LOCK:
+            server_module._RUNTIME_CATALOG_CACHE["catalog"] = None
+            server_module._RUNTIME_CATALOG_CACHE["refreshed_monotonic"] = 0.0
+            server_module._RUNTIME_CATALOG_CACHE["last_error"] = ""
+            server_module._RUNTIME_CATALOG_CACHE["inbox_sync_monotonic"] = 0.0
+            server_module._RUNTIME_CATALOG_CACHE["inbox_sync_snapshot"] = None
+            server_module._RUNTIME_CATALOG_CACHE["inbox_sync_error"] = ""
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+
+        isolated_calls: list[int] = []
+        refresh_calls: list[int] = []
+
+        def _isolated_should_not_run(*_args: Any, **_kwargs: Any) -> tuple[None, str]:
+            isolated_calls.append(1)
+            return None, "catalog_subprocess_disabled"
+
+        monkeypatch.setattr(
+            server_module,
+            "_collect_runtime_catalog_isolated",
+            _isolated_should_not_run,
+        )
+        monkeypatch.setattr(
+            handler,
+            "_schedule_runtime_catalog_refresh",
+            lambda: refresh_calls.append(1),
+        )
+
+        catalog = handler._runtime_catalog_base(allow_inline_collect=False)
+        assert catalog.get("runtime_state") == "fallback"
+        assert isolated_calls == []
+        assert len(refresh_calls) == 1
+
+        with server_module._RUNTIME_CATALOG_CACHE_LOCK:
+            cached = server_module._RUNTIME_CATALOG_CACHE.get("catalog")
+            last_error = str(
+                server_module._RUNTIME_CATALOG_CACHE.get("last_error") or ""
+            )
+        assert isinstance(cached, dict)
+        assert cached.get("runtime_state") == "fallback"
+        assert last_error == "catalog_bootstrap_deferred"
+
+
+def test_runtime_catalog_base_strict_collect_refreshes_cached_fallback(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        with server_module._RUNTIME_CATALOG_CACHE_LOCK:
+            server_module._RUNTIME_CATALOG_CACHE["catalog"] = {
+                "runtime_state": "fallback",
+                "generated_at": "2026-03-03T00:00:00+00:00",
+                "items": [],
+                "counts": {},
+            }
+            server_module._RUNTIME_CATALOG_CACHE["refreshed_monotonic"] = (
+                time.monotonic()
+            )
+            server_module._RUNTIME_CATALOG_CACHE["last_error"] = (
+                "catalog_bootstrap_deferred"
+            )
+            server_module._RUNTIME_CATALOG_CACHE["inbox_sync_monotonic"] = 0.0
+            server_module._RUNTIME_CATALOG_CACHE["inbox_sync_snapshot"] = None
+            server_module._RUNTIME_CATALOG_CACHE["inbox_sync_error"] = ""
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+
+        isolated_calls: list[int] = []
+        refreshed_catalog = {
+            "generated_at": "2026-03-03T00:00:10+00:00",
+            "runtime_state": "ready",
+            "items": [{"name": "ready.wav", "rel_path": "artifacts/audio/ready.wav"}],
+            "counts": {"audio": 1},
+        }
+
+        monkeypatch.setattr(
+            server_module,
+            "_collect_runtime_catalog_isolated",
+            lambda *_args, **_kwargs: (
+                isolated_calls.append(1) or dict(refreshed_catalog),
+                "",
+            ),
+        )
+        monkeypatch.setattr(
+            handler,
+            "_collect_catalog_fast",
+            lambda: (_ for _ in ()).throw(
+                RuntimeError("collect_catalog_fast_unexpected")
+            ),
+        )
+        monkeypatch.setattr(handler, "_schedule_runtime_inbox_sync", lambda: None)
+
+        with server_module._RUNTIME_CATALOG_CACHE_LOCK:
+            server_module._RUNTIME_CATALOG_CACHE["catalog"] = {
+                "runtime_state": "fallback",
+                "generated_at": "2026-03-03T00:00:00+00:00",
+                "items": [],
+                "counts": {},
+            }
+            server_module._RUNTIME_CATALOG_CACHE["refreshed_monotonic"] = (
+                time.monotonic()
+            )
+
+        catalog = handler._runtime_catalog_base(
+            allow_inline_collect=True,
+            strict_collect=True,
+        )
+
+        assert isolated_calls == [1]
+        assert catalog.get("runtime_state") == "ready"
+        assert len(catalog.get("items", [])) == 1
+        with server_module._RUNTIME_CATALOG_CACHE_LOCK:
+            cached = server_module._RUNTIME_CATALOG_CACHE.get("catalog")
+        assert isinstance(cached, dict)
+        assert cached.get("runtime_state") == "ready"
+
+
+def test_runtime_catalog_can_skip_runtime_fields_and_projection(
+    monkeypatch: Any,
+) -> None:
+    from code.world_web import server as server_module
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = server_module.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+
+        resource_calls: list[int] = []
+        influence_calls: list[int] = []
+
+        monkeypatch.setattr(
+            handler,
+            "_runtime_catalog_base",
+            lambda **_kwargs: {
+                "generated_at": "2026-03-02T06:52:00+00:00",
+                "counts": {},
+                "items": [],
+            },
+        )
+        monkeypatch.setattr(
+            server_module,
+            "_resource_monitor_snapshot",
+            lambda **_kwargs: resource_calls.append(1) or {},
+        )
+        monkeypatch.setattr(
+            server_module._INFLUENCE_TRACKER,
+            "record_resource_heartbeat",
+            lambda *_args, **_kwargs: influence_calls.append(1),
+        )
+        monkeypatch.setattr(
+            server_module._INFLUENCE_TRACKER,
+            "snapshot",
+            lambda **_kwargs: influence_calls.append(1) or {},
+        )
+        monkeypatch.setattr(
+            handler,
+            "_muse_manager",
+            lambda: (_ for _ in ()).throw(RuntimeError("muse_manager_unexpected")),
+        )
+
+        (
+            catalog,
+            queue_snapshot,
+            council_snapshot,
+            influence_snapshot,
+            resource_snapshot,
+        ) = handler._runtime_catalog(
+            perspective="hybrid",
+            include_projection=False,
+            include_runtime_fields=False,
+            allow_inline_collect=False,
+        )
+
+        assert isinstance(queue_snapshot, dict)
+        assert isinstance(council_snapshot, dict)
+        assert influence_snapshot == {}
+        assert resource_snapshot == {}
+        assert "presence_runtime" not in catalog
+        assert "muse_runtime" not in catalog
+        assert resource_calls == []
+        assert influence_calls == []
 
 
 def test_runtime_catalog_fallback_bootstraps_particles_from_manifest() -> None:
@@ -3266,3 +6416,160 @@ def test_study_snapshot_history_limit_returns_latest_first() -> None:
         rows = world_web_module._load_study_snapshot_events(root, limit=1)
         assert len(rows) == 1
         assert rows[0].get("id") == "study:b"
+
+
+def test_api_simulation_presets_route_uses_management_controller_payload(
+    monkeypatch: Any,
+) -> None:
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = world_web_server.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = "/api/simulation/presets"
+
+        sent: dict[str, Any] = {}
+
+        monkeypatch.setattr(
+            world_web_server.simulation_management_controller_module,
+            "simulation_presets_get_response",
+            lambda **_kwargs: ({"presets": [{"id": "fast"}]}, 200),
+        )
+        monkeypatch.setattr(
+            handler,
+            "_send_json",
+            lambda payload, status=200: sent.update(
+                {"payload": payload, "status": status}
+            ),
+        )
+
+        handler.do_GET()
+
+        assert sent.get("status") == 200
+        assert sent.get("payload") == {"presets": [{"id": "fast"}]}
+
+
+def test_api_simulation_instances_route_uses_management_controller_payload(
+    monkeypatch: Any,
+) -> None:
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = world_web_server.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = "/api/simulation/instances"
+
+        sent: dict[str, Any] = {}
+
+        monkeypatch.setattr(
+            world_web_server.simulation_management_controller_module,
+            "simulation_instances_list_response",
+            lambda **_kwargs: ([{"id": "sim-1"}], 200),
+        )
+
+        def _capture_send_bytes(
+            body: bytes,
+            content_type: str,
+            status: int = 200,
+            *,
+            extra_headers: dict[str, str] | None = None,
+        ) -> None:
+            sent.update(
+                {
+                    "body": body,
+                    "content_type": content_type,
+                    "status": status,
+                    "extra_headers": dict(extra_headers or {}),
+                }
+            )
+
+        monkeypatch.setattr(handler, "_send_bytes", _capture_send_bytes)
+
+        handler.do_GET()
+
+        assert sent.get("status") == 200
+        assert sent.get("content_type") == "application/json; charset=utf-8"
+        assert json.loads(bytes(sent.get("body", b""))) == [{"id": "sim-1"}]
+
+
+def test_api_simulation_instances_spawn_route_uses_management_controller_payload(
+    monkeypatch: Any,
+) -> None:
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = world_web_server.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = "/api/simulation/instances/spawn"
+
+        sent: dict[str, Any] = {}
+
+        monkeypatch.setattr(handler, "_read_json_body", lambda: {"preset_id": "fast"})
+        monkeypatch.setattr(
+            world_web_server.simulation_management_controller_module,
+            "simulation_instances_spawn_response",
+            lambda **_kwargs: ({"ok": True, "id": "sim-new"}, 200),
+        )
+        monkeypatch.setattr(
+            handler,
+            "_send_json",
+            lambda payload, status=200: sent.update(
+                {"payload": payload, "status": status}
+            ),
+        )
+
+        handler.do_POST()
+
+        assert sent.get("status") == 200
+        assert sent.get("payload") == {"ok": True, "id": "sim-new"}
+
+
+def test_api_simulation_instance_delete_route_uses_management_controller_payload(
+    monkeypatch: Any,
+) -> None:
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        part = root / "mounted_part"
+        vault = root / "vault"
+        part.mkdir(parents=True)
+        vault.mkdir(parents=True)
+        _create_fixture_tree(part)
+
+        handler_cls = world_web_server.make_handler(part, vault, "127.0.0.1", 8787)
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = "/api/simulation/instances/sim-1"
+
+        sent: dict[str, Any] = {}
+
+        monkeypatch.setattr(
+            world_web_server.simulation_management_controller_module,
+            "simulation_instance_delete_response",
+            lambda **_kwargs: ({"ok": True}, 200),
+        )
+        monkeypatch.setattr(
+            handler,
+            "_send_json",
+            lambda payload, status=200: sent.update(
+                {"payload": payload, "status": status}
+            ),
+        )
+
+        handler.do_DELETE()
+
+        assert sent.get("status") == 200
+        assert sent.get("payload") == {"ok": True}

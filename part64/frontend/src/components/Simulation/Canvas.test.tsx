@@ -35,6 +35,37 @@ function createSimulationFixture(): SimulationState {
           resource_daimoi: true,
         },
       ],
+      daimoi_collision_event_seq: 2,
+      daimoi_collision_events: [
+        {
+          event_id: "daimoi-collision:1:emitted:particle-1",
+          seq: 1,
+          kind: "emitted",
+          ts: "2026-03-03T18:00:00Z",
+          particle_id: "particle-1",
+          presence_id: "witness_thread",
+          owner_presence_id: "witness_thread",
+          target_presence_id: "presence.gates.of.truth",
+          resource_type: "cpu",
+          x: 0.4,
+          y: 0.5,
+          target_x: 0.62,
+          target_y: 0.38,
+        },
+        {
+          event_id: "daimoi-collision:2:absorbed:particle-1",
+          seq: 2,
+          kind: "absorbed",
+          ts: "2026-03-03T18:00:01Z",
+          particle_id: "particle-1",
+          presence_id: "witness_thread",
+          owner_presence_id: "witness_thread",
+          target_presence_id: "presence.gates.of.truth",
+          resource_type: "cpu",
+          x: 0.62,
+          y: 0.38,
+        },
+      ],
       compute_jobs: [
         {
           id: "job-gpu",
@@ -501,6 +532,8 @@ describe("SimulationCanvas", () => {
     expect(screen.getByText(/chaos butterflies \(1\)/)).toBeTruthy();
     expect(screen.getByText(/stream signals: transfer \(1\) · resource \(1\)/)).toBeTruthy();
     expect(screen.getByText(/economy: packets 4 · actions 2 · blocked 1/)).toBeTruthy();
+    expect(screen.getByText(/daimoi collisions: emit 1 · absorb 1 · events 2/)).toBeTruthy();
+    expect(screen.getByText(/latest collision event: absorbed/)).toBeTruthy();
   });
 
   it("opens worldscreen via overlay API, switches modes, and closes on escape", async () => {

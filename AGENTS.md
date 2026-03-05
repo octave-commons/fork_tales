@@ -140,6 +140,14 @@ Observed project conventions in `part64/code`:
 - Add comments only for non-obvious logic.
 - Preserve append-only artifacts and logs where expected.
 
+### Server file freeze policy
+
+- Treat `part64/code/world_web/server.py` as a migration-only shell.
+- Do not add new business logic, helpers, feature flags, or payload shaping logic directly to `server.py`.
+- If a change appears to require `server.py` edits, extract the full implementation into a new `part64/code/world_web/*_utils.py` (or other focused module) first, then keep only thin delegation wiring in `server.py`.
+- Allowable `server.py` changes are limited to imports, call-site wiring, and removal of moved code.
+- Prefer reducing `server.py` size every touch; never expand its scope.
+
 ## 10) Receipts and traceability
 
 - If you modify runtime behavior, tests, or contract-sensitive paths, append a receipt to `receipts.log`.

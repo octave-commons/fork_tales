@@ -1051,6 +1051,7 @@ def _ollama_generate_text_remote(
     prompt: str,
     model: str | None = None,
     timeout_s: float | None = None,
+    max_tokens: int | None = None,
 ) -> tuple[str | None, str]:
     prompt_text = str(prompt or "").strip()
     chosen_model = str(
@@ -1079,13 +1080,16 @@ def _ollama_generate_text_remote(
         request_timeout = 8.0
     request_timeout = max(0.2, min(120.0, request_timeout))
 
-    try:
-        max_tokens = int(
-            float(str(os.getenv("TEXT_GENERATION_MAX_TOKENS", "192") or "192"))
-        )
-    except (TypeError, ValueError):
-        max_tokens = 192
-    max_tokens = max(16, min(4096, max_tokens))
+    if max_tokens is None:
+        try:
+            token_limit = int(
+                float(str(os.getenv("TEXT_GENERATION_MAX_TOKENS", "192") or "192"))
+            )
+        except (TypeError, ValueError):
+            token_limit = 192
+    else:
+        token_limit = int(max_tokens)
+    token_limit = max(16, min(4096, token_limit))
 
     try:
         temperature = float(
@@ -1106,7 +1110,7 @@ def _ollama_generate_text_remote(
         "messages": [{"role": "user", "content": prompt_text}],
         "temperature": temperature,
         "top_p": top_p,
-        "max_tokens": max_tokens,
+        "max_tokens": token_limit,
         "stream": False,
     }
 
@@ -1555,6 +1559,24 @@ def _normalize_presence_id(raw_presence_id: str) -> str:
     return raw
 
 
+def _ad_hoc_presence_entity(requested_presence_id: str) -> dict[str, Any]:
+    presence_id = _normalize_presence_id(requested_presence_id)
+    if not presence_id:
+        presence_id = "witness_thread"
+    words = [
+        token for token in re.split(r"[_\-\s]+", str(presence_id).strip()) if token
+    ]
+    en_label = " ".join(token[:1].upper() + token[1:] for token in words).strip()
+    if not en_label:
+        en_label = "Witness Thread"
+    return {
+        "id": presence_id,
+        "en": en_label,
+        "ja": "",
+        "type": "network",
+    }
+
+
 def _resolve_presence_entity(requested_presence_id: str) -> tuple[str, dict[str, Any]]:
     presence_id = _normalize_presence_id(requested_presence_id)
     entity = next(
@@ -1595,14 +1617,16 @@ def _select_chat_entities(
     if presence_ids:
         for item in presence_ids:
             key = _normalize_presence_id(str(item))
-            if key in lookup:
-                entity = lookup[key]
-                entity_id = str(entity.get("id", "")).strip()
-                if entity_id and entity_id in selected_ids:
-                    continue
-                selected.append(entity)
-                if entity_id:
-                    selected_ids.add(entity_id)
+            if not key:
+                continue
+            entity = lookup.get(key)
+            if not isinstance(entity, dict):
+                entity = _ad_hoc_presence_entity(key)
+            entity_id = str(entity.get("id", key)).strip() or key
+            if entity_id in selected_ids:
+                continue
+            selected.append(entity)
+            selected_ids.add(entity_id)
         if selected:
             return selected[:3]
 

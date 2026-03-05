@@ -109,17 +109,19 @@ describe("CoreControlPanel", () => {
     const props = makeProps();
     render(<CoreControlPanel {...props} />);
 
+    fireEvent.click(screen.getByRole("button", { name: "status" }));
     expect(screen.getByText(/chat-lens:/i)).toBeTruthy();
     expect(screen.getByText(/last:/i)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Autopilot On" }));
     fireEvent.click(screen.getByRole("button", { name: "Flight Armed" }));
     fireEvent.click(screen.getByRole("button", { name: "Orbit Off" }));
+    fireEvent.click(screen.getByRole("button", { name: "show sim" }));
     fireEvent.click(screen.getByRole("button", { name: "thrust-" }));
     fireEvent.click(screen.getByRole("button", { name: "thrust+" }));
     fireEvent.click(screen.getByRole("button", { name: "orbit-" }));
     fireEvent.click(screen.getByRole("button", { name: "orbit+" }));
-    fireEvent.click(screen.getByRole("button", { name: "reset" }));
+    fireEvent.click(screen.getByRole("button", { name: "reset camera" }));
     fireEvent.click(screen.getByRole("button", { name: "runtime config" }));
 
     fireEvent.change(screen.getByTitle("simulation-core layer preset"), {

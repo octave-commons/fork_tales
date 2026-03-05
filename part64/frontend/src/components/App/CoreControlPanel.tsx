@@ -94,6 +94,13 @@ interface Props {
 
 const INTERFACE_OPACITY_MIN = 0.72;
 const INTERFACE_OPACITY_MAX = 1;
+const SIDEBAR_OVERLAY_PRESET_IDS = new Set<OverlayViewId>([
+  "omni",
+  "presence",
+  "file-impact",
+  "file-graph",
+  "true-graph",
+]);
 
 export function CoreControlPanel({
   projectionPerspective,
@@ -136,53 +143,68 @@ export function CoreControlPanel({
   onSetMouseDaimonTuning,
   onOpenRuntimeConfig,
 }: Props) {
+  const [showStatus, setShowStatus] = useState(false);
   const [showVisualDials, setShowVisualDials] = useState(false);
   const [showSimulationControls, setShowSimulationControls] = useState(false);
   const interfaceTransparencyPercent = Math.round((1 - interfaceOpacity) * 100);
 
   return (
     <div className="grid gap-2">
-      <div className="text-[10px] text-muted space-y-0.5 font-mono opacity-70">
-        <div className="flex flex-wrap gap-x-3 gap-y-1">
-          <span>perspective: <code>{projectionPerspective}</code></span>
-          <span>autopilot: <code>{autopilotEnabled ? autopilotStatus : "stopped"}</code></span>
-          <span className="opacity-80">note: <code>{autopilotSummary}</code></span>
-          <span>interface: <code>{Math.round(interfaceOpacity * 100)}%</code> opacity</span>
-        </div>
-        <div className="flex flex-wrap gap-x-3 gap-y-1">
-          <span>
-            core-camera: <code>{coreCameraZoom.toFixed(2)}x</code> / pitch
-            <code>{coreCameraPitch.toFixed(0)}deg</code> / yaw
-            <code>{coreCameraYaw.toFixed(0)}deg</code> / xyz
-            <code>{coreRenderedCameraPosition.x.toFixed(0)}</code>,
-            <code>{coreRenderedCameraPosition.y.toFixed(0)}</code>,
-            <code>{coreRenderedCameraPosition.z.toFixed(0)}</code>
-          </span>
-          <span>
-            flight: <code>{coreFlightEnabled ? "armed" : "paused"}</code> speed
-            <code>{coreFlightSpeed.toFixed(2)}x</code>
-          </span>
-          <span>
-            orbit: <code>{coreOrbitEnabled ? "active" : "off"}</code> speed
-            <code>{coreOrbitSpeed.toFixed(2)}x</code>
-          </span>
-          <span>
-            particles: <code>{Math.round(coreSimulationTuning.particleDensity * 100)}%</code> scale
-            <code>{coreSimulationTuning.particleScale.toFixed(2)}x</code> motion
-            <code>{coreSimulationTuning.motionSpeed.toFixed(2)}x</code> mouse
-            <code>{coreSimulationTuning.mouseInfluence.toFixed(2)}x</code> depth
-            <code>{coreSimulationTuning.layerDepth.toFixed(2)}x</code> node smooth
-            <code>{coreSimulationTuning.graphNodeSmoothness.toFixed(2)}x</code> node step
-            <code>{coreSimulationTuning.graphNodeStepScale.toFixed(2)}x</code>
-          </span>
-          {activeChatLens ? (
-            <span>chat-lens: <code>{activeChatLens.presence}</code> ({activeChatLens.status})</span>
-          ) : null}
-          {latestAutopilotEvent ? (
-            <span>last: <code>{latestAutopilotEvent.actionId}</code> ({latestAutopilotEvent.result})</span>
-          ) : null}
-        </div>
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[rgba(119,181,221,0.28)] bg-[rgba(8,19,30,0.28)] px-2 py-1.5">
+        <p className="text-[10px] text-[#b9d9ee] font-mono">
+          perspective <code>{projectionPerspective}</code> · autopilot <code>{autopilotEnabled ? autopilotStatus : "stopped"}</code>
+        </p>
+        <button
+          type="button"
+          onClick={() => setShowStatus((prev) => !prev)}
+          className="border rounded px-2 py-0.5 text-[10px] font-semibold transition-colors bg-[rgba(11,24,36,0.24)] text-[#cbe9ff] border-[rgba(120,178,221,0.32)]"
+        >
+          {showStatus ? "hide status" : "status"}
+        </button>
       </div>
+
+      {showStatus ? (
+        <div className="text-[10px] text-muted space-y-0.5 font-mono opacity-70">
+          <div className="flex flex-wrap gap-x-3 gap-y-1">
+            <span className="opacity-80">note: <code>{autopilotSummary}</code></span>
+            <span>interface: <code>{Math.round(interfaceOpacity * 100)}%</code> opacity</span>
+            <span>
+              core-camera: <code>{coreCameraZoom.toFixed(2)}x</code> / pitch
+              <code>{coreCameraPitch.toFixed(0)}deg</code> / yaw
+              <code>{coreCameraYaw.toFixed(0)}deg</code> / xyz
+              <code>{coreRenderedCameraPosition.x.toFixed(0)}</code>,
+              <code>{coreRenderedCameraPosition.y.toFixed(0)}</code>,
+              <code>{coreRenderedCameraPosition.z.toFixed(0)}</code>
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-x-3 gap-y-1">
+            <span>
+              flight: <code>{coreFlightEnabled ? "armed" : "paused"}</code> speed
+              <code>{coreFlightSpeed.toFixed(2)}x</code>
+            </span>
+            <span>
+              orbit: <code>{coreOrbitEnabled ? "active" : "off"}</code> speed
+              <code>{coreOrbitSpeed.toFixed(2)}x</code>
+            </span>
+            <span>
+              particles: <code>{Math.round(coreSimulationTuning.particleDensity * 100)}%</code> scale
+              <code>{coreSimulationTuning.particleScale.toFixed(2)}x</code> motion
+              <code>{coreSimulationTuning.motionSpeed.toFixed(2)}x</code> mouse
+              <code>{coreSimulationTuning.mouseInfluence.toFixed(2)}x</code> depth
+              <code>{coreSimulationTuning.layerDepth.toFixed(2)}x</code> node smooth
+              <code>{coreSimulationTuning.graphNodeSmoothness.toFixed(2)}x</code> node step
+              <code>{coreSimulationTuning.graphNodeStepScale.toFixed(2)}x</code>
+            </span>
+            {activeChatLens ? (
+              <span>chat-lens: <code>{activeChatLens.presence}</code> ({activeChatLens.status})</span>
+            ) : null}
+            {latestAutopilotEvent ? (
+              <span>last: <code>{latestAutopilotEvent.actionId}</code> ({latestAutopilotEvent.result})</span>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
@@ -220,34 +242,18 @@ export function CoreControlPanel({
           {coreOrbitEnabled ? "Orbit On" : "Orbit Off"}
         </button>
 
-        <div className="flex items-center gap-1 border rounded px-1 py-0.5 text-[10px] bg-[rgba(10,22,34,0.22)] border-[rgba(120,178,221,0.28)]">
-          <button type="button" onClick={() => onNudgeCoreFlightSpeed(-0.12)} className="px-1 text-[#bdd9f2]">thrust-</button>
-          <button type="button" onClick={() => onNudgeCoreFlightSpeed(0.12)} className="px-1 text-[#9ed6f8]">thrust+</button>
-        </div>
-
-        <div className="flex items-center gap-1 border rounded px-1 py-0.5 text-[10px] bg-[rgba(10,22,34,0.22)] border-[rgba(120,178,221,0.28)]">
-          <button type="button" onClick={() => onNudgeCoreOrbitSpeed(-0.08)} className="px-1 text-[#bdd9f2]">orbit-</button>
-          <button type="button" onClick={() => onNudgeCoreOrbitSpeed(0.08)} className="px-1 text-[#9ed6f8]">orbit+</button>
-        </div>
-
         <select
           value={coreOverlayView}
           onChange={(event) => onApplyCoreLayerPreset(event.target.value as OverlayViewId)}
           className="border rounded px-2 py-0.5 text-[10px] font-semibold bg-[rgba(10,22,34,0.24)] text-[#9dd5f8] border-[rgba(120,178,221,0.32)]"
           title="simulation-core layer preset"
         >
-          {OVERLAY_VIEW_OPTIONS.map((option) => (
+          {OVERLAY_VIEW_OPTIONS.filter((option) => SIDEBAR_OVERLAY_PRESET_IDS.has(option.id)).map((option) => (
             <option key={option.id} value={option.id}>
               core:{option.label}
             </option>
           ))}
         </select>
-
-        <div className="flex items-center gap-1 border rounded px-1 py-0.5 text-[10px] bg-[rgba(10,22,34,0.22)] border-[rgba(120,178,221,0.28)]">
-          <button type="button" onClick={() => onNudgeCoreZoom(-0.08)} className="px-1 text-[#9ed6f8]">-</button>
-          <button type="button" onClick={() => onNudgeCoreZoom(0.08)} className="px-1 text-[#9ed6f8]">+</button>
-          <button type="button" onClick={onResetCoreCamera} className="px-1 text-[#f3d9b8]">reset</button>
-        </div>
 
         <button
           type="button"
@@ -437,10 +443,26 @@ export function CoreControlPanel({
                 </button>
               </div>
 
-              <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                <label className="grid gap-1">
-                  <span className="text-[10px] text-[#cde4f8]">particles <code>{Math.round(coreSimulationTuning.particleDensity * 100)}%</code></span>
-                  <input
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+              <div className="sm:col-span-2 flex flex-wrap items-center gap-2 rounded border border-[rgba(116,176,216,0.24)] bg-[rgba(6,14,22,0.35)] px-2 py-1.5">
+                <div className="flex items-center gap-1 border rounded px-1 py-0.5 text-[10px] bg-[rgba(10,22,34,0.22)] border-[rgba(120,178,221,0.28)]">
+                  <button type="button" onClick={() => onNudgeCoreFlightSpeed(-0.12)} className="px-1 text-[#bdd9f2]">thrust-</button>
+                  <button type="button" onClick={() => onNudgeCoreFlightSpeed(0.12)} className="px-1 text-[#9ed6f8]">thrust+</button>
+                </div>
+                <div className="flex items-center gap-1 border rounded px-1 py-0.5 text-[10px] bg-[rgba(10,22,34,0.22)] border-[rgba(120,178,221,0.28)]">
+                  <button type="button" onClick={() => onNudgeCoreOrbitSpeed(-0.08)} className="px-1 text-[#bdd9f2]">orbit-</button>
+                  <button type="button" onClick={() => onNudgeCoreOrbitSpeed(0.08)} className="px-1 text-[#9ed6f8]">orbit+</button>
+                </div>
+                <div className="flex items-center gap-1 border rounded px-1 py-0.5 text-[10px] bg-[rgba(10,22,34,0.22)] border-[rgba(120,178,221,0.28)]">
+                  <button type="button" onClick={() => onNudgeCoreZoom(-0.08)} className="px-1 text-[#9ed6f8]">zoom-</button>
+                  <button type="button" onClick={() => onNudgeCoreZoom(0.08)} className="px-1 text-[#9ed6f8]">zoom+</button>
+                  <button type="button" onClick={onResetCoreCamera} className="px-1 text-[#f3d9b8]">reset camera</button>
+                </div>
+              </div>
+
+              <label className="grid gap-1">
+                <span className="text-[10px] text-[#cde4f8]">particles <code>{Math.round(coreSimulationTuning.particleDensity * 100)}%</code></span>
+                <input
                     type="range"
                     min={CORE_SIM_PARTICLE_DENSITY_MIN}
                     max={CORE_SIM_PARTICLE_DENSITY_MAX}

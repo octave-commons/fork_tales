@@ -649,7 +649,7 @@ export function ChatPanel({
       setMessages((prev) => [
         ...prev,
         {
-          role: "assistant",
+          role: "system",
           text: askSystemMessage(normalized),
           meta: {
             channel: "command",
