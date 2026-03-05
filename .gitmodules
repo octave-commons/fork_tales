@@ -1,0 +1,4 @@
+[submodule "narrative_audio"]
+	path = narrative_audio
+	url = https://github.com/riatzukiza/gates-of-truth-audio.git
+	branch = main
