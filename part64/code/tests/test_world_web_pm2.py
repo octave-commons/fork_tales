@@ -1021,10 +1021,12 @@ def test_threat_radar_panel_and_report_route_contract_present() -> None:
         / "ThreatRadarPanel.tsx"
     )
     server_path = part_root / "code" / "world_web" / "server.py"
+    muse_controller_path = part_root / "code" / "world_web" / "muse_mvc_controller.py"
 
     panel_builder_source = panel_builder_path.read_text("utf-8")
     panel_source = panel_path.read_text("utf-8")
     server_source = server_path.read_text("utf-8")
+    muse_controller_source = muse_controller_path.read_text("utf-8")
 
     # Panel IDs were renamed to muse_radar.witness_thread and muse_radar.chaos
     # Check for the new panel IDs and the ThreatRadarPanel component
@@ -1033,13 +1035,18 @@ def test_threat_radar_panel_and_report_route_contract_present() -> None:
     assert "<ThreatRadarPanel" in panel_builder_source
     assert "/api/muse/threat-radar/report" in panel_source
     assert "/api/github/conversation" in panel_source
-    assert 'if parsed.path == "/api/muse/threat-radar/report":' in server_source
-    assert '"record": "eta-mu.muse-threat-radar-report.v1"' in server_source
-    assert 'radar in {"github", "local"}' in server_source
-    assert 'radar in {"global", "hormuz"}' in server_source
-    assert 'query_name = "hormuz_threat_radar"' in server_source
-    assert 'query_name = "geopolitical_news_radar"' in server_source
-    assert 'query_name = "cyber_risk_radar"' in server_source
+    assert "handle_muse_threat_report_get_route" in server_source
+    assert (
+        'if parsed_path != "/api/muse/threat-radar/report":' in muse_controller_source
+    )
+    assert '"record": "eta-mu.muse-threat-radar-report.v1"' in muse_controller_source
+    assert 'if radar in {"github", "local"}:' in muse_controller_source
+    assert 'if radar in {"global", "hormuz"}:' in muse_controller_source
+    assert 'query_name = "hormuz_threat_radar"' in muse_controller_source
+    assert 'query_name = "geopolitical_news_radar"' in muse_controller_source
+    assert 'query_name = "cyber_risk_radar"' in muse_controller_source
+    assert "muse_threat_radar_utils_module.muse_threat_radar_tick" in server_source
+    assert "muse_runtime_backend_utils_module.muse_tool_callback" in server_source
 
 
 def test_muse_tool_callback_graph_query_cyber_regime_state_dispatches_args(

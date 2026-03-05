@@ -58,6 +58,7 @@ type ChatChannel = "ledger" | "llm";
 
 const AUTOPILOT_OPTION_LIMIT = 5;
 const RUNTIME_REFRESH_MS = 6500;
+const MAX_MESSAGES_PER_MUSE = 240;
 
 const FALLBACK_MUSES: WorldPresence[] = [
   {
@@ -277,7 +278,7 @@ export function ChatPanel({
   activeChatSession,
   minimalMuseView = false,
 }: Props) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messagesByMuse, setMessagesByMuse] = useState<Record<string, ChatMessage[]>>({});
   const [input, setInput] = useState("");
   const [pendingAsk, setPendingAsk] = useState<AskPayload | null>(null);
   const [chatChannel, setChatChannel] = useState<ChatChannel>("ledger");
@@ -312,6 +313,26 @@ export function ChatPanel({
     }
     return musePresenceOptions[0]?.id ?? "witness_thread";
   }, [fixedMusePresenceId, musePresenceOptions, selectedMuseSeed]);
+
+  const activeMessageMuseId = useMemo(() => {
+    const normalized = normalizeMusePresenceId(resolvedMusePresenceId);
+    return normalized || "witness_thread";
+  }, [resolvedMusePresenceId]);
+
+  const messages = messagesByMuse[activeMessageMuseId] ?? [];
+
+  const appendMessageForMuse = useCallback((message: ChatMessage, musePresenceId: string) => {
+    const normalized = normalizeMusePresenceId(String(musePresenceId || ""));
+    const museKey = normalized || "witness_thread";
+    setMessagesByMuse((prev) => {
+      const current = Array.isArray(prev[museKey]) ? prev[museKey] : [];
+      const next = [...current, message].slice(-MAX_MESSAGES_PER_MUSE);
+      return {
+        ...prev,
+        [museKey]: next,
+      };
+    });
+  }, []);
 
   const activeMuse = useMemo(
     () =>
@@ -558,8 +579,7 @@ export function ChatPanel({
           : trimmed;
       onSend(outbound, routedPresenceId, liveWorkspaceContext);
 
-      setMessages((prev) => [
-        ...prev,
+      appendMessageForMuse(
         {
           role: "user",
           text: trimmed,
@@ -570,12 +590,22 @@ export function ChatPanel({
             presenceName: activeMuse?.en,
           },
         },
-      ]);
+        routedPresenceId,
+      );
       setInput("");
       setPendingAsk(null);
       return true;
     },
-    [activeMuse?.en, chatChannel, isThinking, liveWorkspaceContext, minimalMuseView, onSend, resolvedMusePresenceId],
+    [
+      activeMuse?.en,
+      appendMessageForMuse,
+      chatChannel,
+      isThinking,
+      liveWorkspaceContext,
+      minimalMuseView,
+      onSend,
+      resolvedMusePresenceId,
+    ],
   );
 
   const handleSend = () => {
@@ -621,18 +651,15 @@ export function ChatPanel({
         return;
       }
       const incomingPresenceId = normalizeMusePresenceId(String(customEvent.detail.meta?.presenceId ?? ""));
-      const currentPresenceId = normalizeMusePresenceId(resolvedMusePresenceId);
-      if (incomingPresenceId && incomingPresenceId !== currentPresenceId) {
-        return;
-      }
-      if (!incomingPresenceId && currentPresenceId !== "witness_thread") {
-        return;
-      }
-      setMessages((prev) => [...prev, customEvent.detail]);
+      const fallbackPresenceId = normalizeMusePresenceId(resolvedMusePresenceId) || "witness_thread";
+      appendMessageForMuse(
+        customEvent.detail,
+        incomingPresenceId || fallbackPresenceId,
+      );
     };
     window.addEventListener("chat-message", handler);
     return () => window.removeEventListener("chat-message", handler);
-  }, [resolvedMusePresenceId]);
+  }, [appendMessageForMuse, resolvedMusePresenceId]);
 
   useEffect(() => {
     const handler: EventListener = (event) => {
@@ -646,8 +673,7 @@ export function ChatPanel({
       }
 
       setPendingAsk(normalized);
-      setMessages((prev) => [
-        ...prev,
+      appendMessageForMuse(
         {
           role: "system",
           text: askSystemMessage(normalized),
@@ -658,7 +684,8 @@ export function ChatPanel({
             presenceName: activeMuse?.en,
           },
         },
-      ]);
+        resolvedMusePresenceId,
+      );
 
       window.requestAnimationFrame(() => {
         inputRef.current?.focus();
@@ -667,13 +694,13 @@ export function ChatPanel({
 
     window.addEventListener("autopilot:ask", handler);
     return () => window.removeEventListener("autopilot:ask", handler);
-  }, [activeMuse?.en, resolvedMusePresenceId]);
+  }, [activeMuse?.en, appendMessageForMuse, resolvedMusePresenceId]);
 
   if (minimalMuseView) {
     return (
       <div
         id="chat-panel"
-        className="space-y-3 rounded-xl border border-[rgba(102,217,239,0.36)] bg-[linear-gradient(165deg,rgba(10,16,24,0.94),rgba(14,12,21,0.9))] p-3"
+        className="flex h-full min-h-0 flex-col gap-2 overflow-hidden rounded-xl border border-[rgba(102,217,239,0.36)] bg-[linear-gradient(165deg,rgba(10,16,24,0.94),rgba(14,12,21,0.9))] p-2.5"
       >
         <div className="rounded-md border border-[rgba(102,217,239,0.24)] bg-[rgba(10,19,28,0.62)] px-3 py-2">
           <p className="text-sm font-semibold text-ink">{activeMuseLabel}</p>
@@ -682,9 +709,9 @@ export function ChatPanel({
           </p>
         </div>
 
-        <div className="rounded-md border border-[rgba(102,217,239,0.24)] bg-[rgba(11,20,29,0.64)] p-3">
+        <div className="flex min-h-0 flex-col rounded-md border border-[rgba(102,217,239,0.24)] bg-[rgba(11,20,29,0.64)] p-3">
           <p className="text-xs font-semibold text-[#d4ecff]">Nearby Nexus</p>
-          <div className="mt-2 grid gap-1.5 max-h-[190px] overflow-auto pr-1">
+          <div className="mt-2 grid gap-1.5 max-h-[150px] overflow-auto pr-1">
             {nearbyNexusRows.length <= 0 ? (
               <p className="text-xs text-muted">No nearby nexus rows for this muse.</p>
             ) : (
@@ -751,12 +778,12 @@ export function ChatPanel({
           )}
         </div>
 
-        <div className="rounded-lg border border-[var(--line)] bg-[rgba(16,20,20,0.74)] p-3">
+        <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-[var(--line)] bg-[rgba(16,20,20,0.74)] p-3">
           <p className="text-sm font-semibold text-ink">Muse Chat</p>
           <p className="text-[11px] text-muted mt-1">Messages route to `/api/muse/message` with pinned nexus context.</p>
           <div
             ref={scrollRef}
-            className="mt-2 border border-[var(--line)] rounded-lg bg-[rgba(31,32,29,0.86)] p-2 min-h-[130px] max-h-[260px] overflow-auto grid gap-2"
+            className="mt-2 flex-1 min-h-[118px] border border-[var(--line)] rounded-lg bg-[rgba(31,32,29,0.86)] p-2 max-h-[220px] overflow-auto grid gap-2"
           >
             {messages.map((msg, index) => {
               const chips: string[] = [];
@@ -808,7 +835,7 @@ export function ChatPanel({
               onChange={(event) => setInput(event.target.value)}
               placeholder={isThinking ? "Thinking... / 思考中..." : "Ask this muse..."}
               disabled={isThinking}
-              className="w-full min-h-[74px] max-h-[180px] resize-y border border-[var(--line)] rounded-lg p-2 font-inherit bg-[rgba(39,40,34,0.9)] text-ink disabled:opacity-50"
+              className="w-full min-h-[64px] max-h-[140px] resize-y border border-[var(--line)] rounded-lg p-2 font-inherit bg-[rgba(39,40,34,0.9)] text-ink disabled:opacity-50"
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();

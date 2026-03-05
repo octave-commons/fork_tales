@@ -177,6 +177,75 @@ def test_muse_dedupe_tool_events_and_sealed_compliance_drop() -> None:
     assert "muse.message.deduped" in kinds
 
 
+def test_muse_histories_and_context_remain_isolated_per_muse() -> None:
+    manager = _manager()
+
+    witness_one = manager.send_message(
+        muse_id="witness_thread",
+        text="witness-only marker alpha",
+        mode="deterministic",
+        token_budget=900,
+        idempotency_key="iso-w1",
+        graph_revision="graph:v-isolation",
+        surrounding_nodes=[],
+        tool_callback=None,
+        reply_builder=_reply_builder,
+        seed="seed-iso-w1",
+    )
+    chaos_one = manager.send_message(
+        muse_id="chaos",
+        text="chaos-only marker beta",
+        mode="deterministic",
+        token_budget=900,
+        idempotency_key="iso-c1",
+        graph_revision="graph:v-isolation",
+        surrounding_nodes=[],
+        tool_callback=None,
+        reply_builder=_reply_builder,
+        seed="seed-iso-c1",
+    )
+    witness_two = manager.send_message(
+        muse_id="witness_thread",
+        text="witness-second marker gamma",
+        mode="deterministic",
+        token_budget=900,
+        idempotency_key="iso-w2",
+        graph_revision="graph:v-isolation",
+        surrounding_nodes=[],
+        tool_callback=None,
+        reply_builder=_reply_builder,
+        seed="seed-iso-w2",
+    )
+
+    assert witness_one["ok"] is True
+    assert chaos_one["ok"] is True
+    assert witness_two["ok"] is True
+
+    snapshot = manager.snapshot()
+    rows = snapshot.get("muses", []) if isinstance(snapshot, dict) else []
+    by_id = {
+        str(row.get("id", "")): row
+        for row in rows
+        if isinstance(row, dict) and str(row.get("id", ""))
+    }
+    assert int(by_id["witness_thread"].get("chat_history_count", 0)) == 4
+    assert int(by_id["chaos"].get("chat_history_count", 0)) == 2
+
+    chaos_tet = chaos_one.get("manifest", {}).get("tet_units", [])
+    chaos_blob = " ".join(
+        str(row.get("text", "")) for row in chaos_tet if isinstance(row, dict)
+    ).lower()
+    assert "chaos-only marker beta" in chaos_blob
+    assert "witness-only marker alpha" not in chaos_blob
+
+    witness_tet = witness_two.get("manifest", {}).get("tet_units", [])
+    witness_blob = " ".join(
+        str(row.get("text", "")) for row in witness_tet if isinstance(row, dict)
+    ).lower()
+    assert "witness-second marker gamma" in witness_blob
+    assert "chaos-only marker beta" not in witness_blob
+
+
 def test_muse_tool_request_parses_facts_and_graph_commands() -> None:
     manager = _manager()
     tool_calls: list[str] = []

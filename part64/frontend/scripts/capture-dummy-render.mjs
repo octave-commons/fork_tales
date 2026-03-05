@@ -2,7 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { chromium } from "@playwright/test";
 
-const targetUrl = process.argv[2] || "http://127.0.0.1:5173";
+const targetUrl = process.argv[2] || "http://127.0.0.1:5197";
 const outputPath = resolve(process.argv[3] || "part64/frontend/artifacts/webgl-dummy-render.png");
 
 await mkdir(dirname(outputPath), { recursive: true });

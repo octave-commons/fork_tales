@@ -1204,3 +1204,78 @@ Muses lacked domain-specific context:
 - `python -m pytest code/tests/test_world_web_pm2.py -q` (128 passed)
 - `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/ && curl -s -o /dev/null -w " %{http_code}" http://127.0.0.1:8787/api/catalog` (`200 200`)
 - `python -c "import websocket; ws=websocket.create_connection('ws://127.0.0.1:8787/ws', timeout=5); print('101'); ws.close()"` (`101`)
+
+## 2026-03-05T03:04:07Z — Pin Frontend Dev Port To 5197
+
+**Owner:** Presence - Dev Integrator
+**Kind:** fix
+**Definition of Done:** AGENTS.md §14 (1,2,4,5)
+**File refs:** part64/frontend/vite.config.ts, part64/frontend/package.json, part64/frontend/scripts/capture-dummy-render.mjs
+
+### Change
+1. Added a fixed Vite dev server port (`5197`) with `strictPort: true` so dev startup no longer auto-shifts to a new port.
+2. Kept the port configurable through `VITE_DEV_SERVER_PORT` while defaulting to `5197` for stable local behavior.
+3. Updated Electron dev scripts and the dummy render capture script to use `http://127.0.0.1:5197` so related tooling stays aligned.
+
+### Verification refs
+- `npm run test -- src/runtime/endpoints.test.ts` (6 passed)
+- `npm run build` (success)
+- `npm run dev -- --host 127.0.0.1` (Local URL `http://127.0.0.1:5197/`)
+
+## 2026-03-05T03:33:59Z — Extract Muse Threat Radar Report Route
+
+**Owner:** Presence - Dev Integrator
+**Kind:** refactor
+**Definition of Done:** AGENTS.md §14 (1,2,4,5)
+**File refs:** part64/code/world_web/muse_mvc_controller.py, part64/code/world_web/server.py, part64/code/tests/test_world_web_pm2.py
+
+### Change
+1. Moved `/api/muse/threat-radar/report` request handling from `server.py` into `muse_mvc_controller.py` via `handle_muse_threat_report_get_route(...)`.
+2. Kept threat radar behavior stable (radar normalization, query dispatch, cache reuse, result scoping, seed-only quality gate, runtime labeling, and active threat cache updates) while delegating from `server.py`.
+3. Updated route contract test assertions to validate the new controller-based ownership and continued query/radar contract markers.
+
+### Verification refs
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_muse_mvc_controller.py -q` (2 passed)
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_world_web_pm2.py -k "threat_radar_panel_and_report_route_contract_present or threat_radar" -q` (6 passed)
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_muse_runtime.py -q` (21 passed)
+
+## 2026-03-05T03:42:02Z — Extract Muse Threat Radar Runtime Helpers
+
+**Owner:** Presence - Dev Integrator
+**Kind:** refactor
+**Definition of Done:** AGENTS.md §14 (1,2,3,4,5)
+**File refs:** part64/code/world_web/muse_threat_radar_utils.py, part64/code/world_web/server.py
+
+### Change
+1. Added `muse_threat_radar_utils.py` and moved threat-radar runtime helper logic out of `server.py` (`status`, active threat cache update/read, and scheduled tick execution).
+2. Kept `server.py` as thin delegation wrappers for muse threat-radar helper methods, aligned with migration policy to avoid new business logic in the legacy shell.
+3. Preserved behavior for cache writes, muse bootstrap, idempotency key generation, and runtime state transitions while routing through utility functions.
+
+### Verification refs
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_muse_mvc_controller.py -q` (2 passed)
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_world_web_pm2.py -k "muse_threat_radar or threat_radar_panel_and_report_route_contract_present or muse_tool_callback_graph_query_cyber_regime_state_dispatches_args" -q` (7 passed)
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_world_web_pm2.py -q` (128 passed)
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_muse_runtime.py -q` (21 passed)
+- `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/ && curl -s -o /dev/null -w " %{http_code}" http://127.0.0.1:8787/api/catalog` (`200 200`)
+- `python -c "import websocket; ws=websocket.create_connection('ws://127.0.0.1:8787/ws', timeout=5); print('101'); ws.close()"` (`101`)
+
+## 2026-03-05T03:49:48Z — Extract Muse Tool and Reply Backend Logic
+
+**Owner:** Presence - Dev Integrator
+**Kind:** refactor
+**Definition of Done:** AGENTS.md §14 (1,2,3,4,5)
+**File refs:** part64/code/world_web/muse_runtime_backend_utils.py, part64/code/world_web/server.py
+
+### Change
+1. Added `muse_runtime_backend_utils.py` and moved muse tool-callback graph/query dispatch plus muse reply-building logic out of `server.py`.
+2. Converted `server.py` muse methods (`_muse_tool_callback`, `_muse_reply_builder`) to thin delegations into the new utility module.
+3. Preserved runtime behavior, including graph query argument parsing, cache reuse, and muse-specific system prompt injection.
+
+### Verification refs
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_world_web_pm2.py -k "muse_tool_callback_graph_query_cyber_regime_state_dispatches_args or muse_threat_radar" -q` (6 passed)
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_muse_mvc_controller.py -q` (2 passed)
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_world_web_asgi_mvc.py -q` (14 passed)
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_world_web_pm2.py -q` (128 passed)
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_muse_runtime.py -q` (21 passed)
+- `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/ && curl -s -o /dev/null -w " %{http_code}" http://127.0.0.1:8787/api/catalog` (`200 200`)
+- `python -c "import websocket; ws=websocket.create_connection('ws://127.0.0.1:8787/ws', timeout=5); print('101'); ws.close()"` (`101`)

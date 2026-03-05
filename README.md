@@ -45,3 +45,23 @@ This repository contains:
 ## Quick Start
 
 See [AGENTS.md](AGENTS.md) for development and runtime commands.
+
+## Submodules
+
+This repository tracks narrative audio assets via a Git submodule:
+
+- Path: `narrative_audio/`
+- Remote: `https://github.com/riatzukiza/gates-of-truth-audio.git`
+
+Clone and initialize in one step:
+
+- `git clone --recursive <repo-url>`
+
+If you already cloned without submodules, run:
+
+- `git submodule update --init --recursive`
+
+If the submodule pointer changes after pulling new commits, refresh it with:
+
+- `git submodule sync --recursive`
+- `git submodule update --init --recursive`
