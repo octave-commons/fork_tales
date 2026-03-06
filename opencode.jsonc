@@ -38,5 +38,14 @@
         "gpt-5.3-codex": {}
       }
     }
+  },
+  "mcp": {
+    "lith_nexus": {
+      "type": "remote",
+      "url": "http://127.0.0.1:8787/mcp",
+      "enabled": true,
+      "oauth": false,
+      "timeout": 30000
+    }
   }
 }

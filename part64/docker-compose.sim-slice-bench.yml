@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.system
+      additional_contexts:
+        repo_root: ..
     command:
       [
         "pm2-runtime",
@@ -92,6 +94,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.system
+      additional_contexts:
+        repo_root: ..
     command:
       [
         "pm2-runtime",
@@ -190,6 +194,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.system
+      additional_contexts:
+        repo_root: ..
     command:
       [
         "pm2-runtime",
@@ -286,6 +292,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.system
+      additional_contexts:
+        repo_root: ..
     command:
       [
         "pm2-runtime",

@@ -44,7 +44,9 @@ services:
     volumes:
       - ../part64/frontend/dist:/usr/share/nginx/html:ro
     ports:
-      - "${UI_PORT:-5173}:80"
+      - "${UI_PORT:-5197}:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   tf-trainer:
     profiles:

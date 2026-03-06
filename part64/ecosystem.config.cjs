@@ -45,6 +45,10 @@ module.exports = {
           process.env.CDB_EMBED_GPU_VISIBLE_DEVICES || resolveNvidiaVisibleDevices(),
         CDB_EMBED_GPU_CONTROLLER_PROFILE:
           process.env.CDB_EMBED_GPU_CONTROLLER_PROFILE || "energy",
+        OPENVINO_EMBED_DEVICE: process.env.OPENVINO_EMBED_DEVICE || "NPU",
+        CDB_EMBED_DEVICE: process.env.CDB_EMBED_DEVICE || "NPU",
+        CDB_EMBED_AUTO_POLICY:
+          process.env.CDB_EMBED_AUTO_POLICY || "adaptive-npu",
         CDB_ORT_GPU_CAPI_DIR: resolveOrtGpuCapiDir(),
         CDB_ORT_GPU_INCLUDE_DIR: resolveOrtGpuIncludeDir(),
         THREAT_RADAR_LLM_ENABLED:
@@ -105,6 +109,8 @@ module.exports = {
           process.env.SIMULATION_WS_CACHE_REFRESH_SECONDS || "0.5",
         SIMULATION_WS_FULL_SNAPSHOT_HEARTBEAT_SECONDS:
           process.env.SIMULATION_WS_FULL_SNAPSHOT_HEARTBEAT_SECONDS || "2.5",
+        CDB_FORCE_WORKERS: process.env.CDB_FORCE_WORKERS || "2",
+        CDB_COLLISION_WORKERS: process.env.CDB_COLLISION_WORKERS || "2",
         SIMULATION_HTTP_FULL_ASYNC_REBUILD_ENABLED:
           process.env.SIMULATION_HTTP_FULL_ASYNC_REBUILD_ENABLED || "1",
         SIMULATION_HTTP_FULL_ASYNC_STALE_MAX_AGE_SECONDS:

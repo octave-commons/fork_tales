@@ -41,7 +41,7 @@ Modes:
 
 The React UI is served by the `gateway-ui` service.
 
-- URL: `http://localhost:${UI_PORT:-5173}`
+- URL: `http://localhost:${UI_PORT:-5197}`
 - Proxy URL default in UI: `http://localhost:${PORT:-18000}`
 
 ## Compose startup

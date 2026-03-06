@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.system
+      additional_contexts:
+        repo_root: ..
     command: ["pm2-runtime", "start", "ecosystem.config.cjs", "--only", "eta-mu-world"]
     environment:
       CHROMA_HOST: chroma
@@ -91,6 +93,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.system
+      additional_contexts:
+        repo_root: ..
     command: ["pm2-runtime", "start", "ecosystem.config.cjs", "--only", "eta-mu-world"]
     environment:
       CHROMA_HOST: chroma
@@ -179,6 +183,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.system
+      additional_contexts:
+        repo_root: ..
     command: ["pm2-runtime", "start", "ecosystem.config.cjs", "--only", "eta-mu-world"]
     environment:
       CHROMA_HOST: chroma

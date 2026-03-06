@@ -289,6 +289,32 @@ def muse_tool_callback(
                 "error": str(result.get("error", "unknown_query")),
                 "query": query_name,
             }
+
+        if isinstance(result, dict):
+            try:
+                if query_name == "github_threat_radar":
+                    handler._update_active_threats("local", result)
+                elif query_name in {
+                    "geopolitical_news_radar",
+                    "hormuz_threat_radar",
+                    "cyber_risk_radar",
+                }:
+                    handler._update_active_threats("global", result)
+                elif query_name == "multi_threat_radar":
+                    domains = (
+                        result.get("domains", {})
+                        if isinstance(result.get("domains", {}), dict)
+                        else {}
+                    )
+                    local_result = domains.get("github", {})
+                    global_result = domains.get("hormuz", {})
+                    if isinstance(local_result, dict):
+                        handler._update_active_threats("local", local_result)
+                    if isinstance(global_result, dict):
+                        handler._update_active_threats("global", global_result)
+            except Exception:
+                pass
+
         result_count = 0
         if isinstance(result, dict):
             for count_key in (
@@ -370,8 +396,9 @@ def muse_reply_builder(
 ) -> dict[str, Any]:
     del turn_id
     from .muse_runtime import _muse_system_prompt
+    from .muse_mode_strategy import resolve_muse_reply_backend_mode
 
-    model_mode = "canonical" if str(mode).strip().lower() == "deterministic" else "llm"
+    model_mode = resolve_muse_reply_backend_mode(mode)
     clean_muse_id = str(muse_id or "").strip() or "witness_thread"
 
     muse_prompt = _muse_system_prompt(clean_muse_id)
@@ -385,8 +412,7 @@ def muse_reply_builder(
         ],
         mode=model_mode,
         context=server_module.build_world_payload(handler.part_root),
-        multi_entity=True,
-        presence_ids=[clean_muse_id],
+        multi_entity=False,
     )
     if not isinstance(response, dict):
         return {"reply": "", "mode": "canonical", "model": None}

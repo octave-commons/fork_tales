@@ -698,6 +698,24 @@ def test_chaos_filters_non_threat_candidates_when_threats_present() -> None:
     assert "resource:irrelevant" not in surround_candidates
 
 
+def test_send_message_normalizes_invalid_mode_to_stochastic() -> None:
+    manager = _manager()
+    payload = manager.send_message(
+        muse_id=DEFAULT_MUSE_ID,
+        text="normalize invalid mode",
+        mode="chaotic-neutral",
+        token_budget=700,
+        idempotency_key="invalid-mode-1",
+        graph_revision="graph:v-invalid-mode",
+        surrounding_nodes=[],
+        tool_callback=None,
+        reply_builder=_reply_builder,
+        seed="seed-invalid-mode",
+    )
+    assert payload["ok"] is True
+    assert payload["manifest"].get("mode") == "stochastic"
+
+
 def test_threat_fallback_reply_summarizes_active_threats_when_model_empty() -> None:
     manager = _manager()
 

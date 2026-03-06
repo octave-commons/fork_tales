@@ -1047,6 +1047,8 @@ def test_threat_radar_panel_and_report_route_contract_present() -> None:
     assert 'query_name = "cyber_risk_radar"' in muse_controller_source
     assert "muse_threat_radar_utils_module.muse_threat_radar_tick" in server_source
     assert "muse_runtime_backend_utils_module.muse_tool_callback" in server_source
+    assert "muse_ws_stream_utils_module.stream_muse_bootstrap_events" in server_source
+    assert "muse_ws_stream_utils_module.maybe_send_muse_events" in server_source
 
 
 def test_muse_tool_callback_graph_query_cyber_regime_state_dispatches_args(

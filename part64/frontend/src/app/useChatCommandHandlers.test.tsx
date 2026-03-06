@@ -178,12 +178,13 @@ describe("useChatCommandHandlers", () => {
   });
 
   it("falls back to legacy study mode when /api/study is 404", async () => {
+    vi.resetModules();
     vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("/api/study?limit=6")) {
         return mockJsonResponse({}, 404);
       }
-      if (url.includes("/api/council?limit=6")) {
+      if (url.includes("/api/council?limit=10")) {
         return mockJsonResponse({
           council: {
             pending_count: 2,

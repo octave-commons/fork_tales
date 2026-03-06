@@ -3,13 +3,15 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.system
+      additional_contexts:
+        repo_root: ..
     command:
       [
         "pm2-runtime",
         "start",
         "ecosystem.bench.config.cjs",
         "--only",
-        "eta-mu-world,eta-mu-io,web-graph-weaver",
+        "eta-mu-world,eta-mu-io,web-graph-weaver,eta-mu-lith-nexus-mcp",
       ]
     environment:
       CHROMA_HOST: chroma
@@ -20,7 +22,7 @@ services:
       TEXT_GENERATION_MODEL: "qwen3-vl:4b-instruct"
       TEXT_GENERATION_DEVICE: "GPU"
       OPENVINO_EMBED_MODEL: "nomic-embed-text"
-      OPENVINO_EMBED_DEVICE: "AUTO"
+      OPENVINO_EMBED_DEVICE: "${OPENVINO_EMBED_DEVICE:-NPU}"
       OPENVINO_EMBED_MAX_CHARS: "2400"
       ETA_MU_TEXT_EMBED_MODEL: "nomic-embed-text"
       ETA_MU_IMAGE_EMBED_MODEL: "nomic-embed-text"
@@ -37,7 +39,7 @@ services:
       EMBEDDINGS_BACKEND: "auto"
       CDB_EMBED_IN_C: "1"
       CDB_EMBED_REQUIRE_C: "0"
-      CDB_EMBED_DEVICE: "AUTO"
+      CDB_EMBED_DEVICE: "${CDB_EMBED_DEVICE:-NPU}"
       CDB_EMBED_AUTO_POLICY: "adaptive-npu"
       CDB_EMBED_GPU_CONTROLLER_PROFILE: "energy"
       CDB_EMBED_GPU_SIDECAR_ENABLED: "1"
@@ -155,6 +157,12 @@ services:
       WORLD_WEB_ASGI_WS_PING_TIMEOUT_SECONDS: "30"
       RUNTIME_ETA_MU_SYNC_ENABLED: "0"
       RUNTIME_ETA_MU_SYNC_SECONDS: "300.0"
+      LITH_NEXUS_SCRIPT: "/srv/mcp-lith-nexus/dist/http.js"
+      LITH_NEXUS_REPO_ROOT: "/vault"
+      LITH_NEXUS_PYTHON_WORKDIR: "/app"
+      LITH_NEXUS_HTTP_HOST: "0.0.0.0"
+      LITH_NEXUS_HTTP_PORT: "8794"
+      LITH_NEXUS_HTTP_PATH: "/mcp"
       MUSE_RUNTIME_BACKEND: "${MUSE_RUNTIME_BACKEND:-json}"
       MUSE_RUNTIME_STATE_PATH: "${MUSE_RUNTIME_STATE_PATH:-/app/world_state/muse_runtime_state.json}"
       MUSE_RUNTIME_TURNS_PER_MINUTE: "${MUSE_RUNTIME_TURNS_PER_MINUTE:-60}"
@@ -173,7 +181,7 @@ services:
       - chroma
     ports:
       - "${ETA_MU_WEAVER_PORT:-8793}:8793"
-    cpus: "12.00"
+    cpus: "10.00"
     mem_limit: "20000m"
     memswap_limit: "20000m"
     pids_limit: 1024
@@ -181,6 +189,9 @@ services:
     devices:
       - "/dev/accel:/dev/accel"
       - "/dev/dri:/dev/dri"
+    group_add:
+      - "${ETA_MU_ACCEL_GID:-992}"
+      - "${ETA_MU_VIDEO_GID:-44}"
     volumes:
       - .:/app
       - ./world_state:/app/world_state
@@ -199,7 +210,7 @@ services:
           "CMD",
           "python3",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/', timeout=6)",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/', timeout=6); urllib.request.urlopen('http://127.0.0.1:8794/mcp/healthz', timeout=6)",
         ]
       interval: 20s
       timeout: 12s

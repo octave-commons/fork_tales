@@ -172,13 +172,13 @@ afterEach(() => {
 });
 
 describe('useWorldState websocket worker streams', () => {
-  it('connects to worker-delta websocket stream mode', async () => {
+  it('connects to live world-delta websocket stream mode', async () => {
     const { result } = renderHook(() => useWorldState('hybrid'));
     const ws = MockWebSocket.instances[0];
 
     expect(ws).toBeDefined();
     expect(ws.url).toContain(
-      '/ws?perspective=hybrid&delta_stream=workers&wire=arr&simulation_payload=trimmed&particle_payload=lite&ws_chunk=0&catalog_events=0&skip_catalog_bootstrap=1',
+      '/ws?perspective=hybrid&delta_stream=world&wire=arr&simulation_payload=trimmed&particle_payload=lite&ws_chunk=0&catalog_events=0&skip_catalog_bootstrap=1',
     );
 
     act(() => {

@@ -735,10 +735,46 @@ def handle_muse_post_route(
 
         if muse_id in {"witness_thread", "github_security_review"}:
             threat_nodes = handler._get_active_threat_nodes("local")
+            if not threat_nodes and muse_id == "witness_thread":
+                try:
+                    handler._muse_threat_radar_tick(
+                        force=False,
+                        reason="api.message.prefetch.local",
+                    )
+                except Exception:
+                    pass
+                threat_nodes = handler._get_active_threat_nodes("local")
+                if not threat_nodes:
+                    try:
+                        handler._muse_threat_radar_tick(
+                            force=True,
+                            reason="api.message.prefetch.local.force",
+                        )
+                    except Exception:
+                        pass
+                    threat_nodes = handler._get_active_threat_nodes("local")
             if threat_nodes:
                 surrounding_nodes = list(surrounding_nodes) + threat_nodes
         elif muse_id == "chaos":
             threat_nodes = handler._get_active_threat_nodes("global")
+            if not threat_nodes:
+                try:
+                    handler._muse_threat_radar_tick(
+                        force=False,
+                        reason="api.message.prefetch.global",
+                    )
+                except Exception:
+                    pass
+                threat_nodes = handler._get_active_threat_nodes("global")
+                if not threat_nodes:
+                    try:
+                        handler._muse_threat_radar_tick(
+                            force=True,
+                            reason="api.message.prefetch.global.force",
+                        )
+                    except Exception:
+                        pass
+                    threat_nodes = handler._get_active_threat_nodes("global")
             if threat_nodes:
                 surrounding_nodes = list(surrounding_nodes) + threat_nodes
 

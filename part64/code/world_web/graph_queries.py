@@ -13,6 +13,20 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
+from .control_budget_policy import build_control_budget_snapshot
+from .control_budget_strategies import apply_threat_compute_budget_policy
+from .graph_query_policy import (
+    build_unknown_graph_query_result,
+    normalize_graph_query_name,
+)
+from .threat_radar_strategy import (
+    apply_threat_signal_strategy,
+    build_threat_llm_fallback,
+    resolve_threat_proximity_strategy,
+    resolve_threat_risk_level,
+    resolve_threat_scoring_mode,
+)
+
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
@@ -44,60 +58,6 @@ def _canonical_json(payload: dict[str, Any]) -> str:
 
 def _canonical_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
-
-
-def _normalize_query_name(name: Any) -> str:
-    text = str(name or "").strip().lower()
-    if not text:
-        return "overview"
-    aliases = {
-        "summary": "overview",
-        "stats": "overview",
-        "neighbor": "neighbors",
-        "node_neighbors": "neighbors",
-        "roles": "role_slice",
-        "role": "role_slice",
-        "recent": "recently_updated",
-        "recently_touched": "recently_updated",
-        "touched": "recently_updated",
-        "explain": "explain_daimoi",
-        "outcomes": "recent_outcomes",
-        "crawler": "crawler_status",
-        "arxiv": "arxiv_papers",
-        "arxiv_papers": "arxiv_papers",
-        "resource_summary": "web_resource_summary",
-        "graph_summary": "graph_summary",
-        "github": "github_status",
-        "github_repo": "github_repo_summary",
-        "github_search": "github_find",
-        "github_recent": "github_recent_changes",
-        "proximity": "proximity_radar",
-        "proximity_radar": "proximity_radar",
-        "emerging_terms": "proximity_radar",
-        "entity_risk_state": "entity_risk_state",
-        "entity_state": "entity_risk_state",
-        "cyber_regime": "cyber_regime_state",
-        "cyber_regime_state": "cyber_regime_state",
-        "regime": "cyber_regime_state",
-        "cyber_risk_radar": "cyber_risk_radar",
-        "regime_radar": "cyber_risk_radar",
-        "local": "github_threat_radar",
-        "local_threat_radar": "github_threat_radar",
-        "global": "geopolitical_news_radar",
-        "global_feed": "geopolitical_news_radar",
-        "geopolitics": "geopolitical_news_radar",
-        "geopolitical": "geopolitical_news_radar",
-        "geopolitical_news": "geopolitical_news_radar",
-        "geopolitical_news_radar": "geopolitical_news_radar",
-        "github_threats": "github_threat_radar",
-        "threat_radar": "multi_threat_radar",
-        "threats": "multi_threat_radar",
-        "multi_threat_radar": "multi_threat_radar",
-        "hormuz": "hormuz_threat_radar",
-        "hormuz_threats": "hormuz_threat_radar",
-        "maritime_threat_radar": "hormuz_threat_radar",
-    }
-    return aliases.get(text, text)
 
 
 _GITHUB_THREAT_TERMS: set[str] = {
@@ -820,8 +780,29 @@ def _query_search(nodes: list[dict[str, Any]], args: dict[str, Any]) -> dict[str
         label = str(node.get("label", "") or "").strip()
         canonical_url = _node_canonical_url(node)
         title = _node_title(node)
+        path = str(_node_value(node, "path", "") or "").strip()
+        source_uri = str(_node_value(node, "source_uri", "") or "").strip()
+        head = str(_node_value(node, "head", "") or "").strip()
+        tags = [
+            str(item).strip() for item in _node_list(node, "tags") if str(item).strip()
+        ]
+        refs = [
+            str(item).strip() for item in _node_list(node, "refs") if str(item).strip()
+        ]
+        explicit_id = str(_node_value(node, "explicit_id", "") or "").strip()
         haystack = " ".join(
-            [node_id.lower(), label.lower(), canonical_url.lower(), title.lower()]
+            [
+                node_id.lower(),
+                label.lower(),
+                canonical_url.lower(),
+                title.lower(),
+                path.lower(),
+                source_uri.lower(),
+                head.lower(),
+                explicit_id.lower(),
+                " ".join(tag.lower() for tag in tags),
+                " ".join(ref.lower() for ref in refs),
+            ]
         ).strip()
         if query in haystack:
             rows.append(
@@ -831,6 +812,8 @@ def _query_search(nodes: list[dict[str, Any]], args: dict[str, Any]) -> dict[str
                     "label": label,
                     "canonical_url": canonical_url,
                     "title": title,
+                    "path": path,
+                    "tags": tags[:8],
                 }
             )
 
@@ -1006,77 +989,12 @@ def _threat_compute_budget_from_simulation(
     dynamics, _crawler_graph, _field_particles, _outcome_rows = _simulation_sections(
         simulation
     )
-    resource_consumption = (
-        dynamics.get("resource_consumption", {})
-        if isinstance(dynamics.get("resource_consumption", {}), dict)
-        else {}
+    snapshot = build_control_budget_snapshot(dynamics)
+    llm_item_cap_default = max(1, _safe_int(_THREAT_RADAR_LLM_MAX_ITEMS, 6))
+    return apply_threat_compute_budget_policy(
+        snapshot=snapshot,
+        llm_item_cap_default=llm_item_cap_default,
     )
-    control_budget = (
-        resource_consumption.get("control_budget", {})
-        if isinstance(resource_consumption.get("control_budget", {}), dict)
-        else {}
-    )
-
-    mode = str(control_budget.get("mode", "") or "").strip().lower()
-    ratio = _clamp01(_safe_float(control_budget.get("ratio", 1.0), 1.0))
-    queue_ratio = _clamp01(
-        _safe_float(resource_consumption.get("queue_ratio", 0.0), 0.0)
-    )
-    cpu_sentinel_burn_active = bool(
-        resource_consumption.get("cpu_sentinel_burn_active", False)
-    )
-    compute_jobs_180s = max(0, _safe_int(dynamics.get("compute_jobs_180s", 0), 0))
-
-    allow_classifier = True
-    allow_llm = True
-    llm_item_cap = max(1, _safe_int(_THREAT_RADAR_LLM_MAX_ITEMS, 6))
-    reason = "full"
-
-    if cpu_sentinel_burn_active or mode == "minimal" or ratio < 0.08:
-        allow_classifier = False
-        allow_llm = False
-        llm_item_cap = 0
-        reason = "minimal"
-    elif mode == "reduced" or ratio < 0.16:
-        allow_classifier = True
-        allow_llm = False
-        llm_item_cap = 0
-        reason = "reduced"
-    elif mode == "moderate" or ratio < 0.30:
-        allow_classifier = True
-        allow_llm = True
-        llm_item_cap = min(llm_item_cap, 2)
-        reason = "moderate"
-    else:
-        allow_classifier = True
-        allow_llm = True
-        llm_item_cap = min(llm_item_cap, 6)
-        reason = "full"
-
-    if queue_ratio >= 0.90:
-        allow_llm = False
-        llm_item_cap = 0
-        reason = f"{reason}+queue"
-    elif queue_ratio >= 0.75 and allow_llm and llm_item_cap > 0:
-        llm_item_cap = max(1, min(llm_item_cap, 2))
-        reason = f"{reason}+queue_soft"
-
-    if compute_jobs_180s >= 48 and allow_llm and llm_item_cap > 0:
-        llm_item_cap = 1
-        reason = f"{reason}+compute"
-
-    return {
-        "bound": bool(control_budget),
-        "mode": mode or ("full" if not control_budget else "unknown"),
-        "ratio": round(_clamp01(ratio), 6),
-        "queue_ratio": round(_clamp01(queue_ratio), 6),
-        "cpu_sentinel_burn_active": bool(cpu_sentinel_burn_active),
-        "compute_jobs_180s": int(compute_jobs_180s),
-        "allow_classifier": bool(allow_classifier),
-        "allow_llm": bool(allow_llm),
-        "llm_item_cap": int(max(0, llm_item_cap)),
-        "reason": str(reason),
-    }
 
 
 def _query_explain_daimoi(
@@ -5024,24 +4942,19 @@ def _query_github_threat_radar(
             )
         )
 
-        proximity_boost = 0
-        if p_critical_max >= 0.75:
-            proximity_boost = 2
-        elif p_critical_max >= 0.55:
-            proximity_boost = 1
-        if p_active_max >= 0.70 and proximity_boost < 2:
-            proximity_boost += 1
-        proximity_boost = max(0, min(2, proximity_boost))
+        proximity_strategy = resolve_threat_proximity_strategy(
+            p_active_max=p_active_max,
+            p_critical_max=p_critical_max,
+        )
+        proximity_boost = int(proximity_strategy.get("boost", 0) or 0)
         deterministic_score = min(14, max(0, deterministic_score + proximity_boost))
 
-        if source_tier_boost > 0:
-            signals = sorted(set([*signals, "source_tier_boost"]))
-        if corroboration_boost > 0:
-            signals = sorted(set([*signals, "corroborated_signal"]))
-        if p_critical_max >= 0.55:
-            signals = sorted(set([*signals, "proximity_critical_state"]))
-        elif p_active_max >= 0.55:
-            signals = sorted(set([*signals, "proximity_active_state"]))
+        signals = apply_threat_signal_strategy(
+            signals=signals,
+            source_tier_boost=source_tier_boost,
+            corroboration_boost=corroboration_boost,
+            proximity_signal=str(proximity_strategy.get("signal", "") or ""),
+        )
 
         weak_label = _github_weak_label_registry(
             row,
@@ -5180,20 +5093,12 @@ def _query_github_threat_radar(
     if llm_allowed:
         llm = _threat_llm_metrics(domain="github", rows=rows, max_items=llm_item_cap)
     else:
-        llm_error = ""
-        if llm_requested and not allow_llm:
-            llm_error = "disabled_by_compute_budget"
-        elif llm_requested and llm_item_cap <= 0:
-            llm_error = "disabled_by_compute_budget"
-        elif not llm_requested:
-            llm_error = "disabled_by_query"
-        llm = {
-            "enabled": False,
-            "applied": False,
-            "model": _THREAT_RADAR_LLM_MODEL,
-            "error": llm_error,
-            "metrics": {},
-        }
+        llm = build_threat_llm_fallback(
+            llm_requested=llm_requested,
+            allow_llm=allow_llm,
+            llm_item_cap=llm_item_cap,
+            llm_model=_THREAT_RADAR_LLM_MODEL,
+        )
     llm_metrics = (
         llm.get("metrics", {}) if isinstance(llm.get("metrics", {}), dict) else {}
     )
@@ -5229,14 +5134,7 @@ def _query_github_threat_radar(
         else:
             final_score = deterministic_score
         row["risk_score"] = int(final_score)
-        if final_score >= 11:
-            row["risk_level"] = "critical"
-        elif final_score >= 8:
-            row["risk_level"] = "high"
-        elif final_score >= 5:
-            row["risk_level"] = "medium"
-        else:
-            row["risk_level"] = "low"
+        row["risk_level"] = resolve_threat_risk_level(int(final_score))
         row.pop("_threat_id", None)
 
     rows.sort(
@@ -5286,10 +5184,10 @@ def _query_github_threat_radar(
             {"repo": repo, "max_risk_score": score} for repo, score in repo_hotlist[:16]
         ],
         "scoring": {
-            "mode": (
-                "llm_blend"
-                if bool(llm.get("enabled", False)) and bool(llm.get("applied", False))
-                else ("classifier" if classifier_enabled else "deterministic")
+            "mode": resolve_threat_scoring_mode(
+                llm_enabled=bool(llm.get("enabled", False)),
+                llm_applied=bool(llm.get("applied", False)),
+                classifier_enabled=classifier_enabled,
             ),
             "classifier_enabled": bool(classifier_enabled),
             "classifier_requested": bool(_THREAT_RADAR_CLASSIFIER_ENABLED),
@@ -5597,7 +5495,7 @@ def run_named_graph_query(
     simulation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     nodes, edges = _graph_rows(nexus_graph)
-    query = _normalize_query_name(query_name)
+    query = normalize_graph_query_name(query_name)
     query_args = dict(args) if isinstance(args, dict) else {}
 
     threat_query_args = dict(query_args)
@@ -5675,37 +5573,7 @@ def run_named_graph_query(
     if query in handlers:
         result = handlers[query]()
     else:
-        result = {
-            "error": "unknown_query",
-            "query": query,
-            "supported": [
-                "overview",
-                "graph_summary",
-                "neighbors",
-                "search",
-                "url_status",
-                "resource_for_url",
-                "recently_updated",
-                "role_slice",
-                "explain_daimoi",
-                "recent_outcomes",
-                "crawler_status",
-                "arxiv_papers",
-                "github_status",
-                "github_repo_summary",
-                "github_find",
-                "github_recent_changes",
-                "proximity_radar",
-                "entity_risk_state",
-                "cyber_regime_state",
-                "cyber_risk_radar",
-                "github_threat_radar",
-                "geopolitical_news_radar",
-                "hormuz_threat_radar",
-                "multi_threat_radar",
-                "web_resource_summary",
-            ],
-        }
+        result = build_unknown_graph_query_result(query)
 
     payload = {
         "record": "eta-mu.graph-query.v1",

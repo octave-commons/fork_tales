@@ -21,7 +21,7 @@ function createMainWindow() {
     backgroundColor: "#0c1219",
     title: "eta-mu world client",
     webPreferences: {
-      preload: path.resolve(currentDirPath, "./preload.mjs"),
+      preload: path.resolve(currentDirPath, "./preload.cjs"),
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,

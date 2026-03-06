@@ -9,6 +9,22 @@ import time
 import uuid
 from typing import Any
 
+from .sim_slice_offload_strategy import (
+    is_supported_remote_mode,
+    normalize_sim_slice_mode,
+    request_sim_point_budget_by_mode,
+)
+from .sim_slice_fallback_policy import (
+    build_sim_slice_async_cached_meta,
+    build_sim_slice_async_fallback_meta,
+    build_sim_slice_local_meta,
+    build_sim_slice_remote_fallback_meta,
+    build_sim_slice_remote_success_meta,
+    build_sim_slice_worker_fallback_snapshot,
+    build_sim_slice_worker_success_snapshot,
+    resolve_sim_slice_cached_budget,
+)
+
 
 SIM_SLICE_POINT_BUDGET_ID = "sim_point_budget.v1"
 SIM_SLICE_REDIS_MODE = "redis"
@@ -132,63 +148,42 @@ class _SimPointBudgetAsyncWorker:
             if not request:
                 continue
 
-            mode = str(request.get("mode", "")).strip().lower()
+            mode = normalize_sim_slice_mode(request.get("mode", ""))
             cpu_utilization = _safe_float(request.get("cpu_utilization", 0.0), 0.0)
             max_sim_points = max(64, _safe_int(request.get("max_sim_points", 800), 800))
             local_budget = max(64, _safe_int(request.get("local_budget", 800), 800))
 
             started = time.monotonic()
-            remote_budget: int | None = None
-            remote_meta: dict[str, Any] = {
-                "source": "python-fallback",
-                "reason": "unsupported-mode",
-                "job_id": "",
-            }
-            if mode == SIM_SLICE_REDIS_MODE:
-                remote_budget, remote_meta = _request_sim_point_budget_via_redis(
-                    cpu_utilization=cpu_utilization,
-                    max_sim_points=max_sim_points,
-                )
-            elif mode == SIM_SLICE_UDS_MODE:
-                remote_budget, remote_meta = _request_sim_point_budget_via_uds(
-                    cpu_utilization=cpu_utilization,
-                    max_sim_points=max_sim_points,
-                )
+            remote_budget, remote_meta = request_sim_point_budget_by_mode(
+                mode=mode,
+                cpu_utilization=cpu_utilization,
+                max_sim_points=max_sim_points,
+                request_via_redis=_request_sim_point_budget_via_redis,
+                request_via_uds=_request_sim_point_budget_via_uds,
+            )
             transport_latency_ms = round((time.monotonic() - started) * 1000.0, 3)
+            produced_monotonic = time.monotonic()
 
             if remote_budget is None:
                 self._result.publish(
-                    {
-                        "ready": True,
-                        "mode": mode,
-                        "budget": local_budget,
-                        "source": str(
-                            remote_meta.get("source", "python-fallback")
-                            or "python-fallback"
-                        ),
-                        "fallback": True,
-                        "reason": str(
-                            remote_meta.get("reason", "unknown") or "unknown"
-                        ),
-                        "job_id": str(remote_meta.get("job_id", "") or ""),
-                        "transport_latency_ms": transport_latency_ms,
-                        "produced_monotonic": time.monotonic(),
-                    }
+                    build_sim_slice_worker_fallback_snapshot(
+                        mode=mode,
+                        local_budget=local_budget,
+                        remote_meta=remote_meta,
+                        transport_latency_ms=transport_latency_ms,
+                        produced_monotonic=produced_monotonic,
+                    )
                 )
                 continue
 
             self._result.publish(
-                {
-                    "ready": True,
-                    "mode": mode,
-                    "budget": int(remote_budget),
-                    "source": str(remote_meta.get("source", "c-worker") or "c-worker"),
-                    "fallback": False,
-                    "reason": "",
-                    "job_id": str(remote_meta.get("job_id", "") or ""),
-                    "transport_latency_ms": transport_latency_ms,
-                    "produced_monotonic": time.monotonic(),
-                }
+                build_sim_slice_worker_success_snapshot(
+                    mode=mode,
+                    remote_budget=int(remote_budget),
+                    remote_meta=remote_meta,
+                    transport_latency_ms=transport_latency_ms,
+                    produced_monotonic=produced_monotonic,
+                )
             )
 
 
@@ -461,21 +456,13 @@ def _request_sim_point_budget_remote_sync(
     cpu_utilization: float,
     max_sim_points: int,
 ) -> tuple[int | None, dict[str, Any]]:
-    if mode == SIM_SLICE_REDIS_MODE:
-        return _request_sim_point_budget_via_redis(
-            cpu_utilization=cpu_utilization,
-            max_sim_points=max_sim_points,
-        )
-    if mode == SIM_SLICE_UDS_MODE:
-        return _request_sim_point_budget_via_uds(
-            cpu_utilization=cpu_utilization,
-            max_sim_points=max_sim_points,
-        )
-    return None, {
-        "source": "python-fallback",
-        "reason": "unsupported-mode",
-        "job_id": "",
-    }
+    return request_sim_point_budget_by_mode(
+        mode=mode,
+        cpu_utilization=cpu_utilization,
+        max_sim_points=max_sim_points,
+        request_via_redis=_request_sim_point_budget_via_redis,
+        request_via_uds=_request_sim_point_budget_via_uds,
+    )
 
 
 def resolve_sim_point_budget_slice(
@@ -487,17 +474,12 @@ def resolve_sim_point_budget_slice(
     max_points_value = max(64, _safe_int(max_sim_points, 800))
     local_budget = _local_sim_point_budget(cpu_value, max_points_value)
 
-    mode = str(os.getenv(SIM_SLICE_OFFLOAD_MODE_ENV, "local") or "local").strip()
-    normalized_mode = mode.lower()
+    mode = os.getenv(SIM_SLICE_OFFLOAD_MODE_ENV, "local")
+    normalized_mode = normalize_sim_slice_mode(mode)
     started = time.monotonic()
 
-    if normalized_mode not in {SIM_SLICE_REDIS_MODE, SIM_SLICE_UDS_MODE}:
-        return local_budget, {
-            "mode": normalized_mode or "local",
-            "source": "python-local",
-            "fallback": False,
-            "latency_ms": 0.0,
-        }
+    if not is_supported_remote_mode(normalized_mode):
+        return local_budget, build_sim_slice_local_meta(mode=normalized_mode or "local")
 
     async_enabled = _env_flag(SIM_SLICE_ASYNC_ENV, default=False)
     if async_enabled:
@@ -523,43 +505,22 @@ def resolve_sim_point_budget_slice(
             else 0.0
         )
         if latest_ready and latest_mode == normalized_mode and age_ms <= stale_limit_ms:
-            return max(
-                64, _safe_int(latest.get("budget", local_budget), local_budget)
-            ), {
-                "mode": normalized_mode,
-                "source": str(latest.get("source", "c-worker") or "c-worker"),
-                "fallback": bool(latest.get("fallback", False)),
-                "reason": str(latest.get("reason", "") or ""),
-                "job_id": str(latest.get("job_id", "") or ""),
-                "latency_ms": latency_ms,
-                "transport_latency_ms": _safe_float(
-                    latest.get("transport_latency_ms", 0.0),
-                    0.0,
-                ),
-                "age_ms": round(age_ms, 3),
-                "async": True,
-            }
+            return resolve_sim_slice_cached_budget(
+                latest, local_budget
+            ), build_sim_slice_async_cached_meta(
+                mode=normalized_mode,
+                latest=latest,
+                latency_ms=latency_ms,
+                age_ms=age_ms,
+            )
 
-        return local_budget, {
-            "mode": normalized_mode,
-            "source": "python-local",
-            "fallback": True,
-            "reason": (
-                "async-stale"
-                if latest_ready
-                and latest_mode == normalized_mode
-                and age_ms > stale_limit_ms
-                else "async-warmup"
-            ),
-            "job_id": str(latest.get("job_id", "") or ""),
-            "latency_ms": latency_ms,
-            "transport_latency_ms": _safe_float(
-                latest.get("transport_latency_ms", 0.0),
-                0.0,
-            ),
-            "age_ms": round(age_ms, 3),
-            "async": True,
-        }
+        return local_budget, build_sim_slice_async_fallback_meta(
+            mode=normalized_mode,
+            latest=latest,
+            latency_ms=latency_ms,
+            age_ms=age_ms,
+            stale_limit_ms=stale_limit_ms,
+        )
 
     remote_budget, remote_meta = _request_sim_point_budget_remote_sync(
         mode=normalized_mode,
@@ -568,21 +529,14 @@ def resolve_sim_point_budget_slice(
     )
     latency_ms = round((time.monotonic() - started) * 1000.0, 3)
     if remote_budget is None:
-        return local_budget, {
-            "mode": normalized_mode,
-            "source": str(
-                remote_meta.get("source", "python-fallback") or "python-fallback"
-            ),
-            "fallback": True,
-            "reason": str(remote_meta.get("reason", "unknown") or "unknown"),
-            "job_id": str(remote_meta.get("job_id", "") or ""),
-            "latency_ms": latency_ms,
-        }
+        return local_budget, build_sim_slice_remote_fallback_meta(
+            mode=normalized_mode,
+            remote_meta=remote_meta,
+            latency_ms=latency_ms,
+        )
 
-    return remote_budget, {
-        "mode": normalized_mode,
-        "source": str(remote_meta.get("source", "c-worker") or "c-worker"),
-        "fallback": False,
-        "job_id": str(remote_meta.get("job_id", "") or ""),
-        "latency_ms": latency_ms,
-    }
+    return remote_budget, build_sim_slice_remote_success_meta(
+        mode=normalized_mode,
+        remote_meta=remote_meta,
+        latency_ms=latency_ms,
+    )

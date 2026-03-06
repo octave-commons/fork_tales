@@ -184,6 +184,9 @@ from . import catalog_stream_utils as catalog_stream_utils_module
 from . import runtime_catalog_fallback_utils as runtime_catalog_fallback_utils_module
 from . import runtime_io_utils as runtime_io_utils_module
 from . import github_conversation_utils as github_conversation_utils_module
+from . import server_query_daimoi_utils as server_query_daimoi_utils_module
+from . import server_runtime_health_utils as server_runtime_health_utils_module
+from . import server_runtime_config_utils as server_runtime_config_utils_module
 from . import server_misc_utils as server_misc_utils_module
 from . import simulation_ws_particles_utils as simulation_ws_particles_utils_module
 from . import simulation_http_trim_utils as simulation_http_trim_utils_module
@@ -214,8 +217,12 @@ from . import (
 )
 from . import simulation_ws_send_controller as simulation_ws_send_controller_module
 from . import (
+    simulation_ws_shared_payload_utils as simulation_ws_shared_payload_utils_module,
+)
+from . import (
     simulation_ws_tick_policy_controller as simulation_ws_tick_policy_controller_module,
 )
+from . import simulation_ws_shared_controller as simulation_ws_shared_controller_module
 from . import ws_upgrade_controller as ws_upgrade_controller_module
 from . import (
     simulation_bootstrap_state_utils as simulation_bootstrap_state_utils_module,
@@ -230,6 +237,8 @@ from . import world_runtime_controller as world_runtime_controller_module
 from . import muse_mvc_controller as muse_mvc_controller_module
 from . import muse_threat_radar_utils as muse_threat_radar_utils_module
 from . import muse_runtime_backend_utils as muse_runtime_backend_utils_module
+from . import muse_ws_stream_utils as muse_ws_stream_utils_module
+from .study_snapshot_response_utils import get_or_build_study_snapshot_response
 
 
 _RUNTIME_CATALOG_CACHE_LOCK = threading.Lock()
@@ -253,6 +262,10 @@ _RUNTIME_CATALOG_HTTP_CACHE_SECONDS = max(
 )
 _RUNTIME_CATALOG_HTTP_CACHE_LOCK = threading.Lock()
 _RUNTIME_CATALOG_HTTP_CACHE: dict[str, dict[str, Any]] = {}
+_STUDY_RESPONSE_CACHE_SECONDS = max(
+    0.25,
+    float(os.getenv("STUDY_RESPONSE_CACHE_SECONDS", "2.5") or "2.5"),
+)
 _RUNTIME_ETA_MU_SYNC_SECONDS = max(
     0.5,
     float(os.getenv("RUNTIME_ETA_MU_SYNC_SECONDS", "6.0") or "6.0"),
@@ -343,40 +356,11 @@ _SIMULATION_HTTP_WARMUP_DELAY_SECONDS = max(
 
 
 def _normalize_query_text(text: str) -> str:
-    raw = str(text or "").strip()
-    if not raw:
-        return ""
-    return " ".join(raw.split())[:220]
+    return server_query_daimoi_utils_module.normalize_query_text(text)
 
 
 def _query_variant_terms(query_text: str) -> list[str]:
-    base = _normalize_query_text(query_text)
-    if not base:
-        return []
-
-    lowered = base.lower()
-    token_rows = [
-        token
-        for token in "".join(
-            ch if (ch.isalnum() or ch.isspace()) else " " for ch in lowered
-        ).split()
-        if token
-    ]
-
-    variants: list[str] = []
-    for candidate in (
-        base,
-        lowered,
-        " ".join(token_rows),
-        " ".join(token_rows[:4]),
-        " ".join(token_rows[-4:]),
-    ):
-        clean = _normalize_query_text(candidate)
-        if clean and clean not in variants:
-            variants.append(clean)
-        if len(variants) >= 6:
-            break
-    return variants
+    return server_query_daimoi_utils_module.query_variant_terms(query_text)
 
 
 def _build_search_daimoi_meta(
@@ -385,53 +369,14 @@ def _build_search_daimoi_meta(
     target: str,
     model: str | None,
 ) -> dict[str, Any]:
-    variants = _query_variant_terms(query_text)
-    if not variants:
-        return {}
-
-    target_text = str(target or "").strip().lower()
-    target_presence_ids: list[str] = []
-    for row in ENTITY_MANIFEST:
-        if not isinstance(row, dict):
-            continue
-        presence_id = str(row.get("id", "") or "").strip()
-        if not presence_id:
-            continue
-        if (
-            presence_id.lower() in target_text
-            and presence_id not in target_presence_ids
-        ):
-            target_presence_ids.append(presence_id)
-
-    component_rows: list[dict[str, Any]] = []
-    for index, term in enumerate(variants[:6]):
-        component_id = hashlib.sha1(f"{term}|{index}".encode("utf-8")).hexdigest()[:12]
-        embedding = _normalize_embedding_vector(_ollama_embed(term, model=model))
-        component: dict[str, Any] = {
-            "component_id": f"query:{component_id}",
-            "component_type": "query-term",
-            "kind": "search",
-            "text": term,
-            "weight": round(max(0.2, 1.0 - (index * 0.12)), 6),
-            "variant_rank": index,
-            "embedding_dim": 0,
-        }
-        if embedding:
-            component["embedding_dim"] = len(embedding)
-            component["embedding_preview"] = [
-                round(float(value), 6) for value in embedding[:8]
-            ]
-        component_rows.append(component)
-
-    return {
-        "record": "ημ.user-search-daimoi.v1",
-        "schema_version": "user.search.daimoi.v1",
-        "query": variants[0],
-        "variant_count": len(variants),
-        "embed_model": str(model or "").strip(),
-        "target_presence_ids": target_presence_ids,
-        "components": component_rows,
-    }
+    return server_query_daimoi_utils_module.build_search_daimoi_meta(
+        query_text,
+        target=target,
+        model=model,
+        entity_manifest=ENTITY_MANIFEST,
+        normalize_embedding_vector=_normalize_embedding_vector,
+        ollama_embed=_ollama_embed,
+    )
 
 
 _SIMULATION_HTTP_WARMUP_TIMEOUT_SECONDS = max(
@@ -531,25 +476,6 @@ _SIMULATION_HTTP_MAX_EMBED_IDS = max(
 _SIMULATION_HTTP_MAX_EMBEDDING_LINKS = max(
     0,
     int(float(os.getenv("SIMULATION_HTTP_MAX_EMBEDDING_LINKS", "28") or "28")),
-)
-_SIMULATION_HTTP_TRIM_CONFIG = (
-    simulation_http_trim_utils_module.SimulationHttpTrimConfig(
-        trim_enabled=_SIMULATION_HTTP_TRIM_ENABLED,
-        max_items=_SIMULATION_HTTP_MAX_ITEMS,
-        max_file_nodes=_SIMULATION_HTTP_MAX_FILE_NODES,
-        max_file_edges=_SIMULATION_HTTP_MAX_FILE_EDGES,
-        max_field_nodes=_SIMULATION_HTTP_MAX_FIELD_NODES,
-        max_tag_nodes=_SIMULATION_HTTP_MAX_TAG_NODES,
-        max_render_nodes=_SIMULATION_HTTP_MAX_RENDER_NODES,
-        max_crawler_nodes=_SIMULATION_HTTP_MAX_CRAWLER_NODES,
-        max_crawler_edges=_SIMULATION_HTTP_MAX_CRAWLER_EDGES,
-        max_crawler_field_nodes=_SIMULATION_HTTP_MAX_CRAWLER_FIELD_NODES,
-        max_text_excerpt_chars=_SIMULATION_HTTP_MAX_TEXT_EXCERPT_CHARS,
-        max_summary_chars=_SIMULATION_HTTP_MAX_SUMMARY_CHARS,
-        max_embed_layer_points=_SIMULATION_HTTP_MAX_EMBED_LAYER_POINTS,
-        max_embed_ids=_SIMULATION_HTTP_MAX_EMBED_IDS,
-        max_embedding_links=_SIMULATION_HTTP_MAX_EMBEDDING_LINKS,
-    )
 )
 _SIMULATION_HTTP_COMPACT_MAX_POINTS = max(
     256,
@@ -1016,102 +942,56 @@ _SIMULATION_WS_DAIMOI_METRICS_MIN_SLACK_MS = max(
 
 def _runtime_ws_client_snapshot() -> dict[str, int]:
     with _RUNTIME_WS_CLIENT_LOCK:
-        return {
-            "active_clients": int(_RUNTIME_WS_CLIENT_COUNT),
-            "max_clients": int(_RUNTIME_WS_MAX_CLIENTS),
-        }
+        return server_runtime_health_utils_module.runtime_ws_client_snapshot(
+            active_count=_RUNTIME_WS_CLIENT_COUNT,
+            max_clients=_RUNTIME_WS_MAX_CLIENTS,
+        )
 
 
 def _runtime_ws_try_acquire_client_slot() -> bool:
     global _RUNTIME_WS_CLIENT_COUNT
     with _RUNTIME_WS_CLIENT_LOCK:
-        if _RUNTIME_WS_CLIENT_COUNT >= _RUNTIME_WS_MAX_CLIENTS:
+        acquired, next_count = (
+            server_runtime_health_utils_module.runtime_ws_try_acquire_client_slot(
+                active_count=_RUNTIME_WS_CLIENT_COUNT,
+                max_clients=_RUNTIME_WS_MAX_CLIENTS,
+            )
+        )
+        if not acquired:
             return False
-        _RUNTIME_WS_CLIENT_COUNT += 1
+        _RUNTIME_WS_CLIENT_COUNT = int(next_count)
     return True
 
 
 def _runtime_ws_release_client_slot() -> None:
     global _RUNTIME_WS_CLIENT_COUNT
     with _RUNTIME_WS_CLIENT_LOCK:
-        _RUNTIME_WS_CLIENT_COUNT = max(0, _RUNTIME_WS_CLIENT_COUNT - 1)
+        _RUNTIME_WS_CLIENT_COUNT = (
+            server_runtime_health_utils_module.runtime_ws_release_client_slot(
+                active_count=_RUNTIME_WS_CLIENT_COUNT,
+            )
+        )
 
 
 def _runtime_guard_state(resource_snapshot: dict[str, Any]) -> dict[str, Any]:
-    snapshot = resource_snapshot if isinstance(resource_snapshot, dict) else {}
-    devices = (
-        snapshot.get("devices", {}) if isinstance(snapshot.get("devices"), dict) else {}
+    return server_runtime_health_utils_module.runtime_guard_state(
+        resource_snapshot,
+        safe_float=_safe_float,
+        cpu_utilization_critical=_RUNTIME_GUARD_CPU_UTILIZATION_CRITICAL,
+        memory_pressure_critical=_RUNTIME_GUARD_MEMORY_PRESSURE_CRITICAL,
+        log_error_ratio_critical=_RUNTIME_GUARD_LOG_ERROR_RATIO_CRITICAL,
     )
-    cpu = devices.get("cpu", {}) if isinstance(devices.get("cpu"), dict) else {}
-    log_watch = (
-        snapshot.get("log_watch", {})
-        if isinstance(snapshot.get("log_watch"), dict)
-        else {}
-    )
-
-    cpu_utilization = _safe_float(cpu.get("utilization", 0.0), 0.0)
-    memory_pressure = _safe_float(cpu.get("memory_pressure", 0.0), 0.0)
-    error_ratio = _safe_float(log_watch.get("error_ratio", 0.0), 0.0)
-    hot_devices = [
-        str(item).strip()
-        for item in snapshot.get("hot_devices", [])
-        if str(item).strip()
-    ]
-
-    reasons: list[str] = []
-    mode = "normal"
-
-    if cpu_utilization >= _RUNTIME_GUARD_CPU_UTILIZATION_CRITICAL:
-        mode = "critical"
-        reasons.append("cpu_hot")
-    if memory_pressure >= _RUNTIME_GUARD_MEMORY_PRESSURE_CRITICAL:
-        mode = "critical"
-        reasons.append("memory_pressure_high")
-    if error_ratio >= _RUNTIME_GUARD_LOG_ERROR_RATIO_CRITICAL:
-        mode = "critical"
-        reasons.append("runtime_log_error_ratio_high")
-
-    if mode == "normal":
-        if hot_devices:
-            mode = "degraded"
-            reasons.append("hot_devices")
-        if error_ratio >= (_RUNTIME_GUARD_LOG_ERROR_RATIO_CRITICAL * 0.65):
-            mode = "degraded"
-            reasons.append("runtime_log_warning_ratio")
-        if cpu_utilization >= (_RUNTIME_GUARD_CPU_UTILIZATION_CRITICAL * 0.84):
-            mode = "degraded"
-            reasons.append("cpu_watch")
-        if memory_pressure >= (_RUNTIME_GUARD_MEMORY_PRESSURE_CRITICAL * 0.85):
-            mode = "degraded"
-            reasons.append("memory_pressure_watch")
-
-    return {
-        "mode": mode,
-        "reasons": reasons,
-        "cpu_utilization": round(cpu_utilization, 2),
-        "memory_pressure": round(memory_pressure, 4),
-        "log_error_ratio": round(error_ratio, 4),
-        "hot_devices": hot_devices,
-        "critical_thresholds": {
-            "cpu_utilization": _RUNTIME_GUARD_CPU_UTILIZATION_CRITICAL,
-            "memory_pressure": _RUNTIME_GUARD_MEMORY_PRESSURE_CRITICAL,
-            "log_error_ratio": _RUNTIME_GUARD_LOG_ERROR_RATIO_CRITICAL,
-        },
-    }
 
 
 def _runtime_health_payload(part_root: Path) -> dict[str, Any]:
-    resource_snapshot = _resource_monitor_snapshot(part_root=part_root)
-    guard = _runtime_guard_state(resource_snapshot)
-    ws = _runtime_ws_client_snapshot()
-    return {
-        "ok": True,
-        "record": "eta-mu.runtime-health.v1",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "guard": guard,
-        "websocket": ws,
-        "degraded": str(guard.get("mode", "normal")) != "normal",
-    }
+    return server_runtime_health_utils_module.runtime_health_payload(
+        part_root,
+        resource_monitor_snapshot=lambda path: _resource_monitor_snapshot(
+            part_root=path
+        ),
+        guard_state_builder=_runtime_guard_state,
+        ws_snapshot_builder=_runtime_ws_client_snapshot,
+    )
 
 
 _CONFIG_MODULE_SPECS: dict[str, dict[str, Any]] = {
@@ -1170,228 +1050,11 @@ def _config_runtime_version_bump() -> int:
         return int(_CONFIG_RUNTIME_VERSION)
 
 
-def _config_numeric_scalar(value: Any) -> float | int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return int(value)
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            return None
-        return float(value)
-    return None
-
-
-def _config_numeric_only(value: Any) -> Any:
-    scalar = _config_numeric_scalar(value)
-    if scalar is not None:
-        return scalar
-
-    if isinstance(value, dict):
-        nested: dict[str, Any] = {}
-        for key in sorted(value.keys(), key=lambda item: str(item)):
-            numeric_value = _config_numeric_only(value[key])
-            if numeric_value is None:
-                continue
-            nested[str(key)] = numeric_value
-        return nested or None
-
-    if isinstance(value, (list, tuple, set)):
-        nested_list: list[Any] = []
-        sequence = value
-        if isinstance(value, set):
-            sequence = sorted(value, key=lambda item: str(item))
-        for item in sequence:
-            numeric_value = _config_numeric_only(item)
-            if numeric_value is None:
-                continue
-            nested_list.append(numeric_value)
-        return nested_list or None
-
-    return None
-
-
-def _config_numeric_leaf_count(value: Any) -> int:
-    scalar = _config_numeric_scalar(value)
-    if scalar is not None:
-        return 1
-    if isinstance(value, dict):
-        return sum(_config_numeric_leaf_count(item) for item in value.values())
-    if isinstance(value, (list, tuple, set)):
-        return sum(_config_numeric_leaf_count(item) for item in value)
-    return 0
-
-
-def _config_collect_module_constants(
-    module: Any,
-    *,
-    prefixes: tuple[str, ...],
-    exact_names: tuple[str, ...],
-) -> tuple[dict[str, Any], int]:
-    names = sorted(str(name) for name in vars(module).keys())
-    selected: dict[str, Any] = {}
-    numeric_leaf_count = 0
-    for name in names:
-        include = name in exact_names
-        if not include:
-            include = any(name.startswith(prefix) for prefix in prefixes)
-        if not include:
-            continue
-        numeric_value = _config_numeric_only(getattr(module, name, None))
-        if numeric_value is None:
-            continue
-        selected[name] = numeric_value
-        numeric_leaf_count += _config_numeric_leaf_count(numeric_value)
-    return selected, numeric_leaf_count
-
-
-def _config_collect_selected_names(
-    module: Any,
-    *,
-    prefixes: tuple[str, ...],
-    exact_names: tuple[str, ...],
-) -> list[str]:
-    names = sorted(str(name) for name in vars(module).keys())
-    selected: list[str] = []
-    for name in names:
-        include = name in exact_names
-        if not include:
-            include = any(name.startswith(prefix) for prefix in prefixes)
-        if not include:
-            continue
-        numeric_value = _config_numeric_only(getattr(module, name, None))
-        if numeric_value is None:
-            continue
-        selected.append(name)
-    return selected
-
-
-def _config_capture_runtime_baseline() -> dict[str, dict[str, Any]]:
-    baseline: dict[str, dict[str, Any]] = {}
-    for module_name, spec in _CONFIG_MODULE_SPECS.items():
-        module = spec.get("module")
-        if module is None:
-            continue
-        selected_names = _config_collect_selected_names(
-            module,
-            prefixes=tuple(spec.get("prefixes", ())),
-            exact_names=tuple(spec.get("exact_names", ())),
-        )
-        module_baseline: dict[str, Any] = {}
-        for name in selected_names:
-            module_baseline[name] = copy.deepcopy(getattr(module, name, None))
-        baseline[module_name] = module_baseline
-    return baseline
-
-
-def _config_normalize_path_tokens(path_raw: Any) -> list[str]:
-    if path_raw is None:
-        return []
-    if isinstance(path_raw, list):
-        return [str(item).strip() for item in path_raw if str(item).strip()]
-    if isinstance(path_raw, str):
-        clean = path_raw.strip()
-        if not clean:
-            return []
-        normalized = clean.replace("[", ".").replace("]", "")
-        return [token for token in normalized.split(".") if token]
-    return []
-
-
-def _config_resolve_dict_key(container: dict[Any, Any], token: str) -> Any:
-    if token in container:
-        return token
-    for key in container.keys():
-        if str(key) == token:
-            return key
-    raise KeyError(token)
-
-
-def _config_parse_list_index(token: str, length: int) -> int:
-    try:
-        index = int(token)
-    except Exception as exc:
-        raise ValueError(f"invalid_index:{token}") from exc
-    if index < 0:
-        index = length + index
-    if index < 0 or index >= length:
-        raise IndexError(f"index_out_of_range:{token}")
-    return index
-
-
-def _config_coerce_numeric_like(reference: Any, value: float | int) -> float | int:
-    if isinstance(reference, bool):
-        return int(round(float(value)))
-    if isinstance(reference, int):
-        return int(round(float(value)))
-    return float(value)
-
-
 _CONFIG_SCALAR_LIMITS: dict[tuple[str, str], tuple[float, float]] = {
     ("simulation", "SIMULATION_STREAM_DAIMOI_FRICTION"): (0.0, 2.0),
     ("simulation", "SIMULATION_STREAM_NEXUS_FRICTION"): (0.0, 2.0),
     ("simulation", "SIMULATION_STREAM_FRICTION"): (0.0, 2.0),
 }
-
-
-def _config_clamp_scalar_update(
-    *,
-    module_name: str,
-    key_name: str,
-    value: float | int,
-) -> float | int:
-    limits = _CONFIG_SCALAR_LIMITS.get((module_name, key_name))
-    if limits is None:
-        return value
-    lower, upper = limits
-    clamped = max(lower, min(upper, float(value)))
-    return clamped
-
-
-def _config_get_at_path(root: Any, path_tokens: list[str]) -> Any:
-    value = root
-    for token in path_tokens:
-        if isinstance(value, dict):
-            value = value[_config_resolve_dict_key(value, token)]
-            continue
-        if isinstance(value, (list, tuple)):
-            index = _config_parse_list_index(token, len(value))
-            value = value[index]
-            continue
-        raise TypeError(f"non_container_at:{token}")
-    return value
-
-
-def _config_set_at_path(
-    root: Any, path_tokens: list[str], new_scalar: float | int
-) -> Any:
-    if not path_tokens:
-        scalar = _config_numeric_scalar(root)
-        if scalar is None:
-            raise TypeError("target_not_numeric")
-        return _config_coerce_numeric_like(root, new_scalar)
-
-    token = path_tokens[0]
-    tail = path_tokens[1:]
-    if isinstance(root, dict):
-        key = _config_resolve_dict_key(root, token)
-        updated = dict(root)
-        updated[key] = _config_set_at_path(root[key], tail, new_scalar)
-        return updated
-
-    if isinstance(root, list):
-        index = _config_parse_list_index(token, len(root))
-        updated_list = list(root)
-        updated_list[index] = _config_set_at_path(root[index], tail, new_scalar)
-        return updated_list
-
-    if isinstance(root, tuple):
-        index = _config_parse_list_index(token, len(root))
-        updated_list = list(root)
-        updated_list[index] = _config_set_at_path(root[index], tail, new_scalar)
-        return tuple(updated_list)
-
-    raise TypeError(f"non_container_at:{token}")
 
 
 def _config_apply_update(
@@ -1401,99 +1064,15 @@ def _config_apply_update(
     path_tokens: list[str],
     value: Any,
 ) -> dict[str, Any]:
-    requested_module = str(module_name or "").strip().lower()
-    requested_key = str(key_name or "").strip()
-    if not requested_module:
-        return {"ok": False, "error": "module_required"}
-    if not requested_key:
-        return {"ok": False, "error": "key_required"}
-    if requested_module not in _CONFIG_MODULE_SPECS:
-        return {
-            "ok": False,
-            "error": "unknown_module",
-            "module": requested_module,
-            "available_modules": sorted(_CONFIG_MODULE_SPECS.keys()),
-        }
-
-    next_scalar = _config_numeric_scalar(value)
-    if next_scalar is None and isinstance(value, str):
-        text = value.strip()
-        if text:
-            try:
-                next_scalar = float(text)
-            except Exception:
-                next_scalar = None
-    if next_scalar is None:
-        return {
-            "ok": False,
-            "error": "numeric_value_required",
-            "module": requested_module,
-            "key": requested_key,
-        }
-    next_scalar_value: float | int = next_scalar
-    next_scalar_value = _config_clamp_scalar_update(
-        module_name=requested_module,
-        key_name=requested_key,
-        value=next_scalar_value,
+    return server_runtime_config_utils_module.config_apply_update(
+        module_name=module_name,
+        key_name=key_name,
+        path_tokens=path_tokens,
+        value=value,
+        config_module_specs=_CONFIG_MODULE_SPECS,
+        config_runtime_edit_lock=_CONFIG_RUNTIME_EDIT_LOCK,
+        scalar_limits=_CONFIG_SCALAR_LIMITS,
     )
-
-    spec = _CONFIG_MODULE_SPECS[requested_module]
-    module = spec.get("module")
-    if module is None:
-        return {
-            "ok": False,
-            "error": "module_unavailable",
-            "module": requested_module,
-        }
-
-    selected_names = set(
-        _config_collect_selected_names(
-            module,
-            prefixes=tuple(spec.get("prefixes", ())),
-            exact_names=tuple(spec.get("exact_names", ())),
-        )
-    )
-    if requested_key not in selected_names:
-        return {
-            "ok": False,
-            "error": "unknown_constant",
-            "module": requested_module,
-            "key": requested_key,
-        }
-
-    try:
-        with _CONFIG_RUNTIME_EDIT_LOCK:
-            current_value = copy.deepcopy(getattr(module, requested_key, None))
-            previous_leaf = _config_get_at_path(current_value, path_tokens)
-            updated_value = _config_set_at_path(
-                current_value,
-                path_tokens,
-                next_scalar_value,
-            )
-            setattr(module, requested_key, updated_value)
-            current_after = copy.deepcopy(getattr(module, requested_key, None))
-            current_leaf = _config_get_at_path(current_after, path_tokens)
-    except Exception as exc:
-        return {
-            "ok": False,
-            "error": "config_update_failed",
-            "detail": f"{exc.__class__.__name__}: {exc}",
-            "module": requested_module,
-            "key": requested_key,
-            "path": path_tokens,
-        }
-
-    return {
-        "ok": True,
-        "record": "eta-mu.runtime-config.update.v1",
-        "schema_version": "runtime.config.update.v1",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "module": requested_module,
-        "key": requested_key,
-        "path": path_tokens,
-        "previous": _config_numeric_only(previous_leaf),
-        "current": _config_numeric_only(current_leaf),
-    }
 
 
 def _config_reset_updates(
@@ -1502,150 +1081,57 @@ def _config_reset_updates(
     key_name: str = "",
     path_tokens: list[str] | None = None,
 ) -> dict[str, Any]:
-    requested_module = str(module_name or "").strip().lower()
-    requested_key = str(key_name or "").strip()
-    normalized_path = path_tokens or []
+    return server_runtime_config_utils_module.config_reset_updates(
+        module_name=module_name,
+        key_name=key_name,
+        path_tokens=path_tokens,
+        config_module_specs=_CONFIG_MODULE_SPECS,
+        config_runtime_baseline=_CONFIG_RUNTIME_BASELINE,
+        config_runtime_edit_lock=_CONFIG_RUNTIME_EDIT_LOCK,
+    )
 
-    if normalized_path and not requested_key:
-        return {
-            "ok": False,
-            "error": "key_required_for_path_reset",
-        }
 
-    available_modules = sorted(_CONFIG_MODULE_SPECS.keys())
-    if requested_module and requested_module not in _CONFIG_MODULE_SPECS:
-        return {
-            "ok": False,
-            "error": "unknown_module",
-            "module": requested_module,
-            "available_modules": available_modules,
-        }
+def _config_capture_runtime_baseline() -> dict[str, dict[str, Any]]:
+    return server_runtime_config_utils_module.config_capture_runtime_baseline(
+        _CONFIG_MODULE_SPECS,
+    )
 
-    module_names = [requested_module] if requested_module else available_modules
-    applied: list[dict[str, Any]] = []
 
-    with _CONFIG_RUNTIME_EDIT_LOCK:
-        for module_item in module_names:
-            spec = _CONFIG_MODULE_SPECS[module_item]
-            module = spec.get("module")
-            if module is None:
-                continue
-            baseline_module = _CONFIG_RUNTIME_BASELINE.get(module_item, {})
-            if not baseline_module:
-                continue
-            selected_names = set(
-                _config_collect_selected_names(
-                    module,
-                    prefixes=tuple(spec.get("prefixes", ())),
-                    exact_names=tuple(spec.get("exact_names", ())),
-                )
-            )
-            key_names = (
-                [requested_key] if requested_key else sorted(baseline_module.keys())
-            )
-            for key_item in key_names:
-                if key_item not in selected_names:
-                    continue
-                if key_item not in baseline_module:
-                    continue
-
-                baseline_value = copy.deepcopy(baseline_module[key_item])
-                if normalized_path:
-                    try:
-                        baseline_leaf = _config_get_at_path(
-                            baseline_value, normalized_path
-                        )
-                        baseline_scalar = _config_numeric_scalar(baseline_leaf)
-                        if baseline_scalar is None:
-                            continue
-                        current_value = copy.deepcopy(getattr(module, key_item, None))
-                        updated_value = _config_set_at_path(
-                            current_value,
-                            normalized_path,
-                            baseline_scalar,
-                        )
-                    except Exception:
-                        continue
-                else:
-                    updated_value = baseline_value
-
-                setattr(module, key_item, updated_value)
-                applied.append(
-                    {
-                        "module": module_item,
-                        "key": key_item,
-                        "path": list(normalized_path),
-                    }
-                )
-
-    if requested_key and not applied:
-        return {
-            "ok": False,
-            "error": "unknown_constant",
-            "module": requested_module,
-            "key": requested_key,
-        }
-
-    return {
-        "ok": True,
-        "record": "eta-mu.runtime-config.reset.v1",
-        "schema_version": "runtime.config.reset.v1",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "module": requested_module,
-        "key": requested_key,
-        "path": normalized_path,
-        "reset_count": len(applied),
-        "resets": applied[:128],
-    }
+def _config_normalize_path_tokens(path_raw: Any) -> list[str]:
+    return server_runtime_config_utils_module.config_normalize_path_tokens(path_raw)
 
 
 _CONFIG_RUNTIME_BASELINE = _config_capture_runtime_baseline()
 
 
+def _simulation_http_trim_config() -> (
+    simulation_http_trim_utils_module.SimulationHttpTrimConfig
+):
+    return simulation_http_trim_utils_module.SimulationHttpTrimConfig(
+        trim_enabled=_SIMULATION_HTTP_TRIM_ENABLED,
+        max_items=_SIMULATION_HTTP_MAX_ITEMS,
+        max_file_nodes=_SIMULATION_HTTP_MAX_FILE_NODES,
+        max_file_edges=_SIMULATION_HTTP_MAX_FILE_EDGES,
+        max_field_nodes=_SIMULATION_HTTP_MAX_FIELD_NODES,
+        max_tag_nodes=_SIMULATION_HTTP_MAX_TAG_NODES,
+        max_render_nodes=_SIMULATION_HTTP_MAX_RENDER_NODES,
+        max_crawler_nodes=_SIMULATION_HTTP_MAX_CRAWLER_NODES,
+        max_crawler_edges=_SIMULATION_HTTP_MAX_CRAWLER_EDGES,
+        max_crawler_field_nodes=_SIMULATION_HTTP_MAX_CRAWLER_FIELD_NODES,
+        max_text_excerpt_chars=_SIMULATION_HTTP_MAX_TEXT_EXCERPT_CHARS,
+        max_summary_chars=_SIMULATION_HTTP_MAX_SUMMARY_CHARS,
+        max_embed_layer_points=_SIMULATION_HTTP_MAX_EMBED_LAYER_POINTS,
+        max_embed_ids=_SIMULATION_HTTP_MAX_EMBED_IDS,
+        max_embedding_links=_SIMULATION_HTTP_MAX_EMBEDDING_LINKS,
+    )
+
+
 def _config_payload(*, module_filter: str = "") -> dict[str, Any]:
-    requested = str(module_filter or "").strip().lower()
-    available_modules = sorted(_CONFIG_MODULE_SPECS.keys())
-    if requested and requested not in _CONFIG_MODULE_SPECS:
-        return {
-            "ok": False,
-            "error": "unknown_module",
-            "requested_module": requested,
-            "available_modules": available_modules,
-        }
-
-    module_names = [requested] if requested else available_modules
-
-    modules_payload: dict[str, Any] = {}
-    total_constants = 0
-    total_numeric_leaf_count = 0
-    for module_name in module_names:
-        spec = _CONFIG_MODULE_SPECS[module_name]
-        constants, leaf_count = _config_collect_module_constants(
-            spec["module"],
-            prefixes=tuple(spec["prefixes"]),
-            exact_names=tuple(spec["exact_names"]),
-        )
-        modules_payload[module_name] = {
-            "constants": copy.deepcopy(constants),
-            "constant_count": len(constants),
-            "numeric_leaf_count": leaf_count,
-        }
-        total_constants += len(constants)
-        total_numeric_leaf_count += leaf_count
-
-    return {
-        "ok": True,
-        "record": "eta-mu.runtime-config.v1",
-        "schema_version": "runtime.config.v1",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "runtime_config_version": _config_runtime_version_snapshot(),
-        "available_modules": available_modules,
-        "requested_module": requested,
-        "module_count": len(modules_payload),
-        "constant_count": total_constants,
-        "numeric_leaf_count": total_numeric_leaf_count,
-        "modules": modules_payload,
-    }
+    return server_runtime_config_utils_module.config_payload(
+        module_filter=module_filter,
+        config_module_specs=_CONFIG_MODULE_SPECS,
+        runtime_version_snapshot=_config_runtime_version_snapshot,
+    )
 
 
 def _json_compact(payload: Any) -> str:
@@ -1947,7 +1433,7 @@ def _simulation_http_slice_rows(value: Any, *, max_rows: int) -> list[Any]:
 def _simulation_http_compact_embed_layer_point(value: Any) -> dict[str, Any] | None:
     return simulation_http_trim_utils_module.simulation_http_compact_embed_layer_point(
         value,
-        config=_SIMULATION_HTTP_TRIM_CONFIG,
+        config=_simulation_http_trim_config(),
     )
 
 
@@ -1960,21 +1446,21 @@ def _simulation_http_compact_embedding_link(value: Any) -> dict[str, Any] | None
 def _simulation_http_compact_file_node(value: Any) -> dict[str, Any] | None:
     return simulation_http_trim_utils_module.simulation_http_compact_file_node(
         value,
-        config=_SIMULATION_HTTP_TRIM_CONFIG,
+        config=_simulation_http_trim_config(),
     )
 
 
 def _simulation_http_compact_file_graph_node(value: Any) -> dict[str, Any] | None:
     return simulation_http_trim_utils_module.simulation_http_compact_file_graph_node(
         value,
-        config=_SIMULATION_HTTP_TRIM_CONFIG,
+        config=_simulation_http_trim_config(),
     )
 
 
 def _simulation_http_trim_catalog(catalog: dict[str, Any]) -> dict[str, Any]:
     return simulation_http_trim_utils_module.simulation_http_trim_catalog(
         catalog,
-        config=_SIMULATION_HTTP_TRIM_CONFIG,
+        config=_simulation_http_trim_config(),
     )
 
 
@@ -4033,6 +3519,41 @@ class WorldHandler(BaseHTTPRequestHandler):
         def send_ws(payload: dict[str, Any]) -> None:
             ws_send_controller.send(payload)
 
+        use_shared_ws_stream = bool(
+            stream_mode == "workers"
+            and stream_cached_snapshots
+            and effective_skip_catalog_bootstrap
+            and not catalog_events_enabled
+        )
+        if use_shared_ws_stream:
+
+            def _collect_shared_stream_frame() -> tuple[dict[str, Any], str]:
+                return simulation_ws_shared_payload_utils_module.collect_shared_stream_frame(
+                    part_root=self.part_root,
+                    perspective=perspective_key,
+                    payload_mode=payload_mode_key,
+                    load_cached_payload=_simulation_ws_load_cached_payload,
+                    json_compact=_json_compact,
+                )
+
+            shared_stream_key = (
+                f"sim-ws:{perspective_key}:{payload_mode_key}:{particle_payload_key}"
+            )
+            simulation_ws_shared_controller_module.handle_shared_simulation_websocket_stream(
+                connection=self.connection,
+                send_ws=send_ws,
+                consume_ws_client_frame=_consume_ws_client_frame,
+                release_client_slot=_runtime_ws_release_client_slot,
+                stream_key=shared_stream_key,
+                collect_frame=_collect_shared_stream_frame,
+                refresh_seconds=max(0.25, _SIMULATION_WS_CACHE_REFRESH_SECONDS),
+                heartbeat_seconds=max(
+                    SIM_TICK_SECONDS,
+                    _SIMULATION_WS_FULL_SNAPSHOT_HEARTBEAT_SECONDS,
+                ),
+            )
+            return
+
         # Use poll for non-blocking socket reads
         poll = select.poll()
         poll.register(self.connection, select.POLLIN)
@@ -4246,46 +3767,6 @@ class WorldHandler(BaseHTTPRequestHandler):
             delta_payload = _build_ws_delta_payload(simulation)
             return snapshot_payload, delta_payload, projection
 
-        def maybe_send_muse_events(now_monotonic: float) -> None:
-            nonlocal muse_event_seq
-            nonlocal last_muse_poll
-
-            if now_monotonic - last_muse_poll < _SIMULATION_WS_MUSE_POLL_SECONDS:
-                return
-
-            try:
-                self._muse_threat_radar_tick(
-                    now_monotonic=now_monotonic,
-                    force=False,
-                    reason="ws.poll",
-                )
-            except Exception:
-                pass
-
-            previous_muse_seq = muse_event_seq
-            muse_events = self._muse_manager().list_events(
-                since_seq=previous_muse_seq,
-                limit=96,
-            )
-            if muse_events:
-                muse_event_seq = max(
-                    previous_muse_seq,
-                    max(
-                        int(row.get("seq", 0))
-                        for row in muse_events
-                        if isinstance(row, dict)
-                    ),
-                )
-                send_ws(
-                    {
-                        "type": "muse_events",
-                        "events": muse_events,
-                        "since_seq": previous_muse_seq,
-                        "next_seq": muse_event_seq,
-                    }
-                )
-            last_muse_poll = now_monotonic
-
         try:
             if effective_skip_catalog_bootstrap:
                 catalog = {}
@@ -4310,24 +3791,15 @@ class WorldHandler(BaseHTTPRequestHandler):
                     }
                 )
             if not effective_skip_catalog_bootstrap:
-                muse_bootstrap_events = self._muse_manager().list_events(
-                    since_seq=0,
-                    limit=96,
+                muse_event_seq = (
+                    muse_ws_stream_utils_module.stream_muse_bootstrap_events(
+                        handler=self,
+                        send_ws=send_ws,
+                        muse_event_seq=muse_event_seq,
+                        enabled=True,
+                        event_limit=96,
+                    )
                 )
-                if muse_bootstrap_events:
-                    muse_event_seq = max(
-                        int(row.get("seq", 0))
-                        for row in muse_bootstrap_events
-                        if isinstance(row, dict)
-                    )
-                    send_ws(
-                        {
-                            "type": "muse_events",
-                            "events": muse_bootstrap_events,
-                            "since_seq": 0,
-                            "next_seq": muse_event_seq,
-                        }
-                    )
 
             if stream_cached_snapshots:
                 if effective_skip_catalog_bootstrap:
@@ -5427,7 +4899,18 @@ class WorldHandler(BaseHTTPRequestHandler):
                             tick_slack_ms() > 1.0
                             and not effective_skip_catalog_bootstrap
                         ):
-                            maybe_send_muse_events(now_monotonic)
+                            (
+                                muse_event_seq,
+                                last_muse_poll,
+                            ) = muse_ws_stream_utils_module.maybe_send_muse_events(
+                                handler=self,
+                                send_ws=send_ws,
+                                now_monotonic=now_monotonic,
+                                muse_event_seq=muse_event_seq,
+                                last_muse_poll=last_muse_poll,
+                                server_module=sys.modules[__name__],
+                                event_limit=96,
+                            )
                         last_sim_tick = now_monotonic
                         continue
 
@@ -5584,7 +5067,18 @@ class WorldHandler(BaseHTTPRequestHandler):
                         last_simulation_for_delta = simulation_delta_payload
 
                     if tick_slack_ms() > 1.0 and not effective_skip_catalog_bootstrap:
-                        maybe_send_muse_events(now_monotonic)
+                        (
+                            muse_event_seq,
+                            last_muse_poll,
+                        ) = muse_ws_stream_utils_module.maybe_send_muse_events(
+                            handler=self,
+                            send_ws=send_ws,
+                            now_monotonic=now_monotonic,
+                            muse_event_seq=muse_event_seq,
+                            last_muse_poll=last_muse_poll,
+                            server_module=sys.modules[__name__],
+                            event_limit=96,
+                        )
                     last_sim_tick = now_monotonic
 
                 if (
@@ -6389,34 +5883,40 @@ class WorldHandler(BaseHTTPRequestHandler):
                 str(params.get("include_truth", ["false"])[0] or "false"),
                 default=False,
             )
-            queue_snapshot = self.task_queue.snapshot(include_pending=True)
-            council_snapshot = self.council_chamber.snapshot(
-                include_decisions=True,
-                limit=limit,
-            )
-            drift_payload = build_drift_scan_payload(self.part_root, self.vault_root)
-            resource_snapshot = _resource_monitor_snapshot(part_root=self.part_root)
-            _INFLUENCE_TRACKER.record_resource_heartbeat(
-                resource_snapshot,
-                source="api.study",
-            )
+            study_cache_key = f"limit={limit}|include_truth={int(include_truth_state)}"
 
-            truth_gate_blocked: bool | None = None
-            if include_truth_state:
-                try:
-                    truth_state = self._collect_catalog_fast().get("truth_state", {})
-                    gate = (
-                        truth_state.get("gate", {})
-                        if isinstance(truth_state, dict)
-                        else {}
-                    )
-                    if isinstance(gate, dict):
-                        truth_gate_blocked = bool(gate.get("blocked", False))
-                except Exception:
-                    truth_gate_blocked = None
+            def _build_study_payload() -> dict[str, Any]:
+                queue_snapshot = self.task_queue.snapshot(include_pending=True)
+                council_snapshot = self.council_chamber.snapshot(
+                    include_decisions=True,
+                    limit=limit,
+                )
+                drift_payload = build_drift_scan_payload(
+                    self.part_root, self.vault_root
+                )
+                resource_snapshot = _resource_monitor_snapshot(part_root=self.part_root)
+                _INFLUENCE_TRACKER.record_resource_heartbeat(
+                    resource_snapshot,
+                    source="api.study",
+                )
 
-            self._send_json(
-                build_study_snapshot(
+                truth_gate_blocked: bool | None = None
+                if include_truth_state:
+                    try:
+                        truth_state = self._collect_catalog_fast().get(
+                            "truth_state", {}
+                        )
+                        gate = (
+                            truth_state.get("gate", {})
+                            if isinstance(truth_state, dict)
+                            else {}
+                        )
+                        if isinstance(gate, dict):
+                            truth_gate_blocked = bool(gate.get("blocked", False))
+                    except Exception:
+                        truth_gate_blocked = None
+
+                return build_study_snapshot(
                     self.part_root,
                     self.vault_root,
                     queue_snapshot=queue_snapshot,
@@ -6424,6 +5924,13 @@ class WorldHandler(BaseHTTPRequestHandler):
                     drift_payload=drift_payload,
                     truth_gate_blocked=truth_gate_blocked,
                     resource_snapshot=resource_snapshot,
+                )
+
+            self._send_json(
+                get_or_build_study_snapshot_response(
+                    cache_key=study_cache_key,
+                    max_age_seconds=_STUDY_RESPONSE_CACHE_SECONDS,
+                    builder=_build_study_payload,
                 )
             )
             return
