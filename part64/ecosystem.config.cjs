@@ -1,3 +1,5 @@
+const path = require("node:path");
+
 const resolveNvidiaVisibleDevices = () => {
   const raw = String(process.env.NVIDIA_VISIBLE_DEVICES || "all").trim();
   const probe = raw.toLowerCase();
@@ -15,6 +17,18 @@ const resolveOrtGpuIncludeDir = () =>
     process.env.CDB_ORT_GPU_INCLUDE_DIR ||
       "/app/onnxruntime-linux-x64-1.22.0/include",
   );
+
+const resolveLithNexusScript = () =>
+  String(
+    process.env.LITH_NEXUS_SCRIPT ||
+      path.resolve(__dirname, "..", "mcp-lith-nexus", "dist", "http.js"),
+  );
+
+const resolveLithNexusRepoRoot = () =>
+  String(process.env.LITH_NEXUS_REPO_ROOT || path.resolve(__dirname, ".."));
+
+const resolveLithNexusPythonWorkdir = () =>
+  String(process.env.LITH_NEXUS_PYTHON_WORKDIR || __dirname);
 
 module.exports = {
   apps: [
@@ -71,7 +85,7 @@ module.exports = {
           process.env.RUNTIME_CATALOG_CACHE_SECONDS || "25",
         RUNTIME_CATALOG_HTTP_CACHE_SECONDS:
           process.env.RUNTIME_CATALOG_HTTP_CACHE_SECONDS || "10",
-        WORLD_WEB_TRANSPORT: process.env.WORLD_WEB_TRANSPORT || "asgi",
+        WORLD_WEB_TRANSPORT: process.env.WORLD_WEB_TRANSPORT || "legacy",
         WORLD_WEB_LEGACY_PORT: process.env.WORLD_WEB_LEGACY_PORT || "18787",
         WORLD_WEB_ASGI_LIMIT_CONCURRENCY:
           process.env.WORLD_WEB_ASGI_LIMIT_CONCURRENCY || "384",
@@ -131,7 +145,7 @@ module.exports = {
       env: {
         PYTHONUNBUFFERED: "1",
       },
-      watch: ["code/tts_service.py"],
+      watch: false,
       autorestart: true,
     },
     {
@@ -150,6 +164,32 @@ module.exports = {
       watch: ["code/web_graph_weaver.js"],
       ignore_watch: ["world_state", "artifacts", "*.md", "__pycache__"],
       autorestart: true,
+    },
+    {
+      name: "eta-mu-lith-nexus-mcp",
+      cwd: __dirname,
+      script: resolveLithNexusScript(),
+      interpreter: "node",
+      env: {
+        PYTHONUNBUFFERED: "1",
+        LITH_NEXUS_REPO_ROOT: resolveLithNexusRepoRoot(),
+        LITH_NEXUS_PYTHON_WORKDIR: resolveLithNexusPythonWorkdir(),
+        LITH_NEXUS_HTTP_HOST: process.env.LITH_NEXUS_HTTP_HOST || "127.0.0.1",
+        LITH_NEXUS_HTTP_PORT: process.env.LITH_NEXUS_HTTP_PORT || "8794",
+        LITH_NEXUS_HTTP_PATH: process.env.LITH_NEXUS_HTTP_PATH || "/mcp",
+      },
+      watch: [
+        path.resolve(__dirname, "..", "mcp-lith-nexus", "dist", "**", "*.js"),
+      ],
+      ignore_watch: ["world_state", "artifacts", "*.md", "__pycache__"],
+      autorestart: true,
+      min_uptime: "5s",
+      max_restarts: 10,
+      restart_delay: 2000,
+      out_file: "./world_state/pm2-mcp-out.log",
+      error_file: "./world_state/pm2-mcp-error.log",
+      log_date_format: "YYYY-MM-DD HH:mm:ss Z",
+      merge_logs: true,
     }
   ],
 };
