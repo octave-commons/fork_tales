@@ -511,7 +511,7 @@ export function useWorldState(perspective: UIPerspective = 'hybrid') {
             simulation: simulationPayload,
             ...(projectionPayload ? { projection: projectionPayload } : {}),
           });
-        } else if (msgType === 'simulation_delta') {
+        } else if (msgType === 'simulation_delta' || msgType === 'delta') {
           const deltaPayload = msg.delta as { patch?: unknown } | undefined;
           const deltaPatch = deltaPayload?.patch;
           if (deltaPatch && typeof deltaPatch === 'object') {

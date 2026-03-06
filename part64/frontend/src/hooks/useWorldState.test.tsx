@@ -433,6 +433,57 @@ describe('useWorldState websocket worker streams', () => {
     });
   });
 
+  it('applies live delta websocket messages that use the compact delta type', async () => {
+    const { result } = renderHook(() => useWorldState('hybrid'));
+    const ws = MockWebSocket.instances[0];
+    act(() => {
+      ws.emitOpen();
+    });
+
+    act(() => {
+      ws.emitMessage(
+        packWsMessage({
+          type: 'simulation',
+          simulation: simulationFixture({
+            timestamp: '2026-02-21T18:00:03Z',
+            presence_dynamics: {
+              field_particles: [
+                { id: 'compact-lite:0', x: 0.12, y: 0.22 },
+              ],
+            },
+          }),
+        }),
+      );
+    });
+
+    act(() => {
+      ws.emitMessage(
+        packWsMessage({
+          type: 'delta',
+          delta: {
+            patch: {
+              timestamp: '2026-02-21T18:00:04Z',
+              presence_dynamics: {
+                field_particles: [
+                  { id: 'compact-lite:0', x: 0.34, y: 0.44 },
+                ],
+              },
+            },
+          },
+        }),
+      );
+    });
+
+    await waitFor(() => {
+      expect(result.current.simulation?.timestamp).toBe('2026-02-21T18:00:04Z');
+      expect(result.current.simulation?.presence_dynamics?.field_particles?.[0]).toMatchObject({
+        id: 'compact-lite:0',
+        x: 0.34,
+        y: 0.44,
+      });
+    });
+  });
+
   it('hydrates initial catalog from ndjson stream rows', async () => {
     const streamRows = [
       {

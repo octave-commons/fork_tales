@@ -71,6 +71,10 @@ module.exports = {
           process.env.CDB_EMBED_GPU_VISIBLE_DEVICES || resolveNvidiaVisibleDevices(),
         CDB_EMBED_GPU_CONTROLLER_PROFILE:
           process.env.CDB_EMBED_GPU_CONTROLLER_PROFILE || "energy",
+        CDB_EMBED_GPU_SIDECAR_SPLIT_RATIO:
+          process.env.CDB_EMBED_GPU_SIDECAR_SPLIT_RATIO || "0.0",
+        CDB_EMBED_GPU_SIDECAR_SPLIT_HOT_RATIO:
+          process.env.CDB_EMBED_GPU_SIDECAR_SPLIT_HOT_RATIO || "0.0",
         OPENVINO_EMBED_DEVICE: process.env.OPENVINO_EMBED_DEVICE || "NPU",
         CDB_EMBED_DEVICE: process.env.CDB_EMBED_DEVICE || "NPU",
         CDB_EMBED_AUTO_POLICY:
