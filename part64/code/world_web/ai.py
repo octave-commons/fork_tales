@@ -60,6 +60,7 @@ from .vecstore_layer_policy import (
     VecstoreLayerContext,
     resolve_vecstore_collection_name,
 )
+from .openplanner_bridge import summarize_openplanner_memory
 
 CHAT_TOOLS_BY_TYPE = {
     "flow": ["sing_line", "pulse_tag"],
@@ -2205,10 +2206,23 @@ def build_presence_say_payload(
     if clean_text:
         facts.append(f"user_text={clean_text[:160]}")
 
+    memory_lines = (
+        summarize_openplanner_memory(
+            query_text=clean_text,
+            session=presence_id,
+            limit=3,
+        )
+        if clean_text
+        else []
+    )
+    if memory_lines:
+        facts.append(f"openplanner_memory_count={len(memory_lines)}")
+
     say_intent = {
         "facts": facts,
         "asks": asks,
         "repairs": repairs,
+        "memory": memory_lines,
         "constraints": {
             "no_new_facts": True,
             "cite_refs": True,

@@ -32,6 +32,13 @@ describe("runtime endpoint helpers", () => {
     expect(runtimeApiUrl("/api/catalog")).toBe(`${window.location.origin}/sim/alpha/api/catalog`);
   });
 
+  it("derives mounted gateway prefix from browser location", () => {
+    window.history.replaceState({}, "", "/eta-mu/world");
+
+    expect(runtimeBaseUrl()).toBe(`${window.location.origin}/eta-mu`);
+    expect(runtimeApiUrl("/api/catalog")).toBe(`${window.location.origin}/eta-mu/api/catalog`);
+  });
+
   it("maps runtime base to websocket URL protocol", () => {
     window.__ETA_MU_RUNTIME__ = { worldBaseUrl: "https://example.org/root" };
 

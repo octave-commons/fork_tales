@@ -25,6 +25,7 @@ from .muse_threat_fallback_strategy import (
     THREAT_FOCUSED_MUSE_IDS,
     build_muse_threat_fallback_reply,
 )
+from .openplanner_bridge import ingest_single_muse_event
 
 
 MUSE_RUNTIME_RECORD = "eta-mu.muse-runtime.snapshot.v1"
@@ -54,20 +55,6 @@ BOOTSTRAP_MUSE_SPECS: tuple[dict[str, Any], ...] = (
         "anchor": {"x": 0.18, "y": 0.23, "zoom": 1.0, "kind": "bootstrap"},
         "role": "geopolitical",
         "description": "Geopolitical signal analyst. Monitors global threats, maritime security, domain risks.",
-    },
-    {
-        "id": "stability",
-        "label": "Stability",
-        "anchor": {"x": 0.5, "y": 0.22, "zoom": 1.0, "kind": "bootstrap"},
-        "role": "stability",
-        "description": "System stability observer. Tracks runtime health, resource balance, drift patterns.",
-    },
-    {
-        "id": "symmetry",
-        "label": "Symmetry",
-        "anchor": {"x": 0.82, "y": 0.23, "zoom": 1.0, "kind": "bootstrap"},
-        "role": "pattern",
-        "description": "Pattern recognition. Identifies structural parallels across subsystems.",
     },
     {
         "id": "github_security_review",
@@ -3090,6 +3077,10 @@ class MuseRuntimeManager:
         if len(events) > self._max_events:
             events = events[-self._max_events :]
         self._state["events"] = events
+        try:
+            ingest_single_muse_event(event)
+        except Exception:
+            pass
         return event
 
     def _persist_locked(self) -> None:
@@ -3114,6 +3105,22 @@ class MuseRuntimeManager:
         return state
 
     def _ensure_bootstrap_muses_locked(self) -> None:
+        removed_any = False
+        bootstrap_ids = {
+            str(spec.get("id", "")).strip()
+            for spec in BOOTSTRAP_MUSE_SPECS
+            if str(spec.get("id", "")).strip()
+        }
+        for muse_id in list(self._state["muses"].keys()):
+            if muse_id in bootstrap_ids:
+                continue
+            if muse_id in {"stability", "symmetry"}:
+                self._state["muses"].pop(muse_id, None)
+                self._state["messages"].pop(muse_id, None)
+                self._state["manifests"].pop(muse_id, None)
+                self._state["idempotency"].pop(muse_id, None)
+                self._state["rate_windows"].pop(muse_id, None)
+                removed_any = True
         for spec in BOOTSTRAP_MUSE_SPECS:
             muse_id = str(spec.get("id", "")).strip()
             if not muse_id:
@@ -3135,6 +3142,9 @@ class MuseRuntimeManager:
                 anchor=spec.get("anchor", {}),
                 user_intent_id="bootstrap",
             )
+            removed_any = True
+        if removed_any:
+            self._persist_locked()
 
     def _embedding_preview(self, seed: str) -> list[float]:
         vector: list[float] = []

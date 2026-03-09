@@ -155,14 +155,22 @@ services:
       RUNTIME_CATALOG_HTTP_CACHE_SECONDS: "${RUNTIME_CATALOG_HTTP_CACHE_SECONDS:-10}"
       WORLD_WEB_ASGI_WS_PING_INTERVAL_SECONDS: "0"
       WORLD_WEB_ASGI_WS_PING_TIMEOUT_SECONDS: "30"
-      RUNTIME_ETA_MU_SYNC_ENABLED: "0"
-      RUNTIME_ETA_MU_SYNC_SECONDS: "300.0"
+      RUNTIME_ETA_MU_SYNC_ENABLED: "1"
+      RUNTIME_ETA_MU_SYNC_SECONDS: "30.0"
       LITH_NEXUS_SCRIPT: "/srv/mcp-lith-nexus/dist/http.js"
-      LITH_NEXUS_REPO_ROOT: "/vault"
+      LITH_NEXUS_REPO_ROOT: "/workspace"
       LITH_NEXUS_PYTHON_WORKDIR: "/app"
+      WORLD_WEB_HOST: "127.0.0.1"
+      WORLD_WEB_PORT: "8787"
       LITH_NEXUS_HTTP_HOST: "0.0.0.0"
       LITH_NEXUS_HTTP_PORT: "8794"
       LITH_NEXUS_HTTP_PATH: "/mcp"
+      ETA_MU_INBOX_ROOT: "/workspace/.ημ"
+      ETA_MU_SYNC_DEBOUNCE_MS: "1500"
+      OPENPLANNER_ENABLED: "${OPENPLANNER_ENABLED:-1}"
+      OPENPLANNER_URL: "${OPENPLANNER_URL:-http://host.docker.internal:7777}"
+      OPENPLANNER_API_KEY: "${OPENPLANNER_API_KEY:-change-me}"
+      OPENPLANNER_PROJECT: "${OPENPLANNER_PROJECT:-eta-mu}"
       MUSE_RUNTIME_BACKEND: "${MUSE_RUNTIME_BACKEND:-json}"
       MUSE_RUNTIME_STATE_PATH: "${MUSE_RUNTIME_STATE_PATH:-/app/world_state/muse_runtime_state.json}"
       MUSE_RUNTIME_TURNS_PER_MINUTE: "${MUSE_RUNTIME_TURNS_PER_MINUTE:-60}"
@@ -195,8 +203,7 @@ services:
     volumes:
       - .:/app
       - ./world_state:/app/world_state
-      - ../.opencode/runtime:/app/.opencode/runtime:ro
-      - ../:/vault
+      - ${DEVEL_WORKSPACE_ROOT:-/home/err/devel}:/workspace
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /usr/lib/x86_64-linux-gnu/libze_intel_npu.so:/usr/lib/x86_64-linux-gnu/libze_intel_npu.so:ro
       - /usr/lib/x86_64-linux-gnu/libnpu_driver_compiler.so:/usr/lib/x86_64-linux-gnu/libnpu_driver_compiler.so:ro
@@ -223,6 +230,8 @@ services:
     image: nginx:1.27-alpine
     depends_on:
       - eta-mu-system
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${ETA_MU_GATEWAY_PORT:-8787}:80"
     cpus: "0.75"
@@ -233,6 +242,19 @@ services:
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
     networks:
       - eta-mu-sim-net
+    restart: unless-stopped
+
+  eta-mu-tts:
+    profiles:
+      - tts-docker
+    build:
+      context: .
+      dockerfile: Dockerfile.tts
+    ports:
+      - "8789:8788"
+    volumes:
+      - ./world_state:/app/world_state
+      - ./code/tts_service.py:/app/code/tts_service.py:ro
     restart: unless-stopped
 
   chroma:

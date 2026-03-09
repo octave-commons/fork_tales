@@ -238,6 +238,11 @@ from . import muse_mvc_controller as muse_mvc_controller_module
 from . import muse_threat_radar_utils as muse_threat_radar_utils_module
 from . import muse_runtime_backend_utils as muse_runtime_backend_utils_module
 from . import muse_ws_stream_utils as muse_ws_stream_utils_module
+from .openplanner_bridge import (
+    build_presence_say_openplanner_event,
+    build_user_input_openplanner_events,
+    ingest_openplanner_events,
+)
 from .study_snapshot_response_utils import get_or_build_study_snapshot_response
 
 
@@ -7188,6 +7193,10 @@ class WorldHandler(BaseHTTPRequestHandler):
                 "event_count": event_count,
                 "anchor_target": anchor_target,
             }
+            openplanner_result = ingest_openplanner_events(
+                build_user_input_openplanner_events(processed_events)
+            )
+            response["openplanner"] = openplanner_result
             if processed_events:
                 response["event"] = processed_events[-1]
             self._send_json(
@@ -7598,7 +7607,21 @@ class WorldHandler(BaseHTTPRequestHandler):
                 queue_snapshot=queue_snapshot,
                 part_root=self.part_root,
             )
-            self._send_json(build_presence_say_payload(catalog, text, presence_id))
+            payload = build_presence_say_payload(catalog, text, presence_id)
+            event = build_presence_say_openplanner_event(
+                presence_id=str(payload.get("presence_id", presence_id) or presence_id),
+                text=text,
+                payload=payload,
+            )
+            payload["openplanner"] = (
+                ingest_openplanner_events([event])
+                if isinstance(event, dict)
+                else {
+                    "ok": False,
+                    "error": "presence_not_indexed",
+                }
+            )
+            self._send_json(payload)
             return
 
         if parsed.path == "/api/drift/scan":

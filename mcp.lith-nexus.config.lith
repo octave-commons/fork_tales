@@ -1,14 +1,37 @@
 (config
   (roots
-    ["contracts" ".opencode/knowledge" ".opencode/promptdb" ".opencode/protocol" "specs" "manifest.lith"])
+    ["AGENTS.md"
+     "README.md"
+     "spec"
+     "specs"
+     "docs"
+     "services"
+     "packages"
+     "src"
+     "tools"
+     "orgs"
+     "vaults"
+     ".opencode/knowledge"
+     ".opencode/promptdb"
+     ".opencode/protocol"
+     "manifest.lith"])
   (include_ext [".lith" ".lisp" ".md"])
-  (ignore_glob ["**/node_modules/**" "**/dist/**" "**/.git/**"])
+  (ignore_glob ["**/node_modules/**"
+                "**/dist/**"
+                "**/.git/**"
+                "**/.next/**"
+                "**/target/**"
+                "**/build/**"
+                "**/coverage/**"
+                "**/.cache/**"
+                "**/.opencode/runtime/**"
+                "**/__pycache__/**"])
   (mime
     (lith "text/x-lith")
     (md "text/markdown"))
   (writes
     (facts_dir ".opencode/promptdb/facts")
-    (inbox_dir ".opencode/knowledge/inbox"))
+    (inbox_dir ".ημ"))
   (index
     (use_git_ls_files true)
     (watch false)))

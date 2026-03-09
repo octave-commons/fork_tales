@@ -599,6 +599,61 @@ def _collect_git_paths(repo_root: Path, roots: list[str]) -> list[Path]:
     return paths
 
 
+def _collect_submodule_git_paths(repo_root: Path, roots: list[str]) -> list[Path]:
+    command = ["git", "-C", str(repo_root), "submodule", "status", "--recursive"]
+    try:
+        proc = subprocess.run(command, capture_output=True, text=True, check=False)
+    except OSError:
+        return []
+    if proc.returncode != 0:
+        return []
+
+    paths: list[Path] = []
+    for raw_line in proc.stdout.splitlines():
+        line = str(raw_line or "").rstrip()
+        if not line:
+            continue
+        normalized = line.lstrip(" +-U")
+        parts = normalized.split()
+        if len(parts) < 2:
+            continue
+        submodule_rel = _normalize_rel_path(parts[1])
+        if not submodule_rel:
+            continue
+        submodule_abs = repo_root / submodule_rel
+        if not submodule_abs.exists() or not submodule_abs.is_dir():
+            continue
+        try:
+            sub_proc = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(submodule_abs),
+                    "ls-files",
+                    "-co",
+                    "--exclude-standard",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError:
+            continue
+        if sub_proc.returncode != 0:
+            continue
+        for sub_line in sub_proc.stdout.splitlines():
+            child_rel = _normalize_rel_path(sub_line)
+            if not child_rel:
+                continue
+            rel_path = _normalize_rel_path(f"{submodule_rel}/{child_rel}")
+            if not rel_path or not _within_roots(rel_path, roots):
+                continue
+            abs_path = repo_root / rel_path
+            if abs_path.exists() and abs_path.is_file():
+                paths.append(abs_path)
+    return paths
+
+
 def _collect_scan_paths(repo_root: Path, roots: list[str]) -> list[Path]:
     rows: list[Path] = []
     for root in roots:
@@ -622,12 +677,17 @@ def _collect_index_paths(repo_root: Path, config: dict[str, Any]) -> list[Path]:
     ]
     use_git = bool(((config.get("index") or {}).get("use_git_ls_files", True)))
     candidates = _collect_git_paths(repo_root, roots) if use_git else []
+    if use_git:
+        candidates.extend(_collect_submodule_git_paths(repo_root, roots))
     if not candidates:
         candidates = _collect_scan_paths(repo_root, roots)
     deduped: dict[Path, Path] = {}
     for path in candidates:
         abs_path = path.resolve()
-        rel_path = _normalize_rel_path(str(abs_path.relative_to(repo_root)))
+        try:
+            rel_path = _normalize_rel_path(str(abs_path.relative_to(repo_root)))
+        except ValueError:
+            continue
         if include_ext and abs_path.suffix.lower() not in include_ext:
             continue
         if _is_ignored(rel_path, ignore_globs):

@@ -37,7 +37,7 @@ module.exports = {
       cwd: __dirname,
       script: "code/world_web.py",
       interpreter: "python3",
-      args: "--host 0.0.0.0 --port 8787 --part-root /app --vault-root /vault",
+      args: "--host 0.0.0.0 --port 8787 --part-root /app --vault-root /workspace",
       env: {
         PYTHONUNBUFFERED: "1",
         NVIDIA_VISIBLE_DEVICES: resolveNvidiaVisibleDevices(),
@@ -85,6 +85,13 @@ module.exports = {
           process.env.TEXT_GENERATION_API_KEY || "",
         TEXT_GENERATION_API_KEY_HEADER:
           process.env.TEXT_GENERATION_API_KEY_HEADER || "X-API-Key",
+        OPENPLANNER_ENABLED: process.env.OPENPLANNER_ENABLED || "1",
+        OPENPLANNER_URL:
+          process.env.OPENPLANNER_URL || "http://127.0.0.1:7777",
+        OPENPLANNER_API_KEY:
+          process.env.OPENPLANNER_API_KEY || "change-me",
+        OPENPLANNER_PROJECT:
+          process.env.OPENPLANNER_PROJECT || "eta-mu",
         RUNTIME_CATALOG_SUBPROCESS_ENABLED:
           process.env.RUNTIME_CATALOG_SUBPROCESS_ENABLED || "1",
         RUNTIME_CATALOG_SUBPROCESS_TIMEOUT_SECONDS:
@@ -143,6 +150,8 @@ module.exports = {
       script: "code/world_io.js",
       env: {
         WORLD_API: process.env.WORLD_API || "http://127.0.0.1:8787",
+        ETA_MU_INBOX_ROOT: process.env.ETA_MU_INBOX_ROOT || "/workspace/.ημ",
+        ETA_MU_SYNC_DEBOUNCE_MS: process.env.ETA_MU_SYNC_DEBOUNCE_MS || "1500",
       },
       watch: ["code/world_io.js"],
       autorestart: true,
@@ -184,6 +193,8 @@ module.exports = {
         PYTHONUNBUFFERED: "1",
         LITH_NEXUS_REPO_ROOT: resolveLithNexusRepoRoot(),
         LITH_NEXUS_PYTHON_WORKDIR: resolveLithNexusPythonWorkdir(),
+        WORLD_WEB_HOST: process.env.WORLD_WEB_HOST || "127.0.0.1",
+        WORLD_WEB_PORT: process.env.WORLD_WEB_PORT || "8787",
         LITH_NEXUS_HTTP_HOST: process.env.LITH_NEXUS_HTTP_HOST || "127.0.0.1",
         LITH_NEXUS_HTTP_PORT: process.env.LITH_NEXUS_HTTP_PORT || "8794",
         LITH_NEXUS_HTTP_PATH: process.env.LITH_NEXUS_HTTP_PATH || "/mcp",
