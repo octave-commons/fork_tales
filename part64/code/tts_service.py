@@ -368,5 +368,8 @@ async def generate_tts(text: str = Query(...), speed: float = 1.0):
 
 if __name__ == "__main__":
     import uvicorn
+    import os
 
-    uvicorn.run(app, host="127.0.0.1", port=8788)
+    host = os.getenv("ETA_MU_TTS_HOST", "0.0.0.0")
+    port = int(os.getenv("ETA_MU_TTS_PORT", "8788"))
+    uvicorn.run(app, host=host, port=port)
