@@ -370,10 +370,36 @@ export function ThreatRadarPanel({
   const lastMuseEventRefreshAtRef = useRef(0);
   const streamRefreshInFlightRef = useRef(false);
   const lastStreamRefreshAtRef = useRef(0);
+  const managedOverflowRef = useRef<HTMLElement | null>(null);
   const snapshotHashByModeRef = useRef<Record<ThreatRadarMode, string>>({
     local: String(initialCachedReportRef.current?.snapshot_hash || "").trim(),
     global: String(readCachedThreatRadarReport("global")?.snapshot_hash || "").trim(),
   });
+
+  useEffect(() => {
+    if (!museChatPanel) {
+      return;
+    }
+    const root = managedOverflowRef.current;
+    const panelBody = root?.closest(".world-panel-body") as HTMLElement | null;
+    if (!panelBody) {
+      return;
+    }
+    const previousDisplay = panelBody.style.display;
+    const previousFlexDirection = panelBody.style.flexDirection;
+    const previousOverflow = panelBody.style.overflow;
+    const previousOverscrollBehavior = panelBody.style.overscrollBehavior;
+    panelBody.style.display = "flex";
+    panelBody.style.flexDirection = "column";
+    panelBody.style.overflow = "hidden";
+    panelBody.style.overscrollBehavior = "contain";
+    return () => {
+      panelBody.style.display = previousDisplay;
+      panelBody.style.flexDirection = previousFlexDirection;
+      panelBody.style.overflow = previousOverflow;
+      panelBody.style.overscrollBehavior = previousOverscrollBehavior;
+    };
+  }, [museChatPanel]);
 
   useEffect(() => {
     if (!lockedRadarMode) {
@@ -942,6 +968,15 @@ export function ThreatRadarPanel({
   const lastRunLabel = runtimeState?.last_run_at
     ? new Date(runtimeState.last_run_at).toLocaleString()
     : "not yet";
+  const contextHeading = radarMode === "local"
+    ? "LOCAL SOURCE CONTEXT"
+    : "GLOBAL SOURCE CONTEXT";
+  const contextScopeValue = radarMode === "local"
+    ? String(selectedThreat?.repo || radarFilter || "").trim()
+    : String(selectedThreat?.domain || selectedThreat?.kind || radarFilter || "").trim();
+  const compactHotHeading = radarMode === "local"
+    ? "Hot Repos / Kinds"
+    : "Hot Domains / Kinds";
 
   const askGlobalFeed = useCallback(async () => {
     if (radarMode !== "global") {
@@ -1024,6 +1059,213 @@ export function ThreatRadarPanel({
     selectedThreat,
     watchSources,
   ]);
+
+  if (museChatPanel) {
+    return (
+      <section ref={managedOverflowRef} className="threat-radar-muse-layout card relative flex h-full min-h-0 max-h-full flex-1 flex-col overflow-hidden">
+        <div className="absolute top-0 left-0 h-full w-1 bg-[#ef4444] opacity-75" />
+        <div className="grid min-h-0 max-h-full flex-1 grid-rows-[minmax(0,1fr)] gap-2 overflow-hidden lg:grid-cols-[minmax(14rem,1fr)_minmax(0,1.7fr)]">
+          <section className="flex min-h-0 max-h-full flex-col overflow-hidden rounded-lg border border-[var(--line)] bg-[rgba(10,14,22,0.82)] p-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs uppercase tracking-[0.16em] text-[#f4b4b4]">{contextHeading}</p>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {lockedRadarMode ? (
+                  <p className="rounded-md border border-[rgba(128,186,224,0.48)] bg-[rgba(18,42,60,0.72)] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-[#d8ecff]">
+                    {radarMode} scope
+                  </p>
+                ) : (
+                  <select
+                    value={radarMode}
+                    onChange={(event) => {
+                      const nextMode = event.currentTarget.value === "local" ? "local" : "global";
+                      reportRequestTokenRef.current += 1;
+                      const cachedReport = readCachedThreatRadarReport(nextMode);
+                      setRadarMode(nextMode);
+                      setRadarFilterInput("");
+                      setRadarFilter("");
+                      setReport(cachedReport);
+                      setLoading(cachedReport == null);
+                      setSelectedThreat(null);
+                      setConversationLoading(false);
+                      setConversationError(null);
+                      setConversationCommentCount(0);
+                      setConversationMarkdown("");
+                      setConversationUrl("");
+                      setGlobalAskInput("");
+                      setGlobalAskError(null);
+                      setGlobalAskReply("");
+                      setGlobalAskTurnId("");
+                    }}
+                    className="rounded-md border border-[var(--line)] bg-[rgba(17,19,26,0.9)] px-2 py-1 text-[11px] text-ink"
+                  >
+                    <option value="global">global</option>
+                    <option value="local">local</option>
+                  </select>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    forceTick().catch(() => {});
+                  }}
+                  disabled={forcingTick}
+                  className="rounded-md border border-[var(--line)] bg-[rgba(32,35,44,0.9)] px-2.5 py-1 text-[11px] font-semibold text-ink hover:bg-[rgba(44,49,61,0.95)] disabled:opacity-55"
+                >
+                  {forcingTick ? "running..." : "run now"}
+                </button>
+              </div>
+            </div>
+
+            <p className="mt-1.5 overflow-hidden text-ellipsis whitespace-nowrap text-[10px] text-[#a9c2d6]">
+              stream {isConnected ? "ws live" : "ws offline"} | last run {lastRunLabel}
+              {contextScopeValue ? ` | focus ${contextScopeValue}` : ""}
+            </p>
+            {runtimeState?.last_error ? (
+              <p className="mt-1.5 rounded border border-[#b91c1c] bg-[rgba(127,29,29,0.22)] px-2 py-1 text-[11px] text-[#fecaca]">
+                runtime error: {runtimeState.last_error}
+              </p>
+            ) : null}
+            {error ? (
+              <p className="mt-1.5 rounded border border-[#b91c1c] bg-[rgba(127,29,29,0.22)] px-2 py-1 text-[11px] text-[#fecaca]">
+                {error}
+              </p>
+            ) : null}
+
+            <div className="mt-2 grid min-h-0 flex-1 gap-2 overflow-hidden [grid-template-rows:minmax(0,1.72fr)_minmax(0,0.74fr)_minmax(0,0.68fr)_minmax(0,0.56fr)]">
+              <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-md border border-[rgba(116,168,207,0.45)] bg-[rgba(16,30,44,0.62)] p-2">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs uppercase tracking-[0.12em] text-[#f4b4b4]">Top Threats</p>
+                  <p
+                    className={`text-[10px] uppercase tracking-[0.08em] text-[#9cc4df] transition-opacity ${(loading || refreshing) ? "opacity-100" : "opacity-0"}`}
+                  >
+                    refreshing
+                  </p>
+                </div>
+                <div className="mt-1.5 h-full min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
+                  {topThreats.map((row) => {
+                    const rowRepo = String(row.repo || "").trim();
+                    const rowNumber = Math.max(0, Number(row.number || 0));
+                    const rowIdentity = rowRepo ? `${rowRepo} #${rowNumber}` : (row.kind || "resource");
+                    const signalTokens = (Array.isArray(row.signals) && row.signals.length > 0)
+                      ? row.signals
+                      : (Array.isArray(row.labels) ? row.labels : []);
+                    return (
+                      <article
+                        key={threatRowKey(row)}
+                        className={`rounded-md border px-2 py-1.5 ${selectedThreatKey === threatRowKey(row)
+                          ? "border-[rgba(246,113,113,0.72)] bg-[rgba(70,33,38,0.72)]"
+                          : "border-[var(--line)] bg-[rgba(35,39,49,0.84)]"}`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="min-w-0 truncate text-xs font-mono text-[#dbe8f5]">{rowIdentity}</p>
+                          <span
+                            className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${badgeClass(row.risk_level)}`}
+                          >
+                            {row.risk_level} {row.risk_score}
+                          </span>
+                        </div>
+                        <p className="mt-0.5 truncate text-xs text-ink">{row.title || "(untitled)"}</p>
+                        <p className="mt-0.5 truncate text-[10px] text-muted">
+                          {signalTokens.slice(0, 3).map(shortSignal).join(" | ") || "no explicit signals"}
+                        </p>
+                        <div className="mt-1.5 flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              selectThreat(row);
+                            }}
+                            className="rounded border border-[rgba(137,189,226,0.5)] bg-[rgba(27,55,78,0.72)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-[#d9efff]"
+                          >
+                            {radarMode === "local" && supportsConversation(row) ? "thread" : "details"}
+                          </button>
+                          {row.canonical_url ? (
+                            <a
+                              href={row.canonical_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="rounded border border-[rgba(165,190,213,0.44)] bg-[rgba(35,43,59,0.72)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-[#dbe8f5]"
+                            >
+                              open
+                            </a>
+                          ) : null}
+                        </div>
+                      </article>
+                    );
+                  })}
+                  {topThreats.length === 0 && !loading ? (
+                    <p className="text-xs text-muted">
+                      {radarMode === "local"
+                        ? "No GitHub threat candidates yet."
+                        : provisionalSeedThreats.length > 0
+                          ? `No classified global threat signals yet. ${provisionalSeedThreats.length} watch seeds are queued for crawl evidence.`
+                          : "No global geopolitics rows yet. Keep crawl running and trigger refresh."}
+                    </p>
+                  ) : null}
+                </div>
+              </section>
+
+              <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-md border border-[rgba(116,168,207,0.4)] bg-[rgba(18,28,40,0.55)] p-2">
+                <p className="text-[10px] uppercase tracking-[0.1em] text-[#9cc4df]">{compactHotHeading}</p>
+                <div className="mt-1.5 h-full min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
+                  {hotRows.map((row) => (
+                    <div
+                      key={row.id}
+                      className="flex items-center justify-between rounded bg-[rgba(16,22,31,0.72)] px-2 py-1"
+                    >
+                      <p className="truncate text-[11px] font-mono text-[#cfe6f8]">{row.label}</p>
+                      <p className="text-[10px] text-[#fda4af]">risk {row.score}</p>
+                    </div>
+                  ))}
+                  {hotRows.length === 0 ? (
+                    <p className="text-xs text-muted">No hot entries in current window.</p>
+                  ) : null}
+                </div>
+              </section>
+
+              <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-md border border-[rgba(116,168,207,0.4)] bg-[rgba(18,28,40,0.55)] p-2">
+                <p className="text-[10px] uppercase tracking-[0.1em] text-[#9cc4df]">signal mix</p>
+                <div className="mt-1.5 h-full min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
+                  {signalRows.map((row) => (
+                    <div
+                      key={row.signal}
+                      className="flex items-center justify-between rounded bg-[rgba(16,22,31,0.72)] px-2 py-1"
+                    >
+                      <p className="truncate text-[11px] text-[#cfe6f8]">{shortSignal(row.signal)}</p>
+                      <p className="text-[10px] text-[#9cc4df]">{row.count}</p>
+                    </div>
+                  ))}
+                  {signalRows.length === 0 ? (
+                    <p className="text-xs text-muted">No signal labels resolved yet.</p>
+                  ) : null}
+                </div>
+              </section>
+
+              <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-md border border-[rgba(116,168,207,0.45)] bg-[rgba(20,32,46,0.58)] p-2">
+                <p className="text-[10px] uppercase tracking-[0.1em] text-[#9cc4df]">source signal inputs</p>
+                <div className="mt-1.5 h-full min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
+                  {sourceSignalRows.map((sourceRow) => (
+                    <div
+                      key={sourceRow.label}
+                      className="flex items-center justify-between gap-2 rounded bg-[rgba(18,24,33,0.68)] px-2 py-1"
+                    >
+                      <p className="truncate text-[11px] text-[#cfe6f8]">{sourceRow.label}</p>
+                      <p className="text-[10px] text-[#9cc4df]">{sourceRow.count}</p>
+                    </div>
+                  ))}
+                  {sourceSignalRows.length === 0 ? (
+                    <p className="text-xs text-muted">No source signal classes reported by this radar query.</p>
+                  ) : null}
+                </div>
+              </section>
+            </div>
+          </section>
+
+          <div className="flex min-h-0 max-h-full flex-col overflow-hidden">
+            <div className="h-full min-h-0 w-full max-h-full overflow-hidden">{museChatPanel}</div>
+          </div>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section className="card relative flex h-full flex-col overflow-hidden">

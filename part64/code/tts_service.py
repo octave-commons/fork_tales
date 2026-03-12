@@ -125,18 +125,9 @@ def _build_narrator_filter_chain(lang: str) -> str:
             f":d={NARRATOR_EN_VARIANCE_DEPTH:.3f}"
         )
 
-    second_delay = max(NARRATOR_ROOM_PREDELAY_MS + 14, NARRATOR_ROOM_PREDELAY_MS)
-    filters.extend(
-        [
-            "equalizer=f=160:t=q:w=1.0:g=1.5",
-            "equalizer=f=3200:t=q:w=1.2:g=2",
-            "equalizer=f=7000:t=q:w=1.0:g=1",
-            "acompressor=threshold=-24dB:ratio=1.4:attack=10:release=130",
-            f"aecho=0.85:0.35:{NARRATOR_ROOM_PREDELAY_MS}|{second_delay}:0.05|0.03",
-            "aexciter=amount=1.2:drive=2",
-            "alimiter=limit=-1dB",
-        ]
-    )
+    # Keep the narrator chain conservative. The broader EQ/compressor/echo/exciter
+    # stack that once worked can produce clipped, DC-heavy output on current ffmpeg
+    # builds, so only apply the parts we have verified remain speech-safe.
     return ",".join(filters)
 
 
@@ -257,7 +248,7 @@ def split_text_by_language(text: str) -> List[Tuple[str, str]]:
 
 
 def get_cache_key(text: str, speed: float) -> str:
-    spec = f"{text}|{speed}|v2|{_narrator_profile_signature()}"
+    spec = f"{text}|{speed}|v3|{_narrator_profile_signature()}|{_build_narrator_filter_chain('EN')}|{_build_narrator_filter_chain('JP')}"
     return hashlib.sha1(spec.encode("utf-8")).hexdigest()
 
 
@@ -377,5 +368,8 @@ async def generate_tts(text: str = Query(...), speed: float = 1.0):
 
 if __name__ == "__main__":
     import uvicorn
+    import os
 
-    uvicorn.run(app, host="127.0.0.1", port=8788)
+    host = os.getenv("ETA_MU_TTS_HOST", "0.0.0.0")
+    port = int(os.getenv("ETA_MU_TTS_PORT", "8788"))
+    uvicorn.run(app, host=host, port=port)

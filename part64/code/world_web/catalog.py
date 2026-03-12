@@ -2945,6 +2945,7 @@ def collect_catalog(
         _materialize_heat_values,
         build_named_field_overlays,
     )
+    from .simulation_nexus import _build_canonical_nexus_graph
     from .github_presence import (
         merge_crawler_graph_with_github,
         run_github_presence_tick,
@@ -2955,6 +2956,7 @@ def collect_catalog(
         build_pi_archive_payload,
         build_world_log_payload,
     )
+    from .lith_nexus_index import collect_lith_nexus_index
 
     def _emit_progress(stage: str, detail: dict[str, Any] | None = None) -> None:
         if not callable(progress_callback):
@@ -3102,6 +3104,20 @@ def collect_catalog(
         },
     )
 
+    _emit_progress("lith_nexus_start")
+    lith_nexus_index = collect_lith_nexus_index(vault_root, include_text=False)
+    _emit_progress(
+        "lith_nexus_done",
+        {
+            "form_count": int(
+                ((lith_nexus_index.get("stats") or {}).get("form_count", 0)) or 0
+            ),
+            "node_count": int(
+                ((lith_nexus_index.get("stats") or {}).get("node_count", 0)) or 0
+            ),
+        },
+    )
+
     _emit_progress("test_signal_start")
     test_failures, test_coverage = _load_test_signal_artifacts(part_root, vault_root)
     _emit_progress(
@@ -3161,12 +3177,23 @@ def collect_catalog(
         "test_failures": test_failures,
         "test_coverage": test_coverage,
         "promptdb": promptdb_index,
+        "lith_nexus": lith_nexus_index,
         "world_log": world_log_payload,
         "items": items,
     }
     _emit_progress("logical_graph_start")
     catalog["logical_graph"] = _build_logical_graph(catalog)
     _emit_progress("logical_graph_done")
+
+    _emit_progress("nexus_graph_start")
+    catalog["nexus_graph"] = _build_canonical_nexus_graph(
+        file_graph=file_graph,
+        crawler_graph=merged_crawler_graph,
+        logical_graph=catalog["logical_graph"],
+        include_crawler=True,
+        include_logical=True,
+    )
+    _emit_progress("nexus_graph_done")
 
     _emit_progress("pain_field_start")
     catalog["pain_field"] = _build_pain_field(catalog, catalog["logical_graph"])

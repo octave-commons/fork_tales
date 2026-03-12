@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 FROM python:3.12-slim-trixie
 
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -20,6 +22,9 @@ RUN apt-get update \
 COPY code/package.json code/package-lock.json /app/code/
 RUN npm --prefix /app/code ci --omit=dev
 
+COPY --from=repo_root mcp-lith-nexus/package.json mcp-lith-nexus/package-lock.json /srv/mcp-lith-nexus/
+RUN npm --prefix /srv/mcp-lith-nexus ci
+
 RUN pip3 install --no-cache-dir chromadb psutil tensorflow-cpu==2.16.1 onnxruntime-openvino==1.22.0 "tokenizers>=0.20.3" fastapi uvicorn httpx websockets \
     && pip3 install --no-cache-dir nvidia-cuda-runtime-cu12 nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-cufft-cu12 nvidia-curand-cu12 nvidia-cuda-nvrtc-cu12 \
     && pip3 install --no-cache-dir --no-deps --target /opt/ort-gpu onnxruntime-gpu==1.22.0 \
@@ -32,10 +37,13 @@ RUN pip3 install --no-cache-dir chromadb psutil tensorflow-cpu==2.16.1 onnxrunti
     && python3 -c "from pathlib import Path; capi=Path('/opt/ort-gpu/onnxruntime/capi'); assert (capi/'libonnxruntime.so').exists(); assert (capi/'libonnxruntime_providers_cuda.so').exists()"
 
 COPY . /app
+COPY --from=repo_root mcp-lith-nexus /srv/mcp-lith-nexus
+RUN npm --prefix /srv/mcp-lith-nexus run build \
+    && npm --prefix /srv/mcp-lith-nexus prune --omit=dev
 
-EXPOSE 8787 8793
+EXPOSE 8787 8793 8794
 
 # Switch to non-root user
 USER appuser
 
-CMD ["pm2-runtime", "start", "ecosystem.config.cjs", "--only", "eta-mu-world,eta-mu-io,web-graph-weaver"]
+CMD ["pm2-runtime", "start", "ecosystem.config.cjs", "--only", "eta-mu-world,eta-mu-io,web-graph-weaver,eta-mu-lith-nexus-mcp"]

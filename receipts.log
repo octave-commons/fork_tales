@@ -1204,3 +1204,592 @@ Muses lacked domain-specific context:
 - `python -m pytest code/tests/test_world_web_pm2.py -q` (128 passed)
 - `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/ && curl -s -o /dev/null -w " %{http_code}" http://127.0.0.1:8787/api/catalog` (`200 200`)
 - `python -c "import websocket; ws=websocket.create_connection('ws://127.0.0.1:8787/ws', timeout=5); print('101'); ws.close()"` (`101`)
+
+## 2026-03-05T03:04:07Z — Pin Frontend Dev Port To 5197
+
+**Owner:** Presence - Dev Integrator
+**Kind:** fix
+**Definition of Done:** AGENTS.md §14 (1,2,4,5)
+**File refs:** part64/frontend/vite.config.ts, part64/frontend/package.json, part64/frontend/scripts/capture-dummy-render.mjs
+
+### Change
+1. Added a fixed Vite dev server port (`5197`) with `strictPort: true` so dev startup no longer auto-shifts to a new port.
+2. Kept the port configurable through `VITE_DEV_SERVER_PORT` while defaulting to `5197` for stable local behavior.
+3. Updated Electron dev scripts and the dummy render capture script to use `http://127.0.0.1:5197` so related tooling stays aligned.
+
+### Verification refs
+- `npm run test -- src/runtime/endpoints.test.ts` (6 passed)
+- `npm run build` (success)
+- `npm run dev -- --host 127.0.0.1` (Local URL `http://127.0.0.1:5197/`)
+
+## 2026-03-05T03:33:59Z — Extract Muse Threat Radar Report Route
+
+**Owner:** Presence - Dev Integrator
+**Kind:** refactor
+**Definition of Done:** AGENTS.md §14 (1,2,4,5)
+**File refs:** part64/code/world_web/muse_mvc_controller.py, part64/code/world_web/server.py, part64/code/tests/test_world_web_pm2.py
+
+### Change
+1. Moved `/api/muse/threat-radar/report` request handling from `server.py` into `muse_mvc_controller.py` via `handle_muse_threat_report_get_route(...)`.
+2. Kept threat radar behavior stable (radar normalization, query dispatch, cache reuse, result scoping, seed-only quality gate, runtime labeling, and active threat cache updates) while delegating from `server.py`.
+3. Updated route contract test assertions to validate the new controller-based ownership and continued query/radar contract markers.
+
+### Verification refs
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_muse_mvc_controller.py -q` (2 passed)
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_world_web_pm2.py -k "threat_radar_panel_and_report_route_contract_present or threat_radar" -q` (6 passed)
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_muse_runtime.py -q` (21 passed)
+
+## 2026-03-05T03:42:02Z — Extract Muse Threat Radar Runtime Helpers
+
+**Owner:** Presence - Dev Integrator
+**Kind:** refactor
+**Definition of Done:** AGENTS.md §14 (1,2,3,4,5)
+**File refs:** part64/code/world_web/muse_threat_radar_utils.py, part64/code/world_web/server.py
+
+### Change
+1. Added `muse_threat_radar_utils.py` and moved threat-radar runtime helper logic out of `server.py` (`status`, active threat cache update/read, and scheduled tick execution).
+2. Kept `server.py` as thin delegation wrappers for muse threat-radar helper methods, aligned with migration policy to avoid new business logic in the legacy shell.
+3. Preserved behavior for cache writes, muse bootstrap, idempotency key generation, and runtime state transitions while routing through utility functions.
+
+### Verification refs
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_muse_mvc_controller.py -q` (2 passed)
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_world_web_pm2.py -k "muse_threat_radar or threat_radar_panel_and_report_route_contract_present or muse_tool_callback_graph_query_cyber_regime_state_dispatches_args" -q` (7 passed)
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_world_web_pm2.py -q` (128 passed)
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_muse_runtime.py -q` (21 passed)
+- `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/ && curl -s -o /dev/null -w " %{http_code}" http://127.0.0.1:8787/api/catalog` (`200 200`)
+- `python -c "import websocket; ws=websocket.create_connection('ws://127.0.0.1:8787/ws', timeout=5); print('101'); ws.close()"` (`101`)
+
+## 2026-03-05T16:13:00Z — Pin Container UI Port To 5197
+
+**Owner:** Presence - Dev Integrator
+**Kind:** fix
+**Definition of Done:** AGENTS.md §14 (1,2,4,5)
+**File refs:** docker-llm-proxy/docker-compose.yml, docker-llm-proxy/docker-compose.dev.yml, docker-llm-proxy/.env, docker-llm-proxy/.env.example, docker-llm-proxy/SMART_GATEWAY.md, docker-llm-proxy/README.md, part64/README.md
+
+### Change
+1. Updated Docker compose gateway UI defaults from `5173` to `5197` in both standard and dev compose files.
+2. Updated proxy env defaults (`.env` and `.env.example`) so container startup resolves `UI_PORT=5197` consistently.
+3. Aligned operator docs with the pinned UI/dev port value so container and local launch instructions no longer drift.
+
+### Verification refs
+- `docker compose -f docker-compose.yml config` (renders with gateway-ui `published: "5197"`)
+- `docker compose -f docker-compose.dev.yml config` (renders with gateway-ui `published: "5197"`)
+
+## 2026-03-05T11:20:00Z — Muse Context Grounding and Threat Prefetch Hardening
+
+**Owner:** Presence - Dev Integrator
+**Kind:** fix
+**Definition of Done:** AGENTS.md §14 (1,2,3,4,5)
+**File refs:** part64/code/world_web/muse_runtime.py, part64/code/world_web/muse_runtime_backend_utils.py, part64/code/world_web/muse_mvc_controller.py, part64/code/tests/test_muse_mvc_controller.py
+
+### Change
+1. Improved muse context grounding so prompt context prioritizes evidence text rows over metadata-only node identifiers, with explicit fallback marker when no evidence nodes are available.
+2. Added targeted tool-request heuristics for GitHub issue references (`owner/repo#123`) and ATT&CK/taxonomy asks, plus grounded response summarization for `github_find` query results.
+3. Updated muse backend callback path to refresh active threat caches from graph-query tool results and switched direct muse message reply path to non-multi-entity chat mode to avoid presence-tool stylization bleed.
+4. Added message-route threat prefetch in MVC controller for `witness_thread` (local) and `chaos` (global), including forced fallback tick when the first prefetch is still empty.
+5. Extended MVC tests with a local threat prefetch regression that verifies prefetch tick invocation and threat node injection into message surrounding context.
+
+### Verification refs
+- `python -m pytest code/tests/test_muse_mvc_controller.py -q` (3 passed)
+- `python -m pytest code/tests/test_muse_runtime.py -q` (21 passed)
+- `python -m pytest code/tests/test_world_web_asgi_mvc.py -q` (14 passed)
+- `python -m pytest code/tests/test_world_web_pm2.py -q` (128 passed)
+- `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/ && curl -s -o /dev/null -w " %{http_code}" http://127.0.0.1:8787/api/catalog` (`200 200`)
+- `python -c "import websocket; ws=websocket.create_connection('ws://127.0.0.1:8787/ws', timeout=5); print('101'); ws.close()"` (`101`)
+
+## 2026-03-05T03:49:48Z — Extract Muse Tool and Reply Backend Logic
+
+**Owner:** Presence - Dev Integrator
+**Kind:** refactor
+**Definition of Done:** AGENTS.md §14 (1,2,3,4,5)
+**File refs:** part64/code/world_web/muse_runtime_backend_utils.py, part64/code/world_web/server.py
+
+### Change
+1. Added `muse_runtime_backend_utils.py` and moved muse tool-callback graph/query dispatch plus muse reply-building logic out of `server.py`.
+2. Converted `server.py` muse methods (`_muse_tool_callback`, `_muse_reply_builder`) to thin delegations into the new utility module.
+3. Preserved runtime behavior, including graph query argument parsing, cache reuse, and muse-specific system prompt injection.
+
+### Verification refs
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_world_web_pm2.py -k "muse_tool_callback_graph_query_cyber_regime_state_dispatches_args or muse_threat_radar" -q` (6 passed)
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_muse_mvc_controller.py -q` (2 passed)
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_world_web_asgi_mvc.py -q` (14 passed)
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_world_web_pm2.py -q` (128 passed)
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_muse_runtime.py -q` (21 passed)
+- `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/ && curl -s -o /dev/null -w " %{http_code}" http://127.0.0.1:8787/api/catalog` (`200 200`)
+- `python -c "import websocket; ws=websocket.create_connection('ws://127.0.0.1:8787/ws', timeout=5); print('101'); ws.close()"` (`101`)
+
+## 2026-03-05T04:03:38Z — Harden Web Weaver Panel Endpoint and Event Validation
+
+**Owner:** Presence - Dev Integrator
+**Kind:** fix
+**Definition of Done:** AGENTS.md §14 (1,2,4,5)
+**File refs:** part64/frontend/src/components/Panels/WebGraphWeaverPanel.tsx, part64/frontend/src/components/Panels/WebGraphWeaverPanel.test.tsx
+
+### Change
+1. Updated Web Graph Weaver websocket URL derivation to preserve base path prefixes (for example `/weaver/ws`) so the panel does not attach to the world simulation `/ws` stream by mistake.
+2. Added JSON content-type gating for candidate endpoint selection so non-JSON fallbacks (such as HTML app shells) are rejected instead of being treated as healthy Weaver APIs.
+3. Added event sanitization for cached/API/websocket rows (event-name guard + timestamp normalization) to prevent invalid event rows from surfacing as `Invalid Date` and to ignore non-Weaver websocket frames.
+4. Expanded panel tests to cover malformed websocket frames, invalid timestamps, and fallback from non-JSON candidate bases.
+
+### Verification refs
+- `npm run test -- src/components/Panels/WebGraphWeaverPanel.test.tsx src/runtime/endpoints.test.ts` (15 passed)
+- `npm run build` (success)
+
+## 2026-03-05T04:01:02Z — Extract Muse Websocket Event Pump
+
+**Owner:** Presence - Dev Integrator
+**Kind:** refactor
+**Definition of Done:** AGENTS.md §14 (1,2,3,4,5)
+**File refs:** part64/code/world_web/muse_ws_stream_utils.py, part64/code/world_web/server.py, part64/code/tests/test_world_web_pm2.py
+
+### Change
+1. Added `muse_ws_stream_utils.py` and moved websocket muse event stream logic out of `server.py` (bootstrap event emission and periodic poll/tick/event page dispatch).
+2. Replaced inline websocket closure logic in `server.py` with thin delegation calls to `stream_muse_bootstrap_events(...)` and `maybe_send_muse_events(...)`.
+3. Extended route contract assertions to verify websocket muse stream delegation markers alongside prior MVC extraction markers.
+
+### Verification refs
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_world_web_pm2.py -k "threat_radar_panel_and_report_route_contract_present" -q` (1 passed)
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_world_web_pm2.py -q` (128 passed)
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_world_web_asgi_mvc.py -q` (14 passed)
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_muse_mvc_controller.py -q` (2 passed)
+- `PYTHONPATH=part64 python -m pytest part64/code/tests/test_muse_runtime.py -q` (21 passed)
+- `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/ && curl -s -o /dev/null -w " %{http_code}" http://127.0.0.1:8787/api/catalog` (`200 200`)
+- `python -c "import websocket; ws=websocket.create_connection('ws://127.0.0.1:8787/ws', timeout=5); print('101'); ws.close()"` (`101`)
+
+## 2026-03-05T16:30:51Z — Persist Electron PM2 Runtime Targets and PM2 Agent Policy
+
+**Owner:** Presence - Dev Integrator
+**Kind:** fix
+**Definition of Done:** AGENTS.md §14 (1,3,4,5)
+**File refs:** part64/frontend/ecosystem.electron.config.cjs, AGENTS.md
+
+### Change
+1. Pinned `eta-mu-electron-client` PM2 config runtime targets directly in `ecosystem.electron.config.cjs` so Electron uses the active sim endpoints without relying on transient shell env exports.
+2. Added explicit PM2 durability policy in `AGENTS.md` requiring checked-in `ecosystem*.cjs` updates whenever PM2 ports/URLs/env/process names change.
+
+### Verification refs
+- `npm run pm2:electron:start` (restart succeeded via checked-in ecosystem config)
+- `pm2 env 21 | rg "WORLD_RUNTIME_URL|WEAVER_RUNTIME_URL"` (`http://127.0.0.1:8787`, `http://127.0.0.1:8793`)
+- `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/api/catalog && curl -s -o /dev/null -w " %{http_code}" http://127.0.0.1:8793/api/weaver/status` (`200 200`)
+
+## 2026-03-05T16:43:50Z — Fix Electron Preload Module Format For Sandboxed Renderer
+
+**Owner:** Presence - Dev Integrator
+**Kind:** fix
+**Definition of Done:** AGENTS.md §14 (1,3,4,5)
+**File refs:** part64/frontend/electron/main.mjs, part64/frontend/electron/preload.cjs, part64/frontend/electron/preload.mjs
+
+### Change
+1. Switched Electron preload wiring from ESM `preload.mjs` to CommonJS `preload.cjs` to match sandbox preload execution semantics.
+2. Migrated preload bridge code (`__ETA_MU_RUNTIME__`) into `preload.cjs` with equivalent URL normalization behavior.
+3. Removed the obsolete `preload.mjs` file to prevent future drift and accidental re-use.
+
+### Verification refs
+- `npm run pm2:electron:start` (Electron process restarted successfully)
+- `pm2 status eta-mu-electron-client` (`online`)
+- `pm2 logs eta-mu-electron-client --lines 30 --nostream` (no preload module syntax error after restart)
+
+## 2026-03-05T16:34:08Z — Fix Frontend Runtime Base Resolution on Preview Port
+
+**Owner:** Presence - Dev Integrator
+**Kind:** fix
+**Definition of Done:** AGENTS.md §14 (1,2,4,5)
+**File refs:** part64/frontend/src/runtime/endpoints.ts, part64/frontend/src/runtime/endpoints.test.ts
+
+### Change
+1. Added `resolveRuntimeBaseForLocation(...)` so runtime base selection can distinguish true Vite dev runtime from production or preview sessions on the same 5197 port range.
+2. Updated `runtimeBaseUrl()` to route production builds on likely Vite dev ports to the conservative world runtime default (`http://127.0.0.1:8787`) unless an explicit `/sim/<id>` gateway prefix is present.
+3. Added unit coverage for dev-vs-prod resolution on port 5197 to prevent API and WebSocket requests from accidentally resolving to the frontend app shell.
+
+### Verification refs
+- `npm run test -- src/runtime/endpoints.test.ts` (7 passed)
+- `npm run typecheck` (success)
+- `npx eslint src/runtime/endpoints.ts src/runtime/endpoints.test.ts` (success)
+
+## 2026-03-05T16:56:16Z — Fix 5197 Gateway API/WS Proxy Routing
+
+**Owner:** Presence - Dev Integrator
+**Kind:** fix
+**Definition of Done:** AGENTS.md §14 (1,2,3,4,5)
+**File refs:** docker-llm-proxy/gateway-ui/nginx.conf, docker-llm-proxy/docker-compose.yml, docker-llm-proxy/docker-compose.dev.yml
+
+### Change
+1. Added explicit Nginx proxy routes in `gateway-ui/nginx.conf` so `http://127.0.0.1:5197` forwards world-runtime traffic for `/api/*`, `/ws`, `/stream/*`, and `/library/*` to `127.0.0.1:8787` (via `host.docker.internal`).
+2. Added Weaver proxy routes so `/weaver/*` and `/weaver/ws` on port `5197` forward to `127.0.0.1:8793`.
+3. Added `extra_hosts: host.docker.internal:host-gateway` to both gateway-ui compose files so Linux containers can resolve host runtime endpoints deterministically.
+4. Browser-side failure signature changed from HTML shell misrouting (`<!doctype ...` JSON parse failures and WS handshake `200`) to valid proxied API responses; remaining intermittent `504` entries are upstream runtime latency on `/api/study`, not frontend route poisoning.
+
+### Verification refs
+- `docker compose up -d --build gateway-ui` (llm-gateway-ui restarted with updated Nginx config)
+- `curl -sS -D - -o /dev/null http://127.0.0.1:5197/api/catalog` (`200`, `Content-Type: application/json`)
+- `curl -sS -D - -o /dev/null "http://127.0.0.1:5197/api/simulation?perspective=hybrid&payload=trimmed"` (`200`, `Content-Type: application/json`)
+- `curl -sS -D - -o /dev/null http://127.0.0.1:5197/weaver/api/weaver/status` (`200`, `Content-Type: application/json`)
+- `curl -sS -D - -o /tmp/sync_pins_body.json -H "Content-Type: application/json" -X POST http://127.0.0.1:5197/api/muse/sync-pins --data '{"muse_id":"witness_thread","pinned_node_ids":[]}'` (`200`, JSON body)
+- `python - <<'PY' ... websocket.create_connection('ws://127.0.0.1:5197/ws?...', timeout=20) ... PY` (`ws-open True`, received first frame)
+- `agent-browser --session dev5197fixed reload && agent-browser --session dev5197fixed wait 8000 && agent-browser --session dev5197fixed console` (no JSON parse / WS 200 handshake errors)
+- `agent-browser --session dev5197fixed screenshot /home/err/devel/vaults/fork_tales/.opencode/runtime/dev5197-postfix-1440x900.png`
+- `agent-browser --session dev5197fixed screenshot /home/err/devel/vaults/fork_tales/.opencode/runtime/dev5197-postfix-2560x1440.png`
+
+## 2026-03-05T17:04:18Z — Tune 5197 Gateway Proxy Timeouts For Runtime Latency
+
+**Owner:** Presence - Dev Integrator
+**Kind:** hardening
+**Definition of Done:** AGENTS.md §14 (1,2,3,4,5)
+**File refs:** docker-llm-proxy/gateway-ui/nginx.conf
+
+### Change
+1. Added explicit proxy timeout tuning for runtime routes (`/api`, `/stream`, `/library`) and websocket routes (`/ws`, `/weaver/ws`) to reduce spurious `502/504` failures under heavy backend latency.
+2. Added dedicated `/api/catalog/stream` location with `proxy_buffering off` and extended read timeout so catalog stream responses are forwarded as stream data rather than timing out behind buffering.
+
+### Verification refs
+- `docker compose up -d --build gateway-ui` (llm-gateway-ui restarted with timeout/buffering tuning)
+- `docker logs --tail 40 llm-gateway-ui` (observed repeated `101` websocket upgrades on `/ws` and no HTML shell fallthrough for API paths)
+- `agent-browser --session dev5197fixed console --clear && agent-browser --session dev5197fixed reload && agent-browser --session dev5197fixed wait 12000 && agent-browser --session dev5197fixed --json console` (`messages: []` in sample window)
+- `agent-browser --session dev5197fixed errors` (no page errors)
+
+## 2026-03-05T17:37:56Z — Shared WS Simulation Stream Controller For Multi-Tab Clients
+
+**Owner:** Presence - Dev Integrator
+**Kind:** runtime-hardening
+**Definition of Done:** AGENTS.md §14 (1,2,4,5)
+**File refs:** part64/code/world_web/server.py, part64/code/world_web/simulation_ws_shared_controller.py, part64/code/world_web/simulation_ws_shared_payload_utils.py, part64/code/tests/test_world_web_ws_shared_controller.py, part64/code/tests/test_world_web_ws_shared_payload_utils.py
+
+### Change
+1. Added `simulation_ws_shared_controller.py` with a keyed shared-stream registry that maintains one producer loop per stream key and fans out shared frames to all subscribers.
+2. Wired `server.py::_handle_websocket` to route the common cached workers stream path (`delta_stream=workers` with cached snapshots + `skip_catalog_bootstrap=1`) through the shared controller so tabs consume the same backend stream output instead of each running their own simulation serialization loop.
+3. Kept the existing per-connection websocket loop as fallback for non-shared modes and higher-fidelity runtime paths.
+4. Extracted shared-frame payload shaping/fingerprint logic into `simulation_ws_shared_payload_utils.py` to keep `server.py` as thin wiring.
+5. Added focused unit tests for stream reuse/fingerprint sequence advancement and shared payload fallback behavior.
+
+### Verification refs
+- `python -m pytest code/tests/test_world_web_ws_shared_payload_utils.py -q` (2 passed)
+- `python -m pytest code/tests/test_world_web_ws_shared_controller.py -q` (2 passed)
+- `python -m pytest code/tests/test_world_web_ws.py -q` (27 passed)
+- `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/ && curl -s -o /dev/null -w " %{http_code}" http://127.0.0.1:8787/api/catalog` (`200 200`)
+- `python -c "import websocket; ws=websocket.create_connection('ws://127.0.0.1:8787/ws?perspective=hybrid&delta_stream=workers&wire=arr&simulation_payload=trimmed&particle_payload=lite&ws_chunk=0&catalog_events=0&skip_catalog_bootstrap=1', timeout=8); print('101'); ws.close()"` (`101`)
+- `python - <<'PY' ... dual websocket clients on shared workers stream; second-frame timestamps matched ... PY` (`same_timestamp True`)
+- `python - <<'PY' ... five websocket clients on shared workers stream; second-frame timestamps matched ... PY` (`all_same True`)
+
+## 2026-03-05T17:58:44Z — Control Budget Policies And Strategies Extraction
+
+**Owner:** OpenCode
+**Kind:** runtime-refactor
+**Definition of Done:** AGENTS.md §14 (1,2,4,5)
+**File refs:** part64/code/world_web/control_budget_policy.py, part64/code/world_web/control_budget_strategies.py, part64/code/world_web/graph_queries.py, part64/code/world_web/simulation.py
+
+### Change
+1. Added `control_budget_policy.py` to normalize control-budget inputs and classify budget tiers (`minimal`, `reduced`, `moderate`, `full`) in one reusable policy surface.
+2. Added `control_budget_strategies.py` with explicit strategy tables for threat compute gating and crawler-weaver interaction throttling, replacing duplicated conditional trees.
+3. Updated `graph_queries.py` and `simulation.py` to consume the new policy/strategy modules so mode/fallback behavior is centralized and self-contained.
+
+### Verification refs
+- `python -m pytest code/tests/test_graph_queries.py -q` (33 passed)
+- `python -m pytest code/tests/test_daimoi_probabilistic.py -q` (44 passed)
+
+## 2026-03-05T18:09:29Z — Additional Mode Trees Extracted To Policy/Strategy Modules
+
+**Owner:** OpenCode
+**Kind:** runtime-refactor
+**Definition of Done:** AGENTS.md §14 (1,2,4,5)
+**File refs:** part64/code/world_web/vecstore_layer_policy.py, part64/code/world_web/sim_slice_offload_strategy.py, part64/code/world_web/ai.py, part64/code/world_web/sim_slice_bridge.py, part64/code/tests/test_vecstore_layer_policy.py, part64/code/tests/test_sim_slice_offload_strategy.py
+
+### Change
+1. Added `vecstore_layer_policy.py` to formalize vecstore collection layering modes into a self-contained policy (`resolve_vecstore_layer_token` and `resolve_vecstore_collection_name`).
+2. Refactored `ai.py::_eta_mu_vecstore_collection_for_space` to delegate collection-name mode logic to the new vecstore layer policy module.
+3. Added `sim_slice_offload_strategy.py` to formalize sim-slice offload mode normalization, remote-mode support checks, and remote request dispatch.
+4. Refactored `sim_slice_bridge.py` async and sync remote budget dispatch to use the shared offload strategy instead of repeated mode `if/elif` trees.
+5. Added focused unit tests for the new policy/strategy modules.
+
+### Verification refs
+- `python -m pytest code/tests/test_vecstore_layer_policy.py -q` (3 passed)
+- `python -m pytest code/tests/test_sim_slice_offload_strategy.py -q` (4 passed)
+- `python -m pytest code/tests/test_sim_slice_bridge.py -q` (7 passed)
+- `python -m pytest code/tests/test_world_web_ingest_embeddings.py -q` (23 passed)
+
+## 2026-03-05T18:15:12Z — Anti-Clump Controller Mode Strategy Extraction
+
+**Owner:** OpenCode
+**Kind:** runtime-refactor
+**Definition of Done:** AGENTS.md §14 (1,2,4,5)
+**File refs:** part64/code/world_web/daimoi_observer_control_strategy.py, part64/code/world_web/daimoi_observer.py, part64/code/tests/test_daimoi_observer_control_strategy.py
+
+### Change
+1. Added `daimoi_observer_control_strategy.py` to formalize anti-clump controller mode decisions (mode/error selection, deadband gates, integral leak/integration policy, integral stepping strategy, and raw-drive strategy) in one self-contained module.
+2. Refactored `daimoi_observer.py::anti_clump_controller_update` to delegate those mode/fallback condition trees to strategy functions while preserving existing metrics/state wiring.
+3. Added focused unit tests for the extracted strategy behavior and kept full anti-clump probabilistic regression coverage.
+
+### Verification refs
+- `python -m pytest code/tests/test_daimoi_observer_control_strategy.py -q` (5 passed)
+- `python -m pytest code/tests/test_daimoi_probabilistic.py -q` (44 passed)
+- `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/ && curl -s -o /dev/null -w " %{http_code}" http://127.0.0.1:8787/api/catalog` (`200 200`)
+- `python -c "import websocket; ws=websocket.create_connection('ws://127.0.0.1:8787/ws', timeout=8); print('101'); ws.close()"` (`WebSocketTimeoutException: Connection timed out`)
+
+## 2026-03-05T18:42:37Z — Threat Radar Strategy Extraction
+
+**Owner:** OpenCode
+**Kind:** runtime-refactor
+**Definition of Done:** AGENTS.md §14 (1,2,4,5)
+**File refs:** part64/code/world_web/threat_radar_strategy.py, part64/code/world_web/graph_queries.py, part64/code/tests/test_threat_radar_strategy.py
+
+### Change
+1. Added `threat_radar_strategy.py` to formalize GitHub threat radar strategy decisions for proximity boost/signals, disabled-LLM fallback payloads, scoring mode labels, and risk level thresholds.
+2. Refactored `graph_queries.py::_query_github_threat_radar` to delegate those mode/fallback branches to the new strategy module instead of keeping them inline.
+3. Added focused unit coverage for the extracted threat radar strategy logic and re-ran graph query regressions.
+
+### Verification refs
+- `python -m pytest code/tests/test_threat_radar_strategy.py -q` (4 passed)
+- `python -m pytest code/tests/test_graph_queries.py -q` (33 passed)
+- `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/ && curl -s -o /dev/null -w " %{http_code}" http://127.0.0.1:8787/api/catalog` (`200 200`)
+
+## 2026-03-05T18:45:07Z — Sim Slice Fallback Policy Extraction
+
+**Owner:** OpenCode
+**Kind:** runtime-refactor
+**Definition of Done:** AGENTS.md §14 (1,2,4,5)
+**File refs:** part64/code/world_web/sim_slice_fallback_policy.py, part64/code/world_web/sim_slice_bridge.py, part64/code/tests/test_sim_slice_fallback_policy.py
+
+### Change
+1. Added `sim_slice_fallback_policy.py` to formalize sim-slice fallback/success metadata for local, async-cached, async-warmup/stale, remote fallback, and worker snapshot states.
+2. Refactored `sim_slice_bridge.py` to delegate metadata shaping and cached-budget resolution to the new fallback policy instead of repeating inline fallback dictionaries.
+3. Added focused policy tests and re-ran sim-slice bridge regressions.
+
+### Verification refs
+- `python -m pytest code/tests/test_sim_slice_fallback_policy.py -q` (3 passed)
+- `python -m pytest code/tests/test_sim_slice_bridge.py -q` (7 passed)
+
+## 2026-03-05T18:50:59Z — WS Tick Strategy Extraction
+
+**Owner:** OpenCode
+**Kind:** runtime-refactor
+**Definition of Done:** AGENTS.md §14 (1,2,4,5)
+**File refs:** part64/code/world_web/simulation_ws_tick_strategy.py, part64/code/world_web/simulation_ws_tick_policy_controller.py, part64/code/tests/test_simulation_ws_tick_strategy.py
+
+### Change
+1. Added `simulation_ws_tick_strategy.py` to formalize websocket tick pressure, particle-cap thresholds, and payload downgrade triggers as a self-contained strategy module.
+2. Refactored `simulation_ws_tick_policy_controller.py` to delegate ingestion-pressure calculation, particle-cap selection, and effective payload-key selection to the new strategy helpers.
+3. Added focused strategy tests and re-ran websocket controller regressions.
+
+### Verification refs
+- `python -m pytest code/tests/test_simulation_ws_tick_strategy.py -q` (3 passed)
+- `python -m pytest code/tests/test_simulation_ws_tick_policy_controller.py -q` (4 passed)
+- `python -m pytest code/tests/test_world_web_ws.py -q` (27 passed)
+- `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/ && curl -s -o /dev/null -w " %{http_code}" http://127.0.0.1:8787/api/catalog` (`200 200`)
+- `python -c "import websocket; ws=websocket.create_connection('ws://127.0.0.1:8787/ws', timeout=5); print('101'); ws.close()"` (`WebSocketTimeoutException: Connection timed out`)
+
+## 2026-03-05T20:00:24Z — Lith Nexus First-Class Facts + MCP Surface
+
+**Owner:** OpenCode
+**Kind:** runtime-feature
+**Definition of Done:** AGENTS.md §14 (1,2,4,5)
+**File refs:** part64/code/world_web/lith_nexus_index.py, part64/code/world_web/lith_nexus_snapshot.py, part64/code/world_web/lith_nexus_cli.py, part64/code/world_web/chamber.py, part64/code/world_web/catalog.py, part64/code/world_web/simulation.py, part64/code/world_web/simulation_nexus.py, part64/code/world_web/graph_queries.py, part64/code/tests/test_lith_nexus_index.py, mcp-lith-nexus/src/backend.ts, mcp-lith-nexus/src/service.ts, mcp-lith-nexus/src/server.ts, mcp-lith-nexus/src/write.ts, mcp-lith-nexus/src/service.test.ts, mcp.lith-nexus.config.lith
+
+### Change
+1. Added a shared Lith parser/indexer in `part64/code/world_web/lith_nexus_index.py` that scans configured repo roots, extracts top-level forms with stable hashes/spans, derives graph nodes/edges, and preserves legacy PromptDB packet/contract summaries.
+2. Added `part64/code/world_web/lith_nexus_snapshot.py` and `part64/code/world_web/lith_nexus_cli.py` so external tools can pull the same repo-owned Lith index plus canonicalized graph snapshot without inventing a parallel graph contract.
+3. Updated `catalog.py`, `simulation.py`, `simulation_nexus.py`, and `graph_queries.py` so Lith/PromptDB forms become first-class logical/canonical nexus nodes and remain searchable through the existing graph query surface.
+4. Added focused regression coverage in `part64/code/tests/test_lith_nexus_index.py` and built a TypeScript stdio MCP server in `mcp-lith-nexus/` that reads the Python snapshot, serves Lith resources, supports search/query, and writes deterministic in-repo facts/resources.
+
+### Verification refs
+- `python -m pytest code/tests/test_lith_nexus_index.py -q` (2 passed)
+- `python -m pytest code/tests/test_graph_queries.py -q` (33 passed)
+- `python -m pytest code/tests/test_world_web_pm2.py::test_catalog_includes_promptdb_packets -q` (1 passed)
+- `npm run build` in `mcp-lith-nexus/` (passed)
+- `npm run typecheck` in `mcp-lith-nexus/` (passed)
+- `npm test` in `mcp-lith-nexus/` (3 passed, including in-memory MCP server integration)
+- `timeout 3s npm run start` in `mcp-lith-nexus/` (server booted cleanly under stdio until timeout)
+
+## 2026-03-05T20:42:11Z — Part64 Remote MCP Runtime Integration
+
+**Owner:** OpenCode
+**Kind:** runtime-integration
+**Definition of Done:** AGENTS.md §14 (1,2,3,4,5)
+**File refs:** part64/Dockerfile.system, part64/docker-compose.yml, part64/docker-compose.muse-song-lab.yml, part64/docker-compose.sim-slice-bench.yml, part64/ecosystem.config.cjs, part64/ecosystem.bench.config.cjs, part64/nginx/default.conf, part64/code/world_web/lith_nexus_index.py, mcp-lith-nexus/src/http.ts, mcp-lith-nexus/src/runtime.ts, opencode.jsonc
+
+### Change
+1. Added a dedicated HTTP entrypoint for `mcp-lith-nexus` and wired it into both PM2 ecosystem configs as `eta-mu-lith-nexus-mcp`, with docker/local path overrides for the built server artifact.
+2. Updated `Dockerfile.system` plus the `part64` compose stacks to copy the root `mcp-lith-nexus` package from a named repo context, build it into `/srv/mcp-lith-nexus`, and run the MCP process inside the main `eta-mu-system` container.
+3. Added nginx proxying for `/mcp` to the internal MCP port, extended the main stack healthcheck to cover `/mcp/healthz`, and taught the Lith indexer to fall back to filesystem scans when `git` is unavailable inside runtime containers.
+4. Added a remote `lith_nexus` MCP definition to `opencode.jsonc` so OpenCode can connect through the part64 gateway at `http://127.0.0.1:8787/mcp`.
+
+### Verification refs
+- `node -e "require('./ecosystem.config.cjs'); require('./ecosystem.bench.config.cjs')"` in `part64/` (passed)
+- `docker compose config` in `part64/` (passed)
+- `docker compose -f docker-compose.muse-song-lab.yml config` in `part64/` (passed)
+- `docker compose -f docker-compose.sim-slice-bench.yml config` in `part64/` (passed)
+- `npm run typecheck && npm test && npm run build` in `mcp-lith-nexus/` (passed)
+- `timeout 3s npm run start:http` in `mcp-lith-nexus/` (HTTP entrypoint booted cleanly until timeout)
+- `node --input-type=module ... StreamableHTTPClientTransport(new URL('http://127.0.0.1:8794/mcp')) ... listTools()` in `mcp-lith-nexus/` (`{"toolCount":5,"hasFind":true}`)
+- `docker compose up -d --build eta-mu-system eta-mu-gateway chroma` in `part64/` (passed)
+- `docker compose exec eta-mu-system python -m code.world_web.lith_nexus_cli snapshot --repo-root /vault` in `part64/` (passed)
+- `python -m pytest code/tests/test_lith_nexus_index.py -q` in `part64/` (2 passed)
+- `python -m pytest code/tests/test_world_web_pm2.py::test_catalog_includes_promptdb_packets -q` in `part64/` (1 passed)
+- `python - <<'PY' ... urllib.request.urlopen('http://127.0.0.1:8787/') ... urllib.request.urlopen('http://127.0.0.1:8787/api/catalog') ... urllib.request.urlopen('http://127.0.0.1:8787/mcp/healthz') ... PY` (all HTTP 200)
+- `python - <<'PY' ... websocket.create_connection('ws://127.0.0.1:8787/ws', timeout=10) ... PY` (`ws 101`)
+- `node --input-type=module ... StreamableHTTPClientTransport(new URL('http://127.0.0.1:8787/mcp')) ... listTools()/readResource()/callTool()` in `mcp-lith-nexus/` (passed through gateway)
+
+## 2026-03-05T18:59:08Z — Muse Mode Strategy Extraction
+
+**Owner:** OpenCode
+**Kind:** runtime-refactor
+**Definition of Done:** AGENTS.md §14 (1,2,4,5)
+**File refs:** part64/code/world_web/muse_mode_strategy.py, part64/code/world_web/muse_runtime.py, part64/code/world_web/muse_runtime_backend_utils.py, part64/code/tests/test_muse_mode_strategy.py, part64/code/tests/test_muse_runtime.py
+
+### Change
+1. Added `muse_mode_strategy.py` to formalize muse runtime mode normalization, reply backend mode mapping, and deterministic-vs-stochastic surround selection in one self-contained strategy module.
+2. Refactored `muse_runtime.py` to delegate mode normalization and surround row ordering to the new strategy helpers instead of inline mode branches.
+3. Refactored `muse_runtime_backend_utils.py` to reuse the shared reply backend mode mapping.
+4. Added focused strategy tests plus an integration regression covering invalid mode normalization in `MuseRuntimeManager.send_message(...)`.
+
+### Verification refs
+- `python -m pytest code/tests/test_muse_mode_strategy.py -q` (4 passed)
+- `python -m pytest code/tests/test_muse_runtime.py -q` (22 passed)
+- `python -m pytest code/tests/test_muse_mvc_controller.py -q` (3 passed)
+- `curl --max-time 8 -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/` (`000`)
+- `curl --max-time 8 -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/api/catalog` (`000`)
+- `python -c "import websocket; ws=websocket.create_connection('ws://127.0.0.1:8787/ws', timeout=5); print('101'); ws.close()"` (`WebSocketTimeoutException: Connection timed out`)
+
+## 2026-03-05T19:29:08Z — Muse Media Strategy Extraction
+
+**Owner:** OpenCode
+**Kind:** runtime-refactor
+**Definition of Done:** AGENTS.md §14 (1,2,4,5)
+**File refs:** part64/code/world_web/muse_media_strategy.py, part64/code/world_web/muse_runtime.py, part64/code/tests/test_muse_media_strategy.py
+
+### Change
+1. Added `muse_media_strategy.py` to formalize media intent detection, classifier/focus bias accumulation, candidate scoring, classifier default-kind selection, and blocked-reason fallback logic in one self-contained strategy surface.
+2. Refactored `muse_runtime.py::_resolve_media_command_action_locked` to delegate the media mode and fallback trees to the new strategy helpers while preserving existing event emission and action routing behavior.
+3. Added focused unit coverage for explicit media intent, classifier bias inference, focus-boost candidate ordering, and blocked-reason resolution.
+
+### Verification refs
+- `python -m pytest code/tests/test_muse_media_strategy.py -q` (4 passed)
+- `python -m pytest code/tests/test_muse_runtime.py -q` (22 passed)
+- `python -m pytest code/tests/test_muse_mvc_controller.py -q` (3 passed)
+- `curl --max-time 8 -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/` (`000`)
+- `curl --max-time 8 -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/api/catalog` (`000`)
+- `python -c "import websocket; ws=websocket.create_connection('ws://127.0.0.1:8787/ws', timeout=5); print('101'); ws.close()"` (`WebSocketTimeoutException: Connection timed out`)
+
+## 2026-03-05T19:38:19Z — Muse Threat Fallback And Graph Query Policy Extraction
+
+**Owner:** OpenCode
+**Kind:** runtime-refactor
+**Definition of Done:** AGENTS.md §14 (1,2,4,5)
+**File refs:** part64/code/world_web/muse_threat_fallback_strategy.py, part64/code/world_web/muse_runtime.py, part64/code/world_web/graph_query_policy.py, part64/code/world_web/graph_queries.py, part64/code/tests/test_muse_threat_fallback_strategy.py, part64/code/tests/test_graph_query_policy.py
+
+### Change
+1. Added `muse_threat_fallback_strategy.py` to formalize threat-focused muse fallback policy, including threat muse membership, prompt gating, threat/source line extraction, and per-muse fallback headers.
+2. Refactored `muse_runtime.py` to delegate model-empty threat fallback reply shaping to the new strategy module while reusing the shared threat-focused muse policy in context assembly.
+3. Added `graph_query_policy.py` to formalize named-query alias normalization and unknown-query supported-name reporting instead of keeping those mappings inline in `graph_queries.py`.
+4. Refactored `graph_queries.py` to consume the shared graph query policy helpers.
+5. Added focused unit coverage for both extracted policy modules and re-ran muse + graph query regression suites.
+
+### Verification refs
+- `python -m pytest code/tests/test_muse_threat_fallback_strategy.py -q` (3 passed)
+- `python -m pytest code/tests/test_graph_query_policy.py -q` (2 passed)
+- `python -m pytest code/tests/test_muse_runtime.py -q` (22 passed)
+- `python -m pytest code/tests/test_graph_queries.py -q` (33 passed)
+- `curl --max-time 8 -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/` (`000`)
+- `curl --max-time 8 -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/api/catalog` (`000`)
+- `python -c "import websocket; ws=websocket.create_connection('ws://127.0.0.1:8787/ws', timeout=5); print('101'); ws.close()"` (`WebSocketTimeoutException: Connection timed out`)
+
+## 2026-03-05T20:02:57Z — Simulation And Server Size Reduction Extraction
+
+**Owner:** OpenCode
+**Kind:** runtime-refactor
+**Definition of Done:** AGENTS.md §14 (1,2,4,5)
+**File refs:** part64/code/world_web/simulation.py, part64/code/world_web/server.py, part64/code/world_web/simulation_graph_contract_utils.py, part64/code/world_web/server_runtime_config_utils.py, part64/code/world_web/server_query_daimoi_utils.py, part64/code/tests/test_simulation_graph_contract_utils.py, part64/code/tests/test_server_query_daimoi_utils.py
+
+### Change
+1. Extracted file-graph contract/path helper logic from `simulation.py` into `simulation_graph_contract_utils.py`, including truth/view contract builders, file-id path normalization, and graph row helpers.
+2. Refactored `simulation.py` to keep thin wrappers around the extracted graph-contract helpers while preserving local growth-guard/native bridge wiring.
+3. Extracted runtime config mutation/introspection logic from `server.py` into `server_runtime_config_utils.py` and replaced the old in-file implementations with thin delegation wrappers.
+4. Extracted query normalization and search-daimoi construction helpers from `server.py` into `server_query_daimoi_utils.py`.
+5. Reduced primary file size materially: `simulation.py` from 11053 -> 10662 lines, `server.py` from 8698 -> 8216 lines.
+
+### Verification refs
+- `python -m pytest code/tests/test_simulation_graph_contract_utils.py -q` (2 passed)
+- `python -m pytest code/tests/test_server_query_daimoi_utils.py -q` (2 passed)
+- `python -m pytest code/tests/test_presence_runtime.py -q` (19 passed)
+- `python -m pytest code/tests/test_daimoi_probabilistic.py -q` (44 passed)
+- `curl --max-time 8 -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/` (`000`)
+- `curl --max-time 8 -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/api/catalog` (`000`)
+- `python -c "import websocket; ws=websocket.create_connection('ws://127.0.0.1:8787/ws', timeout=5); print('101'); ws.close()"` (`WebSocketTimeoutException: Connection timed out`)
+
+## 2026-03-05T21:50:23Z — Continued Large-File Module Extraction
+
+**Owner:** OpenCode
+**Kind:** runtime-refactor
+**Definition of Done:** AGENTS.md §14 (1,2,4,5)
+**File refs:** part64/code/world_web/simulation.py, part64/code/world_web/server.py, part64/code/world_web/simulation_nooi_runtime_utils.py, part64/code/world_web/server_runtime_health_utils.py, part64/code/tests/test_simulation_nooi_runtime_utils.py, part64/code/tests/test_server_runtime_health_utils.py
+
+### Change
+1. Extracted Nooi runtime state and particle-outcome helpers from `simulation.py` into `simulation_nooi_runtime_utils.py`, including reset-state construction, trail history maintenance, random field seeding, outcome classification, and particle application flow.
+2. Refactored `simulation.py` to delegate those Nooi helpers while preserving module-owned global state and local integration points.
+3. Extracted websocket client slot accounting and runtime health/guard shaping from `server.py` into `server_runtime_health_utils.py`.
+4. Refactored `server.py` to use the extracted runtime health helpers and fixed HTTP trim config access so runtime-updatable trim constants still affect request behavior.
+5. Reduced main file size further: `simulation.py` from 10662 -> 10523 lines, `server.py` from 8216 -> 8174 lines.
+
+### Verification refs
+- `python -m pytest code/tests/test_simulation_nooi_runtime_utils.py -q` (3 passed)
+- `python -m pytest code/tests/test_server_runtime_health_utils.py -q` (3 passed)
+- `python -m pytest code/tests/test_daimoi_probabilistic.py -q` (44 passed)
+- `python -m pytest code/tests/test_runtime_hardening.py -q` (13 passed)
+- `curl --max-time 8 -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/` (`000`)
+- `curl --max-time 8 -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/api/catalog` (`000`)
+- `python -c "import websocket; ws=websocket.create_connection('ws://127.0.0.1:8787/ws', timeout=5); print('101'); ws.close()"` (`WebSocketTimeoutException: Connection timed out`)
+
+## 2026-03-05T23:00:01Z — PM2 Transport Default Fixed For Stable Frontend WebSockets
+
+**Owner:** OpenCode
+**Kind:** runtime-config-fix
+**Definition of Done:** AGENTS.md §14 (1,2,3,4,5)
+**File refs:** part64/ecosystem.config.cjs, part64/ecosystem.bench.config.cjs
+
+### Change
+1. Updated checked-in PM2 ecosystem configs to default `WORLD_WEB_TRANSPORT` to `legacy` instead of `asgi` for `eta-mu-world`.
+2. Applied the checked-in PM2 config inside the running container and verified the effective env now reports `WORLD_WEB_TRANSPORT: legacy`.
+3. This fixes the intermittent browser-facing websocket `502` handshake failures observed through `http://127.0.0.1:5197`.
+
+### Verification refs
+- `docker exec part64-eta-mu-system-1 sh -lc 'pm2 restart /app/ecosystem.bench.config.cjs --only eta-mu-world --update-env && pm2 env 0 | grep WORLD_WEB_'` (`WORLD_WEB_TRANSPORT: legacy`)
+- `python - <<'PY' ... urllib.request.urlopen('http://127.0.0.1:5197/api/witness/lineage', timeout=30) ... urllib.request.urlopen('http://127.0.0.1:5197/api/study?limit=4', timeout=30) ... PY` (`200`, `200`)
+- `python - <<'PY' ... 8 repeated websocket.create_connection('ws://127.0.0.1:5197/ws?...', timeout=20) ... PY` (8/8 succeeded, first frame received each time)
+- `python -m pytest code/tests/test_world_web_pm2.py -q -k parse_args` (2 passed)
+
+## 2026-03-05T23:24:50Z — Frontend Animation Restored By Disabling Bootstrap-Only WS Query Path
+
+**Owner:** OpenCode
+**Kind:** frontend-runtime-fix
+**Definition of Done:** AGENTS.md §14 (1,2,3,4,5)
+**File refs:** part64/frontend/src/hooks/useWorldState.ts, part64/frontend/src/hooks/useWorldState.test.tsx
+
+### Change
+1. Changed the frontend websocket URL in `useWorldState.ts` from `skip_catalog_bootstrap=1` to `skip_catalog_bootstrap=0` so the browser no longer pins itself to the stale shared-cache/bootstrap-only stream path.
+2. Updated the hook test expectation in `useWorldState.test.tsx` to match the live websocket query.
+3. Rebuilt the frontend bundle and restarted the `llm-gateway-ui` container so `127.0.0.1:5197` serves the updated client code.
+
+### Verification refs
+- `npx vitest run src/hooks/useWorldState.test.tsx` (7 passed)
+- `npm run build` in `part64/frontend` (passed)
+- `python - <<'PY' ... bundle contains 'skip_catalog_bootstrap=0' ... PY` (confirmed)
+- `python - <<'PY' ... urllib.request.urlopen('http://127.0.0.1:5197/api/witness/lineage') ... urllib.request.urlopen('http://127.0.0.1:5197/api/study?limit=4') ... PY` (`200`, `200`)
+- `agent-browser open http://127.0.0.1:5197 && agent-browser get text body` (`mode: field particles (96)` and `Connected` visible)
+- `agent-browser screenshot /tmp/frontend-animation-fix.png`
+
+ts=2026-03-06T01:43:44+00:00 | kind=:decision | origin=working-tree | owner=Err | dod=Restored healthy eta-mu narrator output by reducing destructive ffmpeg styling, versioning the TTS cache key, and disabling PM2 watch flapping for eta-mu-tts | pi=eta-mu-tts-narrator-regression-fix | host=127.0.0.1:8788 | manifest=manifest.lith | refs=part64/code/tts_service.py,part64/ecosystem.config.cjs,part64/world_state/tts_debug/live_probe_v3.wav,part64/world_state/tts_debug/live_probe_v3.wav.spectrogram.png,receipts.log | tests=GET:/tts;signal-metrics:live_probe_v3.wav;spectrogram:live_probe_v3.wav.spectrogram.png
+
+ts=2026-03-06T03:09:48.259300+00:00 | kind=:decision | origin=working-tree | owner=OpenCode | dod=Restored live frontend simulation updates by aligning websocket mode with the container runtime and revalidated frontend health | pi=part64-frontend-live-sim-fix | host=127.0.0.1:5197 | manifest=manifest.lith | refs=part64/frontend/src/hooks/useWorldState.ts,part64/frontend/src/hooks/useWorldState.test.tsx,part64/docker-compose.yml,part64/nginx/default.conf,receipts.log | tests=npm test -- --run src/hooks/useWorldState.test.tsx;npm run build;WS:/ws?perspective=hybrid&delta_stream=world&skip_catalog_bootstrap=1 | note=Container runtime served HTTP study/lineage successfully but worker-stream websocket stayed on bootstrap frames; switching frontend to world stream restored live delta flow path
+ts=2026-03-06T03:28:47.426417+00:00 | kind=:decision | origin=working-tree | owner=OpenCode | dod=Reduced part64 runtime CPU pressure modestly by lowering worker fanout, slightly relaxing tick cadence, and trimming compose CPU allocation without starving the sim | pi=part64-runtime-resource-tune | host=127.0.0.1:8787 | manifest=manifest.lith | refs=part64/docker-compose.yml,part64/ecosystem.config.cjs,part64/ecosystem.bench.config.cjs,receipts.log | tests=docker stats --no-stream part64-eta-mu-system-1;docker compose exec eta-mu-system env;docker compose exec eta-mu-system python embed_runtime_snapshot | note=NPU probe still fails in-container due to missing OpenVINO shared library, so this tune reduces CPU load instead of forcing NPU and risking instability
+ts=2026-03-06T03:36:36.324866+00:00 | kind=:decision | origin=working-tree | owner=OpenCode | dod=Settled on a minimal runtime resource tune by keeping only a modest compose CPU cap reduction and rolling back worker/cadence changes that risked starvation | pi=part64-runtime-resource-tune-final | host=127.0.0.1:8787 | manifest=manifest.lith | refs=part64/docker-compose.yml,part64/ecosystem.config.cjs,part64/ecosystem.bench.config.cjs,receipts.log | tests=docker compose up -d eta-mu-system eta-mu-gateway;docker stats --no-stream part64-eta-mu-system-1;GET:/;GET:/api/catalog | note=Final change keeps eta-mu-system cpus at 10.00 instead of 12.00; NPU remains unavailable in-container because the OpenVINO provider shared library is missing, so forcing it would not help OBS CPU headroom
+ts=2026-03-06T03:49:29.331385+00:00 | kind=:decision | origin=working-tree | owner=OpenCode | dod=Restored container NPU usability by adding accel/video supplemental groups so non-root runtime can access NPU and DRI devices | pi=part64-container-npu-group-fix | host=127.0.0.1:8787 | manifest=manifest.lith | refs=part64/docker-compose.yml,part64/Dockerfile.system,receipts.log | tests=docker compose exec eta-mu-system python embed_runtime_snapshot;docker compose exec --user root eta-mu-system python npu_probe | note=Root probe proved NPU path still worked; failure was device-group access for appuser rather than missing model/runtime bits
+ts=2026-03-06T03:58:03.311400+00:00 | kind=:decision | origin=working-tree | owner=OpenCode | dod=Hardened container embedding defaults to prefer NPU explicitly now that non-root device access is fixed, reducing dependence on AUTO lane selection | pi=part64-container-npu-defaults | host=127.0.0.1:8787 | manifest=manifest.lith | refs=part64/docker-compose.yml,part64/ecosystem.config.cjs,part64/ecosystem.bench.config.cjs,receipts.log | tests=docker compose exec eta-mu-system env;docker compose exec eta-mu-system python embed_runtime_snapshot;GET:/;GET:/api/catalog;GET:/api/witness/lineage | note=Runtime already selected NPU under adaptive AUTO after group fix; this follow-up makes NPU the explicit default for future restarts and compose variants
+ts=2026-03-06T04:29:05.263728+00:00 | kind=:decision | origin=working-tree | owner=OpenCode | dod=Reduced /api/study timeout risk by routing it through ASGI native legacy-handler dispatch instead of the internal proxy path | pi=part64-study-asgi-native-dispatch | host=127.0.0.1:8787 | manifest=manifest.lith | refs=part64/code/world_web/asgi_transport.py,part64/code/world_web/server.py,receipts.log | tests=direct-dispatch:/api/study?limit=4;GET:/api/study?limit=4;GET:5197/api/study?limit=4 | note=Direct legacy-handler dispatch returned quickly with 200 while proxied ASGI path exhibited repeated timeout behavior under load
+ts=2026-03-06T04:52:22.921440+00:00 | kind=:decision | origin=working-tree | owner=OpenCode | dod=Stabilized /api/study under concurrent frontend polling by coalescing in-flight study responses in the legacy runtime and deduplicating client fetches | pi=part64-study-stampede-fix | host=127.0.0.1:5197 | manifest=manifest.lith | refs=part64/code/world_web/server.py,part64/code/world_web/study_snapshot_response_utils.py,part64/code/world_web/asgi_transport.py,part64/frontend/src/runtime/studySnapshot.ts,part64/frontend/src/components/Panels/StabilityObservatoryPanel.tsx,part64/frontend/src/components/Panels/Chat.tsx,part64/frontend/src/hooks/useAutopilotController.ts,part64/frontend/src/app/useChatCommandHandlers.ts,receipts.log | tests=GET:8787/api/study?limit=4;GET:5197/api/study?limit=4;npm run build | note=Root cause was overlapping frontend study polling plus legacy runtime stampede; dev proxy path now returns 200 consistently after warmup with fast follow-up hits
+ts=2026-03-06T05:01:57.619433+00:00 | kind=:decision | origin=working-tree | owner=OpenCode | dod=Improved NPU visibility by surfacing busy-time, memory, and frequency signals in the study panel so active NPU work remains visible even when instantaneous utilization reads zero | pi=part64-npu-visibility-surface | host=127.0.0.1:5197 | manifest=manifest.lith | refs=part64/frontend/src/components/Panels/StabilityObservatoryPanel.tsx,part64/frontend/src/types/index.ts,receipts.log | tests=npm run build;embed probe increments npu_busy_time_us and npu_memory_utilization | note=Runtime remains on c-onnxruntime:NPU with no CPU fallback; observed issue was visibility semantics rather than device selection
+ts=2026-03-06T05:31:38.841422+00:00 | kind=:decision | origin=working-tree | owner=OpenCode | dod=Restored NPU-backed cosine-matrix offload feeding the C semantic pipeline so the native semantic worker now consumes an NPU-produced cosine cache | pi=part64-cdb-semantic-npu-cosine | host=127.0.0.1:8787 | manifest=manifest.lith | refs=part64/code/world_web/embed_lane_worker.py,part64/code/world_web/c_double_buffer_backend.py,part64/code/world_web/native/c_double_buffer_sim.c,receipts.log | tests=embed_lane_worker:NPU cosine_matrix;build_double_buffer_field_particles meta cosine_matrix_source=npu-sidecar cosine_matrix_ready=true;GET:/;GET:/api/catalog;GET:/api/study?limit=4 | note=The C semantic worker was already present; the missing piece was the producer feeding its cosine cache, which had been wired GPU/CPU-only instead of allowing OpenVINO NPU
+ts=2026-03-06T06:19:13.690489+00:00 | kind=:decision | origin=working-tree | owner=OpenCode | dod=Restored live frontend simulation motion by accepting compact websocket delta frames after the policy/strategy/MVC migration changed the effective message contract | pi=part64-frontend-sim-delta-contract-fix | host=127.0.0.1:5197 | manifest=manifest.lith | refs=part64/frontend/src/hooks/useWorldState.ts,part64/frontend/src/hooks/useWorldState.test.tsx,receipts.log | tests=npm test -- --run src/hooks/useWorldState.test.tsx;npm run build;WS:5197/ws delta stream verified | note=Backend websocket remained healthy while frontend only handled type=simulation_delta; live dev stream was delivering compact delta frames that needed the same merge path
+
+ts=2026-03-09T22:56:39.134957+00:00 | kind=:decision | origin=working-tree | owner=OpenCode | dod=Integrated OpenPlanner as eta-mu memory bridge, pruned lore-only presences/muses with clear non-purpose, and documented the narrowed mythology for ring-facing use | pi=eta-mu-openplanner-memory-myth | host=127.0.0.1:8787 | manifest=manifest.lith | refs=part64/code/world_web/openplanner_bridge.py,part64/code/world_web/server.py,part64/code/world_web/ai.py,part64/code/world_web/muse_runtime.py,part64/code/lore.py,part64/code/world_web/constants.py,part64/docker-compose.yml,part64/ecosystem.config.cjs,part64/ecosystem.bench.config.cjs,/home/err/devel/spec/2026-03-09-eta-mu-openplanner-myth.md,receipts.log | tests=python3 -m py_compile part64/code/world_web/openplanner_bridge.py part64/code/world_web/ai.py part64/code/world_web/muse_runtime.py;python3 -m pytest part64/code/tests/test_world_web_pm2.py -k "presence_say_payload or the_council";npx vitest run src/runtime/endpoints.test.ts --exclude e2e/**;GET:http://127.0.0.1:8787/api/catalog | note=OpenPlanner now serves as witness-lake for eta-mu user input, presence utterance, and muse events; symbolic principle/state presences removed from canon
+ts=2026-03-11T15:38:26-05:00 | kind=:decision | origin=working-tree | owner=OpenCode | dod=Moved stable watchlist and source-ingestion helpers into reusable @open-hax packages so Fork Tales imports them instead of owning the logic inline | pi=part64-open-hax-signal-foundation | host=127.0.0.1:8793 | manifest=manifest.lith | refs=part64/code/web_graph_weaver.js,part64/code/package.json,part64/code/package-lock.json,/home/err/devel/orgs/open-hax/openhax/packages/signal-watchlists/index.cjs,/home/err/devel/orgs/open-hax/openhax/packages/signal-source-utils/index.cjs,/home/err/devel/orgs/open-hax/openhax/packages/signal-contracts/index.cjs,/home/err/devel/orgs/open-hax/openhax/packages/signal-radar-core/index.cjs,/home/err/devel/orgs/open-hax/openhax/spec/signal-extraction-foundation.md,receipts.log | tests=node --test tests/*.test.cjs@packages/signal-contracts;node --test tests/*.test.cjs@packages/signal-watchlists;node --test tests/*.test.cjs@packages/signal-radar-core;node --test tests/*.test.cjs@packages/signal-source-utils;node --test tests/weaver_semantic_references.test.js@part64/code;GET:/healthz@weaver;GET:/api/weaver/status@weaver | note=This pass keeps the experiment runtime behavior stable while moving canonical seed parsing, URL/feed/semantic extraction, and shared record vocabulary into importable @open-hax modules
+ts=2026-03-11T19:33:44-05:00 | kind=:decision | origin=working-tree | owner=OpenCode | dod=Clamped part64 Docker CPU budgets so the default runtime and bench stacks cannot monopolize host CPU, then reapplied the live 8787 stack and verified runtime health | pi=part64-runtime-cpu-clamp | host=127.0.0.1:8787 | manifest=manifest.lith | refs=part64/docker-compose.yml,part64/docker-compose.sim-slice-bench.yml,part64/docker-compose.muse-song-lab.yml,part64/docker-compose.whisper-bench.yml,part64/docker-compose.embed-bench.yml,receipts.log | tests=docker compose -f part64/docker-compose.yml config;docker compose --profile tts-docker -f part64/docker-compose.yml config;docker compose -f part64/docker-compose.sim-slice-bench.yml config;docker compose -f part64/docker-compose.muse-song-lab.yml config;docker compose -f part64/docker-compose.whisper-bench.yml config;docker compose -f part64/docker-compose.embed-bench.yml config;docker compose --profile runner -f part64/docker-compose.embed-bench.yml config;docker compose up -d eta-mu-system eta-mu-gateway chroma;GET:/;GET:/api/catalog;WS:/ws | note=Live NanoCpus now system=2500000000 gateway=400000000 chroma=800000000; main runtime and sim-slice variants also cap BLAS/TF thread pools at 1
+ts=2026-03-11T20:36:13-05:00 | kind=:decision | origin=working-tree | owner=OpenCode | dod=Migrated eta-mu substrate into the devel workspace, hardened lith nexus ref-path scanning against malformed workspace refs, and revalidated live graph/catalog health on 8787 | pi=part64-eta-mu-workspace-migration | host=127.0.0.1:8787 | manifest=manifest.lith | refs=part64/code/world_web/lith_nexus_index.py,/home/err/devel/.ημ,/home/err/devel/.opencode/knowledge/archive,/home/err/devel/.opencode/runtime/eta_mu_knowledge.v1.jsonl,/home/err/devel/.opencode/runtime/eta_mu_docmeta.v1.jsonl,/home/err/devel/.opencode/runtime/eta_mu_embeddings.v1.jsonl,receipts.log | tests=docker compose exec eta-mu-system python3 sync_eta_mu_inbox(/workspace);docker compose restart eta-mu-system eta-mu-gateway;GET:/;GET:/api/catalog;WS:/ws;catalog:file_graph.nodes=640,file_nodes=360,knowledge_entries=2216 | note=OpenPlanner search recovered earlier knowledge-graph intent (sessions ses_5a57a4492ffe9N6iabNa2UrsTI and ses_5a56b165dffeLxLl1SULrgcyfh); root workspace substrate now resolves to /workspace/.ημ instead of fallback /app/.ημ
+ts=2026-03-11T21:14:26-05:00 | kind=:decision | origin=working-tree | owner=OpenCode | dod=Raised the live eta-mu CPU budget slightly, enabled a small adaptive GPU sidecar split, and revalidated direct NPU/GPU cosine sidecar execution plus restored runtime graph health on 8787 | pi=part64-runtime-sidecar-retune | host=127.0.0.1:8787 | manifest=manifest.lith | refs=part64/docker-compose.yml,receipts.log | tests=docker compose -f part64/docker-compose.yml config;docker compose up -d eta-mu-system eta-mu-gateway;docker inspect part64-eta-mu-system-1 NanoCpus=3249999872;docker compose exec eta-mu-system env(CDB_EMBED_GPU_SIDECAR_SPLIT_RATIO,CDB_EMBED_GPU_SIDECAR_SPLIT_HOT_RATIO,CDB_EMBED_DEVICE,OPENVINO_EMBED_DEVICE);docker compose exec eta-mu-system cosine_sidecar_test(NPU+GPU);docker compose exec eta-mu-system explicit_embed_test(NPU+GPU);nvidia-smi during gpu-sidecar cosine load;GET:/;GET:/api/catalog;WS:/ws;GET:/api/study?limit=4 | note=eta-mu-system cpus=3.25; adaptive GPU sidecar split now base=0.10 hot=0.30 with live controller ratio 0.008; direct cosine validation returned NPU source=npu-sidecar and GPU source=gpu-sidecar; post-test study showed npu0 busy_time_us=181869168 and catalog restored at /workspace/.ημ with knowledge_entries=2216

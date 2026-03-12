@@ -4,6 +4,14 @@ import math
 from typing import Any
 
 from .metrics import _clamp01, _safe_float, _safe_int
+from .daimoi_observer_control_strategy import (
+    resolve_anti_clump_can_integrate,
+    resolve_anti_clump_control_mode,
+    resolve_anti_clump_deadband_active,
+    resolve_anti_clump_integral_leak,
+    resolve_anti_clump_raw_drive,
+    step_anti_clump_integrals_for_mode,
+)
 
 
 def _finite_float(value: Any, default: float = 0.0) -> float:
@@ -937,27 +945,26 @@ def anti_clump_controller_update(
             _safe_float(metrics.get("snr_max", 1.65), 1.65),
         )
 
-        mode = "score"
-        score_error = score_ema - target
-        error = score_error
-        if particle_count < min_particles:
-            mode = "underpop"
-        elif snr_valid:
-            mode = "snr"
-            error = snr_low_gap
-            score_excess = max(0.0, score_error)
-            error = max(error, score_excess * snr_score_blend)
+        control_mode = resolve_anti_clump_control_mode(
+            particle_count=particle_count,
+            min_particles=min_particles,
+            snr_valid=snr_valid,
+            snr_low_gap=snr_low_gap,
+            score_ema=score_ema,
+            target=target,
+            snr_score_blend=snr_score_blend,
+        )
+        mode = control_mode.mode
+        error = control_mode.error
 
-        deadband_active = False
-        if deadband_enabled:
-            if (
-                mode == "snr"
-                and error < snr_low_gap_deadband
-                and snr_high_gap < snr_low_gap_deadband
-            ):
-                deadband_active = True
-            elif mode == "score" and abs(error) < score_deadband:
-                deadband_active = True
+        deadband_active = resolve_anti_clump_deadband_active(
+            mode=mode,
+            error=error,
+            snr_high_gap=snr_high_gap,
+            deadband_enabled=deadband_enabled,
+            snr_low_gap_deadband=snr_low_gap_deadband,
+            score_deadband=score_deadband,
+        )
         if deadband_active:
             error = 0.0
 
@@ -972,88 +979,52 @@ def anti_clump_controller_update(
         else:
             error_sign_streak = 1
 
-        leak = _clamp01(
-            integral_leak + (deadband_integral_leak_boost if deadband_active else 0.0)
+        leak = resolve_anti_clump_integral_leak(
+            mode=mode,
+            deadband_active=deadband_active,
+            snr_in_band=snr_in_band,
+            integral_leak=integral_leak,
+            deadband_integral_leak_boost=deadband_integral_leak_boost,
         )
-        if mode == "underpop":
-            leak = max(leak, 0.18)
-        elif mode == "snr" and snr_in_band:
-            leak = max(leak, 0.16)
 
-        can_integrate = (
-            integral_enabled
-            and mode in {"snr", "score"}
-            and not deadband_active
-            and not (mode == "snr" and snr_in_band)
+        can_integrate = resolve_anti_clump_can_integrate(
+            mode=mode,
+            deadband_active=deadband_active,
+            snr_in_band=snr_in_band,
+            integral_enabled=integral_enabled,
+            integral_freeze_on_saturation=integral_freeze_on_saturation,
+            is_saturated=is_saturated,
+            integral_freeze_on_sign_flip=integral_freeze_on_sign_flip,
+            error_sign_streak=error_sign_streak,
+            integral_sign_stable_updates=integral_sign_stable_updates,
         )
-        if can_integrate and integral_freeze_on_saturation and is_saturated:
-            can_integrate = False
-        if (
-            can_integrate
-            and integral_freeze_on_sign_flip
-            and error_sign_streak < integral_sign_stable_updates
-        ):
-            can_integrate = False
 
-        if mode == "snr":
-            integral_snr = _integral_step(
-                value=integral_snr,
+        integral_snr, integral_score, active_integral = (
+            step_anti_clump_integrals_for_mode(
+                mode=mode,
                 error=error,
-                integrate=can_integrate,
+                can_integrate=can_integrate,
                 leak=leak,
                 integral_limit=integral_limit,
+                integral_snr=integral_snr,
+                integral_score=integral_score,
+                integral_step=_integral_step,
             )
-            integral_score = _integral_step(
-                value=integral_score,
-                error=0.0,
-                integrate=False,
-                leak=leak,
-                integral_limit=integral_limit,
-            )
-            active_integral = integral_snr
-        elif mode == "score":
-            integral_score = _integral_step(
-                value=integral_score,
-                error=error,
-                integrate=can_integrate,
-                leak=leak,
-                integral_limit=integral_limit,
-            )
-            integral_snr = _integral_step(
-                value=integral_snr,
-                error=0.0,
-                integrate=False,
-                leak=leak,
-                integral_limit=integral_limit,
-            )
-            active_integral = integral_score
-        else:
-            integral_snr = _integral_step(
-                value=integral_snr,
-                error=0.0,
-                integrate=False,
-                leak=leak,
-                integral_limit=integral_limit,
-            )
-            integral_score = _integral_step(
-                value=integral_score,
-                error=0.0,
-                integrate=False,
-                leak=leak,
-                integral_limit=integral_limit,
-            )
-            active_integral = integral_score
+        )
 
         kp_eff = kp * kp_mult
         ki_eff = ki * ki_mult
 
-        if mode == "underpop" or deadband_active:
-            raw_drive = 0.0
-        elif mode == "snr":
-            raw_drive = (kp_eff * error) + (ki_eff * active_integral)
-            raw_drive += snr_high_gap * high_snr_perturb_gain
-        else:
-            raw_drive = (kp_eff * error) + (ki_eff * active_integral)
+        raw_drive = resolve_anti_clump_raw_drive(
+            mode=mode,
+            deadband_active=deadband_active,
+            kp_eff=kp_eff,
+            ki_eff=ki_eff,
+            error=error,
+            active_integral=active_integral,
+            snr_high_gap=snr_high_gap,
+            high_snr_perturb_gain=high_snr_perturb_gain,
+        )
 
         candidate_drive = _clamp_range(
             ((previous_drive * (1.0 - smoothing)) + (raw_drive * smoothing)),

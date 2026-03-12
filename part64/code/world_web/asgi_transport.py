@@ -80,6 +80,7 @@ _ASGI_NATIVE_DISPATCH_PATHS = {
     "/",
     "/healthz",
     "/api/catalog",
+    "/api/study",
     "/api/simulation/refresh",
     "/api/simulation/refresh-status",
     "/api/ui/projection",

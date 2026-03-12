@@ -1,17 +1,28 @@
+x-cpu-thread-limits: &cpu_thread_limits
+  OMP_NUM_THREADS: "1"
+  OPENBLAS_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+  NUMEXPR_NUM_THREADS: "1"
+  TF_NUM_INTRAOP_THREADS: "1"
+  TF_NUM_INTEROP_THREADS: "1"
+
 services:
   eta-mu-system:
     build:
       context: .
       dockerfile: Dockerfile.system
+      additional_contexts:
+        repo_root: ..
     command:
       [
         "pm2-runtime",
         "start",
         "ecosystem.bench.config.cjs",
         "--only",
-        "eta-mu-world,eta-mu-io,web-graph-weaver",
+        "eta-mu-world,eta-mu-io,web-graph-weaver,eta-mu-lith-nexus-mcp",
       ]
     environment:
+      <<: *cpu_thread_limits
       CHROMA_HOST: chroma
       CHROMA_PORT: "8000"
       PYTHONUNBUFFERED: "1"
@@ -20,7 +31,7 @@ services:
       TEXT_GENERATION_MODEL: "qwen3-vl:4b-instruct"
       TEXT_GENERATION_DEVICE: "GPU"
       OPENVINO_EMBED_MODEL: "nomic-embed-text"
-      OPENVINO_EMBED_DEVICE: "AUTO"
+      OPENVINO_EMBED_DEVICE: "${OPENVINO_EMBED_DEVICE:-NPU}"
       OPENVINO_EMBED_MAX_CHARS: "2400"
       ETA_MU_TEXT_EMBED_MODEL: "nomic-embed-text"
       ETA_MU_IMAGE_EMBED_MODEL: "nomic-embed-text"
@@ -37,15 +48,15 @@ services:
       EMBEDDINGS_BACKEND: "auto"
       CDB_EMBED_IN_C: "1"
       CDB_EMBED_REQUIRE_C: "0"
-      CDB_EMBED_DEVICE: "AUTO"
+      CDB_EMBED_DEVICE: "${CDB_EMBED_DEVICE:-NPU}"
       CDB_EMBED_AUTO_POLICY: "adaptive-npu"
       CDB_EMBED_GPU_CONTROLLER_PROFILE: "energy"
       CDB_EMBED_GPU_SIDECAR_ENABLED: "1"
       CDB_EMBED_GPU_USE_SIDECAR_FOR_EXPLICIT: "1"
       CDB_EMBED_GPU_EXPLICIT_ALLOW_LOCAL_FALLBACK: "0"
       CDB_EMBED_GPU_SIDECAR_MIN_COUNT: "384"
-      CDB_EMBED_GPU_SIDECAR_SPLIT_RATIO: "0.18"
-      CDB_EMBED_GPU_SIDECAR_SPLIT_HOT_RATIO: "0.42"
+      CDB_EMBED_GPU_SIDECAR_SPLIT_RATIO: "0.10"
+      CDB_EMBED_GPU_SIDECAR_SPLIT_HOT_RATIO: "0.30"
       CDB_EMBED_GPU_SIDECAR_MAX_MEM_RATIO: "0.62"
       CDB_EMBED_GPU_SIDECAR_MIN_AVAILABLE_MB: "6144"
       CDB_EMBED_GPU_SIDECAR_MAX_FAILURES: "2"
@@ -153,8 +164,22 @@ services:
       RUNTIME_CATALOG_HTTP_CACHE_SECONDS: "${RUNTIME_CATALOG_HTTP_CACHE_SECONDS:-10}"
       WORLD_WEB_ASGI_WS_PING_INTERVAL_SECONDS: "0"
       WORLD_WEB_ASGI_WS_PING_TIMEOUT_SECONDS: "30"
-      RUNTIME_ETA_MU_SYNC_ENABLED: "0"
-      RUNTIME_ETA_MU_SYNC_SECONDS: "300.0"
+      RUNTIME_ETA_MU_SYNC_ENABLED: "1"
+      RUNTIME_ETA_MU_SYNC_SECONDS: "30.0"
+      LITH_NEXUS_SCRIPT: "/srv/mcp-lith-nexus/dist/http.js"
+      LITH_NEXUS_REPO_ROOT: "/workspace"
+      LITH_NEXUS_PYTHON_WORKDIR: "/app"
+      WORLD_WEB_HOST: "127.0.0.1"
+      WORLD_WEB_PORT: "8787"
+      LITH_NEXUS_HTTP_HOST: "0.0.0.0"
+      LITH_NEXUS_HTTP_PORT: "8794"
+      LITH_NEXUS_HTTP_PATH: "/mcp"
+      ETA_MU_INBOX_ROOT: "/workspace/.ημ"
+      ETA_MU_SYNC_DEBOUNCE_MS: "1500"
+      OPENPLANNER_ENABLED: "${OPENPLANNER_ENABLED:-1}"
+      OPENPLANNER_URL: "${OPENPLANNER_URL:-http://host.docker.internal:7777}"
+      OPENPLANNER_API_KEY: "${OPENPLANNER_API_KEY:-change-me}"
+      OPENPLANNER_PROJECT: "${OPENPLANNER_PROJECT:-eta-mu}"
       MUSE_RUNTIME_BACKEND: "${MUSE_RUNTIME_BACKEND:-json}"
       MUSE_RUNTIME_STATE_PATH: "${MUSE_RUNTIME_STATE_PATH:-/app/world_state/muse_runtime_state.json}"
       MUSE_RUNTIME_TURNS_PER_MINUTE: "${MUSE_RUNTIME_TURNS_PER_MINUTE:-60}"
@@ -173,7 +198,7 @@ services:
       - chroma
     ports:
       - "${ETA_MU_WEAVER_PORT:-8793}:8793"
-    cpus: "12.00"
+    cpus: "3.25"
     mem_limit: "20000m"
     memswap_limit: "20000m"
     pids_limit: 1024
@@ -181,11 +206,13 @@ services:
     devices:
       - "/dev/accel:/dev/accel"
       - "/dev/dri:/dev/dri"
+    group_add:
+      - "${ETA_MU_ACCEL_GID:-992}"
+      - "${ETA_MU_VIDEO_GID:-44}"
     volumes:
       - .:/app
       - ./world_state:/app/world_state
-      - ../.opencode/runtime:/app/.opencode/runtime:ro
-      - ../:/vault
+      - ${DEVEL_WORKSPACE_ROOT:-/home/err/devel}:/workspace
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /usr/lib/x86_64-linux-gnu/libze_intel_npu.so:/usr/lib/x86_64-linux-gnu/libze_intel_npu.so:ro
       - /usr/lib/x86_64-linux-gnu/libnpu_driver_compiler.so:/usr/lib/x86_64-linux-gnu/libnpu_driver_compiler.so:ro
@@ -199,7 +226,7 @@ services:
           "CMD",
           "python3",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/', timeout=6)",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/', timeout=6); urllib.request.urlopen('http://127.0.0.1:8794/mcp/healthz', timeout=6)",
         ]
       interval: 20s
       timeout: 12s
@@ -212,9 +239,11 @@ services:
     image: nginx:1.27-alpine
     depends_on:
       - eta-mu-system
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${ETA_MU_GATEWAY_PORT:-8787}:80"
-    cpus: "0.75"
+    cpus: "0.40"
     mem_limit: "512m"
     memswap_limit: "512m"
     pids_limit: 128
@@ -224,9 +253,26 @@ services:
       - eta-mu-sim-net
     restart: unless-stopped
 
+  eta-mu-tts:
+    profiles:
+      - tts-docker
+    build:
+      context: .
+      dockerfile: Dockerfile.tts
+    ports:
+      - "8789:8788"
+    volumes:
+      - ./world_state:/app/world_state
+      - ./code/tts_service.py:/app/code/tts_service.py:ro
+    environment:
+      <<: *cpu_thread_limits
+      PYTHONUNBUFFERED: "1"
+    cpus: "0.80"
+    restart: unless-stopped
+
   chroma:
     image: chromadb/chroma:latest
-    cpus: "1.20"
+    cpus: "0.80"
     mem_limit: "1600m"
     memswap_limit: "1600m"
     pids_limit: 180

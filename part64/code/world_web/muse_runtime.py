@@ -12,6 +12,21 @@ from hashlib import sha1
 from pathlib import Path
 from typing import Any
 
+from .muse_media_strategy import (
+    build_muse_media_candidates,
+    build_muse_media_classifier_state,
+    detect_muse_media_intent,
+    resolve_muse_media_block_reason,
+    resolve_muse_media_classifier_default_kind,
+    resolve_muse_media_requested_kind,
+)
+from .muse_mode_strategy import normalize_muse_runtime_mode, select_muse_surround_rows
+from .muse_threat_fallback_strategy import (
+    THREAT_FOCUSED_MUSE_IDS,
+    build_muse_threat_fallback_reply,
+)
+from .openplanner_bridge import ingest_single_muse_event
+
 
 MUSE_RUNTIME_RECORD = "eta-mu.muse-runtime.snapshot.v1"
 MUSE_RUNTIME_SCHEMA_VERSION = "muse.runtime.v1"
@@ -40,20 +55,6 @@ BOOTSTRAP_MUSE_SPECS: tuple[dict[str, Any], ...] = (
         "anchor": {"x": 0.18, "y": 0.23, "zoom": 1.0, "kind": "bootstrap"},
         "role": "geopolitical",
         "description": "Geopolitical signal analyst. Monitors global threats, maritime security, domain risks.",
-    },
-    {
-        "id": "stability",
-        "label": "Stability",
-        "anchor": {"x": 0.5, "y": 0.22, "zoom": 1.0, "kind": "bootstrap"},
-        "role": "stability",
-        "description": "System stability observer. Tracks runtime health, resource balance, drift patterns.",
-    },
-    {
-        "id": "symmetry",
-        "label": "Symmetry",
-        "anchor": {"x": 0.82, "y": 0.23, "zoom": 1.0, "kind": "bootstrap"},
-        "role": "pattern",
-        "description": "Pattern recognition. Identifies structural parallels across subsystems.",
     },
     {
         "id": "github_security_review",
@@ -193,21 +194,6 @@ MUSE_SYSTEM_PROMPTS: dict[str, str] = {
     ),
 }
 
-THREAT_FOCUSED_MUSE_IDS = {"witness_thread", "chaos", "github_security_review"}
-
-_THREAT_QUERY_TOKENS = {
-    "threat",
-    "threats",
-    "risk",
-    "risks",
-    "cve",
-    "security",
-    "exploit",
-    "active",
-    "alert",
-    "alerts",
-}
-
 
 def _muse_system_prompt(muse_id: str) -> str:
     """Return the specialized system prompt for a muse, or empty string for default."""
@@ -283,82 +269,6 @@ def _muse_embedding_bias(muse_id: str) -> list[str]:
             "critical",
         ]
     return []
-
-
-def _threat_fallback_reply(
-    *,
-    muse_id: str,
-    user_text: str,
-    manifest: dict[str, Any],
-) -> str:
-    clean_muse_id = str(muse_id or "").strip().lower()
-    if clean_muse_id not in THREAT_FOCUSED_MUSE_IDS:
-        return ""
-    tet_rows = manifest.get("tet_units", []) if isinstance(manifest, dict) else []
-    if not isinstance(tet_rows, list):
-        tet_rows = []
-
-    user_tokens = {
-        token
-        for token in re.findall(r"[a-z0-9_\-]+", str(user_text or "").lower())
-        if token
-    }
-    threat_prompted = bool(user_tokens & _THREAT_QUERY_TOKENS)
-
-    threat_lines: list[str] = []
-    source_lines: list[str] = []
-    for tet in tet_rows:
-        if not isinstance(tet, dict):
-            continue
-        kind = str(tet.get("kind", "") or "").strip().lower()
-        text = str(tet.get("text", "") or "").strip()
-        if kind == "threat":
-            title_match = re.search(r"Threat:\s*([^\n]+)", text, flags=re.IGNORECASE)
-            risk_match = re.search(
-                r"Risk:\s*([A-Za-z]+)\s*\((\d+)\)",
-                text,
-                flags=re.IGNORECASE,
-            )
-            title = (
-                title_match.group(1).strip()
-                if title_match
-                else text.splitlines()[0].strip()
-            )
-            if not title:
-                title = "Unlabeled threat"
-            risk_level = risk_match.group(1).upper() if risk_match else "WATCH"
-            risk_score = risk_match.group(2) if risk_match else "0"
-            threat_lines.append(f"- {risk_level}({risk_score}) {title[:120]}")
-        elif kind == "threat-source":
-            label = ""
-            source_match = re.search(r"Watch source:\s*([^\.\n]+)", text)
-            if source_match:
-                label = source_match.group(1).strip()
-            if not label:
-                label = text.splitlines()[0].strip()[:96]
-            if label:
-                source_lines.append(f"- {label}")
-
-    if not threat_lines and not source_lines:
-        return ""
-    if not threat_prompted and not threat_lines:
-        return ""
-
-    if clean_muse_id == "chaos":
-        header = "Active global threat snapshot (model fallback):"
-    elif clean_muse_id == "github_security_review":
-        header = "Active GitHub threat snapshot (model fallback):"
-    else:
-        header = "Active security threat snapshot (model fallback):"
-
-    lines = [header]
-    if threat_lines:
-        lines.append("Top threats:")
-        lines.extend(threat_lines[:3])
-    if source_lines:
-        lines.append("Hot sources:")
-        lines.extend(source_lines[:3])
-    return "\n".join(lines)
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -922,9 +832,7 @@ class MuseRuntimeManager:
                 },
             )
 
-            clean_mode = str(mode or "stochastic").strip().lower()
-            if clean_mode not in {"deterministic", "stochastic"}:
-                clean_mode = "stochastic"
+            clean_mode = normalize_muse_runtime_mode(mode)
             safe_budget = max(320, min(8192, int(token_budget)))
             resolved_seed = str(seed or "").strip()
             if not resolved_seed:
@@ -1003,25 +911,24 @@ class MuseRuntimeManager:
             )
 
             context_lines = [
-                "Muse context manifest:",
+                "Muse evidence context:",
                 f"muse_id={clean_muse_id}",
                 f"turn_id={turn_id}",
                 f"mode={clean_mode}",
-                f"graph_revision={graph_revision}",
-                f"tet_units={len(manifest.get('tet_units', []))}",
-                f"gpu_claim={str(gpu_claim.get('status', 'released'))}",
             ]
+            evidence_rows = 0
             for tet in manifest.get("tet_units", [])[:12]:
                 if not isinstance(tet, dict):
                     continue
-                context_lines.append(
-                    "- "
-                    + str(tet.get("node_id", ""))
-                    + " | "
-                    + str(tet.get("kind", "resource"))
-                    + " | "
-                    + str(tet.get("text", ""))[:180]
-                )
+                node_id = str(tet.get("node_id", "") or "").strip()
+                kind = str(tet.get("kind", "resource") or "resource").strip()
+                text = str(tet.get("text", "") or "").strip()
+                if not text or text == node_id:
+                    continue
+                evidence_rows += 1
+                context_lines.append("- kind=" + kind + " text=" + text[:320])
+            if evidence_rows <= 0:
+                context_lines.append("- no_context_evidence_nodes")
             if tool_rows:
                 context_lines.append("tool_results:")
                 for item in tool_rows[:4]:
@@ -1109,7 +1016,7 @@ class MuseRuntimeManager:
 
         if not assistant_text:
             fallback_used = True
-            threat_fallback = _threat_fallback_reply(
+            threat_fallback = build_muse_threat_fallback_reply(
                 muse_id=clean_muse_id,
                 user_text=clean_text,
                 manifest=captured_manifest,
@@ -1599,32 +1506,12 @@ class MuseRuntimeManager:
         )
         surround_candidates = [str(item[0].get("id", "")) for item in scored_rows]
 
-        selected_surround_rows: list[tuple[dict[str, Any], float]] = []
-        if mode == "deterministic":
-            selected_surround_rows = scored_rows
-        else:
-            pool = list(scored_rows)
-            while pool:
-                weights = []
-                for node, score in pool:
-                    weights.append(math.exp(score / max(0.1, tau)))
-                total = sum(weights)
-                if total <= 0:
-                    break
-                mark = (
-                    random.Random(
-                        _seed_to_int(seed + str(len(selected_surround_rows)))
-                    ).random()
-                    * total
-                )
-                cursor = 0.0
-                chosen_index = 0
-                for idx, weight in enumerate(weights):
-                    cursor += weight
-                    if cursor >= mark:
-                        chosen_index = idx
-                        break
-                selected_surround_rows.append(pool.pop(chosen_index))
+        selected_surround_rows = select_muse_surround_rows(
+            scored_rows,
+            mode=mode,
+            seed=seed,
+            tau=tau,
+        )
 
         surround_tokens = 0
         for node, score in selected_surround_rows:
@@ -2110,6 +1997,32 @@ class MuseRuntimeManager:
                 _append_tool("graph_query:github_recent_changes 1440 32")
                 _append_tool("graph_query:github_status")
 
+            repo_issue_match = re.search(
+                r"\b([a-z0-9_.-]+/[a-z0-9_.-]+)#(\d+)\b",
+                normalized,
+            )
+            if repo_issue_match:
+                issue_repo = str(repo_issue_match.group(1) or "").strip().lower()
+                issue_number = str(repo_issue_match.group(2) or "").strip()
+                if issue_number and issue_repo:
+                    _append_tool(
+                        f"graph_query:github_find {issue_number} {issue_repo} 12"
+                    )
+                    _append_tool(f"graph_query:github_threat_radar {issue_repo} 24")
+                    _append_tool("graph_query:github_status")
+
+            asks_attack_taxonomy = (
+                "att&ck" in normalized
+                or "mitre attack" in normalized
+                or "attack taxonomy" in normalized
+                or "taxonomy" in normalized
+            )
+            if asks_attack_taxonomy and clean_muse_id in {
+                "witness_thread",
+                "github_security_review",
+            }:
+                _append_tool("graph_query:github_recent_changes 1440 32")
+
             asks_web_resource_summary = (
                 "crawler learn" in normalized
                 or "what got crawled" in normalized
@@ -2152,6 +2065,7 @@ class MuseRuntimeManager:
         arxiv_summary: dict[str, Any] = {}
         hormuz_threat_summary: dict[str, Any] = {}
         github_threat_summary: dict[str, Any] = {}
+        github_find_summary: dict[str, Any] = {}
 
         for row in tool_rows:
             if not isinstance(row, dict):
@@ -2278,6 +2192,24 @@ class MuseRuntimeManager:
                             )
                             if isinstance(row, dict)
                         ][:4],
+                    }
+                if query_name == "github_find" and isinstance(query_payload, dict):
+                    github_find_summary = {
+                        "term": str(query_payload.get("term", "") or "").strip(),
+                        "repo": str(query_payload.get("repo", "") or "").strip(),
+                        "count": max(
+                            0,
+                            _safe_int(query_payload.get("count", 0), 0),
+                        ),
+                        "matches": [
+                            row
+                            for row in (
+                                query_payload.get("matches", [])
+                                if isinstance(query_payload.get("matches", []), list)
+                                else []
+                            )
+                            if isinstance(row, dict)
+                        ][:6],
                     }
 
         if not grounded:
@@ -2417,6 +2349,40 @@ class MuseRuntimeManager:
             unknown_lines.append(
                 "Threat radar is heuristic scoring from crawler atoms; verify against full issue/PR threads before action."
             )
+        elif github_find_summary:
+            term = str(github_find_summary.get("term", "") or "").strip()
+            repo = str(github_find_summary.get("repo", "") or "").strip()
+            count = max(0, _safe_int(github_find_summary.get("count", 0), 0))
+            derivation_lines.append(
+                "GitHub find: "
+                + f"term={term or '(none)'}, repo={repo or '(all)'}, count={count}."
+            )
+            match_lines: list[str] = []
+            for row in github_find_summary.get("matches", []):
+                if not isinstance(row, dict):
+                    continue
+                row_repo = str(row.get("repo", "") or "").strip()
+                row_kind = str(row.get("kind", "") or "").strip()
+                row_title = str(row.get("title", "") or "").strip()
+                row_url = str(row.get("canonical_url", "") or "").strip()
+                row_atom = row.get("atom", {})
+                action = ""
+                if isinstance(row_atom, dict):
+                    action = str(row_atom.get("action", "") or "").strip()
+                descriptor = row_title or row_url or row_kind
+                line = f"{row_repo or '(repo)'} {row_kind or '(kind)'}: {descriptor}".strip()
+                if action:
+                    line += f" action={action}"
+                match_lines.append(line)
+                if len(match_lines) >= 4:
+                    break
+            if match_lines:
+                derivation_lines.append(
+                    "GitHub matches: " + "; ".join(match_lines) + "."
+                )
+            unknown_lines.append(
+                "GitHub find reflects indexed resource atoms; pull the full issue/PR thread for authoritative action semantics."
+            )
         elif arxiv_summary:
             total = max(0, _safe_int(arxiv_summary.get("count_total", 0), 0))
             fetched = max(0, _safe_int(arxiv_summary.get("count_fetched", 0), 0))
@@ -2518,87 +2484,23 @@ class MuseRuntimeManager:
     ) -> dict[str, Any] | None:
         if not self._audio_intent_enabled:
             return None
-        normalized = str(text or "").strip().lower()
-        if not normalized:
+        intent = detect_muse_media_intent(
+            text=text,
+            audio_suffixes=_AUDIO_SUFFIXES,
+            image_suffixes=_IMAGE_SUFFIXES,
+            audio_action_tokens=_AUDIO_ACTION_TOKENS,
+            image_action_tokens=_IMAGE_ACTION_TOKENS,
+            audio_hint_tokens=_AUDIO_HINT_TOKENS,
+            image_hint_tokens=_IMAGE_HINT_TOKENS,
+            audio_stop_tokens=_AUDIO_STOP_TOKENS,
+            image_stop_tokens=_IMAGE_STOP_TOKENS,
+        )
+        if intent is None:
             return None
-
-        token_list = re.findall(r"[a-z0-9_./:-]+", normalized)
-        token_set = set(token_list)
-
-        audio_suffix_hit = any(
-            token.endswith(_AUDIO_SUFFIXES)
-            or token in {"mp3", "wav", "ogg", "m4a", "flac"}
-            for token in token_set
-        )
-        image_suffix_hit = any(
-            token.endswith(_IMAGE_SUFFIXES)
-            or token in {"png", "jpg", "jpeg", "webp", "gif", "svg", "bmp"}
-            for token in token_set
-        )
-        audio_action_hit = bool(token_set & _AUDIO_ACTION_TOKENS)
-        image_action_hit = bool(token_set & _IMAGE_ACTION_TOKENS)
-        audio_hint_hit = bool(token_set & _AUDIO_HINT_TOKENS)
-        image_hint_hit = bool(token_set & _IMAGE_HINT_TOKENS)
-
-        explicit_audio = (
-            normalized.startswith("/play")
-            or normalized.startswith("play ")
-            or ("play" in token_set and bool(token_set & _AUDIO_HINT_TOKENS))
-        )
-        explicit_image = (
-            normalized.startswith("/image")
-            or normalized.startswith("/open-image")
-            or normalized.startswith("open image")
-            or (("open" in token_set or "show" in token_set) and image_hint_hit)
-        )
-
-        audio_signal = 0
-        image_signal = 0
-        if audio_action_hit:
-            audio_signal += 2
-        if audio_hint_hit:
-            audio_signal += 3
-        if audio_suffix_hit:
-            audio_signal += 3
-        if explicit_audio:
-            audio_signal += 4
-        if image_action_hit:
-            image_signal += 2
-        if image_hint_hit:
-            image_signal += 3
-        if image_suffix_hit:
-            image_signal += 3
-        if explicit_image:
-            image_signal += 4
-
-        if audio_signal <= 0 and image_signal <= 0:
-            return None
-
-        requested_kind = ""
-        if audio_signal > image_signal:
-            requested_kind = "audio"
-        elif image_signal > audio_signal:
-            requested_kind = "image"
-
-        strict_kind = ""
-        if explicit_audio and not explicit_image:
-            strict_kind = "audio"
-        elif explicit_image and not explicit_audio:
-            strict_kind = "image"
+        requested_kind = intent.requested_kind
+        strict_kind = intent.strict_kind
 
         muse_id = str(muse.get("id", "")).strip()
-        query_tokens_by_kind = {
-            "audio": [
-                token
-                for token in token_list
-                if token not in _AUDIO_STOP_TOKENS and len(token) > 1
-            ][:12],
-            "image": [
-                token
-                for token in token_list
-                if token not in _IMAGE_STOP_TOKENS and len(token) > 1
-            ][:12],
-        }
         explicit_selected = {
             str(item).strip()
             for item in manifest.get("explicit_selected", [])
@@ -2613,328 +2515,43 @@ class MuseRuntimeManager:
                 continue
             tet_distance[node_id] = _clamp01(_safe_float(tet.get("distance", 1.0), 1.0))
 
-        classifier_bias = {"audio": 0.0, "image": 0.0}
-        focus_node_bias = {"audio": {}, "image": {}}
-        classifier_presence_ids: list[str] = []
-        for raw_row in surrounding_nodes if isinstance(surrounding_nodes, list) else []:
-            if not isinstance(raw_row, dict):
-                continue
-            row_id = str(
-                raw_row.get(
-                    "id", raw_row.get("node_id", raw_row.get("source_rel_path", ""))
-                )
-                or ""
-            ).strip()
-            row_kind = str(raw_row.get("kind", "") or "").strip().lower()
-            presence_type = str(raw_row.get("presence_type", "") or "").strip().lower()
-            tags = {
-                str(item).strip().lower()
-                for item in (
-                    raw_row.get("tags", [])
-                    if isinstance(raw_row.get("tags"), list)
-                    else []
-                )
-                if str(item).strip()
-            }
-            seed_terms = {
-                str(item).strip().lower()
-                for item in (
-                    raw_row.get("seed_terms", [])
-                    if isinstance(raw_row.get("seed_terms"), list)
-                    else []
-                )
-                if str(item).strip()
-            }
-            if not seed_terms:
-                inferred_terms = re.findall(
-                    r"[a-z0-9_./:-]+",
-                    " ".join(
-                        [
-                            str(raw_row.get("label", "") or ""),
-                            str(raw_row.get("text", "") or ""),
-                            str(raw_row.get("source_rel_path", "") or ""),
-                        ]
-                    ).lower(),
-                )
-                seed_terms = {token for token in inferred_terms if len(token) > 1}
-
-            focus_ids = [
-                str(item).strip()
-                for item in (
-                    raw_row.get("focus_node_ids", [])
-                    if isinstance(raw_row.get("focus_node_ids"), list)
-                    else []
-                )
-                if str(item).strip()
-            ]
-            default_kind = (
-                str(
-                    raw_row.get("default_media_kind", raw_row.get("media_kind", ""))
-                    or ""
-                )
-                .strip()
-                .lower()
-            )
-            if default_kind not in {"audio", "image"}:
-                continue
-
-            overlap = len(seed_terms.intersection(token_set))
-            is_classifier_row = bool(
-                row_kind == "classifier"
-                or presence_type
-                in {"classifier", "modality_classifier", "baseline_classifier"}
-                or "classifier" in tags
-            )
-            if is_classifier_row:
-                classifier_bias[default_kind] += 0.14 + min(0.42, overlap * 0.1)
-                if row_id and row_id not in classifier_presence_ids:
-                    classifier_presence_ids.append(row_id)
-
-            if focus_ids:
-                focus_boost = 0.32 + min(1.4, overlap * 0.28)
-                bias_map = focus_node_bias[default_kind]
-                for focus_id in focus_ids:
-                    current = _safe_float(bias_map.get(focus_id, 0.0), 0.0)
-                    bias_map[focus_id] = current + focus_boost
-            elif "concept-seed" in tags and overlap > 0:
-                classifier_bias[default_kind] += min(0.24, overlap * 0.08)
-
-        if not strict_kind and not requested_kind:
-            audio_bias = _safe_float(classifier_bias.get("audio", 0.0), 0.0)
-            image_bias = _safe_float(classifier_bias.get("image", 0.0), 0.0)
-            if audio_bias > image_bias + 0.04:
-                requested_kind = "audio"
-            elif image_bias > audio_bias + 0.04:
-                requested_kind = "image"
-
-        candidates: list[dict[str, Any]] = []
-        seen_ids: set[str] = set()
-        for raw_row in surrounding_nodes if isinstance(surrounding_nodes, list) else []:
-            if not isinstance(raw_row, dict):
-                continue
-            node_id = str(
-                raw_row.get(
-                    "id", raw_row.get("node_id", raw_row.get("source_rel_path", ""))
-                )
-                or ""
-            ).strip()
-            if not node_id or node_id in seen_ids:
-                continue
-            seen_ids.add(node_id)
-
-            kind = str(raw_row.get("kind", "resource") or "resource").strip().lower()
-            label = str(raw_row.get("label", node_id) or node_id).strip() or node_id
-            text_blob = str(raw_row.get("text", "") or "")
-            source_rel_path = str(raw_row.get("source_rel_path", "") or "").strip()
-            raw_url = str(raw_row.get("url", "") or "").strip()
-            tags = [
-                str(item).strip().lower()
-                for item in (
-                    raw_row.get("tags", [])
-                    if isinstance(raw_row.get("tags"), list)
-                    else []
-                )
-                if str(item).strip()
-            ]
-            joined = " ".join(
-                [
-                    node_id,
-                    label,
-                    text_blob,
-                    source_rel_path,
-                    raw_url,
-                    " ".join(tags),
-                ]
-            ).lower()
-            corpus_tokens = set(re.findall(r"[a-z0-9_./:-]+", joined))
-
-            kind_audio = (
-                kind == "audio"
-                or kind.startswith("audio/")
-                or "music" in kind
-                or "song" in kind
-            )
-            suffix_audio = any(
-                str(field).strip().lower().endswith(_AUDIO_SUFFIXES)
-                for field in (node_id, label, source_rel_path, raw_url)
-                if str(field).strip()
-            )
-            path_audio = "/artifacts/audio/" in joined or "artifacts/audio/" in joined
-            lexical_audio = bool(
-                {"song", "track", "music", "audio", "bpm"} & corpus_tokens
-            )
-            is_audio_candidate = bool(
-                kind_audio or suffix_audio or path_audio or lexical_audio
-            )
-
-            kind_image = (
-                kind == "image"
-                or kind.startswith("image/")
-                or kind == "cover_art"
-                or "image" in kind
-            )
-            suffix_image = any(
-                str(field).strip().lower().endswith(_IMAGE_SUFFIXES)
-                for field in (node_id, label, source_rel_path, raw_url)
-                if str(field).strip()
-            )
-            path_image = "/artifacts/images/" in joined or "artifacts/images/" in joined
-            lexical_image = bool(
-                {
-                    "image",
-                    "photo",
-                    "picture",
-                    "cover",
-                    "png",
-                    "jpg",
-                    "jpeg",
-                    "webp",
-                    "gif",
-                    "svg",
-                }
-                & corpus_tokens
-            )
-            is_image_candidate = bool(
-                kind_image or suffix_image or path_image or lexical_image
-            )
-
-            if strict_kind == "audio":
-                is_image_candidate = False
-            elif strict_kind == "image":
-                is_audio_candidate = False
-
-            if requested_kind == "audio" and not strict_kind:
-                is_image_candidate = False
-            elif requested_kind == "image" and not strict_kind:
-                is_audio_candidate = False
-
-            resolved_url = raw_url
-            if resolved_url and not resolved_url.startswith(
-                ("http://", "https://", "/")
-            ):
-                resolved_url = "/" + resolved_url.lstrip("./")
-            if not resolved_url and source_rel_path:
-                clean_rel = source_rel_path.lstrip("/")
-                if clean_rel.startswith("library/"):
-                    resolved_url = "/" + clean_rel
-                else:
-                    resolved_url = "/library/" + clean_rel
-
-            if is_audio_candidate:
-                score = 0.0
-                if kind_audio:
-                    score += 1.0
-                if suffix_audio:
-                    score += 0.72
-                if path_audio:
-                    score += 0.42
-                if node_id in explicit_selected:
-                    score += 0.78
-                if "workspace-pin" in tags:
-                    score += 0.34
-                if muse_id.lower() in tags:
-                    score += 0.24
-                if node_id in tet_distance:
-                    score += (1.0 - tet_distance[node_id]) * 0.26
-                overlap = len(
-                    corpus_tokens.intersection(set(query_tokens_by_kind["audio"]))
-                )
-                score += min(0.84, overlap * 0.18)
-                score += min(0.55, _safe_float(classifier_bias.get("audio", 0.0), 0.0))
-                score += min(
-                    0.9,
-                    _safe_float(
-                        focus_node_bias["audio"].get(node_id, 0.0)
-                        if isinstance(focus_node_bias.get("audio"), dict)
-                        else 0.0,
-                        0.0,
-                    ),
-                )
-                score += _hash_unit(f"audio|{muse_id}|{node_id}") * 0.04
-                candidates.append(
-                    {
-                        "media_kind": "audio",
-                        "intent": "play_music",
-                        "node_id": node_id,
-                        "label": label,
-                        "kind": kind,
-                        "score": score,
-                        "url": resolved_url,
-                        "source_rel_path": source_rel_path,
-                        "target_presence_id": self._audio_target_presence_id,
-                    }
-                )
-
-            if is_image_candidate:
-                score = 0.0
-                if kind_image:
-                    score += 1.0
-                if suffix_image:
-                    score += 0.72
-                if path_image:
-                    score += 0.42
-                if node_id in explicit_selected:
-                    score += 0.78
-                if "workspace-pin" in tags:
-                    score += 0.34
-                if muse_id.lower() in tags:
-                    score += 0.24
-                if node_id in tet_distance:
-                    score += (1.0 - tet_distance[node_id]) * 0.26
-                overlap = len(
-                    corpus_tokens.intersection(set(query_tokens_by_kind["image"]))
-                )
-                score += min(0.84, overlap * 0.18)
-                score += min(0.55, _safe_float(classifier_bias.get("image", 0.0), 0.0))
-                score += min(
-                    0.9,
-                    _safe_float(
-                        focus_node_bias["image"].get(node_id, 0.0)
-                        if isinstance(focus_node_bias.get("image"), dict)
-                        else 0.0,
-                        0.0,
-                    ),
-                )
-                score += _hash_unit(f"image|{muse_id}|{node_id}") * 0.04
-                candidates.append(
-                    {
-                        "media_kind": "image",
-                        "intent": "open_image",
-                        "node_id": node_id,
-                        "label": label,
-                        "kind": kind,
-                        "score": score,
-                        "url": resolved_url,
-                        "source_rel_path": source_rel_path,
-                        "target_presence_id": self._image_target_presence_id,
-                    }
-                )
-
-        candidates.sort(
-            key=lambda row: (
-                -_safe_float(row.get("score", 0.0), 0.0),
-                str(row.get("media_kind", "")),
-                str(row.get("node_id", "")),
-            )
+        classifier_state = build_muse_media_classifier_state(
+            surrounding_nodes=surrounding_nodes,
+            token_set=intent.token_set,
         )
-        candidates = candidates[: self._audio_max_candidates]
-
-        if strict_kind:
-            fallback_candidates = [
-                row
-                for row in candidates
-                if str(row.get("media_kind", "")) == strict_kind
-            ]
-            candidates = fallback_candidates
+        classifier_bias = classifier_state.classifier_bias
+        focus_node_bias = classifier_state.focus_node_bias
+        classifier_presence_ids = classifier_state.classifier_presence_ids
+        requested_kind = resolve_muse_media_requested_kind(
+            requested_kind=requested_kind,
+            strict_kind=strict_kind,
+            classifier_bias=classifier_bias,
+        )
+        candidates = build_muse_media_candidates(
+            surrounding_nodes=surrounding_nodes,
+            muse_id=muse_id,
+            requested_kind=requested_kind,
+            strict_kind=strict_kind,
+            query_tokens_by_kind=intent.query_tokens_by_kind,
+            explicit_selected=explicit_selected,
+            tet_distance=tet_distance,
+            classifier_bias=classifier_bias,
+            focus_node_bias=focus_node_bias,
+            audio_suffixes=_AUDIO_SUFFIXES,
+            image_suffixes=_IMAGE_SUFFIXES,
+            audio_target_presence_id=self._audio_target_presence_id,
+            image_target_presence_id=self._image_target_presence_id,
+            max_candidates=self._audio_max_candidates,
+        )
 
         resolved_kind = requested_kind or strict_kind
         if not resolved_kind and candidates:
             resolved_kind = str(candidates[0].get("media_kind", "")).strip().lower()
 
         if resolved_kind == "image":
-            query_tokens = query_tokens_by_kind["image"]
+            query_tokens = intent.query_tokens_by_kind["image"]
         else:
-            query_tokens = query_tokens_by_kind["audio"]
+            query_tokens = intent.query_tokens_by_kind["audio"]
 
         action = {
             "record": "eta-mu.media-command-action.v1",
@@ -2962,14 +2579,8 @@ class MuseRuntimeManager:
             "reason": "no_media_candidates",
             "created_at": _now_iso(),
             "classifier_presence_ids": classifier_presence_ids,
-            "classifier_default_kind": (
-                "audio"
-                if _safe_float(classifier_bias.get("audio", 0.0), 0.0)
-                > _safe_float(classifier_bias.get("image", 0.0), 0.0)
-                else "image"
-                if _safe_float(classifier_bias.get("image", 0.0), 0.0)
-                > _safe_float(classifier_bias.get("audio", 0.0), 0.0)
-                else ""
+            "classifier_default_kind": resolve_muse_media_classifier_default_kind(
+                classifier_bias=classifier_bias,
             ),
             "classifier_bias": {
                 "audio": round(_safe_float(classifier_bias.get("audio", 0.0), 0.0), 6),
@@ -3013,15 +2624,10 @@ class MuseRuntimeManager:
             )
 
         if not candidates:
-            reason = "no_media_candidates"
-            if strict_kind == "audio":
-                reason = "no_audio_candidates"
-            elif strict_kind == "image":
-                reason = "no_image_candidates"
-            elif resolved_kind == "audio":
-                reason = "no_audio_candidates"
-            elif resolved_kind == "image":
-                reason = "no_image_candidates"
+            reason = resolve_muse_media_block_reason(
+                strict_kind=strict_kind,
+                resolved_kind=resolved_kind,
+            )
             action["reason"] = reason
             blocked_kind = resolved_kind or strict_kind or "media"
             if blocked_kind == "audio":
@@ -3471,6 +3077,10 @@ class MuseRuntimeManager:
         if len(events) > self._max_events:
             events = events[-self._max_events :]
         self._state["events"] = events
+        try:
+            ingest_single_muse_event(event)
+        except Exception:
+            pass
         return event
 
     def _persist_locked(self) -> None:
@@ -3495,6 +3105,22 @@ class MuseRuntimeManager:
         return state
 
     def _ensure_bootstrap_muses_locked(self) -> None:
+        removed_any = False
+        bootstrap_ids = {
+            str(spec.get("id", "")).strip()
+            for spec in BOOTSTRAP_MUSE_SPECS
+            if str(spec.get("id", "")).strip()
+        }
+        for muse_id in list(self._state["muses"].keys()):
+            if muse_id in bootstrap_ids:
+                continue
+            if muse_id in {"stability", "symmetry"}:
+                self._state["muses"].pop(muse_id, None)
+                self._state["messages"].pop(muse_id, None)
+                self._state["manifests"].pop(muse_id, None)
+                self._state["idempotency"].pop(muse_id, None)
+                self._state["rate_windows"].pop(muse_id, None)
+                removed_any = True
         for spec in BOOTSTRAP_MUSE_SPECS:
             muse_id = str(spec.get("id", "")).strip()
             if not muse_id:
@@ -3516,6 +3142,9 @@ class MuseRuntimeManager:
                 anchor=spec.get("anchor", {}),
                 user_intent_id="bootstrap",
             )
+            removed_any = True
+        if removed_any:
+            self._persist_locked()
 
     def _embedding_preview(self, seed: str) -> list[float]:
         vector: list[float] = []

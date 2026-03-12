@@ -184,6 +184,9 @@ from . import catalog_stream_utils as catalog_stream_utils_module
 from . import runtime_catalog_fallback_utils as runtime_catalog_fallback_utils_module
 from . import runtime_io_utils as runtime_io_utils_module
 from . import github_conversation_utils as github_conversation_utils_module
+from . import server_query_daimoi_utils as server_query_daimoi_utils_module
+from . import server_runtime_health_utils as server_runtime_health_utils_module
+from . import server_runtime_config_utils as server_runtime_config_utils_module
 from . import server_misc_utils as server_misc_utils_module
 from . import simulation_ws_particles_utils as simulation_ws_particles_utils_module
 from . import simulation_http_trim_utils as simulation_http_trim_utils_module
@@ -214,8 +217,12 @@ from . import (
 )
 from . import simulation_ws_send_controller as simulation_ws_send_controller_module
 from . import (
+    simulation_ws_shared_payload_utils as simulation_ws_shared_payload_utils_module,
+)
+from . import (
     simulation_ws_tick_policy_controller as simulation_ws_tick_policy_controller_module,
 )
+from . import simulation_ws_shared_controller as simulation_ws_shared_controller_module
 from . import ws_upgrade_controller as ws_upgrade_controller_module
 from . import (
     simulation_bootstrap_state_utils as simulation_bootstrap_state_utils_module,
@@ -227,6 +234,16 @@ from . import (
     simulation_bootstrap_report_utils as simulation_bootstrap_report_utils_module,
 )
 from . import world_runtime_controller as world_runtime_controller_module
+from . import muse_mvc_controller as muse_mvc_controller_module
+from . import muse_threat_radar_utils as muse_threat_radar_utils_module
+from . import muse_runtime_backend_utils as muse_runtime_backend_utils_module
+from . import muse_ws_stream_utils as muse_ws_stream_utils_module
+from .openplanner_bridge import (
+    build_presence_say_openplanner_event,
+    build_user_input_openplanner_events,
+    ingest_openplanner_events,
+)
+from .study_snapshot_response_utils import get_or_build_study_snapshot_response
 
 
 _RUNTIME_CATALOG_CACHE_LOCK = threading.Lock()
@@ -250,6 +267,10 @@ _RUNTIME_CATALOG_HTTP_CACHE_SECONDS = max(
 )
 _RUNTIME_CATALOG_HTTP_CACHE_LOCK = threading.Lock()
 _RUNTIME_CATALOG_HTTP_CACHE: dict[str, dict[str, Any]] = {}
+_STUDY_RESPONSE_CACHE_SECONDS = max(
+    0.25,
+    float(os.getenv("STUDY_RESPONSE_CACHE_SECONDS", "2.5") or "2.5"),
+)
 _RUNTIME_ETA_MU_SYNC_SECONDS = max(
     0.5,
     float(os.getenv("RUNTIME_ETA_MU_SYNC_SECONDS", "6.0") or "6.0"),
@@ -340,40 +361,11 @@ _SIMULATION_HTTP_WARMUP_DELAY_SECONDS = max(
 
 
 def _normalize_query_text(text: str) -> str:
-    raw = str(text or "").strip()
-    if not raw:
-        return ""
-    return " ".join(raw.split())[:220]
+    return server_query_daimoi_utils_module.normalize_query_text(text)
 
 
 def _query_variant_terms(query_text: str) -> list[str]:
-    base = _normalize_query_text(query_text)
-    if not base:
-        return []
-
-    lowered = base.lower()
-    token_rows = [
-        token
-        for token in "".join(
-            ch if (ch.isalnum() or ch.isspace()) else " " for ch in lowered
-        ).split()
-        if token
-    ]
-
-    variants: list[str] = []
-    for candidate in (
-        base,
-        lowered,
-        " ".join(token_rows),
-        " ".join(token_rows[:4]),
-        " ".join(token_rows[-4:]),
-    ):
-        clean = _normalize_query_text(candidate)
-        if clean and clean not in variants:
-            variants.append(clean)
-        if len(variants) >= 6:
-            break
-    return variants
+    return server_query_daimoi_utils_module.query_variant_terms(query_text)
 
 
 def _build_search_daimoi_meta(
@@ -382,53 +374,14 @@ def _build_search_daimoi_meta(
     target: str,
     model: str | None,
 ) -> dict[str, Any]:
-    variants = _query_variant_terms(query_text)
-    if not variants:
-        return {}
-
-    target_text = str(target or "").strip().lower()
-    target_presence_ids: list[str] = []
-    for row in ENTITY_MANIFEST:
-        if not isinstance(row, dict):
-            continue
-        presence_id = str(row.get("id", "") or "").strip()
-        if not presence_id:
-            continue
-        if (
-            presence_id.lower() in target_text
-            and presence_id not in target_presence_ids
-        ):
-            target_presence_ids.append(presence_id)
-
-    component_rows: list[dict[str, Any]] = []
-    for index, term in enumerate(variants[:6]):
-        component_id = hashlib.sha1(f"{term}|{index}".encode("utf-8")).hexdigest()[:12]
-        embedding = _normalize_embedding_vector(_ollama_embed(term, model=model))
-        component: dict[str, Any] = {
-            "component_id": f"query:{component_id}",
-            "component_type": "query-term",
-            "kind": "search",
-            "text": term,
-            "weight": round(max(0.2, 1.0 - (index * 0.12)), 6),
-            "variant_rank": index,
-            "embedding_dim": 0,
-        }
-        if embedding:
-            component["embedding_dim"] = len(embedding)
-            component["embedding_preview"] = [
-                round(float(value), 6) for value in embedding[:8]
-            ]
-        component_rows.append(component)
-
-    return {
-        "record": "ημ.user-search-daimoi.v1",
-        "schema_version": "user.search.daimoi.v1",
-        "query": variants[0],
-        "variant_count": len(variants),
-        "embed_model": str(model or "").strip(),
-        "target_presence_ids": target_presence_ids,
-        "components": component_rows,
-    }
+    return server_query_daimoi_utils_module.build_search_daimoi_meta(
+        query_text,
+        target=target,
+        model=model,
+        entity_manifest=ENTITY_MANIFEST,
+        normalize_embedding_vector=_normalize_embedding_vector,
+        ollama_embed=_ollama_embed,
+    )
 
 
 _SIMULATION_HTTP_WARMUP_TIMEOUT_SECONDS = max(
@@ -528,25 +481,6 @@ _SIMULATION_HTTP_MAX_EMBED_IDS = max(
 _SIMULATION_HTTP_MAX_EMBEDDING_LINKS = max(
     0,
     int(float(os.getenv("SIMULATION_HTTP_MAX_EMBEDDING_LINKS", "28") or "28")),
-)
-_SIMULATION_HTTP_TRIM_CONFIG = (
-    simulation_http_trim_utils_module.SimulationHttpTrimConfig(
-        trim_enabled=_SIMULATION_HTTP_TRIM_ENABLED,
-        max_items=_SIMULATION_HTTP_MAX_ITEMS,
-        max_file_nodes=_SIMULATION_HTTP_MAX_FILE_NODES,
-        max_file_edges=_SIMULATION_HTTP_MAX_FILE_EDGES,
-        max_field_nodes=_SIMULATION_HTTP_MAX_FIELD_NODES,
-        max_tag_nodes=_SIMULATION_HTTP_MAX_TAG_NODES,
-        max_render_nodes=_SIMULATION_HTTP_MAX_RENDER_NODES,
-        max_crawler_nodes=_SIMULATION_HTTP_MAX_CRAWLER_NODES,
-        max_crawler_edges=_SIMULATION_HTTP_MAX_CRAWLER_EDGES,
-        max_crawler_field_nodes=_SIMULATION_HTTP_MAX_CRAWLER_FIELD_NODES,
-        max_text_excerpt_chars=_SIMULATION_HTTP_MAX_TEXT_EXCERPT_CHARS,
-        max_summary_chars=_SIMULATION_HTTP_MAX_SUMMARY_CHARS,
-        max_embed_layer_points=_SIMULATION_HTTP_MAX_EMBED_LAYER_POINTS,
-        max_embed_ids=_SIMULATION_HTTP_MAX_EMBED_IDS,
-        max_embedding_links=_SIMULATION_HTTP_MAX_EMBEDDING_LINKS,
-    )
 )
 _SIMULATION_HTTP_COMPACT_MAX_POINTS = max(
     256,
@@ -1013,102 +947,56 @@ _SIMULATION_WS_DAIMOI_METRICS_MIN_SLACK_MS = max(
 
 def _runtime_ws_client_snapshot() -> dict[str, int]:
     with _RUNTIME_WS_CLIENT_LOCK:
-        return {
-            "active_clients": int(_RUNTIME_WS_CLIENT_COUNT),
-            "max_clients": int(_RUNTIME_WS_MAX_CLIENTS),
-        }
+        return server_runtime_health_utils_module.runtime_ws_client_snapshot(
+            active_count=_RUNTIME_WS_CLIENT_COUNT,
+            max_clients=_RUNTIME_WS_MAX_CLIENTS,
+        )
 
 
 def _runtime_ws_try_acquire_client_slot() -> bool:
     global _RUNTIME_WS_CLIENT_COUNT
     with _RUNTIME_WS_CLIENT_LOCK:
-        if _RUNTIME_WS_CLIENT_COUNT >= _RUNTIME_WS_MAX_CLIENTS:
+        acquired, next_count = (
+            server_runtime_health_utils_module.runtime_ws_try_acquire_client_slot(
+                active_count=_RUNTIME_WS_CLIENT_COUNT,
+                max_clients=_RUNTIME_WS_MAX_CLIENTS,
+            )
+        )
+        if not acquired:
             return False
-        _RUNTIME_WS_CLIENT_COUNT += 1
+        _RUNTIME_WS_CLIENT_COUNT = int(next_count)
     return True
 
 
 def _runtime_ws_release_client_slot() -> None:
     global _RUNTIME_WS_CLIENT_COUNT
     with _RUNTIME_WS_CLIENT_LOCK:
-        _RUNTIME_WS_CLIENT_COUNT = max(0, _RUNTIME_WS_CLIENT_COUNT - 1)
+        _RUNTIME_WS_CLIENT_COUNT = (
+            server_runtime_health_utils_module.runtime_ws_release_client_slot(
+                active_count=_RUNTIME_WS_CLIENT_COUNT,
+            )
+        )
 
 
 def _runtime_guard_state(resource_snapshot: dict[str, Any]) -> dict[str, Any]:
-    snapshot = resource_snapshot if isinstance(resource_snapshot, dict) else {}
-    devices = (
-        snapshot.get("devices", {}) if isinstance(snapshot.get("devices"), dict) else {}
+    return server_runtime_health_utils_module.runtime_guard_state(
+        resource_snapshot,
+        safe_float=_safe_float,
+        cpu_utilization_critical=_RUNTIME_GUARD_CPU_UTILIZATION_CRITICAL,
+        memory_pressure_critical=_RUNTIME_GUARD_MEMORY_PRESSURE_CRITICAL,
+        log_error_ratio_critical=_RUNTIME_GUARD_LOG_ERROR_RATIO_CRITICAL,
     )
-    cpu = devices.get("cpu", {}) if isinstance(devices.get("cpu"), dict) else {}
-    log_watch = (
-        snapshot.get("log_watch", {})
-        if isinstance(snapshot.get("log_watch"), dict)
-        else {}
-    )
-
-    cpu_utilization = _safe_float(cpu.get("utilization", 0.0), 0.0)
-    memory_pressure = _safe_float(cpu.get("memory_pressure", 0.0), 0.0)
-    error_ratio = _safe_float(log_watch.get("error_ratio", 0.0), 0.0)
-    hot_devices = [
-        str(item).strip()
-        for item in snapshot.get("hot_devices", [])
-        if str(item).strip()
-    ]
-
-    reasons: list[str] = []
-    mode = "normal"
-
-    if cpu_utilization >= _RUNTIME_GUARD_CPU_UTILIZATION_CRITICAL:
-        mode = "critical"
-        reasons.append("cpu_hot")
-    if memory_pressure >= _RUNTIME_GUARD_MEMORY_PRESSURE_CRITICAL:
-        mode = "critical"
-        reasons.append("memory_pressure_high")
-    if error_ratio >= _RUNTIME_GUARD_LOG_ERROR_RATIO_CRITICAL:
-        mode = "critical"
-        reasons.append("runtime_log_error_ratio_high")
-
-    if mode == "normal":
-        if hot_devices:
-            mode = "degraded"
-            reasons.append("hot_devices")
-        if error_ratio >= (_RUNTIME_GUARD_LOG_ERROR_RATIO_CRITICAL * 0.65):
-            mode = "degraded"
-            reasons.append("runtime_log_warning_ratio")
-        if cpu_utilization >= (_RUNTIME_GUARD_CPU_UTILIZATION_CRITICAL * 0.84):
-            mode = "degraded"
-            reasons.append("cpu_watch")
-        if memory_pressure >= (_RUNTIME_GUARD_MEMORY_PRESSURE_CRITICAL * 0.85):
-            mode = "degraded"
-            reasons.append("memory_pressure_watch")
-
-    return {
-        "mode": mode,
-        "reasons": reasons,
-        "cpu_utilization": round(cpu_utilization, 2),
-        "memory_pressure": round(memory_pressure, 4),
-        "log_error_ratio": round(error_ratio, 4),
-        "hot_devices": hot_devices,
-        "critical_thresholds": {
-            "cpu_utilization": _RUNTIME_GUARD_CPU_UTILIZATION_CRITICAL,
-            "memory_pressure": _RUNTIME_GUARD_MEMORY_PRESSURE_CRITICAL,
-            "log_error_ratio": _RUNTIME_GUARD_LOG_ERROR_RATIO_CRITICAL,
-        },
-    }
 
 
 def _runtime_health_payload(part_root: Path) -> dict[str, Any]:
-    resource_snapshot = _resource_monitor_snapshot(part_root=part_root)
-    guard = _runtime_guard_state(resource_snapshot)
-    ws = _runtime_ws_client_snapshot()
-    return {
-        "ok": True,
-        "record": "eta-mu.runtime-health.v1",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "guard": guard,
-        "websocket": ws,
-        "degraded": str(guard.get("mode", "normal")) != "normal",
-    }
+    return server_runtime_health_utils_module.runtime_health_payload(
+        part_root,
+        resource_monitor_snapshot=lambda path: _resource_monitor_snapshot(
+            part_root=path
+        ),
+        guard_state_builder=_runtime_guard_state,
+        ws_snapshot_builder=_runtime_ws_client_snapshot,
+    )
 
 
 _CONFIG_MODULE_SPECS: dict[str, dict[str, Any]] = {
@@ -1167,228 +1055,11 @@ def _config_runtime_version_bump() -> int:
         return int(_CONFIG_RUNTIME_VERSION)
 
 
-def _config_numeric_scalar(value: Any) -> float | int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return int(value)
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            return None
-        return float(value)
-    return None
-
-
-def _config_numeric_only(value: Any) -> Any:
-    scalar = _config_numeric_scalar(value)
-    if scalar is not None:
-        return scalar
-
-    if isinstance(value, dict):
-        nested: dict[str, Any] = {}
-        for key in sorted(value.keys(), key=lambda item: str(item)):
-            numeric_value = _config_numeric_only(value[key])
-            if numeric_value is None:
-                continue
-            nested[str(key)] = numeric_value
-        return nested or None
-
-    if isinstance(value, (list, tuple, set)):
-        nested_list: list[Any] = []
-        sequence = value
-        if isinstance(value, set):
-            sequence = sorted(value, key=lambda item: str(item))
-        for item in sequence:
-            numeric_value = _config_numeric_only(item)
-            if numeric_value is None:
-                continue
-            nested_list.append(numeric_value)
-        return nested_list or None
-
-    return None
-
-
-def _config_numeric_leaf_count(value: Any) -> int:
-    scalar = _config_numeric_scalar(value)
-    if scalar is not None:
-        return 1
-    if isinstance(value, dict):
-        return sum(_config_numeric_leaf_count(item) for item in value.values())
-    if isinstance(value, (list, tuple, set)):
-        return sum(_config_numeric_leaf_count(item) for item in value)
-    return 0
-
-
-def _config_collect_module_constants(
-    module: Any,
-    *,
-    prefixes: tuple[str, ...],
-    exact_names: tuple[str, ...],
-) -> tuple[dict[str, Any], int]:
-    names = sorted(str(name) for name in vars(module).keys())
-    selected: dict[str, Any] = {}
-    numeric_leaf_count = 0
-    for name in names:
-        include = name in exact_names
-        if not include:
-            include = any(name.startswith(prefix) for prefix in prefixes)
-        if not include:
-            continue
-        numeric_value = _config_numeric_only(getattr(module, name, None))
-        if numeric_value is None:
-            continue
-        selected[name] = numeric_value
-        numeric_leaf_count += _config_numeric_leaf_count(numeric_value)
-    return selected, numeric_leaf_count
-
-
-def _config_collect_selected_names(
-    module: Any,
-    *,
-    prefixes: tuple[str, ...],
-    exact_names: tuple[str, ...],
-) -> list[str]:
-    names = sorted(str(name) for name in vars(module).keys())
-    selected: list[str] = []
-    for name in names:
-        include = name in exact_names
-        if not include:
-            include = any(name.startswith(prefix) for prefix in prefixes)
-        if not include:
-            continue
-        numeric_value = _config_numeric_only(getattr(module, name, None))
-        if numeric_value is None:
-            continue
-        selected.append(name)
-    return selected
-
-
-def _config_capture_runtime_baseline() -> dict[str, dict[str, Any]]:
-    baseline: dict[str, dict[str, Any]] = {}
-    for module_name, spec in _CONFIG_MODULE_SPECS.items():
-        module = spec.get("module")
-        if module is None:
-            continue
-        selected_names = _config_collect_selected_names(
-            module,
-            prefixes=tuple(spec.get("prefixes", ())),
-            exact_names=tuple(spec.get("exact_names", ())),
-        )
-        module_baseline: dict[str, Any] = {}
-        for name in selected_names:
-            module_baseline[name] = copy.deepcopy(getattr(module, name, None))
-        baseline[module_name] = module_baseline
-    return baseline
-
-
-def _config_normalize_path_tokens(path_raw: Any) -> list[str]:
-    if path_raw is None:
-        return []
-    if isinstance(path_raw, list):
-        return [str(item).strip() for item in path_raw if str(item).strip()]
-    if isinstance(path_raw, str):
-        clean = path_raw.strip()
-        if not clean:
-            return []
-        normalized = clean.replace("[", ".").replace("]", "")
-        return [token for token in normalized.split(".") if token]
-    return []
-
-
-def _config_resolve_dict_key(container: dict[Any, Any], token: str) -> Any:
-    if token in container:
-        return token
-    for key in container.keys():
-        if str(key) == token:
-            return key
-    raise KeyError(token)
-
-
-def _config_parse_list_index(token: str, length: int) -> int:
-    try:
-        index = int(token)
-    except Exception as exc:
-        raise ValueError(f"invalid_index:{token}") from exc
-    if index < 0:
-        index = length + index
-    if index < 0 or index >= length:
-        raise IndexError(f"index_out_of_range:{token}")
-    return index
-
-
-def _config_coerce_numeric_like(reference: Any, value: float | int) -> float | int:
-    if isinstance(reference, bool):
-        return int(round(float(value)))
-    if isinstance(reference, int):
-        return int(round(float(value)))
-    return float(value)
-
-
 _CONFIG_SCALAR_LIMITS: dict[tuple[str, str], tuple[float, float]] = {
     ("simulation", "SIMULATION_STREAM_DAIMOI_FRICTION"): (0.0, 2.0),
     ("simulation", "SIMULATION_STREAM_NEXUS_FRICTION"): (0.0, 2.0),
     ("simulation", "SIMULATION_STREAM_FRICTION"): (0.0, 2.0),
 }
-
-
-def _config_clamp_scalar_update(
-    *,
-    module_name: str,
-    key_name: str,
-    value: float | int,
-) -> float | int:
-    limits = _CONFIG_SCALAR_LIMITS.get((module_name, key_name))
-    if limits is None:
-        return value
-    lower, upper = limits
-    clamped = max(lower, min(upper, float(value)))
-    return clamped
-
-
-def _config_get_at_path(root: Any, path_tokens: list[str]) -> Any:
-    value = root
-    for token in path_tokens:
-        if isinstance(value, dict):
-            value = value[_config_resolve_dict_key(value, token)]
-            continue
-        if isinstance(value, (list, tuple)):
-            index = _config_parse_list_index(token, len(value))
-            value = value[index]
-            continue
-        raise TypeError(f"non_container_at:{token}")
-    return value
-
-
-def _config_set_at_path(
-    root: Any, path_tokens: list[str], new_scalar: float | int
-) -> Any:
-    if not path_tokens:
-        scalar = _config_numeric_scalar(root)
-        if scalar is None:
-            raise TypeError("target_not_numeric")
-        return _config_coerce_numeric_like(root, new_scalar)
-
-    token = path_tokens[0]
-    tail = path_tokens[1:]
-    if isinstance(root, dict):
-        key = _config_resolve_dict_key(root, token)
-        updated = dict(root)
-        updated[key] = _config_set_at_path(root[key], tail, new_scalar)
-        return updated
-
-    if isinstance(root, list):
-        index = _config_parse_list_index(token, len(root))
-        updated_list = list(root)
-        updated_list[index] = _config_set_at_path(root[index], tail, new_scalar)
-        return updated_list
-
-    if isinstance(root, tuple):
-        index = _config_parse_list_index(token, len(root))
-        updated_list = list(root)
-        updated_list[index] = _config_set_at_path(root[index], tail, new_scalar)
-        return tuple(updated_list)
-
-    raise TypeError(f"non_container_at:{token}")
 
 
 def _config_apply_update(
@@ -1398,99 +1069,15 @@ def _config_apply_update(
     path_tokens: list[str],
     value: Any,
 ) -> dict[str, Any]:
-    requested_module = str(module_name or "").strip().lower()
-    requested_key = str(key_name or "").strip()
-    if not requested_module:
-        return {"ok": False, "error": "module_required"}
-    if not requested_key:
-        return {"ok": False, "error": "key_required"}
-    if requested_module not in _CONFIG_MODULE_SPECS:
-        return {
-            "ok": False,
-            "error": "unknown_module",
-            "module": requested_module,
-            "available_modules": sorted(_CONFIG_MODULE_SPECS.keys()),
-        }
-
-    next_scalar = _config_numeric_scalar(value)
-    if next_scalar is None and isinstance(value, str):
-        text = value.strip()
-        if text:
-            try:
-                next_scalar = float(text)
-            except Exception:
-                next_scalar = None
-    if next_scalar is None:
-        return {
-            "ok": False,
-            "error": "numeric_value_required",
-            "module": requested_module,
-            "key": requested_key,
-        }
-    next_scalar_value: float | int = next_scalar
-    next_scalar_value = _config_clamp_scalar_update(
-        module_name=requested_module,
-        key_name=requested_key,
-        value=next_scalar_value,
+    return server_runtime_config_utils_module.config_apply_update(
+        module_name=module_name,
+        key_name=key_name,
+        path_tokens=path_tokens,
+        value=value,
+        config_module_specs=_CONFIG_MODULE_SPECS,
+        config_runtime_edit_lock=_CONFIG_RUNTIME_EDIT_LOCK,
+        scalar_limits=_CONFIG_SCALAR_LIMITS,
     )
-
-    spec = _CONFIG_MODULE_SPECS[requested_module]
-    module = spec.get("module")
-    if module is None:
-        return {
-            "ok": False,
-            "error": "module_unavailable",
-            "module": requested_module,
-        }
-
-    selected_names = set(
-        _config_collect_selected_names(
-            module,
-            prefixes=tuple(spec.get("prefixes", ())),
-            exact_names=tuple(spec.get("exact_names", ())),
-        )
-    )
-    if requested_key not in selected_names:
-        return {
-            "ok": False,
-            "error": "unknown_constant",
-            "module": requested_module,
-            "key": requested_key,
-        }
-
-    try:
-        with _CONFIG_RUNTIME_EDIT_LOCK:
-            current_value = copy.deepcopy(getattr(module, requested_key, None))
-            previous_leaf = _config_get_at_path(current_value, path_tokens)
-            updated_value = _config_set_at_path(
-                current_value,
-                path_tokens,
-                next_scalar_value,
-            )
-            setattr(module, requested_key, updated_value)
-            current_after = copy.deepcopy(getattr(module, requested_key, None))
-            current_leaf = _config_get_at_path(current_after, path_tokens)
-    except Exception as exc:
-        return {
-            "ok": False,
-            "error": "config_update_failed",
-            "detail": f"{exc.__class__.__name__}: {exc}",
-            "module": requested_module,
-            "key": requested_key,
-            "path": path_tokens,
-        }
-
-    return {
-        "ok": True,
-        "record": "eta-mu.runtime-config.update.v1",
-        "schema_version": "runtime.config.update.v1",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "module": requested_module,
-        "key": requested_key,
-        "path": path_tokens,
-        "previous": _config_numeric_only(previous_leaf),
-        "current": _config_numeric_only(current_leaf),
-    }
 
 
 def _config_reset_updates(
@@ -1499,150 +1086,57 @@ def _config_reset_updates(
     key_name: str = "",
     path_tokens: list[str] | None = None,
 ) -> dict[str, Any]:
-    requested_module = str(module_name or "").strip().lower()
-    requested_key = str(key_name or "").strip()
-    normalized_path = path_tokens or []
+    return server_runtime_config_utils_module.config_reset_updates(
+        module_name=module_name,
+        key_name=key_name,
+        path_tokens=path_tokens,
+        config_module_specs=_CONFIG_MODULE_SPECS,
+        config_runtime_baseline=_CONFIG_RUNTIME_BASELINE,
+        config_runtime_edit_lock=_CONFIG_RUNTIME_EDIT_LOCK,
+    )
 
-    if normalized_path and not requested_key:
-        return {
-            "ok": False,
-            "error": "key_required_for_path_reset",
-        }
 
-    available_modules = sorted(_CONFIG_MODULE_SPECS.keys())
-    if requested_module and requested_module not in _CONFIG_MODULE_SPECS:
-        return {
-            "ok": False,
-            "error": "unknown_module",
-            "module": requested_module,
-            "available_modules": available_modules,
-        }
+def _config_capture_runtime_baseline() -> dict[str, dict[str, Any]]:
+    return server_runtime_config_utils_module.config_capture_runtime_baseline(
+        _CONFIG_MODULE_SPECS,
+    )
 
-    module_names = [requested_module] if requested_module else available_modules
-    applied: list[dict[str, Any]] = []
 
-    with _CONFIG_RUNTIME_EDIT_LOCK:
-        for module_item in module_names:
-            spec = _CONFIG_MODULE_SPECS[module_item]
-            module = spec.get("module")
-            if module is None:
-                continue
-            baseline_module = _CONFIG_RUNTIME_BASELINE.get(module_item, {})
-            if not baseline_module:
-                continue
-            selected_names = set(
-                _config_collect_selected_names(
-                    module,
-                    prefixes=tuple(spec.get("prefixes", ())),
-                    exact_names=tuple(spec.get("exact_names", ())),
-                )
-            )
-            key_names = (
-                [requested_key] if requested_key else sorted(baseline_module.keys())
-            )
-            for key_item in key_names:
-                if key_item not in selected_names:
-                    continue
-                if key_item not in baseline_module:
-                    continue
-
-                baseline_value = copy.deepcopy(baseline_module[key_item])
-                if normalized_path:
-                    try:
-                        baseline_leaf = _config_get_at_path(
-                            baseline_value, normalized_path
-                        )
-                        baseline_scalar = _config_numeric_scalar(baseline_leaf)
-                        if baseline_scalar is None:
-                            continue
-                        current_value = copy.deepcopy(getattr(module, key_item, None))
-                        updated_value = _config_set_at_path(
-                            current_value,
-                            normalized_path,
-                            baseline_scalar,
-                        )
-                    except Exception:
-                        continue
-                else:
-                    updated_value = baseline_value
-
-                setattr(module, key_item, updated_value)
-                applied.append(
-                    {
-                        "module": module_item,
-                        "key": key_item,
-                        "path": list(normalized_path),
-                    }
-                )
-
-    if requested_key and not applied:
-        return {
-            "ok": False,
-            "error": "unknown_constant",
-            "module": requested_module,
-            "key": requested_key,
-        }
-
-    return {
-        "ok": True,
-        "record": "eta-mu.runtime-config.reset.v1",
-        "schema_version": "runtime.config.reset.v1",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "module": requested_module,
-        "key": requested_key,
-        "path": normalized_path,
-        "reset_count": len(applied),
-        "resets": applied[:128],
-    }
+def _config_normalize_path_tokens(path_raw: Any) -> list[str]:
+    return server_runtime_config_utils_module.config_normalize_path_tokens(path_raw)
 
 
 _CONFIG_RUNTIME_BASELINE = _config_capture_runtime_baseline()
 
 
+def _simulation_http_trim_config() -> (
+    simulation_http_trim_utils_module.SimulationHttpTrimConfig
+):
+    return simulation_http_trim_utils_module.SimulationHttpTrimConfig(
+        trim_enabled=_SIMULATION_HTTP_TRIM_ENABLED,
+        max_items=_SIMULATION_HTTP_MAX_ITEMS,
+        max_file_nodes=_SIMULATION_HTTP_MAX_FILE_NODES,
+        max_file_edges=_SIMULATION_HTTP_MAX_FILE_EDGES,
+        max_field_nodes=_SIMULATION_HTTP_MAX_FIELD_NODES,
+        max_tag_nodes=_SIMULATION_HTTP_MAX_TAG_NODES,
+        max_render_nodes=_SIMULATION_HTTP_MAX_RENDER_NODES,
+        max_crawler_nodes=_SIMULATION_HTTP_MAX_CRAWLER_NODES,
+        max_crawler_edges=_SIMULATION_HTTP_MAX_CRAWLER_EDGES,
+        max_crawler_field_nodes=_SIMULATION_HTTP_MAX_CRAWLER_FIELD_NODES,
+        max_text_excerpt_chars=_SIMULATION_HTTP_MAX_TEXT_EXCERPT_CHARS,
+        max_summary_chars=_SIMULATION_HTTP_MAX_SUMMARY_CHARS,
+        max_embed_layer_points=_SIMULATION_HTTP_MAX_EMBED_LAYER_POINTS,
+        max_embed_ids=_SIMULATION_HTTP_MAX_EMBED_IDS,
+        max_embedding_links=_SIMULATION_HTTP_MAX_EMBEDDING_LINKS,
+    )
+
+
 def _config_payload(*, module_filter: str = "") -> dict[str, Any]:
-    requested = str(module_filter or "").strip().lower()
-    available_modules = sorted(_CONFIG_MODULE_SPECS.keys())
-    if requested and requested not in _CONFIG_MODULE_SPECS:
-        return {
-            "ok": False,
-            "error": "unknown_module",
-            "requested_module": requested,
-            "available_modules": available_modules,
-        }
-
-    module_names = [requested] if requested else available_modules
-
-    modules_payload: dict[str, Any] = {}
-    total_constants = 0
-    total_numeric_leaf_count = 0
-    for module_name in module_names:
-        spec = _CONFIG_MODULE_SPECS[module_name]
-        constants, leaf_count = _config_collect_module_constants(
-            spec["module"],
-            prefixes=tuple(spec["prefixes"]),
-            exact_names=tuple(spec["exact_names"]),
-        )
-        modules_payload[module_name] = {
-            "constants": copy.deepcopy(constants),
-            "constant_count": len(constants),
-            "numeric_leaf_count": leaf_count,
-        }
-        total_constants += len(constants)
-        total_numeric_leaf_count += leaf_count
-
-    return {
-        "ok": True,
-        "record": "eta-mu.runtime-config.v1",
-        "schema_version": "runtime.config.v1",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "runtime_config_version": _config_runtime_version_snapshot(),
-        "available_modules": available_modules,
-        "requested_module": requested,
-        "module_count": len(modules_payload),
-        "constant_count": total_constants,
-        "numeric_leaf_count": total_numeric_leaf_count,
-        "modules": modules_payload,
-    }
+    return server_runtime_config_utils_module.config_payload(
+        module_filter=module_filter,
+        config_module_specs=_CONFIG_MODULE_SPECS,
+        runtime_version_snapshot=_config_runtime_version_snapshot,
+    )
 
 
 def _json_compact(payload: Any) -> str:
@@ -1944,7 +1438,7 @@ def _simulation_http_slice_rows(value: Any, *, max_rows: int) -> list[Any]:
 def _simulation_http_compact_embed_layer_point(value: Any) -> dict[str, Any] | None:
     return simulation_http_trim_utils_module.simulation_http_compact_embed_layer_point(
         value,
-        config=_SIMULATION_HTTP_TRIM_CONFIG,
+        config=_simulation_http_trim_config(),
     )
 
 
@@ -1957,21 +1451,21 @@ def _simulation_http_compact_embedding_link(value: Any) -> dict[str, Any] | None
 def _simulation_http_compact_file_node(value: Any) -> dict[str, Any] | None:
     return simulation_http_trim_utils_module.simulation_http_compact_file_node(
         value,
-        config=_SIMULATION_HTTP_TRIM_CONFIG,
+        config=_simulation_http_trim_config(),
     )
 
 
 def _simulation_http_compact_file_graph_node(value: Any) -> dict[str, Any] | None:
     return simulation_http_trim_utils_module.simulation_http_compact_file_graph_node(
         value,
-        config=_SIMULATION_HTTP_TRIM_CONFIG,
+        config=_simulation_http_trim_config(),
     )
 
 
 def _simulation_http_trim_catalog(catalog: dict[str, Any]) -> dict[str, Any]:
     return simulation_http_trim_utils_module.simulation_http_trim_catalog(
         catalog,
-        config=_SIMULATION_HTTP_TRIM_CONFIG,
+        config=_simulation_http_trim_config(),
     )
 
 
@@ -3384,198 +2878,26 @@ class WorldHandler(BaseHTTPRequestHandler):
         return get_muse_runtime_manager()
 
     def _muse_threat_radar_status(self) -> dict[str, Any]:
-        with _MUSE_THREAT_RADAR_LOCK:
-            state = dict(_MUSE_THREAT_RADAR_STATE)
-        return {
-            "enabled": bool(_MUSE_THREAT_RADAR_ENABLED),
-            "muse_id": _MUSE_THREAT_RADAR_MUSE_ID,
-            "label": _MUSE_THREAT_RADAR_LABEL,
-            "interval_seconds": round(_MUSE_THREAT_RADAR_INTERVAL_SECONDS, 3),
-            "token_budget": int(_MUSE_THREAT_RADAR_TOKEN_BUDGET),
-            "prompt": _MUSE_THREAT_RADAR_PROMPT,
-            "state": state,
-        }
+        return muse_threat_radar_utils_module.muse_threat_radar_status(
+            server_module=sys.modules[__name__]
+        )
 
     def _update_active_threats(
         self,
         radar: str,
         result: dict[str, Any],
     ) -> None:
-        """Update the active threat cache for muse context injection.
-
-        This is called when a threat radar report is fetched, storing
-        top threats for the respective radar type. These threats become
-        available as context nodes when the muse assembles its manifest.
-        """
-        if not isinstance(result, dict):
-            return
-        threats = [row for row in result.get("threats", []) if isinstance(row, dict)][
-            :_MUSE_ACTIVE_THREATS_MAX_PER_RADAR
-        ]
-
-        now_iso = datetime.now(timezone.utc).isoformat()
-        radar_key = "local" if radar in {"local", "github"} else "global"
-        muse_tags = (
-            ["witness_thread", "github_security_review"]
-            if radar_key == "local"
-            else ["chaos"]
+        muse_threat_radar_utils_module.update_active_threats(
+            server_module=sys.modules[__name__],
+            radar=radar,
+            result=result,
         )
-        hot_repos = [
-            {
-                "repo": row.get("repo", ""),
-                "max_risk_score": row.get("max_risk_score", 0),
-            }
-            for row in (result.get("hot_repos") or [])
-            if isinstance(row, dict)
-        ][:_MUSE_ACTIVE_THREATS_MAX_PER_RADAR]
-
-        watch_sources = [
-            {
-                "url": row.get("url", ""),
-                "kind": row.get("kind", ""),
-                "title": row.get("title", ""),
-            }
-            for row in (result.get("sources") or [])
-            if isinstance(row, dict)
-        ][:_MUSE_ACTIVE_THREATS_MAX_PER_RADAR]
-
-        # Convert threats to context node format for muse embedding
-        context_nodes: list[dict[str, Any]] = []
-        for idx, threat in enumerate(threats):
-            risk_level = str(threat.get("risk_level", "low") or "low").upper()
-            risk_score = max(0, _safe_int(threat.get("risk_score", 0), 0))
-            title = str(
-                threat.get("title", "") or threat.get("kind", "threat")
-            ).strip()[:180]
-            kind = str(threat.get("kind", "") or "unknown").strip()
-            canonical_url = str(threat.get("canonical_url", "") or "").strip()
-            repo = str(threat.get("repo", "") or "").strip()
-            domain = str(threat.get("domain", "") or "").strip()
-            cves = [
-                str(cve).upper()
-                for cve in (threat.get("cves") or [])
-                if str(cve).strip()
-            ][:4]
-            signals = [
-                str(s).strip()
-                for s in (threat.get("signals") or threat.get("labels") or [])
-                if str(s).strip()
-            ][:6]
-
-            # Create a context node for the threat
-            hash_source = canonical_url or f"{title}|{kind}|{repo}|{domain}|{idx}"
-            url_hash = hashlib.sha1(hash_source.encode("utf-8")).hexdigest()[:8]
-            node_id = f"threat:{radar}:{idx}:{url_hash}"
-            label = f"[{risk_level}:{risk_score}] {title[:80]}"
-            text_parts = [f"Threat: {title}", f"Risk: {risk_level} ({risk_score})"]
-            if repo:
-                text_parts.append(f"Repo: {repo}")
-            if domain:
-                text_parts.append(f"Domain: {domain}")
-            if kind:
-                text_parts.append(f"Kind: {kind}")
-            if cves:
-                text_parts.append(f"CVEs: {', '.join(cves[:3])}")
-            if canonical_url:
-                text_parts.append(f"URL: {canonical_url}")
-            if signals:
-                text_parts.append(f"Signals: {' '.join(signals[:4])}")
-
-            context_nodes.append(
-                {
-                    "id": node_id,
-                    "kind": "threat",
-                    "label": label,
-                    "text": "\n".join(text_parts),
-                    "x": 0.5 + (idx * 0.02),  # Slight horizontal spread
-                    "y": 0.3 + (idx * 0.05),  # Vertical stack
-                    "visibility": "public",
-                    "tags": [
-                        radar,
-                        f"risk_{risk_level.lower()}",
-                        kind,
-                        "threat",
-                        *muse_tags,
-                        *signals[:2],
-                    ],
-                    "risk_score": risk_score,
-                    "risk_level": risk_level,
-                    "radar": radar,
-                    "ts": now_iso,
-                }
-            )
-
-        if radar_key == "local":
-            for idx, hot in enumerate(hot_repos[:4]):
-                repo = str(hot.get("repo", "") or "").strip()
-                if not repo:
-                    continue
-                score = max(0, _safe_int(hot.get("max_risk_score", 0), 0))
-                repo_hash = hashlib.sha1(repo.encode("utf-8")).hexdigest()[:8]
-                context_nodes.append(
-                    {
-                        "id": f"threat-source:repo:{repo_hash}",
-                        "kind": "threat-source",
-                        "label": f"Hot Repo [{score}] {repo}",
-                        "text": f"Hot repo by threat score: {repo} (max_risk_score={score})",
-                        "x": 0.62,
-                        "y": 0.18 + (idx * 0.06),
-                        "visibility": "public",
-                        "tags": ["local", "hot-repo", "threat", *muse_tags],
-                        "risk_score": score,
-                        "risk_level": "HOT",
-                        "radar": "local",
-                        "ts": now_iso,
-                    }
-                )
-        else:
-            for idx, source in enumerate(watch_sources[:4]):
-                url = str(source.get("url", "") or "").strip()
-                title = str(
-                    source.get("title", "") or source.get("kind", "source")
-                ).strip()
-                if not url and not title:
-                    continue
-                source_key = url or title
-                source_hash = hashlib.sha1(source_key.encode("utf-8")).hexdigest()[:8]
-                context_nodes.append(
-                    {
-                        "id": f"threat-source:site:{source_hash}",
-                        "kind": "threat-source",
-                        "label": f"Hot Site {title[:70]}",
-                        "text": (
-                            f"Watch source: {title}. URL: {url}"
-                            if url
-                            else f"Watch source: {title}"
-                        ),
-                        "x": 0.62,
-                        "y": 0.18 + (idx * 0.06),
-                        "visibility": "public",
-                        "tags": ["global", "hot-site", "threat", *muse_tags],
-                        "risk_score": 4,
-                        "risk_level": "WATCH",
-                        "radar": "global",
-                        "ts": now_iso,
-                    }
-                )
-
-        with _MUSE_ACTIVE_THREATS_LOCK:
-            _MUSE_ACTIVE_THREATS[radar_key] = {
-                "threats": context_nodes,
-                "hot_repos": hot_repos if radar_key == "local" else [],
-                "hot_domains": hot_repos
-                if radar_key == "global"
-                else [],  # Reuse structure
-                "watch_sources": watch_sources if radar_key == "global" else [],
-                "updated_at": now_iso,
-            }
 
     def _get_active_threat_nodes(self, radar: str) -> list[dict[str, Any]]:
-        """Retrieve active threat nodes for muse context injection."""
-        radar_key = "local" if radar in {"local", "github"} else "global"
-        with _MUSE_ACTIVE_THREATS_LOCK:
-            data = dict(_MUSE_ACTIVE_THREATS.get(radar_key, {}))
-        return data.get("threats", []) if isinstance(data.get("threats"), list) else []
+        return muse_threat_radar_utils_module.get_active_threat_nodes(
+            server_module=sys.modules[__name__],
+            radar=radar,
+        )
 
     def _muse_threat_radar_tick(
         self,
@@ -3584,448 +2906,20 @@ class WorldHandler(BaseHTTPRequestHandler):
         force: bool = False,
         reason: str = "manual",
     ) -> dict[str, Any]:
-        now_mono = (
-            max(0.0, _safe_float(now_monotonic, 0.0))
-            if now_monotonic is not None
-            else time.monotonic()
+        return muse_threat_radar_utils_module.muse_threat_radar_tick(
+            handler=self,
+            server_module=sys.modules[__name__],
+            now_monotonic=now_monotonic,
+            force=force,
+            reason=reason,
         )
-        now_iso = datetime.now(timezone.utc).isoformat()
-
-        if not _MUSE_THREAT_RADAR_ENABLED:
-            with _MUSE_THREAT_RADAR_LOCK:
-                _MUSE_THREAT_RADAR_STATE["last_skipped_reason"] = "disabled"
-            return {
-                "ok": True,
-                "status": "disabled",
-                "runtime": self._muse_threat_radar_status(),
-            }
-
-        with _MUSE_THREAT_RADAR_LOCK:
-            next_due = max(
-                0.0,
-                _safe_float(
-                    _MUSE_THREAT_RADAR_STATE.get("next_run_monotonic", 0.0), 0.0
-                ),
-            )
-            if not force and now_mono < next_due:
-                _MUSE_THREAT_RADAR_STATE["last_skipped_reason"] = "interval_not_elapsed"
-                skipped = True
-            else:
-                skipped = False
-                _MUSE_THREAT_RADAR_STATE["next_run_monotonic"] = round(
-                    now_mono + _MUSE_THREAT_RADAR_INTERVAL_SECONDS,
-                    6,
-                )
-                _MUSE_THREAT_RADAR_STATE["last_run_monotonic"] = round(now_mono, 6)
-                _MUSE_THREAT_RADAR_STATE["last_run_at"] = now_iso
-                _MUSE_THREAT_RADAR_STATE["last_reason"] = str(reason or "manual")
-                _MUSE_THREAT_RADAR_STATE["last_skipped_reason"] = ""
-
-        if skipped:
-            return {
-                "ok": True,
-                "status": "skipped",
-                "reason": "interval_not_elapsed",
-                "runtime": self._muse_threat_radar_status(),
-            }
-
-        manager = self._muse_manager()
-        runtime = manager.snapshot()
-        muse_rows = runtime.get("muses", []) if isinstance(runtime, dict) else []
-        muse_ids = {
-            str(row.get("id", "")).strip()
-            for row in muse_rows
-            if isinstance(row, dict) and str(row.get("id", "")).strip()
-        }
-        if _MUSE_THREAT_RADAR_MUSE_ID not in muse_ids:
-            manager.create_muse(
-                muse_id=_MUSE_THREAT_RADAR_MUSE_ID,
-                label=_MUSE_THREAT_RADAR_LABEL,
-                anchor={"x": 0.82, "y": 0.5, "zoom": 1.0, "kind": "threat-radar"},
-                user_intent_id="runtime:threat-radar-bootstrap",
-            )
-
-        bucket = int(now_mono / max(1.0, _MUSE_THREAT_RADAR_INTERVAL_SECONDS))
-        idempotency_key = (
-            f"threat-radar:{bucket}"
-            if not force
-            else f"threat-radar:force:{time.time_ns()}"
-        )
-        try:
-            self._muse_tool_cache = {}
-            catalog = self._runtime_catalog_base()
-            graph_revision = str(catalog.get("generated_at", "") or "").strip()
-            payload = manager.send_message(
-                muse_id=_MUSE_THREAT_RADAR_MUSE_ID,
-                text=_MUSE_THREAT_RADAR_PROMPT,
-                mode="deterministic",
-                token_budget=_MUSE_THREAT_RADAR_TOKEN_BUDGET,
-                idempotency_key=idempotency_key,
-                graph_revision=graph_revision,
-                surrounding_nodes=[],
-                tool_callback=self._muse_tool_callback,
-                reply_builder=self._muse_reply_builder,
-                seed=f"threat-radar|{bucket}",
-            )
-        except Exception as exc:
-            error_text = f"{exc.__class__.__name__}:{exc}"
-            with _MUSE_THREAT_RADAR_LOCK:
-                _MUSE_THREAT_RADAR_STATE["last_status"] = "error"
-                _MUSE_THREAT_RADAR_STATE["last_turn_id"] = ""
-                _MUSE_THREAT_RADAR_STATE["last_error"] = error_text
-            return {
-                "ok": False,
-                "status": "error",
-                "error": error_text,
-                "runtime": self._muse_threat_radar_status(),
-            }
-
-        ok = bool(payload.get("ok", False)) if isinstance(payload, dict) else False
-        turn_id = (
-            str(payload.get("turn_id", "") or "") if isinstance(payload, dict) else ""
-        )
-        error = str(payload.get("error", "") or "") if isinstance(payload, dict) else ""
-
-        with _MUSE_THREAT_RADAR_LOCK:
-            _MUSE_THREAT_RADAR_STATE["last_status"] = "ok" if ok else "error"
-            _MUSE_THREAT_RADAR_STATE["last_turn_id"] = turn_id
-            _MUSE_THREAT_RADAR_STATE["last_error"] = error
-
-        return {
-            "ok": ok,
-            "status": "triggered" if ok else "error",
-            "muse_id": _MUSE_THREAT_RADAR_MUSE_ID,
-            "turn_id": turn_id,
-            "error": error,
-            "runtime": self._muse_threat_radar_status(),
-        }
 
     def _muse_tool_callback(self, *, tool_name: str) -> dict[str, Any]:
-        clean_tool = str(tool_name or "").strip().lower()
-        cache = getattr(self, "_muse_tool_cache", None)
-        if not isinstance(cache, dict):
-            cache = {}
-            setattr(self, "_muse_tool_cache", cache)
-
-        def _cached_simulation() -> dict[str, Any]:
-            cached = cache.get("simulation")
-            if isinstance(cached, dict):
-                return cached
-            simulation_payload = build_simulation_state(self._collect_catalog_fast())
-            cache["simulation"] = simulation_payload
-            return simulation_payload
-
-        if clean_tool == "facts_snapshot":
-            payload = cache.get("facts_snapshot")
-            if not isinstance(payload, dict):
-                payload = build_facts_snapshot(
-                    _cached_simulation(),
-                    part_root=self.part_root,
-                )
-                cache["facts_snapshot"] = payload
-            counts = payload.get("counts", {}) if isinstance(payload, dict) else {}
-            node_count = max(
-                0,
-                int(
-                    _safe_float(
-                        sum(
-                            int(_safe_float(value, 0.0))
-                            for value in (
-                                counts.get("nodes_by_role", {}).values()
-                                if isinstance(counts.get("nodes_by_role", {}), dict)
-                                else []
-                            )
-                        ),
-                        0.0,
-                    )
-                ),
-            )
-            edge_count = max(
-                0,
-                int(
-                    _safe_float(
-                        sum(
-                            int(_safe_float(value, 0.0))
-                            for value in (
-                                counts.get("edges_by_kind", {}).values()
-                                if isinstance(counts.get("edges_by_kind", {}), dict)
-                                else []
-                            )
-                        ),
-                        0.0,
-                    )
-                ),
-            )
-            return {
-                "ok": True,
-                "summary": "facts snapshot generated",
-                "record": str(payload.get("record", "")),
-                "snapshot_hash": str(payload.get("snapshot_hash", "")),
-                "snapshot_path": str(payload.get("snapshot_path", "")),
-                "node_count": node_count,
-                "edge_count": edge_count,
-            }
-        if (
-            clean_tool.startswith("graph:")
-            or clean_tool.startswith("graph_query:")
-            or clean_tool == "graph_query"
-        ):
-            graph_tail = ""
-            if clean_tool in {"graph", "graph_query"}:
-                graph_tail = "overview"
-            elif clean_tool.startswith("graph_query:"):
-                graph_tail = str(clean_tool.split(":", 1)[1]).strip()
-            elif clean_tool.startswith("graph:"):
-                graph_tail = str(clean_tool.split(":", 1)[1]).strip()
-            tail_parts = [piece for piece in graph_tail.split(" ") if piece]
-            query_name = str(tail_parts[0] if tail_parts else "").strip().lower()
-            query_arg = " ".join(tail_parts[1:]).strip()
-            if not query_name:
-                query_name = "overview"
-            query_args: dict[str, Any] = {}
-            if query_name in {"neighbors", "node_neighbors"} and query_arg:
-                query_args["node_id"] = query_arg
-            elif query_name == "search" and query_arg:
-                query_args["q"] = query_arg
-            elif query_name in {"url_status", "resource_for_url"} and query_arg:
-                query_args["target"] = query_arg
-            elif query_name == "recently_updated" and query_arg:
-                query_args["limit"] = max(1, int(_safe_float(query_arg, 24.0)))
-            elif query_name == "role_slice" and query_arg:
-                query_args["role"] = query_arg
-            elif query_name == "explain_daimoi" and query_arg:
-                query_args["daimoi_id"] = query_arg
-            elif query_name == "recent_outcomes":
-                if query_arg:
-                    parts = [piece for piece in query_arg.split(" ") if piece]
-                    if parts:
-                        query_args["window_ticks"] = max(
-                            1,
-                            int(_safe_float(parts[0], 360.0)),
-                        )
-                    if len(parts) > 1:
-                        query_args["limit"] = max(
-                            1,
-                            int(_safe_float(parts[1], 48.0)),
-                        )
-            elif query_name in {"web_resource_summary", "graph_summary"} and query_arg:
-                if query_name == "web_resource_summary":
-                    query_args["target"] = query_arg
-                else:
-                    parts = [piece for piece in query_arg.split(" ") if piece]
-                    if parts:
-                        query_args["scope"] = parts[0]
-                    if len(parts) > 1:
-                        query_args["n"] = max(
-                            1,
-                            int(_safe_float(parts[1], 12.0)),
-                        )
-            elif query_name == "arxiv_papers" and query_arg:
-                parts = [piece for piece in query_arg.split(" ") if piece]
-                if parts:
-                    query_args["limit"] = max(
-                        1,
-                        int(_safe_float(parts[0], 8.0)),
-                    )
-            elif query_name == "github_repo_summary" and query_arg:
-                query_args["repo"] = query_arg
-            elif query_name == "github_find" and query_arg:
-                parts = [piece for piece in query_arg.split(" ") if piece]
-                if parts:
-                    query_args["term"] = parts[0]
-                if len(parts) > 1:
-                    query_args["repo"] = parts[1]
-                if len(parts) > 2:
-                    query_args["limit"] = max(1, int(_safe_float(parts[2], 24.0)))
-            elif query_name == "github_recent_changes" and query_arg:
-                parts = [piece for piece in query_arg.split(" ") if piece]
-                if parts:
-                    query_args["window_ticks"] = max(
-                        1,
-                        int(_safe_float(parts[0], 360.0)),
-                    )
-                if len(parts) > 1:
-                    query_args["limit"] = max(1, int(_safe_float(parts[1], 32.0)))
-            elif query_name == "github_threat_radar" and query_arg:
-                parts = [piece for piece in query_arg.split(" ") if piece]
-                if parts:
-                    if parts[0].isdigit():
-                        query_args["window_ticks"] = max(
-                            1,
-                            int(_safe_float(parts[0], 1440.0)),
-                        )
-                    else:
-                        query_args["repo"] = parts[0]
-                if len(parts) > 1:
-                    if parts[1].isdigit():
-                        query_args["limit"] = max(
-                            1,
-                            int(_safe_float(parts[1], 24.0)),
-                        )
-                    elif "repo" not in query_args:
-                        query_args["repo"] = parts[1]
-                if len(parts) > 2 and "repo" not in query_args:
-                    query_args["repo"] = parts[2]
-            elif query_name == "hormuz_threat_radar" and query_arg:
-                parts = [piece for piece in query_arg.split(" ") if piece]
-                if parts and parts[0].isdigit():
-                    query_args["window_ticks"] = max(
-                        1,
-                        int(_safe_float(parts[0], 1440.0)),
-                    )
-                if len(parts) > 1 and parts[1].isdigit():
-                    query_args["limit"] = max(
-                        1,
-                        int(_safe_float(parts[1], 24.0)),
-                    )
-                for token in parts:
-                    if not token.isdigit():
-                        query_args["kind"] = token.strip().lower()
-                        break
-            elif query_name == "multi_threat_radar" and query_arg:
-                parts = [piece for piece in query_arg.split(" ") if piece]
-                if parts and parts[0].isdigit():
-                    query_args["window_ticks"] = max(
-                        1,
-                        int(_safe_float(parts[0], 1440.0)),
-                    )
-                if len(parts) > 1 and parts[1].isdigit():
-                    query_args["limit"] = max(
-                        1,
-                        int(_safe_float(parts[1], 24.0)),
-                    )
-            elif query_name in {"cyber_regime_state", "cyber_regime", "regime"}:
-                parts = [piece for piece in query_arg.split(" ") if piece]
-                numeric_parts = [piece for piece in parts if piece.isdigit()]
-                if numeric_parts:
-                    query_args["window_ticks"] = max(
-                        1,
-                        int(_safe_float(numeric_parts[0], 1440.0)),
-                    )
-                if len(numeric_parts) > 1:
-                    query_args["state_bins"] = max(
-                        3,
-                        int(_safe_float(numeric_parts[1], 8.0)),
-                    )
-                for token in parts:
-                    lowered = str(token or "").strip().lower()
-                    if not lowered or lowered.isdigit():
-                        continue
-                    query_args["repo"] = lowered
-                    break
-            elif query_name in {"cyber_risk_radar", "regime_radar"}:
-                parts = [piece for piece in query_arg.split(" ") if piece]
-                numeric_parts = [piece for piece in parts if piece.isdigit()]
-                if numeric_parts:
-                    query_args["window_ticks"] = max(
-                        1,
-                        int(_safe_float(numeric_parts[0], 1440.0)),
-                    )
-                if len(numeric_parts) > 1:
-                    query_args["limit"] = max(
-                        1,
-                        int(_safe_float(numeric_parts[1], 24.0)),
-                    )
-                if len(numeric_parts) > 2:
-                    query_args["state_bins"] = max(
-                        3,
-                        int(_safe_float(numeric_parts[2], 8.0)),
-                    )
-                if len(numeric_parts) > 3:
-                    query_args["threat_limit"] = max(
-                        16,
-                        int(_safe_float(numeric_parts[3], 256.0)),
-                    )
-                for token in parts:
-                    lowered = str(token or "").strip().lower()
-                    if not lowered:
-                        continue
-                    if lowered in {"true", "yes", "on", "false", "no", "off"}:
-                        query_args["apply_regime_threshold"] = _safe_bool_query(
-                            lowered,
-                            default=True,
-                        )
-                        continue
-                    if lowered.isdigit():
-                        continue
-                    if "repo" not in query_args:
-                        query_args["repo"] = lowered
-            simulation = _cached_simulation()
-            nexus_graph = (
-                simulation.get("nexus_graph", {})
-                if isinstance(simulation.get("nexus_graph", {}), dict)
-                else {}
-            )
-            payload = run_named_graph_query(
-                nexus_graph,
-                query_name,
-                args=query_args,
-                simulation=simulation,
-            )
-            result = payload.get("result", {})
-            if isinstance(result, dict) and result.get("error"):
-                return {
-                    "ok": False,
-                    "error": str(result.get("error", "unknown_query")),
-                    "query": query_name,
-                }
-            result_count = 0
-            if isinstance(result, dict):
-                for count_key in (
-                    "count",
-                    "neighbor_count",
-                    "node_count",
-                    "edge_count",
-                ):
-                    if count_key in result:
-                        result_count = max(
-                            result_count,
-                            int(_safe_float(result.get(count_key, 0), 0.0)),
-                        )
-            return {
-                "ok": True,
-                "summary": f"graph query {query_name} generated",
-                "query": query_name,
-                "snapshot_hash": str(payload.get("snapshot_hash", "")),
-                "result_count": int(result_count),
-                "result": result if isinstance(result, dict) else {},
-            }
-        if clean_tool == "study_snapshot":
-            payload = build_study_snapshot(
-                self.part_root,
-                self.vault_root,
-                queue_snapshot=self.task_queue.snapshot(include_pending=True),
-                council_snapshot=self.council_chamber.snapshot(
-                    include_decisions=True,
-                    limit=16,
-                ),
-                drift_payload=build_drift_scan_payload(self.part_root, self.vault_root),
-                truth_gate_blocked=None,
-                resource_snapshot=_resource_monitor_snapshot(part_root=self.part_root),
-            )
-            return {
-                "ok": True,
-                "summary": "study snapshot generated",
-                "record": str(payload.get("record", "")),
-            }
-        if clean_tool == "drift_scan":
-            payload = build_drift_scan_payload(self.part_root, self.vault_root)
-            return {
-                "ok": True,
-                "summary": "drift scan generated",
-                "blocked_gates": len(payload.get("blocked_gates", [])),
-            }
-        if clean_tool == "push_truth_dry_run":
-            payload = build_push_truth_dry_run_payload(self.part_root, self.vault_root)
-            gate = payload.get("gate", {}) if isinstance(payload, dict) else {}
-            return {
-                "ok": True,
-                "summary": "push-truth dry run generated",
-                "blocked": bool(gate.get("blocked", False))
-                if isinstance(gate, dict)
-                else False,
-            }
-        return {"ok": False, "error": "unsupported_tool"}
+        return muse_runtime_backend_utils_module.muse_tool_callback(
+            handler=self,
+            tool_name=tool_name,
+            server_module=sys.modules[__name__],
+        )
 
     def _muse_reply_builder(
         self,
@@ -4036,36 +2930,15 @@ class WorldHandler(BaseHTTPRequestHandler):
         muse_id: str = "",
         turn_id: str = "",
     ) -> dict[str, Any]:
-        del turn_id
-        from .muse_runtime import _muse_system_prompt
-
-        model_mode = (
-            "canonical" if str(mode).strip().lower() == "deterministic" else "llm"
+        return muse_runtime_backend_utils_module.muse_reply_builder(
+            handler=self,
+            messages=messages,
+            context_block=context_block,
+            mode=mode,
+            muse_id=muse_id,
+            turn_id=turn_id,
+            server_module=sys.modules[__name__],
         )
-        clean_muse_id = str(muse_id or "").strip() or "witness_thread"
-
-        # Inject muse-specific system prompt if available.
-        muse_prompt = _muse_system_prompt(clean_muse_id)
-        if muse_prompt:
-            context_block = f"{muse_prompt}\n\n{context_block}"
-
-        response = build_chat_reply(
-            messages=[
-                {"role": "system", "text": context_block},
-                *messages,
-            ],
-            mode=model_mode,
-            context=build_world_payload(self.part_root),
-            multi_entity=True,
-            presence_ids=[clean_muse_id],
-        )
-        if not isinstance(response, dict):
-            return {"reply": "", "mode": "canonical", "model": None}
-        return {
-            "reply": str(response.get("reply", "") or "").strip(),
-            "mode": str(response.get("mode", model_mode) or model_mode),
-            "model": response.get("model"),
-        }
 
     def _collect_catalog_fast(self) -> dict[str, Any]:
         return collect_catalog(
@@ -4651,6 +3524,41 @@ class WorldHandler(BaseHTTPRequestHandler):
         def send_ws(payload: dict[str, Any]) -> None:
             ws_send_controller.send(payload)
 
+        use_shared_ws_stream = bool(
+            stream_mode == "workers"
+            and stream_cached_snapshots
+            and effective_skip_catalog_bootstrap
+            and not catalog_events_enabled
+        )
+        if use_shared_ws_stream:
+
+            def _collect_shared_stream_frame() -> tuple[dict[str, Any], str]:
+                return simulation_ws_shared_payload_utils_module.collect_shared_stream_frame(
+                    part_root=self.part_root,
+                    perspective=perspective_key,
+                    payload_mode=payload_mode_key,
+                    load_cached_payload=_simulation_ws_load_cached_payload,
+                    json_compact=_json_compact,
+                )
+
+            shared_stream_key = (
+                f"sim-ws:{perspective_key}:{payload_mode_key}:{particle_payload_key}"
+            )
+            simulation_ws_shared_controller_module.handle_shared_simulation_websocket_stream(
+                connection=self.connection,
+                send_ws=send_ws,
+                consume_ws_client_frame=_consume_ws_client_frame,
+                release_client_slot=_runtime_ws_release_client_slot,
+                stream_key=shared_stream_key,
+                collect_frame=_collect_shared_stream_frame,
+                refresh_seconds=max(0.25, _SIMULATION_WS_CACHE_REFRESH_SECONDS),
+                heartbeat_seconds=max(
+                    SIM_TICK_SECONDS,
+                    _SIMULATION_WS_FULL_SNAPSHOT_HEARTBEAT_SECONDS,
+                ),
+            )
+            return
+
         # Use poll for non-blocking socket reads
         poll = select.poll()
         poll.register(self.connection, select.POLLIN)
@@ -4864,46 +3772,6 @@ class WorldHandler(BaseHTTPRequestHandler):
             delta_payload = _build_ws_delta_payload(simulation)
             return snapshot_payload, delta_payload, projection
 
-        def maybe_send_muse_events(now_monotonic: float) -> None:
-            nonlocal muse_event_seq
-            nonlocal last_muse_poll
-
-            if now_monotonic - last_muse_poll < _SIMULATION_WS_MUSE_POLL_SECONDS:
-                return
-
-            try:
-                self._muse_threat_radar_tick(
-                    now_monotonic=now_monotonic,
-                    force=False,
-                    reason="ws.poll",
-                )
-            except Exception:
-                pass
-
-            previous_muse_seq = muse_event_seq
-            muse_events = self._muse_manager().list_events(
-                since_seq=previous_muse_seq,
-                limit=96,
-            )
-            if muse_events:
-                muse_event_seq = max(
-                    previous_muse_seq,
-                    max(
-                        int(row.get("seq", 0))
-                        for row in muse_events
-                        if isinstance(row, dict)
-                    ),
-                )
-                send_ws(
-                    {
-                        "type": "muse_events",
-                        "events": muse_events,
-                        "since_seq": previous_muse_seq,
-                        "next_seq": muse_event_seq,
-                    }
-                )
-            last_muse_poll = now_monotonic
-
         try:
             if effective_skip_catalog_bootstrap:
                 catalog = {}
@@ -4928,24 +3796,15 @@ class WorldHandler(BaseHTTPRequestHandler):
                     }
                 )
             if not effective_skip_catalog_bootstrap:
-                muse_bootstrap_events = self._muse_manager().list_events(
-                    since_seq=0,
-                    limit=96,
+                muse_event_seq = (
+                    muse_ws_stream_utils_module.stream_muse_bootstrap_events(
+                        handler=self,
+                        send_ws=send_ws,
+                        muse_event_seq=muse_event_seq,
+                        enabled=True,
+                        event_limit=96,
+                    )
                 )
-                if muse_bootstrap_events:
-                    muse_event_seq = max(
-                        int(row.get("seq", 0))
-                        for row in muse_bootstrap_events
-                        if isinstance(row, dict)
-                    )
-                    send_ws(
-                        {
-                            "type": "muse_events",
-                            "events": muse_bootstrap_events,
-                            "since_seq": 0,
-                            "next_seq": muse_event_seq,
-                        }
-                    )
 
             if stream_cached_snapshots:
                 if effective_skip_catalog_bootstrap:
@@ -6045,7 +4904,18 @@ class WorldHandler(BaseHTTPRequestHandler):
                             tick_slack_ms() > 1.0
                             and not effective_skip_catalog_bootstrap
                         ):
-                            maybe_send_muse_events(now_monotonic)
+                            (
+                                muse_event_seq,
+                                last_muse_poll,
+                            ) = muse_ws_stream_utils_module.maybe_send_muse_events(
+                                handler=self,
+                                send_ws=send_ws,
+                                now_monotonic=now_monotonic,
+                                muse_event_seq=muse_event_seq,
+                                last_muse_poll=last_muse_poll,
+                                server_module=sys.modules[__name__],
+                                event_limit=96,
+                            )
                         last_sim_tick = now_monotonic
                         continue
 
@@ -6202,7 +5072,18 @@ class WorldHandler(BaseHTTPRequestHandler):
                         last_simulation_for_delta = simulation_delta_payload
 
                     if tick_slack_ms() > 1.0 and not effective_skip_catalog_bootstrap:
-                        maybe_send_muse_events(now_monotonic)
+                        (
+                            muse_event_seq,
+                            last_muse_poll,
+                        ) = muse_ws_stream_utils_module.maybe_send_muse_events(
+                            handler=self,
+                            send_ws=send_ws,
+                            now_monotonic=now_monotonic,
+                            muse_event_seq=muse_event_seq,
+                            last_muse_poll=last_muse_poll,
+                            server_module=sys.modules[__name__],
+                            event_limit=96,
+                        )
                     last_sim_tick = now_monotonic
 
                 if (
@@ -6851,556 +5732,22 @@ class WorldHandler(BaseHTTPRequestHandler):
             )
             return
 
-        if parsed.path == "/api/muse/runtime":
-            manager = self._muse_manager()
-            self._send_json({"ok": True, "runtime": manager.snapshot()})
+        if muse_mvc_controller_module.handle_muse_get_route(
+            handler=self,
+            path=parsed.path,
+            params=params,
+            send_json=self._send_json,
+            server_module=sys.modules[__name__],
+        ):
             return
 
-        if parsed.path == "/api/muse/threat-radar/status":
-            self._send_json(
-                {
-                    "ok": True,
-                    "record": "eta-mu.muse-threat-radar-status.v1",
-                    "runtime": self._muse_threat_radar_status(),
-                }
-            )
-            return
-
-        if parsed.path == "/api/muse/threat-radar/tick":
-            force = _safe_bool_query(
-                str(params.get("force", ["false"])[0] or "false"),
-                default=False,
-            )
-            payload = self._muse_threat_radar_tick(
-                force=force,
-                reason="api.tick",
-            )
-            status = (
-                HTTPStatus.OK
-                if bool(payload.get("ok", False))
-                else HTTPStatus.BAD_GATEWAY
-            )
-            self._send_json(payload, status=status)
-            return
-
-        if parsed.path == "/api/muse/threat-radar/report":
-            window_ticks = max(
-                1,
-                min(
-                    20_000,
-                    int(
-                        _safe_float(
-                            str(params.get("window_ticks", ["1440"])[0] or "1440"),
-                            1440.0,
-                        )
-                    ),
-                ),
-            )
-            limit = max(
-                1,
-                min(
-                    128,
-                    int(
-                        _safe_float(
-                            str(params.get("limit", ["24"])[0] or "24"),
-                            24.0,
-                        )
-                    ),
-                ),
-            )
-            requested_radar = (
-                str(params.get("radar", ["global"])[0] or "global").strip().lower()
-            )
-            radar = requested_radar
-            if radar in {"github", "local"}:
-                radar = "local"
-            elif radar in {"global", "hormuz"}:
-                radar = radar
-            elif radar in {"cyber", "regime"}:
-                radar = "cyber"
-            else:
-                self._send_json(
-                    {
-                        "ok": False,
-                        "error": "invalid_radar",
-                        "supported": [
-                            "local",
-                            "global",
-                            "hormuz",
-                            "cyber",
-                            "regime",
-                        ],
-                    },
-                    status=HTTPStatus.BAD_REQUEST,
-                )
-                return
-            repo = str(params.get("repo", [""])[0] or "").strip().lower()
-            kind = str(params.get("kind", [""])[0] or "").strip().lower()
-            state_bins = max(
-                3,
-                min(
-                    48,
-                    int(
-                        _safe_float(
-                            str(params.get("state_bins", ["8"])[0] or "8"),
-                            8.0,
-                        )
-                    ),
-                ),
-            )
-            threat_limit = max(
-                16,
-                min(
-                    512,
-                    int(
-                        _safe_float(
-                            str(
-                                params.get(
-                                    "threat_limit",
-                                    [str(max(64, limit * 4))],
-                                )[0]
-                                or str(max(64, limit * 4))
-                            ),
-                            float(max(64, limit * 4)),
-                        )
-                    ),
-                ),
-            )
-            apply_regime_threshold = _safe_bool_query(
-                str(params.get("apply_regime_threshold", ["true"])[0] or "true"),
-                default=True,
-            )
-            since_snapshot_hash = str(
-                params.get("since_snapshot_hash", [""])[0] or ""
-            ).strip()
-
-            catalog = self._runtime_catalog_base(
-                allow_inline_collect=False,
-                strict_collect=False,
-            )
-            file_graph = (
-                catalog.get("file_graph", {}) if isinstance(catalog, dict) else {}
-            )
-            crawler_graph = (
-                catalog.get("crawler_graph", {}) if isinstance(catalog, dict) else {}
-            )
-            logical_graph = (
-                catalog.get("logical_graph", {}) if isinstance(catalog, dict) else {}
-            )
-            query_args: dict[str, Any] = {
-                "window_ticks": window_ticks,
-                "limit": limit,
-            }
-            query_name = "github_threat_radar"
-            if radar == "local":
-                min_weak_label_score = max(
-                    -16,
-                    min(
-                        16,
-                        int(
-                            _safe_float(
-                                str(
-                                    params.get("min_weak_label_score", ["1"])[0] or "1"
-                                ),
-                                1.0,
-                            )
-                        ),
-                    ),
-                )
-                if repo:
-                    query_args["repo"] = repo
-                query_args["min_weak_label_score"] = int(min_weak_label_score)
-            elif radar == "global":
-                query_name = "geopolitical_news_radar"
-                query_args["include_provisional"] = False
-                domain = str(params.get("domain", [""])[0] or "").strip().lower()
-                if domain:
-                    query_args["domain"] = domain
-                if kind:
-                    query_args["kind"] = kind
-            elif radar == "hormuz":
-                query_name = "hormuz_threat_radar"
-                if kind:
-                    query_args["kind"] = kind
-            else:
-                query_name = "cyber_risk_radar"
-                min_weak_label_score = max(
-                    -16,
-                    min(
-                        16,
-                        int(
-                            _safe_float(
-                                str(
-                                    params.get("min_weak_label_score", ["1"])[0] or "1"
-                                ),
-                                1.0,
-                            )
-                        ),
-                    ),
-                )
-                if repo:
-                    query_args["repo"] = repo
-                query_args["state_bins"] = state_bins
-                query_args["threat_limit"] = threat_limit
-                query_args["apply_regime_threshold"] = bool(apply_regime_threshold)
-                query_args["min_weak_label_score"] = int(min_weak_label_score)
-
-            def _canonical_nexus_for_threat_radar(
-                *,
-                include_logical: bool,
-            ) -> dict[str, Any]:
-                payload = simulation_module._build_canonical_nexus_graph(
-                    file_graph if isinstance(file_graph, dict) else None,
-                    crawler_graph if isinstance(crawler_graph, dict) else None,
-                    logical_graph
-                    if include_logical and isinstance(logical_graph, dict)
-                    else None,
-                    include_crawler=True,
-                    include_logical=include_logical,
-                )
-                if not isinstance(payload, dict):
-                    return {"nodes": [], "edges": []}
-                return payload
-
-            prefer_crawler_direct = radar in {"local", "hormuz"}
-            nexus_graph: dict[str, Any]
-            if prefer_crawler_direct and isinstance(crawler_graph, dict):
-                crawler_nodes_raw = crawler_graph.get("nodes", [])
-                if not isinstance(crawler_nodes_raw, list) or not crawler_nodes_raw:
-                    crawler_nodes_raw = crawler_graph.get("crawler_nodes", [])
-                crawler_edges_raw = crawler_graph.get("edges", [])
-                crawler_nodes = (
-                    [row for row in crawler_nodes_raw if isinstance(row, dict)]
-                    if isinstance(crawler_nodes_raw, list)
-                    else []
-                )
-                crawler_edges = (
-                    [row for row in crawler_edges_raw if isinstance(row, dict)]
-                    if isinstance(crawler_edges_raw, list)
-                    else []
-                )
-                if crawler_nodes:
-                    nexus_graph = {
-                        "nodes": crawler_nodes,
-                        "edges": crawler_edges,
-                    }
-                else:
-                    nexus_graph = _canonical_nexus_for_threat_radar(
-                        include_logical=False
-                    )
-            else:
-                nexus_graph = _canonical_nexus_for_threat_radar(
-                    include_logical=(radar == "cyber"),
-                )
-
-            simulation_payload: dict[str, Any] = {
-                "nexus_graph": nexus_graph,
-                "generated_at": str(
-                    catalog.get("generated_at", "") if isinstance(catalog, dict) else ""
-                ),
-            }
-            if isinstance(crawler_graph, dict):
-                simulation_payload["crawler_graph"] = crawler_graph
-            cache_key_payload = {
-                "radar": radar,
-                "query": query_name,
-                "args": query_args,
-                "catalog_generated_at": simulation_payload.get("generated_at", ""),
-            }
-            cache_key = hashlib.sha256(
-                json.dumps(
-                    cache_key_payload,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            ).hexdigest()
-
-            cached_payload: dict[str, Any] | None = None
-            with _MUSE_THREAT_RADAR_REPORT_CACHE_LOCK:
-                cached_row = _MUSE_THREAT_RADAR_REPORT_CACHE.get(cache_key)
-                if isinstance(cached_row, dict):
-                    cached_payload = {
-                        "snapshot_hash": str(cached_row.get("snapshot_hash", "") or ""),
-                        "result": cached_row.get("result", {}),
-                    }
-
-            query_payload = cached_payload
-            if not isinstance(query_payload, dict):
-                query_payload = run_named_graph_query(
-                    nexus_graph,
-                    query_name,
-                    args=query_args,
-                    simulation=simulation_payload,
-                )
-                with _MUSE_THREAT_RADAR_REPORT_CACHE_LOCK:
-                    _MUSE_THREAT_RADAR_REPORT_CACHE[cache_key] = {
-                        "snapshot_hash": str(
-                            query_payload.get("snapshot_hash", "") or ""
-                        ).strip(),
-                        "result": query_payload.get("result", {}),
-                        "updated_monotonic": round(time.monotonic(), 6),
-                    }
-                    if (
-                        len(_MUSE_THREAT_RADAR_REPORT_CACHE)
-                        > _MUSE_THREAT_RADAR_REPORT_CACHE_MAX
-                    ):
-                        overflow = (
-                            len(_MUSE_THREAT_RADAR_REPORT_CACHE)
-                            - _MUSE_THREAT_RADAR_REPORT_CACHE_MAX
-                        )
-                        oldest_keys = sorted(
-                            _MUSE_THREAT_RADAR_REPORT_CACHE.items(),
-                            key=lambda item: _safe_float(
-                                item[1].get("updated_monotonic", 0.0),
-                                0.0,
-                            ),
-                        )[: max(0, overflow)]
-                        for key, _value in oldest_keys:
-                            _MUSE_THREAT_RADAR_REPORT_CACHE.pop(key, None)
-
-            result = (
-                query_payload.get("result", {})
-                if isinstance(query_payload.get("result", {}), dict)
-                else {}
-            )
-
-            def _threat_row_is_github_like(row: dict[str, Any]) -> bool:
-                kind_value = str(row.get("kind", "") or "").strip().lower()
-                if kind_value.startswith("github:"):
-                    return True
-                canonical_url = str(row.get("canonical_url", "") or "").strip().lower()
-                if (
-                    "github.com/" in canonical_url
-                    or "githubusercontent.com/" in canonical_url
-                    or "githubassets.com/" in canonical_url
-                ):
-                    return True
-                domain_value = str(row.get("domain", "") or "").strip().lower()
-                if (
-                    domain_value == "github.com"
-                    or domain_value.endswith(".github.com")
-                    or domain_value == "githubusercontent.com"
-                    or domain_value.endswith(".githubusercontent.com")
-                    or domain_value == "githubassets.com"
-                    or domain_value.endswith(".githubassets.com")
-                ):
-                    return True
-                return False
-
-            if isinstance(result, dict):
-                raw_threat_rows = (
-                    result.get("threats", [])
-                    if isinstance(result.get("threats", []), list)
-                    else []
-                )
-                threat_rows = [row for row in raw_threat_rows if isinstance(row, dict)]
-                scoped_rows = threat_rows
-                if radar == "local":
-                    scoped_rows = [
-                        row for row in threat_rows if _threat_row_is_github_like(row)
-                    ]
-                elif radar in {"global", "hormuz"}:
-                    scoped_rows = [
-                        row
-                        for row in threat_rows
-                        if not _threat_row_is_github_like(row)
-                    ]
-
-                if len(scoped_rows) != len(threat_rows):
-                    result = dict(result)
-                    result["threats"] = scoped_rows
-
-                    level_counts = {
-                        "critical": 0,
-                        "high": 0,
-                        "medium": 0,
-                        "low": 0,
-                    }
-                    for row in scoped_rows:
-                        level = str(row.get("risk_level", "") or "").strip().lower()
-                        if level == "critical":
-                            level_counts["critical"] += 1
-                        elif level == "high":
-                            level_counts["high"] += 1
-                        elif level == "medium":
-                            level_counts["medium"] += 1
-                        else:
-                            level_counts["low"] += 1
-
-                    result["count"] = len(scoped_rows)
-                    result["critical_count"] = int(level_counts["critical"])
-                    result["high_count"] = int(level_counts["high"])
-                    result["medium_count"] = int(level_counts["medium"])
-                    result["low_count"] = int(level_counts["low"])
-
-            if radar == "global" and isinstance(result, dict):
-                global_rows_raw = result.get("threats", [])
-                global_rows = (
-                    [row for row in global_rows_raw if isinstance(row, dict)]
-                    if isinstance(global_rows_raw, list)
-                    else []
-                )
-                provisional_count = sum(
-                    1 for row in global_rows if bool(row.get("provisional", False))
-                )
-                seed_only = len(global_rows) > 0 and provisional_count == len(
-                    global_rows
-                )
-                now_iso = datetime.now(timezone.utc).isoformat()
-                with _MUSE_THREAT_RADAR_LOCK:
-                    prior_streak = max(
-                        0,
-                        _safe_int(
-                            _MUSE_THREAT_RADAR_STATE.get("global_seed_only_streak", 0),
-                            0,
-                        ),
-                    )
-                    streak = prior_streak + 1 if seed_only else 0
-                    alert = bool(
-                        streak >= _MUSE_THREAT_RADAR_GLOBAL_SEED_ONLY_ALERT_STREAK
-                    )
-                    _MUSE_THREAT_RADAR_STATE["global_seed_only_streak"] = int(streak)
-                    _MUSE_THREAT_RADAR_STATE["global_seed_only_alert"] = bool(alert)
-                    if global_rows and not seed_only:
-                        _MUSE_THREAT_RADAR_STATE["last_non_provisional_global_at"] = (
-                            now_iso
-                        )
-
-                result = dict(result)
-                quality = result.get("quality", {})
-                quality_dict = quality if isinstance(quality, dict) else {}
-                quality_dict = dict(quality_dict)
-                quality_dict["seed_only"] = bool(seed_only)
-                quality_dict["seed_only_streak"] = int(streak)
-                quality_dict["seed_only_alert"] = bool(alert)
-                quality_dict["needs_crawl_evidence"] = bool(
-                    quality_dict.get("needs_crawl_evidence", False) or seed_only
-                )
-                result["quality"] = quality_dict
-                result["provisional_count"] = int(provisional_count)
-                result["non_provisional_count"] = int(
-                    max(0, len(global_rows) - provisional_count)
-                )
-
-            resolved_snapshot_hash = str(
-                query_payload.get("snapshot_hash", "")
-                if isinstance(query_payload, dict)
-                else ""
-            ).strip()
-            runtime_status = self._muse_threat_radar_status()
-            if isinstance(runtime_status, dict):
-                runtime_status = dict(runtime_status)
-                runtime_status["scope"] = radar
-                if radar == "local":
-                    runtime_status["label"] = "Local Cyber Threat Radar"
-                elif radar == "global":
-                    runtime_status["label"] = "Global Geopolitical Feed"
-                elif radar == "hormuz":
-                    runtime_status["label"] = "Hormuz Maritime Watch"
-                else:
-                    runtime_status["label"] = "Cyber Risk Radar"
-
-            if (
-                since_snapshot_hash
-                and resolved_snapshot_hash
-                and since_snapshot_hash == resolved_snapshot_hash
-            ):
-                self._send_json(
-                    {
-                        "ok": True,
-                        "record": "eta-mu.muse-threat-radar-report.v1",
-                        "snapshot_hash": resolved_snapshot_hash,
-                        "not_modified": True,
-                        "radar": radar,
-                        "query": query_name,
-                        "runtime": runtime_status,
-                    }
-                )
-                return
-
-            # Update active threat cache for muse context injection.
-            self._update_active_threats(radar, result)
-
-            self._send_json(
-                {
-                    "ok": True,
-                    "record": "eta-mu.muse-threat-radar-report.v1",
-                    "snapshot_hash": resolved_snapshot_hash,
-                    "radar": radar,
-                    "query": query_name,
-                    "runtime": runtime_status,
-                    "result": result,
-                }
-            )
-            return
-
-        if parsed.path == "/api/muse/events":
-            manager = self._muse_manager()
-            muse_id = str(params.get("muse_id", [""])[0] or "").strip()
-            since_seq = max(
-                0,
-                int(
-                    _safe_float(
-                        str(params.get("since_seq", ["0"])[0] or "0"),
-                        0.0,
-                    )
-                ),
-            )
-            limit = max(
-                1,
-                min(
-                    512,
-                    int(
-                        _safe_float(
-                            str(params.get("limit", ["96"])[0] or "96"),
-                            96.0,
-                        )
-                    ),
-                ),
-            )
-            events = manager.list_events(
-                muse_id=muse_id,
-                since_seq=since_seq,
-                limit=limit,
-            )
-            next_seq = since_seq
-            if events:
-                next_seq = max(
-                    int(row.get("seq", since_seq))
-                    for row in events
-                    if isinstance(row, dict)
-                )
-            self._send_json(
-                {
-                    "ok": True,
-                    "record": "eta-mu.muse-event-page.v1",
-                    "muse_id": muse_id,
-                    "since_seq": since_seq,
-                    "next_seq": next_seq,
-                    "events": events,
-                }
-            )
-            return
-
-        if parsed.path == "/api/muse/context":
-            manager = self._muse_manager()
-            muse_id = str(params.get("muse_id", [""])[0] or "").strip()
-            turn_id = str(params.get("turn_id", [""])[0] or "").strip()
-            if not muse_id or not turn_id:
-                self._send_json(
-                    {"ok": False, "error": "muse_id_and_turn_id_required"},
-                    status=HTTPStatus.BAD_REQUEST,
-                )
-                return
-            manifest = manager.get_context_manifest(muse_id, turn_id)
-            if not isinstance(manifest, dict):
-                self._send_json(
-                    {"ok": False, "error": "context_manifest_not_found"},
-                    status=HTTPStatus.NOT_FOUND,
-                )
-                return
-            self._send_json({"ok": True, "manifest": manifest})
+        if muse_mvc_controller_module.handle_muse_threat_report_get_route(
+            handler=self,
+            path=parsed.path,
+            params=params,
+            send_json=self._send_json,
+            server_module=sys.modules[__name__],
+        ):
             return
 
         if parsed.path == "/api/zips":
@@ -7541,34 +5888,40 @@ class WorldHandler(BaseHTTPRequestHandler):
                 str(params.get("include_truth", ["false"])[0] or "false"),
                 default=False,
             )
-            queue_snapshot = self.task_queue.snapshot(include_pending=True)
-            council_snapshot = self.council_chamber.snapshot(
-                include_decisions=True,
-                limit=limit,
-            )
-            drift_payload = build_drift_scan_payload(self.part_root, self.vault_root)
-            resource_snapshot = _resource_monitor_snapshot(part_root=self.part_root)
-            _INFLUENCE_TRACKER.record_resource_heartbeat(
-                resource_snapshot,
-                source="api.study",
-            )
+            study_cache_key = f"limit={limit}|include_truth={int(include_truth_state)}"
 
-            truth_gate_blocked: bool | None = None
-            if include_truth_state:
-                try:
-                    truth_state = self._collect_catalog_fast().get("truth_state", {})
-                    gate = (
-                        truth_state.get("gate", {})
-                        if isinstance(truth_state, dict)
-                        else {}
-                    )
-                    if isinstance(gate, dict):
-                        truth_gate_blocked = bool(gate.get("blocked", False))
-                except Exception:
-                    truth_gate_blocked = None
+            def _build_study_payload() -> dict[str, Any]:
+                queue_snapshot = self.task_queue.snapshot(include_pending=True)
+                council_snapshot = self.council_chamber.snapshot(
+                    include_decisions=True,
+                    limit=limit,
+                )
+                drift_payload = build_drift_scan_payload(
+                    self.part_root, self.vault_root
+                )
+                resource_snapshot = _resource_monitor_snapshot(part_root=self.part_root)
+                _INFLUENCE_TRACKER.record_resource_heartbeat(
+                    resource_snapshot,
+                    source="api.study",
+                )
 
-            self._send_json(
-                build_study_snapshot(
+                truth_gate_blocked: bool | None = None
+                if include_truth_state:
+                    try:
+                        truth_state = self._collect_catalog_fast().get(
+                            "truth_state", {}
+                        )
+                        gate = (
+                            truth_state.get("gate", {})
+                            if isinstance(truth_state, dict)
+                            else {}
+                        )
+                        if isinstance(gate, dict):
+                            truth_gate_blocked = bool(gate.get("blocked", False))
+                    except Exception:
+                        truth_gate_blocked = None
+
+                return build_study_snapshot(
                     self.part_root,
                     self.vault_root,
                     queue_snapshot=queue_snapshot,
@@ -7576,6 +5929,13 @@ class WorldHandler(BaseHTTPRequestHandler):
                     drift_payload=drift_payload,
                     truth_gate_blocked=truth_gate_blocked,
                     resource_snapshot=resource_snapshot,
+                )
+
+            self._send_json(
+                get_or_build_study_snapshot_response(
+                    cache_key=study_cache_key,
+                    max_age_seconds=_STUDY_RESPONSE_CACHE_SECONDS,
+                    builder=_build_study_payload,
                 )
             )
             return
@@ -8833,6 +7193,10 @@ class WorldHandler(BaseHTTPRequestHandler):
                 "event_count": event_count,
                 "anchor_target": anchor_target,
             }
+            openplanner_result = ingest_openplanner_events(
+                build_user_input_openplanner_events(processed_events)
+            )
+            response["openplanner"] = openplanner_result
             if processed_events:
                 response["event"] = processed_events[-1]
             self._send_json(
@@ -9117,193 +7481,14 @@ class WorldHandler(BaseHTTPRequestHandler):
             )
             return
 
-        if parsed.path == "/api/muse/create":
-            req = self._read_json_body() or {}
-            manager = self._muse_manager()
-            payload = manager.create_muse(
-                muse_id=str(req.get("muse_id", "") or "").strip(),
-                label=str(req.get("label", "") or "").strip(),
-                anchor=req.get("anchor")
-                if isinstance(req.get("anchor"), dict)
-                else None,
-                user_intent_id=str(req.get("user_intent_id", "") or "").strip(),
-            )
-            status = (
-                HTTPStatus.OK
-                if bool(payload.get("ok", False))
-                else HTTPStatus.BAD_REQUEST
-            )
-            self._send_json(payload, status=status)
-            return
-
-        if parsed.path == "/api/muse/pause":
-            req = self._read_json_body() or {}
-            manager = self._muse_manager()
-            muse_id = str(req.get("muse_id", "") or "").strip()
-            paused = _safe_bool_query(
-                str(req.get("paused", "true") or "true"), default=True
-            )
-            payload = manager.set_pause(
-                muse_id,
-                paused=paused,
-                reason=str(req.get("reason", "") or "").strip(),
-                user_intent_id=str(req.get("user_intent_id", "") or "").strip(),
-            )
-            if not bool(payload.get("ok", False)):
-                error = str(payload.get("error", ""))
-                status = (
-                    HTTPStatus.NOT_FOUND
-                    if error == "muse_not_found"
-                    else HTTPStatus.BAD_REQUEST
-                )
-                self._send_json(payload, status=status)
-                return
-            self._send_json(payload)
-            return
-
-        if parsed.path == "/api/muse/pin":
-            req = self._read_json_body() or {}
-            manager = self._muse_manager()
-            payload = manager.pin_node(
-                str(req.get("muse_id", "") or "").strip(),
-                node_id=str(req.get("node_id", "") or "").strip(),
-                user_intent_id=str(req.get("user_intent_id", "") or "").strip(),
-                reason=str(req.get("reason", "") or "").strip(),
-            )
-            if not bool(payload.get("ok", False)):
-                error = str(payload.get("error", ""))
-                status = (
-                    HTTPStatus.NOT_FOUND
-                    if error == "muse_not_found"
-                    else HTTPStatus.BAD_REQUEST
-                )
-                self._send_json(payload, status=status)
-                return
-            self._send_json(payload)
-            return
-
-        if parsed.path == "/api/muse/unpin":
-            req = self._read_json_body() or {}
-            manager = self._muse_manager()
-            payload = manager.unpin_node(
-                str(req.get("muse_id", "") or "").strip(),
-                node_id=str(req.get("node_id", "") or "").strip(),
-                user_intent_id=str(req.get("user_intent_id", "") or "").strip(),
-            )
-            if not bool(payload.get("ok", False)):
-                error = str(payload.get("error", ""))
-                status = (
-                    HTTPStatus.NOT_FOUND
-                    if error == "muse_not_found"
-                    else HTTPStatus.BAD_REQUEST
-                )
-                self._send_json(payload, status=status)
-                return
-            self._send_json(payload)
-            return
-
-        if parsed.path == "/api/muse/bind-nexus":
-            req = self._read_json_body() or {}
-            manager = self._muse_manager()
-            payload = manager.bind_nexus(
-                str(req.get("muse_id", "") or "").strip(),
-                nexus_id=str(req.get("nexus_id", "") or "").strip(),
-                reason=str(req.get("reason", "") or "").strip(),
-                user_intent_id=str(req.get("user_intent_id", "") or "").strip(),
-            )
-            if not bool(payload.get("ok", False)):
-                error = str(payload.get("error", ""))
-                status = (
-                    HTTPStatus.NOT_FOUND
-                    if error == "muse_not_found"
-                    else HTTPStatus.BAD_REQUEST
-                )
-                self._send_json(payload, status=status)
-                return
-            self._send_json(payload)
-            return
-
-        if parsed.path == "/api/muse/sync-pins":
-            req = self._read_json_body() or {}
-            manager = self._muse_manager()
-            pinned_node_ids = req.get("pinned_node_ids", [])
-            payload = manager.sync_workspace_pins(
-                str(req.get("muse_id", "") or "").strip(),
-                pinned_node_ids=pinned_node_ids
-                if isinstance(pinned_node_ids, list)
-                else [],
-                reason=str(req.get("reason", "") or "").strip(),
-                user_intent_id=str(req.get("user_intent_id", "") or "").strip(),
-            )
-            if not bool(payload.get("ok", False)):
-                error = str(payload.get("error", ""))
-                status = (
-                    HTTPStatus.NOT_FOUND
-                    if error == "muse_not_found"
-                    else HTTPStatus.BAD_REQUEST
-                )
-                self._send_json(payload, status=status)
-                return
-            self._send_json(payload)
-            return
-
-        if parsed.path == "/api/muse/message":
-            req = self._read_json_body() or {}
-            manager = self._muse_manager()
-            self._muse_tool_cache = {}
-            catalog = self._runtime_catalog_base()
-            graph_revision = str(
-                req.get("graph_revision", catalog.get("generated_at", ""))
-                or catalog.get("generated_at", "")
-            ).strip()
-            idempotency_key = str(
-                req.get("idempotency_key", self.headers.get("Idempotency-Key", ""))
-                or ""
-            ).strip()
-            surrounding_nodes = req.get("surrounding_nodes", [])
-            if not isinstance(surrounding_nodes, list):
-                surrounding_nodes = []
-
-            # Inject active threat context for specialized muses.
-            muse_id = str(req.get("muse_id", "") or "").strip()
-            if muse_id in {"witness_thread", "github_security_review"}:
-                # GitHub security muse gets local threats
-                threat_nodes = self._get_active_threat_nodes("local")
-                if threat_nodes:
-                    surrounding_nodes = list(surrounding_nodes) + threat_nodes
-            elif muse_id == "chaos":
-                # Chaos muse gets global geopolitical threats
-                threat_nodes = self._get_active_threat_nodes("global")
-                if threat_nodes:
-                    surrounding_nodes = list(surrounding_nodes) + threat_nodes
-
-            payload = manager.send_message(
-                muse_id=muse_id,
-                text=str(req.get("text", "") or "").strip(),
-                mode=str(req.get("mode", "stochastic") or "stochastic").strip(),
-                token_budget=max(
-                    320,
-                    min(
-                        8192,
-                        int(
-                            _safe_float(
-                                str(req.get("token_budget", 2048) or 2048), 2048.0
-                            )
-                        ),
-                    ),
-                ),
-                idempotency_key=idempotency_key,
-                graph_revision=graph_revision,
-                surrounding_nodes=surrounding_nodes,
-                tool_callback=self._muse_tool_callback,
-                reply_builder=self._muse_reply_builder,
-                seed=str(req.get("seed", "") or "").strip(),
-            )
-            if not bool(payload.get("ok", False)):
-                status_code = int(payload.get("status_code", HTTPStatus.BAD_REQUEST))
-                self._send_json(payload, status=status_code)
-                return
-            self._send_json(payload)
+        if muse_mvc_controller_module.handle_muse_post_route(
+            handler=self,
+            path=parsed.path,
+            read_json_body=self._read_json_body,
+            send_json=self._send_json,
+            headers=self.headers,
+            server_module=sys.modules[__name__],
+        ):
             return
 
         if parsed.path == "/api/chat":
@@ -9422,7 +7607,21 @@ class WorldHandler(BaseHTTPRequestHandler):
                 queue_snapshot=queue_snapshot,
                 part_root=self.part_root,
             )
-            self._send_json(build_presence_say_payload(catalog, text, presence_id))
+            payload = build_presence_say_payload(catalog, text, presence_id)
+            event = build_presence_say_openplanner_event(
+                presence_id=str(payload.get("presence_id", presence_id) or presence_id),
+                text=text,
+                payload=payload,
+            )
+            payload["openplanner"] = (
+                ingest_openplanner_events([event])
+                if isinstance(event, dict)
+                else {
+                    "ok": False,
+                    "error": "presence_not_indexed",
+                }
+            )
+            self._send_json(payload)
             return
 
         if parsed.path == "/api/drift/scan":
