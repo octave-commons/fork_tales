@@ -1,3 +1,11 @@
+x-cpu-thread-limits: &cpu_thread_limits
+  OMP_NUM_THREADS: "1"
+  OPENBLAS_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+  NUMEXPR_NUM_THREADS: "1"
+  TF_NUM_INTRAOP_THREADS: "1"
+  TF_NUM_INTEROP_THREADS: "1"
+
 services:
   eta-mu-local:
     build:
@@ -14,6 +22,7 @@ services:
         "eta-mu-world,eta-mu-io,web-graph-weaver",
       ]
     environment:
+      <<: *cpu_thread_limits
       CHROMA_HOST: chroma
       CHROMA_PORT: "8000"
       PYTHONUNBUFFERED: "1"
@@ -57,7 +66,7 @@ services:
     ports:
       - "18877:8787"
       - "18993:8793"
-    cpus: "0.95"
+    cpus: "0.75"
     mem_limit: "24000m"
     memswap_limit: "24000m"
     pids_limit: 176
@@ -105,6 +114,7 @@ services:
         "eta-mu-world,eta-mu-io,web-graph-weaver",
       ]
     environment:
+      <<: *cpu_thread_limits
       CHROMA_HOST: chroma
       CHROMA_PORT: "8000"
       PYTHONUNBUFFERED: "1"
@@ -157,7 +167,7 @@ services:
     ports:
       - "18880:8787"
       - "18996:8793"
-    cpus: "3.00"
+    cpus: "1.50"
     mem_limit: "24000m"
     memswap_limit: "24000m"
     pids_limit: 1024
@@ -205,6 +215,7 @@ services:
         "eta-mu-world,eta-mu-io,web-graph-weaver",
       ]
     environment:
+      <<: *cpu_thread_limits
       CHROMA_HOST: chroma
       CHROMA_PORT: "8000"
       PYTHONUNBUFFERED: "1"
@@ -255,7 +266,7 @@ services:
     ports:
       - "18878:8787"
       - "18994:8793"
-    cpus: "1.05"
+    cpus: "0.80"
     mem_limit: "24000m"
     memswap_limit: "24000m"
     pids_limit: 188
@@ -303,6 +314,7 @@ services:
         "eta-mu-world,eta-mu-io,web-graph-weaver",
       ]
     environment:
+      <<: *cpu_thread_limits
       CHROMA_HOST: chroma
       CHROMA_PORT: "8000"
       PYTHONUNBUFFERED: "1"
@@ -350,7 +362,7 @@ services:
     ports:
       - "18879:8787"
       - "18995:8793"
-    cpus: "1.00"
+    cpus: "0.80"
     mem_limit: "24000m"
     memswap_limit: "24000m"
     pids_limit: 188
@@ -394,7 +406,7 @@ services:
       SIM_SLICE_REDIS_JOBS_STREAM: "eta_mu:sim_slice_jobs"
       SIM_SLICE_WORKER_NAME: "c-budget-worker.v1"
       SIM_SLICE_REPLY_TTL_SECONDS: "20"
-    cpus: "0.35"
+    cpus: "0.25"
     mem_limit: "384m"
     memswap_limit: "384m"
     pids_limit: 96
@@ -411,7 +423,7 @@ services:
     environment:
       SIM_SLICE_UDS_PATH: "/sim-socket/sim_slice.sock"
       SIM_SLICE_WORKER_NAME: "c-uds-worker.v1"
-    cpus: "0.30"
+    cpus: "0.20"
     mem_limit: "320m"
     memswap_limit: "320m"
     pids_limit: 88
@@ -424,7 +436,7 @@ services:
   sim-slice-redis:
     image: redis:7-alpine
     command: ["redis-server", "--save", "", "--appendonly", "no"]
-    cpus: "0.35"
+    cpus: "0.20"
     mem_limit: "384m"
     memswap_limit: "384m"
     pids_limit: 96
@@ -434,7 +446,7 @@ services:
 
   chroma:
     image: chromadb/chroma:latest
-    cpus: "1.00"
+    cpus: "0.75"
     mem_limit: "1500m"
     memswap_limit: "1500m"
     pids_limit: 160

@@ -1318,7 +1318,19 @@ def collect_lith_nexus_index(
         elif _looks_repo_path(value):
             candidate_path = _normalize_rel_path(value)
             candidate_abs = root / candidate_path
-            if candidate_abs.exists() and candidate_abs.is_file():
+            try:
+                candidate_is_file = candidate_abs.exists() and candidate_abs.is_file()
+            except OSError as exc:
+                errors.append(
+                    {
+                        "kind": "invalid_ref_path",
+                        "path": path_value,
+                        "value": value[:240],
+                        "error": exc.__class__.__name__,
+                    }
+                )
+                candidate_is_file = False
+            if candidate_is_file:
                 target_id = ensure_file_node(candidate_path)
                 if source_kind in {"packet", "contract", "protocol", "spec"}:
                     edge_kind = "depends_on"
