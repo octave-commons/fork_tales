@@ -163,6 +163,7 @@ const LLM_AUTH_CONFIGURED = Object.keys(LLM_AUTH_HEADERS).length > 0;
 const USER_AGENT =
   process.env.WEAVER_USER_AGENT ||
   `WebGraphWeaver/0.1 (+http://${HOST}:${PORT}/api/weaver/opt-out)`;
+const WEAVER_RESEARCH_MODE = String(process.env.WEAVER_RESEARCH_MODE || "").trim().toLowerCase();
 
 const PART_ROOT = path.join(__dirname, "..");
 const WORLD_STATE_DIR = path.join(PART_ROOT, "world_state");
@@ -341,6 +342,219 @@ function normalizeDomain(input) {
     return "";
   }
   return value.replace(/^https?:\/\//, "").replace(/\/$/, "");
+}
+
+const RESEARCH_MOTIF_PATTERNS = {
+  quantization: [/\bint6\b/i, /\bint8\b/i, /\bqat\b/i, /quant/i, /fp16 embed/i, /outlier/i],
+  recurrence: [/recurr/i, /shared depth/i, /layer tying/i, /cross-layer/i, /phase-conditioned/i],
+  tokenizer: [/tokenizer/i, /vocab/i, /sp1024/i, /sp4096/i, /bigramhash/i, /lm head/i],
+  optimizer: [/muon/i, /normuon/i, /swa/i, /warmdown/i, /optimizer/i],
+  eval_time_compute: [/sliding window/i, /sliding eval/i, /test-time training/i, /\bttt\b/i, /iterative refinement/i],
+  artifact_interface: [/rmsnorm/i, /codebook/i, /codec/i, /artifact-native/i, /regenerated-head/i],
+};
+
+function detectResearchMotifs(node) {
+  const text = [
+    String(node?.url || ""),
+    String(node?.title || ""),
+    String(node?.analysis_summary || ""),
+    String(node?.content_type || ""),
+  ].join(" ");
+  const motifs = [];
+  for (const [motif, patterns] of Object.entries(RESEARCH_MOTIF_PATTERNS)) {
+    if (patterns.some((pattern) => pattern.test(text))) {
+      motifs.push(motif);
+    }
+  }
+  return motifs;
+}
+
+function annotateResearchNode(node) {
+  if (!node || String(node.kind || "") !== "url" || WEAVER_RESEARCH_MODE !== "parameter-golf") {
+    return node;
+  }
+
+  const url = String(node.url || node.label || "").trim();
+  let host = "";
+  let pathname = "";
+  try {
+    const parsed = new URL(url);
+    host = String(parsed.hostname || "").trim().toLowerCase();
+    pathname = String(parsed.pathname || "").trim();
+  } catch (_err) {
+    host = "";
+    pathname = "";
+  }
+
+  let sourceKind = "web_page";
+  let sourceQuality = "tertiary";
+  let rawSignalScore = 0.0;
+  let navigationNoisePenalty = 0.0;
+
+  if (host === "patch-diff.githubusercontent.com") {
+    sourceKind = "patch_diff";
+    sourceQuality = "primary";
+    rawSignalScore = 2.4;
+  } else if (host === "parameter-golf.github.io" && pathname.startsWith("/data/") && pathname.endsWith(".json")) {
+    sourceKind = "leaderboard_json";
+    sourceQuality = "primary";
+    rawSignalScore = 2.1;
+  } else if (host === "raw.githubusercontent.com") {
+    if (/submission\.json$/i.test(pathname)) {
+      sourceKind = "submission_json";
+      sourceQuality = "primary";
+      rawSignalScore = 2.3;
+    } else if (/train\.log$/i.test(pathname)) {
+      sourceKind = "train_log";
+      sourceQuality = "primary";
+      rawSignalScore = 2.2;
+    } else if (/train_gpt\.py$/i.test(pathname)) {
+      sourceKind = "trainer_script";
+      sourceQuality = "primary";
+      rawSignalScore = 2.0;
+    } else if (/parameter-golf-research-garden\/main\/content\//i.test(pathname)) {
+      sourceKind = "research_garden_note";
+      sourceQuality = "secondary";
+      rawSignalScore = 1.0;
+    } else if (/agustif\/runmatrix\/main\/docs\//i.test(pathname) || /agustif\/runmatrix\/main\/README\.md$/i.test(pathname)) {
+      sourceKind = "orchestration_doc";
+      sourceQuality = "secondary";
+      rawSignalScore = 0.9;
+    } else {
+      sourceKind = "raw_document";
+      sourceQuality = "secondary";
+      rawSignalScore = 0.7;
+    }
+  } else if (host === "arxiv.org") {
+    if (/^\/abs\//i.test(pathname)) {
+      sourceKind = "arxiv_abs";
+      sourceQuality = "primary";
+      rawSignalScore = 1.8;
+    } else if (/^\/pdf\//i.test(pathname)) {
+      sourceKind = "arxiv_pdf";
+      sourceQuality = "primary";
+      rawSignalScore = 1.7;
+    } else if (/^\/search\/?$/i.test(pathname)) {
+      sourceKind = "arxiv_search";
+      sourceQuality = "secondary";
+      rawSignalScore = 0.6;
+    }
+  } else if (host === "github.com") {
+    if (/\/openai\/parameter-golf\/pull\/\d+/i.test(pathname)) {
+      sourceKind = "parameter_golf_pr";
+      sourceQuality = "secondary";
+      rawSignalScore = 0.7;
+    } else if (/\/(login|marketplace|trending|search|settings|notifications|sponsors)\b/i.test(pathname)) {
+      sourceKind = "navigation_noise";
+      sourceQuality = "noise";
+      navigationNoisePenalty = 1.6;
+    } else if (/\/(blob|tree|commits)\//i.test(pathname)) {
+      sourceKind = "repo_navigation";
+      sourceQuality = "noise";
+      navigationNoisePenalty = 1.0;
+    } else {
+      sourceKind = "repo_html";
+      sourceQuality = "tertiary";
+      rawSignalScore = 0.2;
+    }
+  } else if (host === "blog.skypilot.co") {
+    sourceKind = "blog_post";
+    sourceQuality = "secondary";
+    rawSignalScore = 0.45;
+  }
+
+  if (/\.(png|jpg|jpeg|gif|svg|ico|woff2?|ttf|css|js)$/i.test(pathname)) {
+    sourceKind = "asset_noise";
+    sourceQuality = "noise";
+    navigationNoisePenalty = Math.max(navigationNoisePenalty, 1.8);
+    rawSignalScore = 0;
+  }
+
+  const researchMotifs = detectResearchMotifs(node);
+  return {
+    ...node,
+    source_kind: sourceKind,
+    source_quality: sourceQuality,
+    raw_signal_score: Number(rawSignalScore.toFixed(4)),
+    navigation_noise_penalty: Number(navigationNoisePenalty.toFixed(4)),
+    research_motifs: researchMotifs,
+  };
+}
+
+const SOURCE_QUALITY_RANK = {
+  noise: 0,
+  tertiary: 1,
+  secondary: 2,
+  primary: 3,
+};
+
+function sourceQualityRank(node) {
+  const quality = String(node?.source_quality || "tertiary").trim().toLowerCase();
+  return SOURCE_QUALITY_RANK[quality] ?? 1;
+}
+
+function sharedResearchMotifCount(leftNode, rightNode) {
+  const left = new Set(Array.isArray(leftNode?.research_motifs) ? leftNode.research_motifs : []);
+  const right = Array.isArray(rightNode?.research_motifs) ? rightNode.research_motifs : [];
+  let count = 0;
+  for (const motif of right) {
+    if (left.has(motif)) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function researchRouteAdjustment(sourceNode, targetNode) {
+  const targetKind = String(targetNode?.source_kind || "web_page");
+  const sourceKind = String(sourceNode?.source_kind || "");
+  const targetQuality = String(targetNode?.source_quality || "tertiary");
+  const sourceQuality = String(sourceNode?.source_quality || "tertiary");
+  const sharedMotifs = sharedResearchMotifCount(sourceNode, targetNode);
+  const interactionPenalty = Math.min(1.5, Number(targetNode?.interaction_count || 0) * 0.06);
+
+  let bridgeBonus = 0;
+  let loopPenalty = interactionPenalty;
+
+  if (!sourceNode) {
+    return { bridgeBonus, loopPenalty, sharedMotifs };
+  }
+
+  if (targetQuality === "noise") {
+    loopPenalty += 1.2;
+  }
+  if (sourceKind && sourceKind === targetKind) {
+    loopPenalty += 0.55;
+    if (targetKind === "patch_diff") {
+      loopPenalty += 0.75;
+    } else if (targetKind === "parameter_golf_pr" || targetKind === "submission_json") {
+      loopPenalty += 0.35;
+    }
+  }
+  if (sourceNode.domain && targetNode?.domain && sourceNode.domain === targetNode.domain) {
+    loopPenalty += 0.12;
+  }
+
+  if (sharedMotifs > 0 && sourceKind !== targetKind) {
+    bridgeBonus += 0.22 + 0.10 * sharedMotifs;
+  }
+  if (sourceQualityRank(targetNode) > sourceQualityRank(sourceNode)) {
+    bridgeBonus += 0.28;
+  }
+  if (sourceQuality === "primary" && targetQuality === "secondary" && sharedMotifs > 0) {
+    bridgeBonus += 0.25;
+  }
+  if (sourceKind === "patch_diff" && ["submission_json", "train_log", "trainer_script", "parameter_golf_pr"].includes(targetKind)) {
+    bridgeBonus += 0.55;
+  }
+  if (["patch_diff", "submission_json", "train_log"].includes(sourceKind) && ["arxiv_abs", "research_garden_note", "blog_post", "orchestration_doc"].includes(targetKind)) {
+    bridgeBonus += 0.18;
+  }
+  if (sourceKind === "research_garden_note" && ["patch_diff", "submission_json", "trainer_script", "arxiv_abs"].includes(targetKind) && sharedMotifs > 0) {
+    bridgeBonus += 0.35;
+  }
+
+  return { bridgeBonus, loopPenalty, sharedMotifs };
 }
 
 function getDepthHistogram(urlNodes) {
@@ -638,7 +852,7 @@ class GraphStore {
       };
     }
     const knowledge = inferKnowledgeMetadata(url);
-    const created = this._insertNode({
+    const created = this._insertNode(annotateResearchNode({
       id,
       kind: "url",
       label: url,
@@ -658,7 +872,7 @@ class GraphStore {
       knowledge_kind: knowledge.knowledge_kind,
       arxiv_id: knowledge.arxiv_id,
       wikipedia_slug: knowledge.wikipedia_slug,
-    });
+    }));
     return {
       id,
       created: created && !created.rejected ? created : null,
@@ -672,10 +886,10 @@ class GraphStore {
     if (!existing) {
       return;
     }
-    this.nodes.set(id, {
+    this.nodes.set(id, annotateResearchNode({
       ...existing,
       ...patch,
-    });
+    }));
   }
 
   getNodeById(id) {
@@ -1475,6 +1689,7 @@ class WebGraphWeaver {
     const rows = [];
     const seen = new Set();
     const sourceUrl = entity.current_url;
+    const sourceNode = sourceUrl ? this.graph.getUrlNode(sourceUrl) : null;
     if (sourceUrl) {
       for (const edge of this.graph.getOutgoingUrlEdges(sourceUrl)) {
         const targetUrl = String(edge.target || "").startsWith("url:")
@@ -1485,13 +1700,47 @@ class WebGraphWeaver {
         }
         seen.add(targetUrl);
         const node = this.graph.getUrlNode(targetUrl);
+        let targetHost = "";
+        try {
+          targetHost = String(new URL(targetUrl).hostname || "").trim().toLowerCase();
+        } catch (_err) {
+          targetHost = "";
+        }
+        if (targetHost && this.optOutDomains.has(targetHost)) {
+          continue;
+        }
+        const status = String(node?.status || "").trim().toLowerCase();
+        const compliance = String(node?.compliance || "").trim().toLowerCase();
+        if (status === "blocked" || compliance === "robots_blocked" || compliance === "opt_out") {
+          continue;
+        }
         const activation = Number(node?.activation_potential || 0);
         const cooldownRemaining = this._cooldownRemainingMs(targetUrl);
         const inFlight = this.inFlightUrls.has(targetUrl) || this.frontier.has(targetUrl);
         if (cooldownRemaining > 0 || inFlight) {
           continue;
         }
-        const score = 0.65 + activation + Math.random() * 0.35;
+        const rawSignal = Number(node?.raw_signal_score || 0);
+        const noisePenalty = Number(node?.navigation_noise_penalty || 0);
+        const motifCount = Array.isArray(node?.research_motifs) ? node.research_motifs.length : 0;
+        const quality = String(node?.source_quality || "tertiary");
+        const qualityBonus = quality === "primary"
+          ? 0.75
+          : quality === "secondary"
+            ? 0.25
+            : quality === "noise"
+              ? -1.15
+              : 0.0;
+        const adjustment = researchRouteAdjustment(sourceNode, node);
+        const score = 0.35
+          + activation
+          + rawSignal
+          + qualityBonus
+          + motifCount * 0.08
+          + adjustment.bridgeBonus
+          - noisePenalty
+          - adjustment.loopPenalty
+          + Math.random() * 0.12;
         rows.push({
           url: targetUrl,
           score,
@@ -1507,6 +1756,20 @@ class WebGraphWeaver {
         if (!targetUrl || seen.has(targetUrl)) {
           continue;
         }
+        let targetHost = "";
+        try {
+          targetHost = String(new URL(targetUrl).hostname || "").trim().toLowerCase();
+        } catch (_err) {
+          targetHost = "";
+        }
+        if (targetHost && this.optOutDomains.has(targetHost)) {
+          continue;
+        }
+        const status = String(node.status || "").trim().toLowerCase();
+        const compliance = String(node.compliance || "").trim().toLowerCase();
+        if (status === "blocked" || compliance === "robots_blocked" || compliance === "opt_out") {
+          continue;
+        }
         const cooldownRemaining = this._cooldownRemainingMs(targetUrl);
         const inFlight = this.inFlightUrls.has(targetUrl) || this.frontier.has(targetUrl);
         if (cooldownRemaining > 0 || inFlight) {
@@ -1514,9 +1777,29 @@ class WebGraphWeaver {
         }
         const activation = Number(node.activation_potential || 0);
         const fetchedBias = String(node.status || "") === "fetched" ? 0.1 : 0.22;
+        const rawSignal = Number(node.raw_signal_score || 0);
+        const noisePenalty = Number(node.navigation_noise_penalty || 0);
+        const motifCount = Array.isArray(node.research_motifs) ? node.research_motifs.length : 0;
+        const quality = String(node.source_quality || "tertiary");
+        const qualityBonus = quality === "primary"
+          ? 0.55
+          : quality === "secondary"
+            ? 0.18
+            : quality === "noise"
+              ? -0.9
+              : 0.0;
+        const adjustment = researchRouteAdjustment(sourceNode, node);
         rows.push({
           url: targetUrl,
-          score: activation + fetchedBias + Math.random() * 0.16,
+          score: activation
+            + fetchedBias
+            + rawSignal
+            + qualityBonus
+            + motifCount * 0.05
+            + adjustment.bridgeBonus
+            - noisePenalty
+            - adjustment.loopPenalty
+            + Math.random() * 0.08,
           reason: "known_url",
         });
       }
@@ -1948,6 +2231,20 @@ class WebGraphWeaver {
     if (domainInfo.lastFetchedAt <= 0) {
       score += 14;
     }
+    if (WEAVER_RESEARCH_MODE === "parameter-golf") {
+      const meta = annotateResearchNode({ kind: "url", url });
+      score += Number(meta.raw_signal_score || 0) * 18;
+      score -= Number(meta.navigation_noise_penalty || 0) * 20;
+      const motifs = Array.isArray(meta.research_motifs) ? meta.research_motifs.length : 0;
+      score += motifs * 2.5;
+      if (String(meta.source_quality || "") === "primary") {
+        score += 12;
+      } else if (String(meta.source_quality || "") === "secondary") {
+        score += 4;
+      } else if (String(meta.source_quality || "") === "noise") {
+        score -= 18;
+      }
+    }
     score += Math.random() * 0.5;
     return score;
   }
@@ -2177,6 +2474,13 @@ class WebGraphWeaver {
     if (!allowed) {
       this.stats.skipped += 1;
       this.stats.robots_blocked += 1;
+      if (WEAVER_RESEARCH_MODE === "parameter-golf" && domain === "patch-diff.githubusercontent.com") {
+        this.optOutDomains.add(domain);
+        this._emit("domain_opt_out", {
+          domain,
+          reason: "robots_blocked_primary_patch_host",
+        });
+      }
       this.graph.setUrlStatus(item.url, {
         status: "blocked",
         compliance: "robots_blocked",
