@@ -222,6 +222,34 @@ Current state:
 - bias candidate scoring by host/path class
 - penalize navigation-noise patterns
 
+#### Phase 2a — concrete Parameter Golf routing policy
+- hard-block known dead descendants such as `patch-diff.githubusercontent.com/raw/openai/parameter-golf/pull/*.patch` once identified as structurally robots-blocked in this mode
+- redirect blocked patch-diff discoveries toward canonical bridge URLs like `https://github.com/openai/parameter-golf/pull/<n>` instead of letting frontier work churn on dead raw artifacts
+- strongly favor raw follow-ons when available:
+  - raw `submission.json`
+  - raw `train.log`
+  - raw `train_gpt.py`
+- allowlist high-value evidence roots:
+  - `parameter-golf.github.io/data/*.json`
+  - `raw.githubusercontent.com/openai/parameter-golf/*`
+  - `raw.githubusercontent.com/agustif/parameter-golf-research-garden/*`
+  - `arxiv.org/abs/*`
+- hard-block or strongly penalize noisy descendants:
+  - GitHub login / marketplace / trending / search / feature pages
+  - GitHub `blob/tree/commits` HTML loops unless no better route exists
+  - Slack invite paths
+  - DOI / ADS index hops when they are not adding fresh evidence
+
+#### Phase 2b — bridge preference
+- when a candidate frontier contains both navigational GitHub pages and raw record artifacts, route into the raw record artifact first
+- reward transitions like:
+  - `parameter_golf_pr -> submission_json`
+  - `parameter_golf_pr -> train_log`
+  - `parameter_golf_pr -> train_gpt.py`
+  - `research_garden_note -> raw parameter-golf artifact`
+  - `leaderboard_json -> parameter_golf_pr`
+- explicitly punish same-kind loops such as `patch_diff -> patch_diff` and `repo_navigation -> repo_navigation`
+
 ### Phase 3 — motif clustering
 - assign motif vectors / clusters to nodes
 - prefer cluster representatives and bridge nodes
