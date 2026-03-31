@@ -11,8 +11,26 @@ function mockJsonResponse(body: unknown, status = 200): Response {
   return {
     ok: status >= 200 && status < 300,
     status,
+    headers: {
+      get: (header: string) =>
+        header.toLowerCase() === "content-type" ? "application/json; charset=utf-8" : null,
+    } as Headers,
     json: async () => body,
   } as Response;
+}
+
+function mockHtmlResponse(status = 200): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: {
+      get: (header: string) =>
+        header.toLowerCase() === "content-type" ? "text/html; charset=utf-8" : null,
+    } as Headers,
+    json: async () => {
+      throw new Error("unexpected non-json response");
+    },
+  } as unknown as Response;
 }
 
 class MockWebSocket {
@@ -479,6 +497,80 @@ describe("WebGraphWeaverPanel", () => {
       expect(screen.getByText(/state: disabled/)).toBeTruthy();
       expect(screen.getByText(/count 0/)).toBeTruthy();
     });
+  });
+
+  it("ignores non-weaver websocket frames and normalizes bad event timestamps", async () => {
+    setupFetchMock();
+
+    render(<WebGraphWeaverPanel />);
+
+    const ws = MockWebSocket.instances[0];
+    expect(ws).toBeTruthy();
+    act(() => {
+      ws.emitOpen();
+      ws.emitMessage({
+        type: "simulation_delta",
+        timestamp: "2026-03-05T03:00:00Z",
+      });
+      ws.emitMessage({
+        event: "fetch_started",
+        timestamp: "definitely-not-a-time",
+        url: "https://opencode.ai/",
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/fetch_started/)).toBeTruthy();
+    });
+
+    expect(screen.queryByText(/Invalid Date/)).toBeNull();
+  });
+
+  it("skips non-json candidate responses and keeps prefixed weaver websocket path", async () => {
+    window.__ETA_MU_RUNTIME__ = {
+      worldBaseUrl: "http://127.0.0.1:5197",
+    };
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+
+      if (url.startsWith("http://127.0.0.1:5197/weaver")) {
+        return mockHtmlResponse(200);
+      }
+
+      if (url.includes(":8793/api/weaver/status")) {
+        return mockJsonResponse(statusPayload(["robots.example"]));
+      }
+      if (url.includes(":8793/api/weaver/entities")) {
+        return mockJsonResponse(entitiesEnvelope());
+      }
+      if (url.includes(":8793/api/weaver/graph")) {
+        return mockJsonResponse(graphPayload());
+      }
+      if (url.includes(":8793/api/weaver/events")) {
+        return mockJsonResponse({ ok: true, events: [] });
+      }
+
+      return mockJsonResponse({ ok: true });
+    });
+
+    render(<WebGraphWeaverPanel />);
+
+    const ws = MockWebSocket.instances[0];
+    expect(ws).toBeTruthy();
+    expect(ws.url).toContain("/weaver/ws");
+
+    act(() => {
+      ws.emitOpen();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/endpoint: http:\/\/(127\.0\.0\.1|localhost):8793/)).toBeTruthy();
+    });
+
+    expect(
+      fetchSpy.mock.calls.some(([url]) => String(url).startsWith("http://127.0.0.1:5197/weaver")),
+    ).toBe(true);
   });
 
   it("surfaces offline hint when bootstrap status request fails", async () => {

@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.system
+      additional_contexts:
+        repo_root: ..
     command: ["pm2-runtime", "start", "ecosystem.config.cjs", "--only", "eta-mu-world"]
     environment:
       CHROMA_HOST: chroma
@@ -54,7 +56,7 @@ services:
       - chroma
     ports:
       - "19877:8787"
-    cpus: "0.85"
+    cpus: "0.60"
     mem_limit: "8000m"
     memswap_limit: "8000m"
     pids_limit: 96
@@ -91,6 +93,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.system
+      additional_contexts:
+        repo_root: ..
     command: ["pm2-runtime", "start", "ecosystem.config.cjs", "--only", "eta-mu-world"]
     environment:
       CHROMA_HOST: chroma
@@ -142,7 +146,7 @@ services:
       - chroma
     ports:
       - "19878:8787"
-    cpus: "1.10"
+    cpus: "0.75"
     mem_limit: "6200m"
     memswap_limit: "6200m"
     pids_limit: 112
@@ -179,6 +183,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.system
+      additional_contexts:
+        repo_root: ..
     command: ["pm2-runtime", "start", "ecosystem.config.cjs", "--only", "eta-mu-world"]
     environment:
       CHROMA_HOST: chroma
@@ -230,7 +236,7 @@ services:
       - chroma
     ports:
       - "19879:8787"
-    cpus: "0.80"
+    cpus: "0.55"
     mem_limit: "8000m"
     memswap_limit: "8000m"
     pids_limit: 88
@@ -265,7 +271,7 @@ services:
 
   chroma:
     image: chromadb/chroma:latest
-    cpus: "0.95"
+    cpus: "0.70"
     mem_limit: "1400m"
     memswap_limit: "1400m"
     pids_limit: 144

@@ -266,7 +266,8 @@ function weaverHttpCandidates(): string[] {
 function wsUrlFromHttpBase(base: string): string {
   const parsed = new URL(base);
   parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
-  parsed.pathname = "/ws";
+  const basePath = parsed.pathname.replace(/\/+$/, "");
+  parsed.pathname = basePath ? `${basePath}/ws` : "/ws";
   parsed.search = "";
   parsed.hash = "";
   return parsed.toString();
@@ -315,6 +316,64 @@ function shortText(value: string, max = 92): string {
 
 function eventTargetValue(event: WeaverEvent): string {
   return String(event.url || event.domain || event.reason || "-");
+}
+
+function normalizeTimestamp(value: unknown, fallback = Date.now()): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return fallback;
+    }
+    const numericValue = Number(trimmed);
+    if (Number.isFinite(numericValue)) {
+      return numericValue;
+    }
+    const parsedValue = Date.parse(trimmed);
+    if (Number.isFinite(parsedValue)) {
+      return parsedValue;
+    }
+  }
+  return fallback;
+}
+
+function normalizeEvent(event: unknown): WeaverEvent | null {
+  if (!event || typeof event !== "object") {
+    return null;
+  }
+  const row = event as Record<string, unknown>;
+  const eventName = String(row.event || "").trim();
+  if (!eventName) {
+    return null;
+  }
+  return {
+    ...row,
+    event: eventName,
+    timestamp: normalizeTimestamp(row.timestamp),
+  } as WeaverEvent;
+}
+
+function normalizeEventList(rows: unknown, limit = PANEL_EVENT_LIMIT): WeaverEvent[] {
+  if (!Array.isArray(rows)) {
+    return [];
+  }
+  const normalizedRows: WeaverEvent[] = [];
+  for (const row of rows) {
+    const event = normalizeEvent(row);
+    if (event) {
+      normalizedRows.push(event);
+    }
+  }
+  if (normalizedRows.length > limit) {
+    normalizedRows.splice(0, normalizedRows.length - limit);
+  }
+  return normalizedRows;
+}
+
+function formatEventTimestamp(timestamp: unknown): string {
+  return new Date(normalizeTimestamp(timestamp)).toLocaleTimeString();
 }
 
 function sampleByStride<T>(items: T[], limit: number): T[] {
@@ -610,9 +669,7 @@ export function WebGraphWeaverPanel({ onOpenSimulationNexus }: WebGraphWeaverPan
 
   const [status, setStatus] = useState<WeaverStatus | null>(cachedState.status || null);
   const [graph, setGraph] = useState<WeaverGraph>(cachedState.graph || { nodes: [], edges: [] });
-  const [events, setEvents] = useState<WeaverEvent[]>(
-    Array.isArray(cachedState.events) ? cachedState.events.slice(-PANEL_EVENT_LIMIT) : [],
-  );
+  const [events, setEvents] = useState<WeaverEvent[]>(normalizeEventList(cachedState.events));
   const [connection, setConnection] = useState<"connecting" | "online" | "offline">("connecting");
   const [seedInput, setSeedInput] = useState(
     "https://opencode.ai/\nhttps://openrouter.ai/\nhttps://www.cisa.gov/known-exploited-vulnerabilities-catalog\nhttps://www.cisa.gov/news-events/cybersecurity-advisories\nhttps://nvd.nist.gov/vuln/search\nhttps://attack.mitre.org/\nhttps://blog.google/threat-analysis-group/\nhttps://unit42.paloaltonetworks.com/",
@@ -741,8 +798,12 @@ export function WebGraphWeaverPanel({ onOpenSimulationNexus }: WebGraphWeaverPan
   );
 
   const appendEvent = useCallback((event: WeaverEvent) => {
+    const normalized = normalizeEvent(event);
+    if (!normalized) {
+      return;
+    }
     setEvents((prev) => {
-      const next = [...prev, event];
+      const next = [...prev, normalized];
       if (next.length > PANEL_EVENT_LIMIT) {
         next.splice(0, next.length - PANEL_EVENT_LIMIT);
       }
@@ -766,6 +827,11 @@ export function WebGraphWeaverPanel({ onOpenSimulationNexus }: WebGraphWeaverPan
           const response = await fetch(`${base}${path}`, init);
           if (response.status === 404 || response.status === 502 || response.status === 503) {
             lastError = new Error(`HTTP ${response.status} from ${base}`);
+            continue;
+          }
+          const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+          if (contentType && !contentType.includes("json")) {
+            lastError = new Error(`Unexpected content type '${contentType}' from ${base}`);
             continue;
           }
           setActiveWeaverBase(base);
@@ -847,7 +913,7 @@ export function WebGraphWeaverPanel({ onOpenSimulationNexus }: WebGraphWeaverPan
       throw new Error(`events request failed (${response.status})`);
     }
     const payload = (await response.json()) as { ok: boolean; events: WeaverEvent[] };
-    setEvents(Array.isArray(payload.events) ? payload.events : []);
+    setEvents(normalizeEventList(payload.events));
   }, [requestWeaver]);
 
   const bootstrap = useCallback(async () => {
@@ -1023,7 +1089,7 @@ export function WebGraphWeaverPanel({ onOpenSimulationNexus }: WebGraphWeaverPan
         }
         try {
           const payload = JSON.parse(String(event.data)) as {
-            event: string;
+            event?: string;
             status?: WeaverStatus;
             entities?: WeaverEntityStateEnvelope;
             graph?: WeaverGraph;
@@ -1032,7 +1098,12 @@ export function WebGraphWeaverPanel({ onOpenSimulationNexus }: WebGraphWeaverPan
             edges?: WeaverEdge[];
           } & WeaverEvent;
 
-          if (payload.event === "snapshot") {
+          const eventName = typeof payload.event === "string" ? payload.event.trim() : "";
+          if (!eventName) {
+            return;
+          }
+
+          if (eventName === "snapshot") {
             if (payload.status) {
               setStatus(payload.status);
               if (payload.status.entities) {
@@ -1051,16 +1122,16 @@ export function WebGraphWeaverPanel({ onOpenSimulationNexus }: WebGraphWeaverPan
               });
             }
             if (Array.isArray(payload.recent_events)) {
-              setEvents(payload.recent_events);
+              setEvents(normalizeEventList(payload.recent_events));
             }
             return;
           }
 
-          if (payload.event === "graph_delta") {
+          if (eventName === "graph_delta") {
             setGraph((prev) => mergeGraph(prev, payload.nodes || [], payload.edges || []));
           }
 
-          if (payload.event === "entity_tick") {
+          if (eventName === "entity_tick") {
             const nextEntities: WeaverEntityStateEnvelope = {
               ok: true,
               enabled: Boolean(payload.entities_enabled),
@@ -1075,7 +1146,7 @@ export function WebGraphWeaverPanel({ onOpenSimulationNexus }: WebGraphWeaverPan
             setEntityState(nextEntities);
           }
 
-          appendEvent(payload);
+          appendEvent({ ...payload, event: eventName });
 
           const now = Date.now();
           if (now - statusRefreshRef.current > 900) {
@@ -2086,7 +2157,7 @@ export function WebGraphWeaverPanel({ onOpenSimulationNexus }: WebGraphWeaverPan
                 <tbody>
                   {[...events].slice(-120).reverse().map((event, index) => (
                     <tr key={`${event.timestamp}-${event.event}-${index}`}>
-                      <td className="font-mono">{new Date(event.timestamp).toLocaleTimeString()}</td>
+                      <td className="font-mono">{formatEventTimestamp(event.timestamp)}</td>
                       <td>{event.event}</td>
                       <td className="font-mono">{shortText(eventTargetValue(event), 88)}</td>
                     </tr>

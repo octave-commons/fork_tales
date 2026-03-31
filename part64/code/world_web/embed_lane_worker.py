@@ -159,13 +159,24 @@ class _CosineSession:
             return False
 
         providers: list[str]
+        provider_options: list[dict[str, str]] | None = None
         if self._device == "GPU":
             providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        elif self._device == "NPU":
+            providers = ["OpenVINOExecutionProvider", "CPUExecutionProvider"]
+            provider_options = [{"device_type": "NPU"}, {}]
         else:
             providers = ["CPUExecutionProvider"]
 
         try:
-            session = ort.InferenceSession(str(model_path), providers=providers)
+            if provider_options is not None:
+                session = ort.InferenceSession(
+                    str(model_path),
+                    providers=providers,
+                    provider_options=provider_options,
+                )
+            else:
+                session = ort.InferenceSession(str(model_path), providers=providers)
         except Exception as exc:
             self._error = f"cosine_session_create_failed:{exc}"
             return False
@@ -174,6 +185,10 @@ class _CosineSession:
         if self._device == "GPU":
             if not active or active[0] != "CUDAExecutionProvider":
                 self._error = "cosine_cuda_provider_unavailable:" + ",".join(active)
+                return False
+        if self._device == "NPU":
+            if not active or active[0] != "OpenVINOExecutionProvider":
+                self._error = "cosine_openvino_npu_unavailable:" + ",".join(active)
                 return False
 
         self._provider = active[0] if active else "unknown"
@@ -196,6 +211,7 @@ class _CosineSession:
             "cosine_model_path": str(self._model_path or ""),
             "cosine_ort_module": str(self._ort_module or ""),
             "cosine_gpu_enabled": bool(self._enabled),
+            "cosine_device": str(self._device or ""),
         }
 
     def error(self) -> str:

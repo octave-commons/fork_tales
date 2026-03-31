@@ -325,6 +325,7 @@ def _build_unified_nexus_graph(
 _NEXUS_ROLE_MAP: dict[str, str] = {
     "field": "field",
     "file": "file",
+    "form": "form",
     "image": "image",
     "audio": "audio",
     "tag": "tag",
@@ -334,8 +335,14 @@ _NEXUS_ROLE_MAP: dict[str, str] = {
     "organizer": "presence",
     "resource": "resource",
     "anchor": "anchor",
+    "packet": "packet",
+    "contract": "contract",
+    "protocol": "protocol",
+    "spec": "spec",
     "logical": "logical",
     "fact": "logical",
+    "observation": "observation",
+    "question": "question",
     "rule": "logical",
     "derivation": "logical",
     "contradiction": "logical",
@@ -447,7 +454,11 @@ def _build_canonical_nexus_node(
         canonical["status"] = str(legacy_node.get("status"))
 
     # Copy relevant extension fields based on role
-    extension: dict[str, Any] = {}
+    extension: dict[str, Any] = (
+        dict(legacy_node.get("extension", {}))
+        if isinstance(legacy_node.get("extension", {}), dict)
+        else {}
+    )
     if role == "file":
         for key in (
             "source_rel_path",
@@ -596,6 +607,8 @@ def _build_canonical_nexus_edge(
 
     if legacy_edge.get("field"):
         canonical["field"] = str(legacy_edge.get("field"))
+    if isinstance(legacy_edge.get("provenance"), dict):
+        canonical["provenance"] = dict(legacy_edge.get("provenance", {}))
 
     # Edge dynamics (if available)
     if legacy_edge.get("cost") is not None:

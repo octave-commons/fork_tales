@@ -3340,7 +3340,7 @@ class _EmbedLaneSidecar:
 
 def _get_embed_lane_sidecar(device: str) -> _EmbedLaneSidecar | None:
     normalized = _normalize_embed_device(device)
-    if normalized not in {"GPU", "CPU"}:
+    if normalized not in {"GPU", "CPU", "NPU"}:
         return None
     if not _embed_sidecar_available(normalized):
         stale: Any = None
@@ -4373,6 +4373,42 @@ def _cosine_matrix_gpu_sidecar(
     if len(flat) != expected:
         return None, "length-mismatch", f"len={len(flat)} expected={expected}"
     return flat, "gpu-sidecar", ""
+
+
+def _cosine_matrix_npu_sidecar(
+    vectors: list[list[float]],
+) -> tuple[list[float] | None, str, str]:
+    count = len(vectors)
+    if count < _cosine_gpu_matrix_min_count():
+        return None, "below-min-count", "below_min_count"
+    if count > _cosine_gpu_matrix_max_count():
+        return None, "above-max-count", "above_max_count"
+
+    sidecar = _get_embed_lane_sidecar("NPU")
+    if sidecar is None:
+        return None, "sidecar-unavailable", "sidecar_unavailable"
+
+    chunk_rows = max(1, _cosine_gpu_matrix_chunk_rows())
+    timeout_s = _cosine_gpu_matrix_timeout_seconds()
+    retry_timeout_s = _cosine_gpu_matrix_retry_timeout_seconds()
+    flat: list[float] = []
+    for start in range(0, count, chunk_rows):
+        end = min(count, start + chunk_rows)
+        left = vectors[start:end]
+        block = sidecar.cosine_matrix(left, vectors, timeout_s=timeout_s)
+        if block is None and _embed_sidecar_error_is_retryable(sidecar.last_error()):
+            block = sidecar.cosine_matrix(left, vectors, timeout_s=retry_timeout_s)
+        if block is None:
+            return None, "sidecar-error", sidecar.last_error()
+        block_flat, rows, cols = block
+        if rows != (end - start) or cols != count:
+            return None, "shape-mismatch", f"rows={rows} cols={cols} count={count}"
+        flat.extend(block_flat)
+
+    expected = count * count
+    if len(flat) != expected:
+        return None, "length-mismatch", f"len={len(flat)} expected={expected}"
+    return flat, "npu-sidecar", ""
 
 
 def _cosine_matrix_local(vectors: list[list[float]]) -> list[float]:
@@ -6859,8 +6895,12 @@ def build_double_buffer_field_particles(
                 False,
             )
             cosine_flat, cosine_matrix_source, cosine_matrix_error = (
-                _cosine_matrix_gpu_sidecar(normalized_rows)
+                _cosine_matrix_npu_sidecar(normalized_rows)
             )
+            if cosine_flat is None:
+                cosine_flat, cosine_matrix_source, cosine_matrix_error = (
+                    _cosine_matrix_gpu_sidecar(normalized_rows)
+                )
             if cosine_flat is None and allow_local_matrix_fallback:
                 cosine_matrix_source = (
                     f"gpu-sidecar-fallback:{cosine_matrix_source}"

@@ -242,4 +242,25 @@ def simulation_http_trim_catalog(
         compact_crawler_graph["stats"] = compact_crawler_stats
         trimmed["crawler_graph"] = compact_crawler_graph
 
+    nexus_graph = catalog.get("nexus_graph") if isinstance(catalog, dict) else None
+    if isinstance(nexus_graph, dict):
+        compact_nexus_graph = dict(nexus_graph)
+        compact_nexus_graph["nodes"] = simulation_http_slice_rows(
+            nexus_graph.get("nodes", []),
+            max_rows=config.max_render_nodes,
+        )
+        compact_nexus_graph["edges"] = simulation_http_slice_rows(
+            nexus_graph.get("edges", []),
+            max_rows=config.max_file_edges,
+        )
+        compact_nexus_stats = (
+            dict(nexus_graph.get("stats", {}))
+            if isinstance(nexus_graph.get("stats", {}), dict)
+            else {}
+        )
+        compact_nexus_stats["node_count"] = len(compact_nexus_graph.get("nodes", []))
+        compact_nexus_stats["edge_count"] = len(compact_nexus_graph.get("edges", []))
+        compact_nexus_graph["stats"] = compact_nexus_stats
+        trimmed["nexus_graph"] = compact_nexus_graph
+
     return trimmed

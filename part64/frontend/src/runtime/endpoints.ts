@@ -102,6 +102,20 @@ function runtimeGatewayPrefixFromLocation(): string {
   return `/sim/${match[1]}`;
 }
 
+function runtimeMountedPrefixFromLocation(): string {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  const pathname = String(window.location.pathname || "");
+  const candidates = ["/eta-mu", "/opencode"];
+  for (const candidate of candidates) {
+    if (pathname === candidate || pathname.startsWith(`${candidate}/`)) {
+      return candidate;
+    }
+  }
+  return "";
+}
+
 function originWithPort(origin: string, port: string): string {
   try {
     const parsed = new URL(origin);
@@ -159,6 +173,11 @@ export function runtimeBaseUrl(): string {
   const gatewayPrefix = runtimeGatewayPrefixFromLocation();
   if (gatewayPrefix) {
     return `${window.location.origin}${gatewayPrefix}`;
+  }
+
+  const mountedPrefix = runtimeMountedPrefixFromLocation();
+  if (mountedPrefix) {
+    return `${window.location.origin}${mountedPrefix}`;
   }
 
   return "";

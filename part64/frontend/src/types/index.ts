@@ -1302,6 +1302,10 @@ export interface GhostRoleState {
 export interface ResourceDeviceSnapshot {
   utilization: number;
   status: string;
+  busy_time_us?: number;
+  current_freq_mhz?: number;
+  max_freq_mhz?: number;
+  memory_bytes?: number;
   memory?: number;
   temperature?: number;
   queue_depth?: number;

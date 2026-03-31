@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, Gauge, RefreshCw, ShieldAlert } from "lucide-react";
 import { relativeTime } from "../../app/time";
 import { runtimeApiUrl } from "../../runtime/endpoints";
+import { fetchStudySnapshot, invalidateStudySnapshot } from "../../runtime/studySnapshot";
 import type {
   Catalog,
   CouncilDecision,
@@ -150,9 +151,8 @@ export function StabilityObservatoryPanel({ catalog, simulation }: Props) {
     setLoading(true);
     setError("");
     try {
-      const studyRes = await fetch(runtimeApiUrl("/api/study?limit=10"));
-      if (studyRes.ok) {
-        const payload = (await studyRes.json()) as StudySnapshotPayload;
+      try {
+        const payload = await fetchStudySnapshot(10);
         setStudy(payload);
         setCouncil(payload.council ?? null);
         setQueue(payload.queue ?? null);
@@ -160,10 +160,10 @@ export function StabilityObservatoryPanel({ catalog, simulation }: Props) {
         setSourceMode("study-v1");
         setLastFetchedAt(payload.generated_at || new Date().toISOString());
         return;
-      }
-
-      if (studyRes.status !== 404) {
-        throw new Error(`/api/study failed: ${studyRes.status}`);
+      } catch (studyError) {
+        if (!(studyError instanceof Error) || !studyError.message.includes("404")) {
+          throw studyError;
+        }
       }
 
       const [councilRes, queueRes, driftRes] = await Promise.all([
@@ -233,6 +233,7 @@ export function StabilityObservatoryPanel({ catalog, simulation }: Props) {
       const eventId = String(payload.event?.id || "").trim() || "(unknown)";
       const historyCount = Number(payload.history?.count ?? 0);
       setExportStatus(`evidence exported ${eventId} (history=${historyCount})`);
+      invalidateStudySnapshot();
       void refreshStudySnapshot();
     } catch (exportError) {
       const message = exportError instanceof Error ? exportError.message : "study export failed";
@@ -268,8 +269,15 @@ export function StabilityObservatoryPanel({ catalog, simulation }: Props) {
   const npuUtilization = typeof npuDevice?.utilization === "number" ? npuDevice.utilization : 0;
   const npuQueueDepth = typeof npuDevice?.queue_depth === "number" ? npuDevice.queue_depth : 0;
   const npuTemperature = typeof npuDevice?.temperature === "number" ? npuDevice.temperature : 0;
+  const npuBusyTimeUs = typeof npuDevice?.busy_time_us === "number" ? npuDevice.busy_time_us : 0;
+  const npuCurrentFreqMhz = typeof npuDevice?.current_freq_mhz === "number" ? npuDevice.current_freq_mhz : 0;
+  const npuMaxFreqMhz = typeof npuDevice?.max_freq_mhz === "number" ? npuDevice.max_freq_mhz : 0;
+  const npuMemoryBytes = typeof npuDevice?.memory_bytes === "number" ? npuDevice.memory_bytes : 0;
   const npuDeviceLabel = String(npuDevice?.device || "NPU").trim() || "NPU";
   const npuTemperatureLabel = npuTemperature > 0 ? `${npuTemperature.toFixed(1)}C` : "n/a";
+  const npuMemoryMiB = npuMemoryBytes > 0 ? `${(npuMemoryBytes / (1024 * 1024)).toFixed(1)} MiB` : "n/a";
+  const npuBusyMs = npuBusyTimeUs > 0 ? `${(npuBusyTimeUs / 1000).toFixed(1)} ms` : "n/a";
+  const npuFreqLabel = npuCurrentFreqMhz > 0 ? `${npuCurrentFreqMhz} MHz` : (npuMaxFreqMhz > 0 ? `idle / max ${npuMaxFreqMhz} MHz` : "n/a");
   const resourceAutoEmbeddings =
     runtimeResource?.auto_backend?.embeddings_order?.join(" -> ") ?? "(n/a)";
   const resourceAutoText = runtimeResource?.auto_backend?.text_order?.join(" -> ") ?? "(n/a)";
@@ -413,6 +421,9 @@ export function StabilityObservatoryPanel({ catalog, simulation }: Props) {
             </p>
             <p className="text-[11px] text-muted mt-1">
               queue <code>{npuQueueDepth}</code> | temp <code>{npuTemperatureLabel}</code> | device <code>{npuDeviceLabel}</code>
+            </p>
+            <p className="text-[11px] text-muted mt-1">
+              busy <code>{npuBusyMs}</code> | mem <code>{npuMemoryMiB}</code> | freq <code>{npuFreqLabel}</code>
             </p>
           </div>
         </div>

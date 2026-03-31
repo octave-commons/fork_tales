@@ -1,5 +1,4 @@
-import process from "node:process";
-import { contextBridge } from "electron";
+const { contextBridge } = require("electron");
 
 const DEFAULT_WORLD_RUNTIME_URL = "http://127.0.0.1:8787";
 const DEFAULT_WEAVER_RUNTIME_URL = "http://127.0.0.1:8793";
@@ -23,8 +22,14 @@ function normalizeHttpOrigin(value, fallback) {
   }
 }
 
-const worldBaseUrl = normalizeHttpOrigin(process.env.ETA_MU_WORLD_BASE_URL, DEFAULT_WORLD_RUNTIME_URL);
-const weaverBaseUrl = normalizeHttpOrigin(process.env.ETA_MU_WEAVER_BASE_URL, DEFAULT_WEAVER_RUNTIME_URL);
+const worldBaseUrl = normalizeHttpOrigin(
+  process.env.ETA_MU_WORLD_BASE_URL,
+  DEFAULT_WORLD_RUNTIME_URL,
+);
+const weaverBaseUrl = normalizeHttpOrigin(
+  process.env.ETA_MU_WEAVER_BASE_URL,
+  DEFAULT_WEAVER_RUNTIME_URL,
+);
 
 contextBridge.exposeInMainWorld(
   "__ETA_MU_RUNTIME__",

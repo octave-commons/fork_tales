@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 
 import { runtimeBaseUrl } from "../runtime/endpoints";
+import { fetchStudySnapshot, invalidateStudySnapshot } from "../runtime/studySnapshot";
 import type {
   CouncilDecision,
   CouncilApiResponse,
@@ -280,6 +281,7 @@ async function handleStudyExportCommand(rawText: string, context: CommandContext
     const eventId = String(payload.event?.id || "(unknown)");
     const historyCount = Number(payload.history?.count ?? 0);
     const resolvedLabel = String(payload.event?.label || label || "chat-export");
+    invalidateStudySnapshot();
     context.emitSystemMessage(`study export\nid=${eventId}\nlabel=${resolvedLabel}\nhistory=${historyCount}`);
   } catch {
     context.emitSystemMessage("study export failed");
@@ -405,15 +407,14 @@ async function handleStudyCommand(text: string, context: CommandContext): Promis
   }
 
   try {
-    const studyResponse = await fetch(runtimeUrl("/api/study?limit=6"));
-    if (studyResponse.ok) {
-      const study = (await studyResponse.json()) as StudySnapshotPayload;
+    try {
+      const study = await fetchStudySnapshot(6);
       context.emitSystemMessage(buildStudySnapshotMessage(study));
       return true;
-    }
-
-    if (studyResponse.status !== 404) {
-      throw new Error(`study fetch failed: /api/study status=${studyResponse.status}`);
+    } catch (studyError) {
+      if (!(studyError instanceof Error) || !studyError.message.includes("404")) {
+        throw studyError;
+      }
     }
 
     const legacySnapshot = await fetchLegacyStudySnapshot(context);

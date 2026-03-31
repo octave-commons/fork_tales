@@ -9,6 +9,7 @@ import {
   type PlannedAction,
 } from "../autopilot";
 import { runtimeBaseUrl } from "../runtime/endpoints";
+import { fetchStudySnapshot } from "../runtime/studySnapshot";
 import type { Catalog, DriftScanPayload, SimulationState, StudySnapshotPayload } from "../types";
 
 type AutopilotHealth = "green" | "yellow" | "red";
@@ -107,16 +108,8 @@ export function useAutopilotController({
   }, [autopilotPermissions]);
 
   const runAutopilotStudySnapshot = useCallback(async (): Promise<AutopilotActionResult> => {
-    const baseUrl = runtimeBaseUrl();
     try {
-      const response = await fetch(`${baseUrl}/api/study?limit=6`);
-      if (!response.ok) {
-        return {
-          ok: false,
-          summary: `study snapshot failed (${response.status})`,
-        };
-      }
-      const study = (await response.json()) as StudySnapshotPayload;
+      const study = await fetchStudySnapshot(6);
       emitSystemMessage(
         [
           "autopilot /study",
@@ -208,14 +201,9 @@ export function useAutopilotController({
 
   const senseAutopilotContext = useCallback(async (): Promise<AutopilotSenseContext> => {
     const runtime = runtimeSnapshotRef.current;
-    const baseUrl = runtimeBaseUrl();
-
     let study: StudySnapshotPayload | null = null;
     try {
-      const studyRes = await fetch(`${baseUrl}/api/study?limit=4`);
-      if (studyRes.ok) {
-        study = (await studyRes.json()) as StudySnapshotPayload;
-      }
+      study = await fetchStudySnapshot(4);
     } catch {
       // best effort
     }

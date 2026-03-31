@@ -71,6 +71,13 @@ For runtime bring-up, prefer Docker unless a task explicitly requires PM2.
 - PM2 stop: `python -m code.world_pm2 stop`
 - Dashboard server: `python -m code.world_web --part-root ./ --vault-root .. --host 127.0.0.1 --port 8791`
 
+### PM2 durability policy
+
+- Treat ad-hoc `pm2 start ...` commands as temporary only.
+- For any PM2 port/URL/env/process-name change, update the corresponding checked-in PM2 config file (`ecosystem*.cjs`) in the same task.
+- Keep PM2-backed npm scripts aligned with those config changes when applicable.
+- Before closing PM2-related tasks, verify effective config with `pm2 status <name>` and `pm2 env <id|name>`.
+
 ## 5) Test commands
 
 ### Full or suite-level
@@ -174,6 +181,13 @@ Observed project conventions in `part64/code`:
 - Run relevant tests/builds after each significant phase.
 - Report exactly what changed, what was verified, and what remains.
 - If blocked, ask one targeted question with a recommended default.
+
+### UI verification requirements
+
+- For user-requested UI changes, verify visually with a real browser session before finalizing.
+- Use browser automation (for example `agent-browser`) to capture evidence at desktop size and at least one large desktop viewport (for example `2560x1440` or higher).
+- If the UI involves panel sizing/splits/overflow behavior, include a large viewport check in 3-pane mode when available.
+- Report the browser verification commands and screenshot artifact paths in the final response.
 
 ## 13) Cursor/Copilot rule integration
 

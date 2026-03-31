@@ -56,6 +56,11 @@ from .metrics import (
     _resource_auto_text_order,
 )
 from .symbols import world_web_symbol as _world_web_symbol
+from .vecstore_layer_policy import (
+    VecstoreLayerContext,
+    resolve_vecstore_collection_name,
+)
+from .openplanner_bridge import summarize_openplanner_memory
 
 CHAT_TOOLS_BY_TYPE = {
     "flow": ["sing_line", "pulse_tag"],
@@ -2201,10 +2206,23 @@ def build_presence_say_payload(
     if clean_text:
         facts.append(f"user_text={clean_text[:160]}")
 
+    memory_lines = (
+        summarize_openplanner_memory(
+            query_text=clean_text,
+            session=presence_id,
+            limit=3,
+        )
+        if clean_text
+        else []
+    )
+    if memory_lines:
+        facts.append(f"openplanner_memory_count={len(memory_lines)}")
+
     say_intent = {
         "facts": facts,
         "asks": asks,
         "repairs": repairs,
+        "memory": memory_lines,
         "constraints": {
             "no_new_facts": True,
             "cite_refs": True,
@@ -3841,35 +3859,15 @@ def _eta_mu_vecstore_collection_for_space(space: dict[str, Any]) -> str:
             ETA_MU_INGEST_VECSTORE_COLLECTION,
         )
     ).strip()
-    if mode in {"", "single", "none", "off"}:
-        return base
-
-    space_id = str(space.get("id", "")).strip()
-    space_signature = str(space.get("signature", "")).strip()
-    model_name = str((space.get("model") or {}).get("name", "")).strip()
-
-    if mode == "space":
-        token = _sanitize_collection_name_token(space_id)
-    elif mode == "signature":
-        token = _sanitize_collection_name_token(space_signature[:12])
-    elif mode == "model":
-        token = _sanitize_collection_name_token(model_name)
-    elif mode in {"space-signature", "space_signature"}:
-        token = _sanitize_collection_name_token(f"{space_id}_{space_signature[:10]}")
-    elif mode in {"space-model", "space_model"}:
-        token = _sanitize_collection_name_token(f"{space_id}_{model_name}")
-    else:
-        token = _sanitize_collection_name_token(mode)
-
-    if not token:
-        return base
-    return f"{base}__{token}"
-
-
-def _sanitize_collection_name_token(value: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip().lower())
-    cleaned = cleaned.strip("._-")
-    return cleaned or "layer"
+    return resolve_vecstore_collection_name(
+        VecstoreLayerContext(
+            base_collection=base,
+            mode=mode,
+            space_id=str(space.get("id", "")).strip(),
+            space_signature=str(space.get("signature", "")).strip(),
+            model_name=str((space.get("model") or {}).get("name", "")).strip(),
+        )
+    )
 
 
 def _eta_mu_embed_layer_identity(

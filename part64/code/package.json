@@ -14,6 +14,8 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@open-hax/signal-source-utils": "file:../../../../orgs/open-hax/openhax/packages/signal-source-utils",
+    "@open-hax/signal-watchlists": "file:../../../../orgs/open-hax/openhax/packages/signal-watchlists",
     "axios": "^1.13.5",
     "chokidar": "^5.0.0",
     "ws": "^8.19.0"

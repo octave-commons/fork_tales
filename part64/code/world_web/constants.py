@@ -1139,15 +1139,13 @@ FIELD_TO_PRESENCE = {
     "f6": "mage_of_receipts",
     "f7": "gates_of_truth",
     "f8": "anchor_registry",
-    # Philosophical concept fields
-    "f9": "principle_good",
-    "f10": "principle_evil",
-    "f11": "principle_right",
-    "f12": "principle_wrong",
-    "f13": "state_dead",
-    "f14": "state_living",
-    # Chaos field - transcends and perturbs all other fields
-    "f15": "chaos_butterfly",
+    "f9": "change_fog",
+    "f10": "path_ward",
+    "f11": "manifest_lith",
+    "f12": "core_pulse",
+    "f13": "file_sentinel",
+    "f14": "gates_of_truth",
+    "f15": "anchor_registry",
     # Core resource fields
     "f16": "presence.core.cpu",
     "f17": "presence.core.ram",
