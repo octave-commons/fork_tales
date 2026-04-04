@@ -13,6 +13,7 @@ services:
       dockerfile: Dockerfile.system
       additional_contexts:
         repo_root: ..
+        tooloxx_root: ../../../open-hax/tooloxx
     command:
       [
         "pm2-runtime",

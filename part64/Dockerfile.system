@@ -22,7 +22,7 @@ RUN apt-get update \
 COPY code/package.json code/package-lock.json /app/code/
 RUN npm --prefix /app/code ci --omit=dev
 
-COPY --from=repo_root mcp-lith-nexus/package.json mcp-lith-nexus/package-lock.json /srv/mcp-lith-nexus/
+COPY --from=tooloxx_root services/mcp-lith-nexus/package.json services/mcp-lith-nexus/package-lock.json /srv/mcp-lith-nexus/
 RUN npm --prefix /srv/mcp-lith-nexus ci
 
 RUN pip3 install --no-cache-dir chromadb psutil tensorflow-cpu==2.16.1 onnxruntime-openvino==1.22.0 "tokenizers>=0.20.3" fastapi uvicorn httpx websockets \
@@ -37,7 +37,7 @@ RUN pip3 install --no-cache-dir chromadb psutil tensorflow-cpu==2.16.1 onnxrunti
     && python3 -c "from pathlib import Path; capi=Path('/opt/ort-gpu/onnxruntime/capi'); assert (capi/'libonnxruntime.so').exists(); assert (capi/'libonnxruntime_providers_cuda.so').exists()"
 
 COPY . /app
-COPY --from=repo_root mcp-lith-nexus /srv/mcp-lith-nexus
+COPY --from=tooloxx_root services/mcp-lith-nexus /srv/mcp-lith-nexus
 RUN npm --prefix /srv/mcp-lith-nexus run build \
     && npm --prefix /srv/mcp-lith-nexus prune --omit=dev
 

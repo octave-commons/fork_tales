@@ -4,8 +4,10 @@ const WATCH_WORLD_PATHS = ["code/world_web.py", "code/world_web/**/*.py"];
 const WATCH_IO_PATHS = ["code/world_io.js"];
 const WATCH_TTS_PATHS = ["code/tts_service.py"];
 const WATCH_WEAVER_PATHS = ["code/web_graph_weaver.js"];
+const resolveLithNexusRoot = () =>
+  path.resolve(__dirname, "..", "..", "..", "open-hax", "tooloxx", "services", "mcp-lith-nexus");
 const WATCH_MCP_PATHS = [
-  path.resolve(__dirname, "..", "mcp-lith-nexus", "dist", "**", "*.js"),
+  path.resolve(resolveLithNexusRoot(), "dist", "**", "*.js"),
 ];
 
 const WATCH_ENABLED = ["1", "true", "yes", "on"].includes(
@@ -33,11 +35,11 @@ const resolveOrtGpuIncludeDir = () =>
 const resolveLithNexusScript = () =>
   String(
     process.env.LITH_NEXUS_SCRIPT ||
-      path.resolve(__dirname, "..", "mcp-lith-nexus", "dist", "http.js"),
+      path.resolve(resolveLithNexusRoot(), "dist", "http.js"),
   );
 
 const resolveLithNexusRepoRoot = () =>
-  String(process.env.LITH_NEXUS_REPO_ROOT || path.resolve(__dirname, ".."));
+  String(process.env.LITH_NEXUS_REPO_ROOT || path.resolve(__dirname, "..", "..", "..", ".."));
 
 const resolveLithNexusPythonWorkdir = () =>
   String(process.env.LITH_NEXUS_PYTHON_WORKDIR || __dirname);
