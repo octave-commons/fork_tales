@@ -1,0 +1,41 @@
+The runtime needs a comparison target that is close enough to be fair but not so broad that the paper drifts into marketing taxonomy. The primary external baseline should therefore be a temporal graph memory system rather than a generic agent stack. On that criterion, Graphiti is the best apples-to-apples comparison currently visible in the field: it is graph-native, incremental, provenance-aware, and explicitly designed for evolving agent context \citep{rasmussen2025zep}. Mem0 and Letta are important neighboring systems, but they are better treated as supporting references than as the main head-to-head baseline because their primary claims center more on memory extraction and stateful agent platforms than on temporal graph substrate design \citep{mem02025,packer2023memgpt}.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{p{0.2\linewidth}p{0.23\linewidth}p{0.42\linewidth}}
+\toprule
+System family & Role in this paper & Why it matters \\
+\midrule
+Passive RAG & sanity floor & cheap hydration baseline for token cost and retrieval quality \\
+GraphRAG & static graph baseline & useful for graph retrieval without dynamic temporal memory \\
+Mem0 / Letta & neighboring memory systems & strong production memory references, but weaker substrate match \\
+Graphiti & primary external baseline & temporal graph memory with provenance and incremental updates \\
+Internal ablations & primary uniqueness test & required for claims about pricing, congestion, fairness, and compression \\
+\bottomrule
+\end{tabular}
+\caption{The comparison stack used to keep the paper honest.}
+\end{table}
+
+This comparison frame implies two different evaluation modes.
+
+First, there are \emph{directly comparable memory claims}. These should be measured against Graphiti and, where useful, against a simpler passive-retrieval baseline:
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item \textbf{Temporal correctness.} Accuracy on ``what is true now'' and ``what was true then'' queries after fact updates.
+  \item \textbf{Incremental update behavior.} Episode ingestion latency and query latency after updates, rather than only one-time batch build cost.
+  \item \textbf{Provenance fidelity.} The fraction of returned answers that can be traced back to concrete source episodes or truth objects.
+  \item \textbf{Retrieval quality.} Recall@k, hit@k, and contradiction resolution on synthetic dynamic-memory tasks.
+  \item \textbf{Context efficiency.} Prompt-context size or token budget needed to answer equivalent temporal queries.
+\end{enumerate}
+
+Second, there are \emph{runtime-unique claims} that no current external baseline is likely to match directly because they depend on the reservoir economy, packet routing, or graph compaction model. Those should be tested primarily through internal ablations:
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item \textbf{Congestion resilience.} Whether local prices and gravity fields reroute flow under adversarial bottlenecks.
+  \item \textbf{Fairness under contention.} Whether multiple presences receive more stable allocations under resource pressure.
+  \item \textbf{Compression effectiveness.} Whether \truthgraph{}/\viewgraph{} separation improves scale without breaking correctness.
+  \item \textbf{Auditability of control.} Whether packet motion and final decisions can be explained in bounded, replayable graph-local terms.
+\end{enumerate}
+
+This split matters because it prevents a common failure mode in systems papers: claiming novelty on dimensions that were never actually measured against the nearest existing system. The paper should compare like with like where possible, then use ablations to defend the parts that are genuinely new.
