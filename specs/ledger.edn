@@ -1,0 +1,24 @@
+;; ledger — system-objective event log + agent-subjective receipt river
+
+;; EventRecord: system writes on every state mutation
+{:event-record  [:map {:closed false}
+                 [:id          :uuid]
+                 [:kind        :namespaced]
+                 [:actor-id    {:optional true} :string]
+                 [:caused-by   {:optional true} :uuid]
+                 [:contract-id {:optional true} :id]
+                 [:org-id      {:optional true} :string]
+                 [:payload     {:optional true} [:map-of :keyword :any]]
+                 [:occurred-at :inst]]
+
+;; Receipt: agent writes; kind tags schematic intent
+ :receipt-kind  [:enum :push-truth :decision :drift :catalog :warning]
+
+ :receipt       [:map {:closed false}
+                 [:id          :uuid]
+                 [:kind        :receipt-kind]
+                 [:agent-id    :string]
+                 [:contract-id {:optional true} :id]
+                 [:caused-by   {:optional true} :uuid]
+                 [:content     :string]
+                 [:ts          :inst]]}

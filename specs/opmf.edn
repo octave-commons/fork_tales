@@ -1,0 +1,9 @@
+;; opmf-output — 5-section output gate
+;; gate checks presence of :signal; others contextual
+;; absence of :frames/:countermoves signals potential agent drift
+{:opmf-output [:map {:closed false}
+               [:signal       :string]
+               [:evidence     {:optional true} :string]
+               [:frames       {:optional true} :string]
+               [:countermoves {:optional true} :string]
+               [:next         {:optional true} :string]]}
