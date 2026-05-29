@@ -1,0 +1,30 @@
+The practical architecture can be explained as five interacting surfaces.
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item \textbf{Truth capture.} Raw events, observations, and objects are appended to \truthgraph{} with provenance.
+  \item \textbf{Operational projection.} The runtime compiles and updates \viewgraph{} as a compressed control surface that remains expandable back to raw truth.
+  \item \textbf{Presence runtime.} Presences maintain needs, masks, priorities, and adaptive parameters.
+  \item \textbf{Daimoi transport.} Packets move through the graph according to shared fields, graph costs, and stochastic policies.
+  \item \textbf{Reservoir economy.} Local scarcity and congestion produce prices that shape demand and transport.
+\end{enumerate}
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{p{0.17\linewidth}p{0.33\linewidth}p{0.28\linewidth}}
+\toprule
+Surface & Responsibility & Cleaner descendant \\
+\midrule
+Truth capture & immutable objects, provenance, event history & \texttt{graph-runtime} plus raw-truth storage \\
+Operational projection & coarsening, expansion, runtime views & \texttt{graph-runtime} \\
+Presence runtime & needs, masks, priorities, authority & \texttt{simulacron} \\
+Packet engine & emit, move, collide, absorb daimoi & \texttt{daimoi} \\
+Instrumentation & graph query, overlays, inspection surfaces & \texttt{graph-weaver} \\
+\bottomrule
+\end{tabular}
+\caption{The substrate split that the broader decomposition is trying to make explicit.}
+\end{table}
+
+This paper should emphasize that the system is not merely a graph database plus an agent wrapper. The substantive claim is that behavior can be explained as the composition of field contributions, graph topology, and ledgered state changes. That makes diagnostic surfaces possible: shortest-path audit trails, pressure heatmaps, gravity maps, and packet-level decision traces.
+
+The draft should later add an explicit mapping from the original \texttt{fork\_tales} runtime to its extracted descendants. For now, the clean story is that the runtime paper stands on top of the same substrate later decomposed into \texttt{graph-runtime}, \texttt{daimoi}, \texttt{simulacron}, and graph instrumentation services. The decomposition is not only cleanup. It is part of the scientific argument: the system should be separable into explicit contracts without becoming a collection of amnesiac fragments.

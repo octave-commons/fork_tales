@@ -1,0 +1,56 @@
+The deep research report already suggests the right evaluation style for this paper: targeted workloads, ablations, and audit-case diagnostics rather than a generic benchmark scoreboard. With the comparison frame in place, the evaluation can now be made more falsifiable: directly comparable temporal-memory claims should be tested against Graphiti, while runtime-unique claims should be tested against internal ablations rather than forced into an unfair apples-to-oranges comparison.
+
+The main empirical questions should be:
+
+\begin{itemize}[leftmargin=1.5em]
+  \item Does coupling semantics to graph topology improve routing and controllability compared to flatter retrieval or transport baselines?
+  \item Does explicit local pricing improve congestion behavior under load?
+  \item Do stochastic daimoi and learned lens parameters improve adaptation relative to deterministic collapse and fixed routing policies?
+  \item Does the \truthgraph{}/\viewgraph{} split preserve correctness while improving scale and inspectability?
+\end{itemize}
+
+The most important shift is to state the claims in measurable form. A useful first set is:
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{p{0.2\linewidth}p{0.26\linewidth}p{0.34\linewidth}}
+\toprule
+Claim & Measurement & Comparison mode \\
+\midrule
+Better temporal memory fidelity & current-truth accuracy, historical-query accuracy & against Graphiti \\
+Lower update overhead & median/p95 ingest latency, post-update query latency & against Graphiti \\
+Stronger provenance & trace-complete answer rate, mean provenance depth & against Graphiti \\
+More efficient context assembly & tokens per correct answer or retrieved context size & against Graphiti and passive RAG \\
+More stable under congestion & latency-to-satisfy, reroute success, fairness index & internal ablations \\
+Better scalable audit surface & compression ratio, expand time, explanation cost & internal ablations \\
+\bottomrule
+\end{tabular}
+\caption{Quantifiable claims for the runtime paper.}
+\end{table}
+
+The workload suite should include ingestion-heavy traffic, query-heavy hot spots, adversarial congestion, multi-tenant competition, and compression stress. Together these workloads let the paper ask about stability, fairness, compression overhead, latency-to-satisfy, and explanation cost under changing graph conditions.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lll}
+\toprule
+Ablation & Change & Expected effect \\
+\midrule
+No gravity & set demand fields to zero & weaker semantic congregation \\
+No learned lens & fix adaptive parameters & less specialization under change \\
+Deterministic collapse & MAP instead of sampling & more stability, less diversity \\
+Fixed prices & constant local prices & weaker congestion response \\
+No compaction & keep \(G^V = G^T\) & correctness retained, worse scale \\
+No edge upkeep & remove decay & denser, hub-prone topology \\
+\bottomrule
+\end{tabular}
+\caption{The core ablation set already implied by the deep research report.}
+\end{table}
+
+The ablations are already visible in the report: no gravity, no learned lens, deterministic collapse, fixed prices, no compaction, and no edge upkeep. Those should become the backbone of the results section because they directly isolate the unusual parts of the system.
+
+Existing repository tooling gives this paper a starting point rather than a blank slate. The scripts \texttt{part64/scripts/bench\_sim\_compare.py} and \texttt{part64/scripts/eval\_sim\_learning\_suite.py} already measure latency, payload size, and runtime probe behavior for simulation variants. Those measurements are not yet the paper's final benchmark, but they provide an existing scaffold for repeatable timing, JSON artifact output, and comparison harnesses.
+
+The paper should also include audit-ready qualitative figures: architecture diagrams, graph heatmaps, time-series dashboards, and per-decision audit trails. These are not cosmetic extras. They are part of the claim that the runtime is auditable in ways that more conventional hidden-index systems are not.

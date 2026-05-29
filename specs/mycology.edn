@@ -1,0 +1,12 @@
+;; session-mycology — meta-cognition; embedding-gated skill surface
+{:mycology-entry [:map {:closed false}
+                  [:id          :uuid]
+                  [:agent-id    :string]
+                  [:contract-id {:optional true} :id]
+                  [:difficulty  :score]
+                  [:complexity  :score]
+                  [:confidence  :score]
+                  [:reflection  {:optional true} :string]
+                  [:tags        {:optional true} [:vector :string]]
+                  [:embedding   {:optional true} [:vector :double]]
+                  [:ts          :inst]]}

@@ -1,0 +1,8 @@
+;; primitives — shared leaf types
+{:id          [:and :string [:min-count 1] [:max-count 128]]
+ :version     [:int {:min 1 :max 9999}]
+ :uuid        [:re #"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"]
+ :inst        :string
+ :score       [:double {:min 0.0 :max 1.0}]
+ :pos-int     [:int {:min 1}]
+ :namespaced  [:and :keyword #(namespace %)]}

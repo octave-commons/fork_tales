@@ -163,6 +163,7 @@ const LLM_AUTH_CONFIGURED = Object.keys(LLM_AUTH_HEADERS).length > 0;
 const USER_AGENT =
   process.env.WEAVER_USER_AGENT ||
   `WebGraphWeaver/0.1 (+http://${HOST}:${PORT}/api/weaver/opt-out)`;
+const WEAVER_RESEARCH_MODE = String(process.env.WEAVER_RESEARCH_MODE || "").trim().toLowerCase();
 
 const PART_ROOT = path.join(__dirname, "..");
 const WORLD_STATE_DIR = path.join(PART_ROOT, "world_state");
@@ -341,6 +342,417 @@ function normalizeDomain(input) {
     return "";
   }
   return value.replace(/^https?:\/\//, "").replace(/\/$/, "");
+}
+
+const RESEARCH_MOTIF_PATTERNS = {
+  quantization: [/\bint6\b/i, /\bint8\b/i, /\bqat\b/i, /quant/i, /fp16 embed/i, /outlier/i],
+  recurrence: [/recurr/i, /shared depth/i, /layer tying/i, /cross-layer/i, /phase-conditioned/i],
+  tokenizer: [/tokenizer/i, /vocab/i, /sp1024/i, /sp4096/i, /bigramhash/i, /lm head/i],
+  optimizer: [/muon/i, /normuon/i, /swa/i, /warmdown/i, /optimizer/i],
+  eval_time_compute: [/sliding window/i, /sliding eval/i, /test-time training/i, /\bttt\b/i, /iterative refinement/i],
+  artifact_interface: [/rmsnorm/i, /codebook/i, /codec/i, /artifact-native/i, /regenerated-head/i],
+};
+
+function detectResearchMotifs(node) {
+  const text = [
+    String(node?.url || ""),
+    String(node?.title || ""),
+    String(node?.analysis_summary || ""),
+    String(node?.content_type || ""),
+  ].join(" ");
+  const motifs = [];
+  for (const [motif, patterns] of Object.entries(RESEARCH_MOTIF_PATTERNS)) {
+    if (patterns.some((pattern) => pattern.test(text))) {
+      motifs.push(motif);
+    }
+  }
+  return motifs;
+}
+
+function parameterGolfPatchBridgeUrl(input) {
+  try {
+    const parsed = input instanceof URL ? input : new URL(String(input || "").trim());
+    const host = String(parsed.hostname || "").trim().toLowerCase();
+    if (host !== "patch-diff.githubusercontent.com") {
+      return "";
+    }
+    const match = String(parsed.pathname || "").match(/^\/raw\/openai\/parameter-golf\/pull\/(\d+)\.patch$/i);
+    if (!match) {
+      return "";
+    }
+    return `https://github.com/openai/parameter-golf/pull/${match[1]}`;
+  } catch (_err) {
+    return "";
+  }
+}
+
+function parameterGolfRoutingPolicy(input) {
+  const policy = {
+    routingClass: "generic",
+    allowlistBonus: 0,
+    denylistPenalty: 0,
+    hardBlockReason: "",
+    bridgeUrl: "",
+    optOutDomain: false,
+  };
+  if (WEAVER_RESEARCH_MODE !== "parameter-golf") {
+    return policy;
+  }
+
+  let parsed = null;
+  try {
+    parsed = input instanceof URL ? input : new URL(String(input || "").trim());
+  } catch (_err) {
+    return policy;
+  }
+
+  const host = String(parsed.hostname || "").trim().toLowerCase();
+  const pathname = String(parsed.pathname || "").trim();
+  if (!host) {
+    return policy;
+  }
+
+  if (/\.(png|jpg|jpeg|gif|svg|ico|woff2?|ttf|css|js)$/i.test(pathname)) {
+    policy.routingClass = "asset_noise";
+    policy.denylistPenalty = 2.1;
+    return policy;
+  }
+
+  if (host === "patch-diff.githubusercontent.com") {
+    policy.routingClass = "blocked_patch_diff";
+    policy.denylistPenalty = 2.6;
+    policy.hardBlockReason = "known_robots_blocked_patch_diff";
+    policy.bridgeUrl = parameterGolfPatchBridgeUrl(parsed);
+    policy.optOutDomain = true;
+    return policy;
+  }
+
+  if (host === "parameter-golf.github.io" && /^\/data\/.*\.json$/i.test(pathname)) {
+    policy.routingClass = "leaderboard_json";
+    policy.allowlistBonus = 1.25;
+    return policy;
+  }
+
+  if (host === "raw.githubusercontent.com") {
+    if (/submission\.json$/i.test(pathname)) {
+      policy.routingClass = "submission_json_raw";
+      policy.allowlistBonus = 1.4;
+      return policy;
+    }
+    if (/train\.log$/i.test(pathname)) {
+      policy.routingClass = "train_log_raw";
+      policy.allowlistBonus = 1.3;
+      return policy;
+    }
+    if (/train_gpt\.py$/i.test(pathname)) {
+      policy.routingClass = "trainer_script_raw";
+      policy.allowlistBonus = 1.2;
+      return policy;
+    }
+    if (/^\/openai\/parameter-golf\//i.test(pathname)) {
+      policy.routingClass = "parameter_golf_raw";
+      policy.allowlistBonus = 0.95;
+      return policy;
+    }
+    if (/agustif\/parameter-golf-research-garden\/main\/content\//i.test(pathname)) {
+      policy.routingClass = "research_garden_raw";
+      policy.allowlistBonus = 0.85;
+      return policy;
+    }
+    if (/agustif\/runmatrix\/main\/(docs\/|README\.md$)/i.test(pathname)) {
+      policy.routingClass = "runmatrix_raw_doc";
+      policy.allowlistBonus = 0.6;
+      return policy;
+    }
+  }
+
+  if (host === "arxiv.org") {
+    if (/^\/abs\//i.test(pathname)) {
+      policy.routingClass = "arxiv_abs";
+      policy.allowlistBonus = 0.9;
+      return policy;
+    }
+    if (/^\/pdf\//i.test(pathname)) {
+      policy.routingClass = "arxiv_pdf";
+      policy.allowlistBonus = 0.65;
+      return policy;
+    }
+    if (/^\/(search|help|user|corr)\b/i.test(pathname)) {
+      policy.routingClass = "arxiv_navigation_noise";
+      policy.denylistPenalty = 1.15;
+      return policy;
+    }
+  }
+
+  if (host === "github.com") {
+    if (/\/openai\/parameter-golf\/pull\/\d+$/i.test(pathname)) {
+      policy.routingClass = "parameter_golf_pr";
+      policy.allowlistBonus = 0.85;
+      return policy;
+    }
+    if (/\/(login|marketplace|trending|search|settings|notifications|sponsors|features|copilot|enterprise|pricing|join|session)\b/i.test(pathname)) {
+      policy.routingClass = "github_navigation_noise";
+      policy.denylistPenalty = 2.2;
+      policy.hardBlockReason = "github_navigation_noise";
+      return policy;
+    }
+    if (/\/(blob|tree|commits)\//i.test(pathname)) {
+      policy.routingClass = "github_repo_navigation";
+      policy.denylistPenalty = 1.35;
+      return policy;
+    }
+  }
+
+  if (host === "join.slack.com" || (host.endsWith("slack.com") && /\/(join|invite)\b/i.test(pathname))) {
+    policy.routingClass = "social_invite_noise";
+    policy.denylistPenalty = 2.0;
+    policy.hardBlockReason = "social_invite_noise";
+    return policy;
+  }
+
+  if (host === "ui.adsabs.harvard.edu" || host === "doi.org") {
+    policy.routingClass = "secondary_index";
+    policy.denylistPenalty = host === "doi.org" ? 0.85 : 1.0;
+    return policy;
+  }
+
+  if (host === "blog.skypilot.co") {
+    policy.routingClass = "skypilot_blog";
+    policy.allowlistBonus = /scaling-autoresearch/i.test(pathname) ? 0.55 : 0.35;
+    return policy;
+  }
+
+  return policy;
+}
+
+function annotateResearchNode(node) {
+  if (!node || String(node.kind || "") !== "url" || WEAVER_RESEARCH_MODE !== "parameter-golf") {
+    return node;
+  }
+
+  const url = String(node.url || node.label || "").trim();
+  let host = "";
+  let pathname = "";
+  try {
+    const parsed = new URL(url);
+    host = String(parsed.hostname || "").trim().toLowerCase();
+    pathname = String(parsed.pathname || "").trim();
+  } catch (_err) {
+    host = "";
+    pathname = "";
+  }
+
+  let sourceKind = "web_page";
+  let sourceQuality = "tertiary";
+  let rawSignalScore = 0.0;
+  let navigationNoisePenalty = 0.0;
+
+  if (host === "patch-diff.githubusercontent.com") {
+    sourceKind = "patch_diff";
+    sourceQuality = "primary";
+    rawSignalScore = 2.4;
+  } else if (host === "parameter-golf.github.io" && pathname.startsWith("/data/") && pathname.endsWith(".json")) {
+    sourceKind = "leaderboard_json";
+    sourceQuality = "primary";
+    rawSignalScore = 2.1;
+  } else if (host === "raw.githubusercontent.com") {
+    if (/submission\.json$/i.test(pathname)) {
+      sourceKind = "submission_json";
+      sourceQuality = "primary";
+      rawSignalScore = 2.3;
+    } else if (/train\.log$/i.test(pathname)) {
+      sourceKind = "train_log";
+      sourceQuality = "primary";
+      rawSignalScore = 2.2;
+    } else if (/train_gpt\.py$/i.test(pathname)) {
+      sourceKind = "trainer_script";
+      sourceQuality = "primary";
+      rawSignalScore = 2.0;
+    } else if (/parameter-golf-research-garden\/main\/content\//i.test(pathname)) {
+      sourceKind = "research_garden_note";
+      sourceQuality = "secondary";
+      rawSignalScore = 1.0;
+    } else if (/agustif\/runmatrix\/main\/docs\//i.test(pathname) || /agustif\/runmatrix\/main\/README\.md$/i.test(pathname)) {
+      sourceKind = "orchestration_doc";
+      sourceQuality = "secondary";
+      rawSignalScore = 0.9;
+    } else {
+      sourceKind = "raw_document";
+      sourceQuality = "secondary";
+      rawSignalScore = 0.7;
+    }
+  } else if (host === "arxiv.org") {
+    if (/^\/abs\//i.test(pathname)) {
+      sourceKind = "arxiv_abs";
+      sourceQuality = "primary";
+      rawSignalScore = 1.8;
+    } else if (/^\/pdf\//i.test(pathname)) {
+      sourceKind = "arxiv_pdf";
+      sourceQuality = "primary";
+      rawSignalScore = 1.7;
+    } else if (/^\/search\/?$/i.test(pathname)) {
+      sourceKind = "arxiv_search";
+      sourceQuality = "secondary";
+      rawSignalScore = 0.6;
+    }
+  } else if (host === "github.com") {
+    if (/\/openai\/parameter-golf\/pull\/\d+/i.test(pathname)) {
+      sourceKind = "parameter_golf_pr";
+      sourceQuality = "secondary";
+      rawSignalScore = 0.7;
+    } else if (/\/(login|marketplace|trending|search|settings|notifications|sponsors)\b/i.test(pathname)) {
+      sourceKind = "navigation_noise";
+      sourceQuality = "noise";
+      navigationNoisePenalty = 1.6;
+    } else if (/\/(blob|tree|commits)\//i.test(pathname)) {
+      sourceKind = "repo_navigation";
+      sourceQuality = "noise";
+      navigationNoisePenalty = 1.0;
+    } else {
+      sourceKind = "repo_html";
+      sourceQuality = "tertiary";
+      rawSignalScore = 0.2;
+    }
+  } else if (host === "blog.skypilot.co") {
+    sourceKind = "blog_post";
+    sourceQuality = "secondary";
+    rawSignalScore = 0.45;
+  }
+
+  if (/\.(png|jpg|jpeg|gif|svg|ico|woff2?|ttf|css|js)$/i.test(pathname)) {
+    sourceKind = "asset_noise";
+    sourceQuality = "noise";
+    navigationNoisePenalty = Math.max(navigationNoisePenalty, 1.8);
+    rawSignalScore = 0;
+  }
+
+  const routingPolicy = parameterGolfRoutingPolicy(url);
+  const researchMotifs = detectResearchMotifs(node);
+  return {
+    ...node,
+    source_kind: sourceKind,
+    source_quality: sourceQuality,
+    raw_signal_score: Number(rawSignalScore.toFixed(4)),
+    navigation_noise_penalty: Number(navigationNoisePenalty.toFixed(4)),
+    allowlist_bonus: Number(routingPolicy.allowlistBonus.toFixed(4)),
+    denylist_penalty: Number(routingPolicy.denylistPenalty.toFixed(4)),
+    routing_class: routingPolicy.routingClass,
+    hard_block_reason: routingPolicy.hardBlockReason,
+    preferred_bridge_url: routingPolicy.bridgeUrl,
+    research_motifs: researchMotifs,
+  };
+}
+
+const SOURCE_QUALITY_RANK = {
+  noise: 0,
+  tertiary: 1,
+  secondary: 2,
+  primary: 3,
+};
+
+function sourceQualityRank(node) {
+  const quality = String(node?.source_quality || "tertiary").trim().toLowerCase();
+  return SOURCE_QUALITY_RANK[quality] ?? 1;
+}
+
+function sharedResearchMotifCount(leftNode, rightNode) {
+  const left = new Set(Array.isArray(leftNode?.research_motifs) ? leftNode.research_motifs : []);
+  const right = Array.isArray(rightNode?.research_motifs) ? rightNode.research_motifs : [];
+  let count = 0;
+  for (const motif of right) {
+    if (left.has(motif)) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function researchRouteAdjustment(sourceNode, targetNode) {
+  const targetKind = String(targetNode?.source_kind || "web_page");
+  const sourceKind = String(sourceNode?.source_kind || "");
+  const targetQuality = String(targetNode?.source_quality || "tertiary");
+  const sourceQuality = String(sourceNode?.source_quality || "tertiary");
+  const sharedMotifs = sharedResearchMotifCount(sourceNode, targetNode);
+  const interactionPenalty = Math.min(1.5, Number(targetNode?.interaction_count || 0) * 0.06);
+
+  let bridgeBonus = 0;
+  let loopPenalty = interactionPenalty;
+  const targetIsRawFollowOn = ["submission_json", "train_log", "trainer_script"].includes(targetKind);
+  const sourceIsEvidenceAnchor = [
+    "patch_diff",
+    "parameter_golf_pr",
+    "leaderboard_json",
+    "submission_json",
+    "train_log",
+    "trainer_script",
+    "research_garden_note",
+    "arxiv_abs",
+    "blog_post",
+    "orchestration_doc",
+  ].includes(sourceKind);
+
+  if (!sourceNode) {
+    return { bridgeBonus, loopPenalty, sharedMotifs };
+  }
+
+  if (targetQuality === "noise") {
+    loopPenalty += 1.2;
+  }
+  if (sourceKind && sourceKind === targetKind) {
+    loopPenalty += 0.55;
+    if (targetKind === "patch_diff") {
+      loopPenalty += 1.85;
+    } else if (targetKind === "parameter_golf_pr" || targetKind === "submission_json") {
+      loopPenalty += 0.35;
+    } else if (targetKind === "repo_navigation") {
+      loopPenalty += 0.7;
+    }
+  }
+  if (sourceNode.domain && targetNode?.domain && sourceNode.domain === targetNode.domain) {
+    loopPenalty += 0.12;
+  }
+  if (sourceKind === "parameter_golf_pr" && targetKind === "repo_navigation") {
+    loopPenalty += 1.0;
+  }
+  if (sourceKind === "repo_navigation" && targetKind === "repo_navigation") {
+    loopPenalty += 0.6;
+  }
+  if (["blog_post", "research_garden_note", "arxiv_abs"].includes(sourceKind) && sourceKind === targetKind) {
+    loopPenalty += 0.3;
+  }
+
+  if (sharedMotifs > 0 && sourceKind !== targetKind) {
+    bridgeBonus += 0.22 + 0.10 * sharedMotifs;
+  }
+  if (sourceQualityRank(targetNode) > sourceQualityRank(sourceNode)) {
+    bridgeBonus += 0.28;
+  }
+  if (sourceQuality === "primary" && targetQuality === "secondary" && sharedMotifs > 0) {
+    bridgeBonus += 0.25;
+  }
+  if (sourceKind === "patch_diff" && ["submission_json", "train_log", "trainer_script", "parameter_golf_pr"].includes(targetKind)) {
+    bridgeBonus += 0.55;
+  }
+  if (sourceKind === "parameter_golf_pr" && targetIsRawFollowOn) {
+    bridgeBonus += 0.9;
+  }
+  if (["leaderboard_json", "research_garden_note", "arxiv_abs", "blog_post", "orchestration_doc"].includes(sourceKind) && targetIsRawFollowOn) {
+    bridgeBonus += 0.3;
+  }
+  if (sourceKind === "leaderboard_json" && targetKind === "parameter_golf_pr") {
+    bridgeBonus += 0.35;
+  }
+  if (["patch_diff", "submission_json", "train_log"].includes(sourceKind) && ["arxiv_abs", "research_garden_note", "blog_post", "orchestration_doc"].includes(targetKind)) {
+    bridgeBonus += 0.18;
+  }
+  if (sourceKind === "research_garden_note" && ["patch_diff", "submission_json", "trainer_script", "arxiv_abs"].includes(targetKind) && sharedMotifs > 0) {
+    bridgeBonus += 0.35;
+  }
+  if (sourceIsEvidenceAnchor && targetKind === "leaderboard_json") {
+    bridgeBonus += 0.12;
+  }
+
+  return { bridgeBonus, loopPenalty, sharedMotifs };
 }
 
 function getDepthHistogram(urlNodes) {
@@ -638,7 +1050,7 @@ class GraphStore {
       };
     }
     const knowledge = inferKnowledgeMetadata(url);
-    const created = this._insertNode({
+    const created = this._insertNode(annotateResearchNode({
       id,
       kind: "url",
       label: url,
@@ -658,7 +1070,7 @@ class GraphStore {
       knowledge_kind: knowledge.knowledge_kind,
       arxiv_id: knowledge.arxiv_id,
       wikipedia_slug: knowledge.wikipedia_slug,
-    });
+    }));
     return {
       id,
       created: created && !created.rejected ? created : null,
@@ -672,10 +1084,10 @@ class GraphStore {
     if (!existing) {
       return;
     }
-    this.nodes.set(id, {
+    this.nodes.set(id, annotateResearchNode({
       ...existing,
       ...patch,
-    });
+    }));
   }
 
   getNodeById(id) {
@@ -1471,10 +1883,93 @@ class WebGraphWeaver {
     });
   }
 
+  _applyResearchPolicyBlock(url, sourceUrl, depth, reason) {
+    const policy = parameterGolfRoutingPolicy(url);
+    if (!policy.hardBlockReason) {
+      return null;
+    }
+
+    let host = "";
+    try {
+      host = String(new URL(url).hostname || "").trim().toLowerCase();
+    } catch (_err) {
+      host = "";
+    }
+
+    if (policy.optOutDomain && host && !this.optOutDomains.has(host)) {
+      this.optOutDomains.add(host);
+      this._emit("domain_opt_out", {
+        domain: host,
+        reason: policy.hardBlockReason,
+      });
+    }
+
+    this.graph.setUrlStatus(url, {
+      status: "blocked",
+      compliance: "policy_blocked",
+      policy_block_reason: policy.hardBlockReason,
+      preferred_bridge_url: policy.bridgeUrl || "",
+      last_enqueue_reason: reason,
+    });
+
+    let bridgeOutcome = null;
+    if (policy.bridgeUrl && policy.bridgeUrl !== url) {
+      const bridgeNode = this.graph.upsertUrl(policy.bridgeUrl, depth, sourceUrl || null);
+      const bridgeEdge = this.graph.upsertEdge(
+        "policy_bridge",
+        `url:${url}`,
+        `url:${policy.bridgeUrl}`,
+        {
+          reason: policy.hardBlockReason,
+        },
+      );
+      this._emitGraphDelta(
+        "policy_bridge",
+        bridgeNode.created ? [bridgeNode.created] : [],
+        bridgeEdge ? [bridgeEdge] : [],
+      );
+      bridgeOutcome = this.enqueueUrl(
+        policy.bridgeUrl,
+        sourceUrl || null,
+        depth,
+        "policy_bridge",
+      );
+    }
+
+    this.stats.skipped += 1;
+    this._emit("policy_blocked", {
+      url,
+      source: sourceUrl || null,
+      depth,
+      reason: policy.hardBlockReason,
+      bridge_url: policy.bridgeUrl || null,
+    });
+
+    if (bridgeOutcome?.ok) {
+      return {
+        ok: true,
+        url: bridgeOutcome.url,
+        redirected_from: url,
+        reason: "policy_redirect",
+        policy_reason: policy.hardBlockReason,
+        bridge_url: policy.bridgeUrl,
+      };
+    }
+
+    return {
+      ok: false,
+      url,
+      reason: "policy_blocked",
+      policy_reason: policy.hardBlockReason,
+      bridge_url: policy.bridgeUrl || null,
+    };
+  }
+
   _candidateTargetsForEntity(entity) {
     const rows = [];
     const seen = new Set();
     const sourceUrl = entity.current_url;
+    const sourceNode = sourceUrl ? this.graph.getUrlNode(sourceUrl) : null;
     if (sourceUrl) {
       for (const edge of this.graph.getOutgoingUrlEdges(sourceUrl)) {
         const targetUrl = String(edge.target || "").startsWith("url:")
@@ -1485,13 +1980,61 @@ class WebGraphWeaver {
         }
         seen.add(targetUrl);
         const node = this.graph.getUrlNode(targetUrl);
+        let targetHost = "";
+        try {
+          targetHost = String(new URL(targetUrl).hostname || "").trim().toLowerCase();
+        } catch (_err) {
+          targetHost = "";
+        }
+        const routing = parameterGolfRoutingPolicy(targetUrl);
+        if (routing.hardBlockReason) {
+          continue;
+        }
+        if (targetHost && this.optOutDomains.has(targetHost)) {
+          continue;
+        }
+        const status = String(node?.status || "").trim().toLowerCase();
+        const compliance = String(node?.compliance || "").trim().toLowerCase();
+        if (status === "blocked" || compliance === "robots_blocked" || compliance === "opt_out") {
+          continue;
+        }
         const activation = Number(node?.activation_potential || 0);
         const cooldownRemaining = this._cooldownRemainingMs(targetUrl);
         const inFlight = this.inFlightUrls.has(targetUrl) || this.frontier.has(targetUrl);
         if (cooldownRemaining > 0 || inFlight) {
           continue;
         }
-        const score = 0.65 + activation + Math.random() * 0.35;
+        const rawSignal = Number(node?.raw_signal_score || 0);
+        const noisePenalty = Number(node?.navigation_noise_penalty || 0);
+        const allowlistBonus = Math.max(
+          Number(node?.allowlist_bonus || 0),
+          Number(routing.allowlistBonus || 0),
+        );
+        const denylistPenalty = Math.max(
+          Number(node?.denylist_penalty || 0),
+          Number(routing.denylistPenalty || 0),
+        );
+        const motifCount = Array.isArray(node?.research_motifs) ? node.research_motifs.length : 0;
+        const quality = String(node?.source_quality || "tertiary");
+        const qualityBonus = quality === "primary"
+          ? 0.75
+          : quality === "secondary"
+            ? 0.25
+            : quality === "noise"
+              ? -1.15
+              : 0.0;
+        const adjustment = researchRouteAdjustment(sourceNode, node);
+        const score = 0.35
+          + activation
+          + rawSignal
+          + allowlistBonus
+          + qualityBonus
+          + motifCount * 0.08
+          + adjustment.bridgeBonus
+          - noisePenalty
+          - denylistPenalty
+          - adjustment.loopPenalty
+          + Math.random() * 0.12;
         rows.push({
           url: targetUrl,
           score,
@@ -1507,6 +2050,24 @@ class WebGraphWeaver {
         if (!targetUrl || seen.has(targetUrl)) {
           continue;
         }
+        let targetHost = "";
+        try {
+          targetHost = String(new URL(targetUrl).hostname || "").trim().toLowerCase();
+        } catch (_err) {
+          targetHost = "";
+        }
+        const routing = parameterGolfRoutingPolicy(targetUrl);
+        if (routing.hardBlockReason) {
+          continue;
+        }
+        if (targetHost && this.optOutDomains.has(targetHost)) {
+          continue;
+        }
+        const status = String(node.status || "").trim().toLowerCase();
+        const compliance = String(node.compliance || "").trim().toLowerCase();
+        if (status === "blocked" || compliance === "robots_blocked" || compliance === "opt_out") {
+          continue;
+        }
         const cooldownRemaining = this._cooldownRemainingMs(targetUrl);
         const inFlight = this.inFlightUrls.has(targetUrl) || this.frontier.has(targetUrl);
         if (cooldownRemaining > 0 || inFlight) {
@@ -1514,9 +2075,39 @@ class WebGraphWeaver {
         }
         const activation = Number(node.activation_potential || 0);
         const fetchedBias = String(node.status || "") === "fetched" ? 0.1 : 0.22;
+        const rawSignal = Number(node.raw_signal_score || 0);
+        const noisePenalty = Number(node.navigation_noise_penalty || 0);
+        const allowlistBonus = Math.max(
+          Number(node.allowlist_bonus || 0),
+          Number(routing.allowlistBonus || 0),
+        );
+        const denylistPenalty = Math.max(
+          Number(node.denylist_penalty || 0),
+          Number(routing.denylistPenalty || 0),
+        );
+        const motifCount = Array.isArray(node.research_motifs) ? node.research_motifs.length : 0;
+        const quality = String(node.source_quality || "tertiary");
+        const qualityBonus = quality === "primary"
+          ? 0.55
+          : quality === "secondary"
+            ? 0.18
+            : quality === "noise"
+              ? -0.9
+              : 0.0;
+        const adjustment = researchRouteAdjustment(sourceNode, node);
         rows.push({
           url: targetUrl,
-          score: activation + fetchedBias + Math.random() * 0.16,
+          score: activation
+            + fetchedBias
+            + rawSignal
+            + allowlistBonus
+            + qualityBonus
+            + motifCount * 0.05
+            + adjustment.bridgeBonus
+            - noisePenalty
+            - denylistPenalty
+            - adjustment.loopPenalty
+            + Math.random() * 0.08,
           reason: "known_url",
         });
       }
@@ -1948,6 +2539,32 @@ class WebGraphWeaver {
     if (domainInfo.lastFetchedAt <= 0) {
       score += 14;
     }
+    if (WEAVER_RESEARCH_MODE === "parameter-golf") {
+      const meta = annotateResearchNode({ kind: "url", url });
+      const routing = parameterGolfRoutingPolicy(url);
+      if (routing.hardBlockReason) {
+        return -1000;
+      }
+      score += Number(meta.raw_signal_score || 0) * 18;
+      score -= Number(meta.navigation_noise_penalty || 0) * 20;
+      score += Math.max(
+        Number(meta.allowlist_bonus || 0),
+        Number(routing.allowlistBonus || 0),
+      ) * 14;
+      score -= Math.max(
+        Number(meta.denylist_penalty || 0),
+        Number(routing.denylistPenalty || 0),
+      ) * 16;
+      const motifs = Array.isArray(meta.research_motifs) ? meta.research_motifs.length : 0;
+      score += motifs * 2.5;
+      if (String(meta.source_quality || "") === "primary") {
+        score += 12;
+      } else if (String(meta.source_quality || "") === "secondary") {
+        score += 4;
+      } else if (String(meta.source_quality || "") === "noise") {
+        score -= 18;
+      }
+    }
     score += Math.random() * 0.5;
     return score;
   }
@@ -2011,6 +2628,11 @@ class WebGraphWeaver {
     }
 
     this._emitGraphDelta(reason, createdNodes, createdEdges);
+
+    const policyOutcome = this._applyResearchPolicyBlock(normalized, sourceUrl, depth, reason);
+    if (policyOutcome) {
+      return policyOutcome;
+    }
 
     const priority = this._priorityFor(normalized, depth, sourceUrl);
     const pushed = this.frontier.push({
@@ -2125,6 +2747,16 @@ class WebGraphWeaver {
       return;
     }
 
+    const policyOutcome = this._applyResearchPolicyBlock(
+      item.url,
+      item.sourceUrl || null,
+      item.depth,
+      "fetch_policy_guard",
+    );
+    if (policyOutcome) {
+      return;
+    }
+
     const domainState = this._domainState(domain);
     const now = nowMs();
     if (domainState.active >= this.currentMaxRequestsPerHost) {
@@ -2177,6 +2809,13 @@ class WebGraphWeaver {
     if (!allowed) {
       this.stats.skipped += 1;
       this.stats.robots_blocked += 1;
+      if (WEAVER_RESEARCH_MODE === "parameter-golf" && domain === "patch-diff.githubusercontent.com") {
+        this.optOutDomains.add(domain);
+        this._emit("domain_opt_out", {
+          domain,
+          reason: "robots_blocked_primary_patch_host",
+        });
+      }
       this.graph.setUrlStatus(item.url, {
         status: "blocked",
         compliance: "robots_blocked",
@@ -2766,6 +3405,10 @@ class WebGraphWeaver {
       } catch (_err) {
         host = "";
       }
+      const routing = parameterGolfRoutingPolicy(normalized);
+      if (routing.hardBlockReason) {
+        continue;
+      }
       if (!host || host === "localhost" || host === "127.0.0.1" || host === "::1") {
         continue;
       }
@@ -2791,7 +3434,15 @@ class WebGraphWeaver {
       const activation = Number(node?.activation_potential || 0);
       const depthPenalty = Math.max(0, Number(node?.depth || 0)) * 0.3;
       const cooldownPenalty = this._cooldownRemainingMs(normalized, now) > 0 ? 3.5 : 0;
-      const score = statusWeight + activation - depthPenalty - cooldownPenalty;
+      const allowlistBonus = Math.max(
+        Number(node?.allowlist_bonus || 0),
+        Number(routing.allowlistBonus || 0),
+      );
+      const denylistPenalty = Math.max(
+        Number(node?.denylist_penalty || 0),
+        Number(routing.denylistPenalty || 0),
+      );
+      const score = statusWeight + activation + allowlistBonus - depthPenalty - cooldownPenalty - denylistPenalty;
       const freshness = Math.max(
         0,
         Number(node?.last_interacted_at || 0),

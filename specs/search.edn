@@ -1,0 +1,8 @@
+;; scoped-search — compiled contract projection sent from knoxx to openplanner
+;; NOT full EDN; this is the wire shape
+{:scoped-search [:map {:closed false}
+                 [:query       :string]
+                 [:collections [:vector :string]]
+                 [:top-k       {:optional true} [:int {:min 1 :max 100}]]
+                 [:min-score   {:optional true} :score]
+                 [:role        {:optional true} :keyword]]}
