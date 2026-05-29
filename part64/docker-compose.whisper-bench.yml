@@ -18,6 +18,7 @@ services:
       - model_bench_cache:/cache
       - ./runs/whisper-bench:/results
     shm_size: "12gb"
+    cpus: "1.25"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: "no"

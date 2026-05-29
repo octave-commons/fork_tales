@@ -3,12 +3,22 @@ import react from "@vitejs/plugin-react";
 
 const buildSourceMaps = process.env.VITE_BUILD_SOURCEMAP !== "false";
 const devRuntimeProxyTarget = process.env.VITE_DEV_PROXY_TARGET || "http://127.0.0.1:8787";
+const DEFAULT_DEV_SERVER_PORT = 5197;
+const parsedDevServerPort = Number.parseInt(
+  process.env.VITE_DEV_SERVER_PORT ?? `${DEFAULT_DEV_SERVER_PORT}`,
+  10,
+);
+const devServerPort = Number.isFinite(parsedDevServerPort)
+  ? parsedDevServerPort
+  : DEFAULT_DEV_SERVER_PORT;
 
 // https://vite.dev/config/
 export default defineConfig({
   base: "./",
   plugins: [react()],
   server: {
+    port: devServerPort,
+    strictPort: true,
     proxy: {
       "/api": {
         target: devRuntimeProxyTarget,

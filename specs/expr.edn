@@ -1,0 +1,6 @@
+;; expr — sci-eval boundary; runtime-whitelisted
+{:expr-node [:map {:closed false}
+             [:expr   {:optional true} :any]
+             [:fn-ref {:optional true} :keyword]]
+
+ :prompt-value [:or :string :expr-node]}

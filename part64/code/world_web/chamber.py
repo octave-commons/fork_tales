@@ -23,6 +23,10 @@ from urllib.request import Request, urlopen
 from xml.etree import ElementTree as ET
 
 from .ai import build_presence_say_payload, _eta_mu_deterministic_vector
+from .lith_nexus_index import (
+    build_promptdb_snapshot_from_lith_index,
+    collect_lith_nexus_index,
+)
 from .constants import (
     COUNCIL_DECISION_HISTORY_LIMIT,
     COUNCIL_EVENT_VERSION,
@@ -352,40 +356,25 @@ def _clone_promptdb_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 
 def _build_promptdb_snapshot(promptdb_root: Path, paths: list[Path]) -> dict[str, Any]:
-    packets: list[dict[str, Any]] = []
-    contracts: list[dict[str, Any]] = []
-    errors: list[dict[str, str]] = []
-    seen_keys: set[str] = set()
+    try:
+        lith_index = collect_lith_nexus_index(
+            promptdb_root.parent.parent, include_text=False
+        )
+        snapshot = build_promptdb_snapshot_from_lith_index(lith_index)
+    except Exception as exc:
+        return {
+            "root": str(promptdb_root),
+            "packet_count": 0,
+            "contract_count": 0,
+            "file_count": len(paths),
+            "packets": [],
+            "contracts": [],
+            "errors": [{"path": str(promptdb_root), "error": str(exc)}],
+        }
 
-    for packet_path in paths:
-        is_contract = packet_path.name.endswith(".contract.lisp")
-        try:
-            parsed = (
-                parse_promptdb_contract(packet_path, promptdb_root)
-                if is_contract
-                else parse_promptdb_packet(packet_path, promptdb_root)
-            )
-            node_key = str(parsed.get("node_key") or "")
-            if not node_key or node_key in seen_keys:
-                continue
-            seen_keys.add(node_key)
-            if is_contract:
-                contracts.append(parsed)
-            else:
-                packets.append(parsed)
-        except Exception as exc:
-            rel = str(packet_path).replace("\\", "/")
-            errors.append({"path": rel, "error": str(exc)})
-
-    return {
-        "root": str(promptdb_root),
-        "packet_count": len(packets),
-        "contract_count": len(contracts),
-        "file_count": len(paths),
-        "packets": packets,
-        "contracts": contracts,
-        "errors": errors,
-    }
+    snapshot["root"] = str(promptdb_root)
+    snapshot["file_count"] = max(int(snapshot.get("file_count", 0)), len(paths))
+    return snapshot
 
 
 def locate_promptdb_root(vault_root: Path) -> Path | None:

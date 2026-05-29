@@ -159,7 +159,7 @@ World Log live signal feeds (optional, append-only runtime logs):
 Electron client (sandboxed renderer):
 - From `part64/frontend`, install deps: `npm install`
 - Dev loop (two terminals):
-  - Terminal A: `npm run dev -- --host 127.0.0.1 --port 5173`
+  - Terminal A: `npm run dev -- --host 127.0.0.1 --port 5197`
   - Terminal B (auto-restarts Electron main/preload on changes): `npm run electron:dev:watch`
 - Launch built desktop client: `npm run electron:preview`
 - Override runtime endpoints when needed:

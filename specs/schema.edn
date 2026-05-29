@@ -1,0 +1,180 @@
+;; fork_tales language spec — single canonical schema
+;; malli registry; all refs are keywords into this same map
+;; closed=false everywhere except :signal-obs (wire boundary)
+
+{;; ─── primitives ───────────────────────────────────────────────
+ :id           [:and :string [:min-count 1] [:max-count 128]]
+ :version      [:int {:min 1 :max 9999}]
+ :uuid         [:re #"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"]
+ :inst         :string
+ :score        [:double {:min 0.0 :max 1.0}]
+ :pos-int      [:int {:min 1}]
+ :namespaced   [:and :keyword #(namespace %)]
+
+ ;; ─── expr (sci-eval boundary) ─────────────────────────────────
+ :expr-node    [:map {:closed false}
+                [:expr   {:optional true} :any]
+                [:fn-ref {:optional true} :keyword]]
+ :prompt-value [:or :string :expr-node]
+
+ ;; ─── enums ────────────────────────────────────────────────────
+ :trigger-kind [:enum :cron :event :manual]
+ :source-kind  [:enum :discord :github :cron :manual :http :rss :local :pi-sessions :s3]
+ :sink-kind    [:enum :openplanner :ragussy]
+ :thinking     [:enum :off :minimal :low :medium :high :xhigh]
+ :receipt-kind [:enum :push-truth :decision :drift :catalog :warning]
+ :sig-dir      [:enum :into :out-of :lateral :recursive]
+ :chunk-strat  [:enum :paragraph :semantic]
+ :opmf-section [:enum :signal :evidence :frames :countermoves :next]
+
+ ;; ─── contract sub-blocks ──────────────────────────────────────
+ :agent        [:map {:closed false}
+                [:role     {:optional true} :keyword]
+                [:model    {:optional true} :string]
+                [:thinking {:optional true} :thinking]]
+
+ :prompts      [:map {:closed false}
+                [:system {:optional true} :prompt-value]
+                [:task   {:optional true} :prompt-value]
+                [:user   {:optional true} :prompt-value]]
+
+ :events       [:map {:closed false}
+                [:always {:optional true} [:vector :namespaced]]
+                [:maybe  {:optional true} [:vector :namespaced]]]
+
+ :hook         [:map {:closed false}
+                [:expr   {:optional true} :any]
+                [:fn-ref {:optional true} :keyword]]
+
+ :hooks        [:map {:closed false}
+                [:before {:optional true} [:map-of :keyword :hook]]
+                [:after  {:optional true} [:map-of :keyword :hook]]]
+
+ :tool         [:map {:closed false}
+                [:name    :string]
+                [:effect  {:optional true} [:enum :allow :deny]]
+                [:allowed {:optional true} [:vector :string]]]
+
+ :data-source  [:map {:closed false}
+                [:root-path   {:optional true} :string]
+                [:batch-size  {:optional true} :pos-int]
+                [:collections {:optional true} [:vector :string]]]
+
+ :op-opts      [:map {:closed false}
+                [:collection      {:optional true} :string]
+                [:embedding-model {:optional true} :string]
+                [:chunk-strategy  {:optional true} :chunk-strat]
+                [:semantic-edges  {:optional true} :boolean]
+                [:top-k           {:optional true} :pos-int]
+                [:min-score       {:optional true} :score]]
+
+ :data         [:map {:closed false}
+                [:source      {:optional true} :data-source]
+                [:filters     {:optional true} [:map-of :keyword :any]]
+                [:collections {:optional true} [:vector :string]]
+                [:sink        {:optional true} :sink-kind]
+                [:openplanner {:optional true} :op-opts]]
+
+ ;; ─── contract (top-level) ─────────────────────────────────────
+ :contract     [:map {:closed false}
+                [:contract/id      :id]
+                [:contract/version {:optional true} :version]
+                [:contract/kind    {:optional true} :keyword]
+                [:contract/uses    {:optional true} [:vector :id]]
+                [:enabled          {:optional true} :boolean]
+                [:trigger-kind     :trigger-kind]
+                [:source-kind      :source-kind]
+                [:source-mode      {:optional true} :string]
+                [:cadence-min      {:optional true} [:int {:min 1 :max 10080}]]
+                [:agent            {:optional true} :agent]
+                [:prompts          {:optional true} :prompts]
+                [:events           {:optional true} :events]
+                [:data             {:optional true} :data]
+                [:tools            {:optional true} [:vector :tool]]
+                [:hooks            {:optional true} :hooks]]
+
+ ;; ─── ledger ───────────────────────────────────────────────────
+ :event-record [:map {:closed false}
+                [:id          :uuid]
+                [:kind        :namespaced]
+                [:actor-id    {:optional true} :string]
+                [:caused-by   {:optional true} :uuid]
+                [:contract-id {:optional true} :id]
+                [:org-id      {:optional true} :string]
+                [:payload     {:optional true} [:map-of :keyword :any]]
+                [:occurred-at :inst]]
+
+ :receipt      [:map {:closed false}
+                [:id          :uuid]
+                [:kind        :receipt-kind]
+                [:agent-id    :string]
+                [:contract-id {:optional true} :id]
+                [:caused-by   {:optional true} :uuid]
+                [:content     :string]
+                [:ts          :inst]]
+
+ ;; ─── mycology ─────────────────────────────────────────────────
+ :mycology     [:map {:closed false}
+                [:id          :uuid]
+                [:agent-id    :string]
+                [:contract-id {:optional true} :id]
+                [:difficulty  :score]
+                [:complexity  :score]
+                [:confidence  :score]
+                [:reflection  {:optional true} :string]
+                [:tags        {:optional true} [:vector :string]]
+                [:embedding   {:optional true} [:vector :double]]
+                [:ts          :inst]]
+
+ ;; ─── signal (closed=true: crosses TS<->CLJS wire) ─────────────
+ :signal-obs   [:map {:closed true}
+                [:record         [:= :open-hax.signal-observation/v1]]
+                [:schema-version [:= :signal.observation/v1]]
+                [:id             :uuid]
+                [:scope          :string]
+                [:profile        :string]
+                [:category       :string]
+                [:severity       :score]
+                [:confidence     :score]
+                [:direction      :sig-dir]
+                [:subject-refs   [:vector :string]]
+                [:evidence-refs  [:vector :string]]
+                [:tags           [:vector :string]]
+                [:observed-at    :inst]
+                [:summary        :string]]
+
+ :correlation  [:map {:closed false}
+                [:id       :uuid]
+                [:from     :uuid]
+                [:to       :uuid]
+                [:kind     :keyword]
+                [:weight   {:optional true} :score]
+                [:evidence {:optional true} [:vector :string]]
+                [:ts       :inst]]
+
+ :finding      [:map {:closed false}
+                [:id         :uuid]
+                [:kind       :keyword]
+                [:scope      :string]
+                [:severity   :score]
+                [:confidence :score]
+                [:refs       [:vector :uuid]]
+                [:summary    :string]
+                [:ts         :inst]]
+
+ ;; ─── search (knoxx->openplanner wire projection) ──────────────
+ :search       [:map {:closed false}
+                [:query       :string]
+                [:collections [:vector :string]]
+                [:top-k       {:optional true} [:int {:min 1 :max 100}]]
+                [:min-score   {:optional true} :score]
+                [:role        {:optional true} :keyword]]
+
+ ;; ─── opmf output gate ─────────────────────────────────────────
+ ;; absent :frames/:countermoves = agent drift signal
+ :opmf         [:map {:closed false}
+                [:signal       :string]
+                [:evidence     {:optional true} :string]
+                [:frames       {:optional true} :string]
+                [:countermoves {:optional true} :string]
+                [:next         {:optional true} :string]]}

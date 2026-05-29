@@ -126,6 +126,7 @@ from .simulation_nexus import (
     _project_legacy_file_graph_from_nexus,
     _project_legacy_logical_graph_from_nexus,
 )
+from .lith_nexus_index import merge_lith_nexus_into_logical_graph
 from . import simulation_resources as simulation_resources_module
 from . import simulation_backend_particles as simulation_backend_particles_module
 from . import simulation_document_layout as simulation_document_layout_module
@@ -138,6 +139,22 @@ from . import (
 )
 from . import simulation_stream_motion_utils as simulation_stream_motion_utils_module
 from . import simulation_test_artifacts as simulation_test_artifacts_module
+from .control_budget_policy import build_control_budget_snapshot
+from .control_budget_strategies import apply_weaver_interaction_budget_policy
+from .simulation_graph_contract_utils import (
+    SIMULATION_FILE_GRAPH_NODE_FIELDS,
+    SIMULATION_FILE_GRAPH_PROJECTION_RECORD,
+    SIMULATION_FILE_GRAPH_PROJECTION_SCHEMA_VERSION,
+    SIMULATION_FILE_GRAPH_RENDER_NODE_FIELDS,
+    build_truth_graph_contract as _build_truth_graph_contract,
+    build_view_graph_contract as _build_view_graph_contract_impl,
+    file_id_for_path as _file_id_for_path,
+    file_node_usage_path as _file_node_usage_path,
+    file_node_usage_score as _file_node_usage_score_impl,
+    graph_rows as _graph_rows,
+    normalize_path_for_file_id as _normalize_path_for_file_id,
+)
+from . import simulation_nooi_runtime_utils as simulation_nooi_runtime_utils_module
 
 _RESOURCE_DAIMOI_TYPES = simulation_resources_module._RESOURCE_DAIMOI_TYPES
 _RESOURCE_DAIMOI_TYPE_ALIASES = (
@@ -328,12 +345,6 @@ SIMULATION_DAIMOI_COLLISION_ACTIVE_ID_MAX = max(
 SIMULATION_GROWTH_WATCH_THRESHOLD = 0.62
 SIMULATION_GROWTH_CRITICAL_THRESHOLD = 0.82
 SIMULATION_GROWTH_MAX_CLUSTER_NODES = 18
-SIMULATION_FILE_GRAPH_PROJECTION_RECORD = "ημ.file-graph-projection.v1"
-SIMULATION_FILE_GRAPH_PROJECTION_SCHEMA_VERSION = "file-graph.projection.v1"
-SIMULATION_TRUTH_GRAPH_RECORD = "eta-mu.truth-graph.v1"
-SIMULATION_TRUTH_GRAPH_SCHEMA_VERSION = "truth.graph.v1"
-SIMULATION_VIEW_GRAPH_RECORD = "eta-mu.view-graph.v1"
-SIMULATION_VIEW_GRAPH_SCHEMA_VERSION = "view.graph.v1"
 SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD = max(
     120,
     int(os.getenv("SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD", "340") or "340"),
@@ -816,95 +827,80 @@ def _simulation_core_resource_emitters(
     return resources, cpu_core_emitter_enabled, cpu_daimoi_stop_percent
 
 
-SIMULATION_FILE_GRAPH_NODE_FIELDS: tuple[str, ...] = (
-    "id",
-    "node_id",
-    "node_type",
-    "field",
-    "tag",
-    "label",
-    "label_ja",
-    "presence_kind",
-    "name",
-    "kind",
-    "resource_kind",
-    "modality",
-    "x",
-    "y",
-    "hue",
-    "importance",
-    "source_rel_path",
-    "archived_rel_path",
-    "archive_rel_path",
-    "url",
-    "dominant_field",
-    "dominant_presence",
-    "field_scores",
-    "text_excerpt",
-    "summary",
-    "tags",
-    "labels",
-    "member_count",
-    "embed_layer_points",
-    "embed_layer_count",
-    "vecstore_collection",
-    "concept_presence_id",
-    "concept_presence_label",
-    "organized_by",
-    "embedding_links",
-    "projection_overflow",
-    "consolidated",
-    "consolidated_count",
-    "projection_group_id",
-    "graph_scope",
-    "truth_scope",
-    "simulation_semantic_role",
-    "semantic_bundle",
-    "semantic_bundle_mass",
-    "semantic_bundle_charge",
-    "semantic_bundle_gravity",
-    "semantic_bundle_member_edge_count",
-)
+def _file_node_usage_score(
+    node: dict[str, Any],
+    *,
+    recent_paths: set[str],
+) -> tuple[float, bool, str]:
+    return _file_node_usage_score_impl(
+        node,
+        recent_paths=recent_paths,
+        safe_float=_safe_float,
+        safe_int=_safe_int,
+        clamp01=_clamp01,
+    )
 
-SIMULATION_FILE_GRAPH_RENDER_NODE_FIELDS: tuple[str, ...] = (
-    "id",
-    "node_id",
-    "node_type",
-    "field",
-    "tag",
-    "label",
-    "label_ja",
-    "presence_kind",
-    "name",
-    "kind",
-    "resource_kind",
-    "modality",
-    "x",
-    "y",
-    "hue",
-    "importance",
-    "source_rel_path",
-    "dominant_field",
-    "dominant_presence",
-    "embed_layer_count",
-    "vecstore_collection",
-    "concept_presence_id",
-    "concept_presence_label",
-    "organized_by",
-    "resource_wallet",  # Exposed for debugging/visualization
-    "projection_overflow",
-    "consolidated",
-    "consolidated_count",
-    "projection_group_id",
-    "graph_scope",
-    "truth_scope",
-    "simulation_semantic_role",
-    "semantic_bundle",
-    "semantic_bundle_mass",
-    "semantic_bundle_charge",
-    "semantic_bundle_gravity",
-    "semantic_bundle_member_edge_count",
-)
+
+def _build_view_graph_contract(file_graph: dict[str, Any] | None) -> dict[str, Any]:
+    return _build_view_graph_contract_impl(
+        file_graph,
+        safe_float=_safe_float,
+        safe_int=_safe_int,
+        clamp01=_clamp01,
+        projection_edge_threshold=SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD,
+    )
+
+
+def _growth_guard_pressure_native(
+    *,
+    file_count: int,
+    edge_count: int,
+    crawler_count: int,
+    item_count: int,
+    sim_point_budget: int,
+    queue_pending_count: int,
+    queue_event_count: int,
+    cpu_utilization: float,
+) -> dict[str, Any] | None:
+    try:
+        from .c_double_buffer_backend import compute_growth_guard_pressure_native
+
+        return compute_growth_guard_pressure_native(
+            file_count=file_count,
+            edge_count=edge_count,
+            crawler_count=crawler_count,
+            item_count=item_count,
+            sim_point_budget=sim_point_budget,
+            queue_pending_count=queue_pending_count,
+            queue_event_count=queue_event_count,
+            cpu_utilization=cpu_utilization,
+            weaver_graph_node_limit=_safe_float(WEAVER_GRAPH_NODE_LIMIT, 1.0),
+            watch_threshold=SIMULATION_GROWTH_WATCH_THRESHOLD,
+            critical_threshold=SIMULATION_GROWTH_CRITICAL_THRESHOLD,
+        )
+    except Exception:
+        return None
+
+
+def _growth_guard_scores_native(
+    *,
+    importance: list[float],
+    layer_counts: list[int],
+    has_collection: list[bool],
+    recent_hit: list[bool],
+) -> list[float] | None:
+    try:
+        from .c_double_buffer_backend import compute_growth_guard_scores_native
+
+        return compute_growth_guard_scores_native(
+            importance=importance,
+            layer_counts=layer_counts,
+            has_collection=has_collection,
+            recent_hit=recent_hit,
+        )
+    except Exception:
+        return None
+
 
 _SIMULATION_LAYOUT_CACHE_LOCK = threading.Lock()
 _SIMULATION_LAYOUT_CACHE: dict[str, Any] = {
@@ -994,623 +990,100 @@ def _reset_nooi_field_state() -> None:
     global _NOOI_FIELD, _NOOI_RANDOM_BOOT_APPLIED, _DAIMOI_MOTION_HISTORY
     global _WEAVER_INTERACTION_COOLDOWN_UNTIL, _WEAVER_INTERACTION_HEALTH
     global _DAIMOI_CRAWL_SEARCH_STATE
-    _NOOI_FIELD = NooiField()
-    _NOOI_RANDOM_BOOT_APPLIED = False
+    state = simulation_nooi_runtime_utils_module.build_reset_nooi_runtime_state(
+        nooi_field_factory=NooiField,
+    )
+    _NOOI_FIELD = state["nooi_field"]
+    _NOOI_RANDOM_BOOT_APPLIED = bool(state["nooi_random_boot_applied"])
     with _DAIMOI_MOTION_HISTORY_LOCK:
-        _DAIMOI_MOTION_HISTORY = {}
+        _DAIMOI_MOTION_HISTORY = dict(state["motion_history"])
     with _WEAVER_INTERACTION_STATE_LOCK:
-        _WEAVER_INTERACTION_COOLDOWN_UNTIL = {}
-        _WEAVER_INTERACTION_HEALTH = {
-            "checked_monotonic": 0.0,
-            "healthy": False,
-        }
-        _DAIMOI_CRAWL_SEARCH_STATE = {}
+        _WEAVER_INTERACTION_COOLDOWN_UNTIL = dict(
+            state["weaver_interaction_cooldown_until"]
+        )
+        _WEAVER_INTERACTION_HEALTH = dict(state["weaver_interaction_health"])
+        _DAIMOI_CRAWL_SEARCH_STATE = dict(state["daimoi_crawl_search_state"])
 
 
 def _record_daimoi_motion_trail(
     row: dict[str, Any], *, tick: int
 ) -> tuple[str, list[dict[str, Any]]]:
-    daimoi_id = str(row.get("id", "") or "").strip()
-    if not daimoi_id:
-        return "", []
-    sample = {
-        "x": _clamp01(_safe_float(row.get("x", 0.5), 0.5)),
-        "y": _clamp01(_safe_float(row.get("y", 0.5), 0.5)),
-        "vx": _safe_float(row.get("vx", 0.0), 0.0),
-        "vy": _safe_float(row.get("vy", 0.0), 0.0),
-        "tick": max(0, _safe_int(tick, 0)),
-    }
-    with _DAIMOI_MOTION_HISTORY_LOCK:
-        history = list(_DAIMOI_MOTION_HISTORY.get(daimoi_id, []))
-        history.append(sample)
-        if len(history) > _DAIMOI_TRAIL_STEPS:
-            history = history[-_DAIMOI_TRAIL_STEPS:]
-        _DAIMOI_MOTION_HISTORY[daimoi_id] = history
-        return daimoi_id, [dict(step) for step in history]
+    return simulation_nooi_runtime_utils_module.record_daimoi_motion_trail(
+        row,
+        tick=tick,
+        motion_history=_DAIMOI_MOTION_HISTORY,
+        motion_history_lock=_DAIMOI_MOTION_HISTORY_LOCK,
+        trail_steps=_DAIMOI_TRAIL_STEPS,
+        safe_float=_safe_float,
+        safe_int=_safe_int,
+        clamp01=_clamp01,
+    )
 
 
 def _prune_daimoi_motion_history(active_ids: set[str]) -> None:
-    with _DAIMOI_MOTION_HISTORY_LOCK:
-        stale_ids = [
-            daimoi_id
-            for daimoi_id in list(_DAIMOI_MOTION_HISTORY.keys())
-            if daimoi_id not in active_ids
-        ]
-        for daimoi_id in stale_ids:
-            _DAIMOI_MOTION_HISTORY.pop(daimoi_id, None)
+    simulation_nooi_runtime_utils_module.prune_daimoi_motion_history(
+        active_ids,
+        motion_history=_DAIMOI_MOTION_HISTORY,
+        motion_history_lock=_DAIMOI_MOTION_HISTORY_LOCK,
+    )
 
 
 def _maybe_seed_random_nooi_field_vectors(*, force: bool = False) -> None:
     global _NOOI_RANDOM_BOOT_APPLIED
-    if _safe_float(SIMULATION_RANDOM_FIELD_VECTORS_ON_BOOT, 0.0) < 0.5:
-        return
-    with _NOOI_RANDOM_BOOT_LOCK:
-        if _NOOI_RANDOM_BOOT_APPLIED and not force:
-            return
-        count = max(0, _safe_int(SIMULATION_RANDOM_FIELD_VECTOR_COUNT, 0))
-        magnitude = max(0.0, _safe_float(SIMULATION_RANDOM_FIELD_VECTOR_MAGNITUDE, 0.0))
-        if count <= 0 or magnitude <= 0.0:
-            _NOOI_RANDOM_BOOT_APPLIED = True
-            return
-        seed = _safe_int(SIMULATION_RANDOM_FIELD_VECTOR_SEED, 0)
-        if seed <= 0:
-            seed = int(time.time_ns() & 0xFFFFFFFF)
-        rng = random.Random(seed)
-        for _ in range(count):
-            x_value = _clamp01(rng.random())
-            y_value = _clamp01(rng.random())
-            theta = rng.random() * math.tau
-            speed = magnitude * (0.35 + (rng.random() * 0.65))
-            _NOOI_FIELD.deposit(
-                x_value,
-                y_value,
-                math.cos(theta) * speed,
-                math.sin(theta) * speed,
-            )
-        _NOOI_RANDOM_BOOT_APPLIED = True
+    _NOOI_RANDOM_BOOT_APPLIED = (
+        simulation_nooi_runtime_utils_module.maybe_seed_random_nooi_field_vectors(
+            force=force,
+            nooi_random_boot_applied=_NOOI_RANDOM_BOOT_APPLIED,
+            nooi_random_boot_lock=_NOOI_RANDOM_BOOT_LOCK,
+            nooi_field=_NOOI_FIELD,
+            random_field_vectors_on_boot=SIMULATION_RANDOM_FIELD_VECTORS_ON_BOOT,
+            random_field_vector_count=SIMULATION_RANDOM_FIELD_VECTOR_COUNT,
+            random_field_vector_magnitude=SIMULATION_RANDOM_FIELD_VECTOR_MAGNITUDE,
+            random_field_vector_seed=SIMULATION_RANDOM_FIELD_VECTOR_SEED,
+            safe_float=_safe_float,
+            safe_int=_safe_int,
+            clamp01=_clamp01,
+        )
+    )
 
 
 def _particle_influences_nooi(row: dict[str, Any]) -> bool:
-    return not bool(row.get("is_nexus", False))
+    return simulation_nooi_runtime_utils_module.particle_influences_nooi(row)
 
 
 def _nooi_flow_at(x_value: float, y_value: float) -> tuple[float, float, float]:
-    flow_x, flow_y = _NOOI_FIELD.sample_vector(
-        _clamp01(_safe_float(x_value, 0.5)),
-        _clamp01(_safe_float(y_value, 0.5)),
+    return simulation_nooi_runtime_utils_module.nooi_flow_at(
+        nooi_field=_NOOI_FIELD,
+        x_value=x_value,
+        y_value=y_value,
+        safe_float=_safe_float,
+        clamp01=_clamp01,
     )
-    magnitude = math.hypot(flow_x, flow_y)
-    if magnitude <= 1e-8:
-        return (0.0, 0.0, 0.0)
-    return (flow_x / magnitude, flow_y / magnitude, min(1.0, magnitude))
 
 
 def _nooi_outcome_from_particle(row: dict[str, Any]) -> dict[str, Any] | None:
-    interaction_status = (
-        str(row.get("crawler_interaction_status", "") or "").strip().lower()
+    return simulation_nooi_runtime_utils_module.nooi_outcome_from_particle(
+        row,
+        safe_float=_safe_float,
+        safe_int=_safe_int,
     )
-    if interaction_status == "accepted":
-        return {
-            "outcome": "food",
-            "intensity": min(
-                1.0,
-                0.45
-                + max(
-                    0.0,
-                    _safe_float(row.get("message_probability", 0.0), 0.0) * 0.4,
-                ),
-            ),
-            "reason": "crawler_interaction_accepted",
-        }
-    if interaction_status == "deadline_expired":
-        return {
-            "outcome": "death",
-            "intensity": 0.78,
-            "reason": "crawler_deadline_exceeded",
-        }
-    if interaction_status in {
-        "cooldown_blocked",
-        "rate_limited",
-        "unreachable",
-    }:
-        return None
-
-    consumed = max(0.0, _safe_float(row.get("resource_consume_amount", 0.0), 0.0))
-    blocked = bool(row.get("resource_action_blocked", False))
-    collisions = max(0, _safe_int(row.get("collision_count", 0), 0))
-    if consumed >= 0.04 and not blocked:
-        return {
-            "outcome": "food",
-            "intensity": min(1.0, 0.25 + consumed),
-            "reason": "resource_consumed",
-        }
-    if blocked or collisions > 0:
-        return {
-            "outcome": "death",
-            "intensity": min(1.0, 0.3 + (collisions * 0.1)),
-            "reason": "blocked_or_collision",
-        }
-    return None
 
 
 def _apply_nooi_from_particles(
     particles: list[dict[str, Any]], *, dt_seconds: float, tick: int = 0
 ) -> tuple[dict[str, Any], dict[str, int]]:
-    nooi_rows = [
-        row
-        for row in particles
-        if isinstance(row, dict) and _particle_influences_nooi(row)
-    ]
-    summary = {"food": 0, "death": 0, "total": 0}
-    _NOOI_FIELD.decay(dt_seconds)
-    now_iso = datetime.now(timezone.utc).isoformat()
-    active_ids: set[str] = set()
-    for row in nooi_rows:
-        x_value = _safe_float(row.get("x", 0.5), 0.5)
-        y_value = _safe_float(row.get("y", 0.5), 0.5)
-        vx_value = _safe_float(row.get("vx", 0.0), 0.0)
-        vy_value = _safe_float(row.get("vy", 0.0), 0.0)
-        row_tick = max(0, _safe_int(row.get("age", tick), tick))
-        daimoi_id, motion_trail = _record_daimoi_motion_trail(row, tick=row_tick)
-        if daimoi_id:
-            active_ids.add(daimoi_id)
-        _NOOI_FIELD.deposit(x_value, y_value, vx_value, vy_value)
-
-        outcome = _nooi_outcome_from_particle(row)
-        if not isinstance(outcome, dict):
-            continue
-        outcome_kind = str(outcome.get("outcome", "")).strip().lower()
-        if outcome_kind not in {"food", "death"}:
-            continue
-        intensity = max(0.05, _safe_float(outcome.get("intensity", 0.2), 0.2))
-        direction_scale = 1.0 if outcome_kind == "food" else -1.0
-        trail_rows = motion_trail or [
-            {
-                "x": _clamp01(x_value),
-                "y": _clamp01(y_value),
-                "vx": vx_value,
-                "vy": vy_value,
-                "tick": row_tick,
-            }
-        ]
-        step_count = max(1, len(trail_rows))
-        for step_index, step in enumerate(trail_rows):
-            weight_scale = 0.45 + (((step_index + 1) / float(step_count)) * 0.55)
-            step_intensity = max(
-                0.05,
-                intensity
-                * weight_scale
-                * min(
-                    1.0,
-                    max(
-                        0.35,
-                        math.hypot(
-                            _safe_float(step.get("vx", 0.0), 0.0),
-                            _safe_float(step.get("vy", 0.0), 0.0),
-                        )
-                        * 160.0,
-                    ),
-                ),
-            )
-            layer_weights = [
-                step_intensity,
-                step_intensity * 0.85,
-                step_intensity * 0.72,
-                step_intensity * 0.58,
-                step_intensity * 0.46,
-                step_intensity * 0.35,
-                step_intensity * 0.24,
-                step_intensity * 0.16,
-            ]
-            _NOOI_FIELD.deposit(
-                _safe_float(step.get("x", x_value), x_value),
-                _safe_float(step.get("y", y_value), y_value),
-                _safe_float(step.get("vx", vx_value), vx_value) * direction_scale,
-                _safe_float(step.get("vy", vy_value), vy_value) * direction_scale,
-                layer_weights=layer_weights,
-            )
-        _NOOI_FIELD.append_outcome_trail(
-            outcome=outcome_kind,
-            x=x_value,
-            y=y_value,
-            vx=vx_value,
-            vy=vy_value,
-            intensity=intensity,
-            presence_id=str(row.get("presence_id", row.get("owner", "")) or ""),
-            daimoi_id=daimoi_id,
-            reason=str(outcome.get("reason", "") or ""),
-            graph_node_id=str(row.get("graph_node_id", "") or ""),
-            tick=row_tick,
-            trail_steps=step_count,
-            ts=now_iso,
-        )
-        summary[outcome_kind] = summary.get(outcome_kind, 0) + 1
-        summary["total"] = summary.get("total", 0) + 1
-    _prune_daimoi_motion_history(active_ids)
-    return _NOOI_FIELD.get_grid_snapshot(nooi_rows), summary
-
-
-def _normalize_path_for_file_id(path_like: str) -> str:
-    raw = str(path_like or "").strip().replace("\\", "/")
-    if not raw:
-        return ""
-    parts: list[str] = []
-    for token in raw.split("/"):
-        piece = token.strip()
-        if not piece or piece == ".":
-            continue
-        if piece == "..":
-            if parts:
-                parts.pop()
-            continue
-        parts.append(piece)
-    return "/".join(parts)
-
-
-def _file_id_for_path(path_like: str) -> str:
-    norm = _normalize_path_for_file_id(path_like)
-    return hashlib.sha256(norm.encode("utf-8")).hexdigest() if norm else ""
-
-
-def _file_node_usage_path(node: dict[str, Any]) -> str:
-    return _normalize_path_for_file_id(
-        str(
-            node.get("source_rel_path")
-            or node.get("archived_rel_path")
-            or node.get("archive_rel_path")
-            or node.get("name")
-            or node.get("label")
-            or ""
-        )
+    return simulation_nooi_runtime_utils_module.apply_nooi_from_particles(
+        particles,
+        dt_seconds=dt_seconds,
+        tick=tick,
+        nooi_field=_NOOI_FIELD,
+        motion_history=_DAIMOI_MOTION_HISTORY,
+        motion_history_lock=_DAIMOI_MOTION_HISTORY_LOCK,
+        trail_steps=_DAIMOI_TRAIL_STEPS,
+        safe_float=_safe_float,
+        safe_int=_safe_int,
+        clamp01=_clamp01,
     )
-
-
-def _file_node_usage_score(
-    node: dict[str, Any],
-    *,
-    recent_paths: set[str],
-) -> tuple[float, bool, str]:
-    usage_path = _file_node_usage_path(node)
-    recent_hit = bool(usage_path and usage_path in recent_paths)
-    importance = _clamp01(_safe_float(node.get("importance", 0.25), 0.25))
-    layer_ratio = _clamp01(_safe_int(node.get("embed_layer_count", 0), 0) / 4.0)
-    collection_bonus = 0.08 if str(node.get("vecstore_collection", "")).strip() else 0.0
-    recent_bonus = 0.34 if recent_hit else 0.0
-    score = _clamp01(
-        (importance * 0.56) + (layer_ratio * 0.2) + collection_bonus + recent_bonus
-    )
-    return score, recent_hit, usage_path
-
-
-def _growth_guard_pressure_native(
-    *,
-    file_count: int,
-    edge_count: int,
-    crawler_count: int,
-    item_count: int,
-    sim_point_budget: int,
-    queue_pending_count: int,
-    queue_event_count: int,
-    cpu_utilization: float,
-) -> dict[str, Any] | None:
-    try:
-        from .c_double_buffer_backend import compute_growth_guard_pressure_native
-
-        return compute_growth_guard_pressure_native(
-            file_count=file_count,
-            edge_count=edge_count,
-            crawler_count=crawler_count,
-            item_count=item_count,
-            sim_point_budget=sim_point_budget,
-            queue_pending_count=queue_pending_count,
-            queue_event_count=queue_event_count,
-            cpu_utilization=cpu_utilization,
-            weaver_graph_node_limit=_safe_float(WEAVER_GRAPH_NODE_LIMIT, 1.0),
-            watch_threshold=SIMULATION_GROWTH_WATCH_THRESHOLD,
-            critical_threshold=SIMULATION_GROWTH_CRITICAL_THRESHOLD,
-        )
-    except Exception:
-        return None
-
-
-def _growth_guard_scores_native(
-    *,
-    importance: list[float],
-    layer_counts: list[int],
-    has_collection: list[bool],
-    recent_hit: list[bool],
-) -> list[float] | None:
-    try:
-        from .c_double_buffer_backend import compute_growth_guard_scores_native
-
-        return compute_growth_guard_scores_native(
-            importance=importance,
-            layer_counts=layer_counts,
-            has_collection=has_collection,
-            recent_hit=recent_hit,
-        )
-    except Exception:
-        return None
-
-
-def _graph_rows(
-    file_graph: dict[str, Any] | None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    graph = file_graph if isinstance(file_graph, dict) else {}
-    node_rows: list[dict[str, Any]] = []
-    seen_node_ids: set[str] = set()
-
-    def _append_rows(raw_rows: Any) -> None:
-        if not isinstance(raw_rows, list):
-            return
-        for row in raw_rows:
-            if not isinstance(row, dict):
-                continue
-            node_id = str(row.get("id", "")).strip()
-            if node_id and node_id in seen_node_ids:
-                continue
-            node_rows.append(row)
-            if node_id:
-                seen_node_ids.add(node_id)
-
-    _append_rows(graph.get("nodes", []))
-    _append_rows(graph.get("field_nodes", []))
-    _append_rows(graph.get("tag_nodes", []))
-    _append_rows(graph.get("file_nodes", []))
-    _append_rows(graph.get("crawler_nodes", []))
-    edge_rows = [
-        row
-        for row in (
-            graph.get("edges", []) if isinstance(graph.get("edges", []), list) else []
-        )
-        if isinstance(row, dict)
-    ]
-    return node_rows, edge_rows
-
-
-def _graph_node_type_counts(node_rows: list[dict[str, Any]]) -> dict[str, int]:
-    counts: dict[str, int] = {
-        "field": 0,
-        "tag": 0,
-        "file": 0,
-        "crawler": 0,
-        "other": 0,
-    }
-    for row in node_rows:
-        node_type = str(row.get("node_type", "")).strip().lower()
-        if node_type == "field":
-            counts["field"] += 1
-        elif node_type == "tag":
-            counts["tag"] += 1
-        elif node_type == "file":
-            if str(row.get("url", "")).strip():
-                counts["crawler"] += 1
-            else:
-                counts["file"] += 1
-        elif node_type == "crawler":
-            counts["crawler"] += 1
-        else:
-            counts["other"] += 1
-    return counts
-
-
-def _build_truth_graph_contract(file_graph: dict[str, Any] | None) -> dict[str, Any]:
-    now_iso = datetime.now(timezone.utc).isoformat()
-    node_rows, edge_rows = _graph_rows(file_graph)
-    node_type_counts = _graph_node_type_counts(node_rows)
-    node_ids = sorted(
-        {
-            str(row.get("id", "")).strip()
-            for row in node_rows
-            if str(row.get("id", "")).strip()
-        }
-    )
-    edge_ids = sorted(
-        {
-            str(row.get("id", "")).strip()
-            for row in edge_rows
-            if str(row.get("id", "")).strip()
-        }
-    )
-    node_digest_input = "\n".join(node_ids)
-    edge_digest_input = "\n".join(edge_ids)
-    projection_bundle_node_count = sum(
-        1
-        for row in node_rows
-        if isinstance(row, dict)
-        and (
-            bool(row.get("projection_overflow", False))
-            or bool(row.get("semantic_bundle", False))
-            or str(row.get("kind", "")).strip().lower() == "projection_overflow"
-        )
-    )
-    projection_bundle_edge_count = sum(
-        1
-        for row in edge_rows
-        if isinstance(row, dict) and bool(row.get("projection_overflow", False))
-    )
-
-    return {
-        "record": SIMULATION_TRUTH_GRAPH_RECORD,
-        "schema_version": SIMULATION_TRUTH_GRAPH_SCHEMA_VERSION,
-        "generated_at": now_iso,
-        "node_count": int(len(node_rows)),
-        "edge_count": int(len(edge_rows)),
-        "node_type_counts": node_type_counts,
-        "node_id_digest": sha1(node_digest_input.encode("utf-8")).hexdigest()
-        if node_digest_input
-        else "",
-        "edge_id_digest": sha1(edge_digest_input.encode("utf-8")).hexdigest()
-        if edge_digest_input
-        else "",
-        "provenance": {
-            "source": "catalog.file_graph",
-            "lossless": True,
-        },
-        "semantics": {
-            "graph_domain": "truth_graph",
-            "graph_scope": "truth",
-            "includes_projection_bundles": False,
-            "projection_bundle_node_count": int(projection_bundle_node_count),
-            "projection_bundle_edge_count": int(projection_bundle_edge_count),
-        },
-    }
-
-
-def _build_view_graph_contract(file_graph: dict[str, Any] | None) -> dict[str, Any]:
-    now_iso = datetime.now(timezone.utc).isoformat()
-    node_rows, edge_rows = _graph_rows(file_graph)
-    node_type_counts = _graph_node_type_counts(node_rows)
-    projection = (
-        file_graph.get("projection", {})
-        if isinstance(file_graph, dict)
-        and isinstance(file_graph.get("projection", {}), dict)
-        else {}
-    )
-    projection_policy = (
-        projection.get("policy", {})
-        if isinstance(projection, dict)
-        and isinstance(projection.get("policy", {}), dict)
-        else {}
-    )
-    groups = [
-        row
-        for row in (
-            projection.get("groups", [])
-            if isinstance(projection.get("groups", []), list)
-            else []
-        )
-        if isinstance(row, dict)
-    ]
-    bundle_ledgers: list[dict[str, Any]] = []
-    bundle_member_edges_total = 0
-    reconstructable_bundle_count = 0
-    surface_visible_count = 0
-    for group in groups:
-        member_edge_count = max(0, _safe_int(group.get("member_edge_count", 0), 0))
-        member_edge_ids = group.get("member_edge_ids", [])
-        has_member_ids = isinstance(member_edge_ids, list) and bool(member_edge_ids)
-        if has_member_ids:
-            reconstructable_bundle_count += 1
-        if bool(group.get("surface_visible", False)):
-            surface_visible_count += 1
-        bundle_member_edges_total += member_edge_count
-        bundle_ledgers.append(
-            {
-                "bundle_id": str(group.get("id", "")),
-                "kind": str(group.get("kind", "")),
-                "field": str(group.get("field", "")),
-                "target": str(group.get("target", "")),
-                "member_edge_count": int(member_edge_count),
-                "member_source_count": max(
-                    0, _safe_int(group.get("member_source_count", 0), 0)
-                ),
-                "member_target_count": max(
-                    0, _safe_int(group.get("member_target_count", 0), 0)
-                ),
-                "member_edge_digest": str(group.get("member_edge_digest", "")),
-                "surface_visible": bool(group.get("surface_visible", False)),
-            }
-        )
-
-    projection_bundle_node_count = sum(
-        1
-        for row in node_rows
-        if isinstance(row, dict)
-        and (
-            bool(row.get("projection_overflow", False))
-            or bool(row.get("semantic_bundle", False))
-            or str(row.get("kind", "")).strip().lower() == "projection_overflow"
-        )
-    )
-    projection_bundle_edge_count = sum(
-        1
-        for row in edge_rows
-        if isinstance(row, dict) and bool(row.get("projection_overflow", False))
-    )
-
-    return {
-        "record": SIMULATION_VIEW_GRAPH_RECORD,
-        "schema_version": SIMULATION_VIEW_GRAPH_SCHEMA_VERSION,
-        "generated_at": now_iso,
-        "node_count": int(len(node_rows)),
-        "edge_count": int(len(edge_rows)),
-        "node_type_counts": node_type_counts,
-        "projection": {
-            "mode": str(projection.get("mode", "none") or "none"),
-            "active": bool(projection.get("active", False)),
-            "reason": str(projection.get("reason", "") or ""),
-            "compaction_drive": round(
-                _clamp01(
-                    _safe_float(projection_policy.get("compaction_drive", 0.0), 0.0)
-                ),
-                6,
-            ),
-            "cpu_pressure": round(
-                _clamp01(_safe_float(projection_policy.get("cpu_pressure", 0.0), 0.0)),
-                6,
-            ),
-            "view_edge_pressure": round(
-                _clamp01(
-                    _safe_float(projection_policy.get("view_edge_pressure", 0.0), 0.0)
-                ),
-                6,
-            ),
-            "cpu_utilization": round(
-                max(
-                    0.0,
-                    min(
-                        100.0,
-                        _safe_float(projection_policy.get("cpu_utilization", 0.0), 0.0),
-                    ),
-                ),
-                3,
-            ),
-            "cpu_sentinel_id": str(projection_policy.get("presence_id", "") or ""),
-            "edge_threshold_base": int(
-                _safe_int(
-                    projection_policy.get(
-                        "edge_threshold_base",
-                        SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD,
-                    ),
-                    SIMULATION_FILE_GRAPH_PROJECTION_EDGE_THRESHOLD,
-                )
-            ),
-            "edge_threshold_effective": int(
-                _safe_int(
-                    projection_policy.get("edge_threshold_effective", 0),
-                    0,
-                )
-            ),
-            "edge_cap_base": int(
-                _safe_int(projection_policy.get("edge_cap_base", 0), 0)
-            ),
-            "edge_cap_effective": int(
-                _safe_int(projection_policy.get("edge_cap_effective", 0), 0)
-            ),
-            "bundle_ledger_count": int(len(bundle_ledgers)),
-            "bundle_member_edge_count_total": int(bundle_member_edges_total),
-            "reconstructable_bundle_count": int(reconstructable_bundle_count),
-            "surface_visible_bundle_count": int(surface_visible_count),
-            "bundle_ledgers": bundle_ledgers,
-            "ledger_ref": "file_graph.projection.groups",
-            "policy": projection_policy,
-        },
-        "projection_pi": {
-            "kind": "edge-bundle" if bundle_ledgers else "identity",
-            "bundle_count": int(len(bundle_ledgers)),
-            "bundle_member_edge_count_total": int(bundle_member_edges_total),
-            "reconstructable_bundle_count": int(reconstructable_bundle_count),
-        },
-        "semantics": {
-            "graph_domain": "view_graph",
-            "graph_scope": "view",
-            "includes_projection_bundles": bool(bundle_ledgers),
-            "projection_bundle_node_count": int(projection_bundle_node_count),
-            "projection_bundle_edge_count": int(projection_bundle_edge_count),
-            "bundle_semantic_role": "view_compaction_aggregate",
-        },
-    }
 
 
 def _default_growth_guard(
@@ -3988,10 +3461,13 @@ def _load_test_signal_artifacts(
 def _build_logical_graph(catalog: dict[str, Any]) -> dict[str, Any]:
     file_graph = catalog.get("file_graph") if isinstance(catalog, dict) else {}
     truth_state = catalog.get("truth_state") if isinstance(catalog, dict) else {}
+    lith_nexus = catalog.get("lith_nexus") if isinstance(catalog, dict) else {}
     if not isinstance(file_graph, dict):
         file_graph = {}
     if not isinstance(truth_state, dict):
         truth_state = {}
+    if not isinstance(lith_nexus, dict):
+        lith_nexus = {}
 
     file_nodes_raw = file_graph.get("file_nodes", [])
     if not isinstance(file_nodes_raw, list):
@@ -4212,6 +3688,17 @@ def _build_logical_graph(catalog: dict[str, Any]) -> dict[str, Any]:
                     "weight": 0.58,
                 }
             )
+
+    merge_lith_nexus_into_logical_graph(
+        graph_nodes=graph_nodes,
+        graph_edges=graph_edges,
+        file_path_to_node=file_path_to_node,
+        tag_token_to_logical=tag_token_to_logical,
+        lith_nexus=lith_nexus,
+        normalize_path_for_file_id=_normalize_path_for_file_id,
+        safe_float=_safe_float,
+        clamp01=_clamp01,
+    )
 
     for idx, row in enumerate(test_failures):
         if not isinstance(row, dict):
@@ -5725,65 +5212,16 @@ def _trim_weaver_interaction_state(
 def _weaver_interaction_budget_policy(
     presence_dynamics: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    dynamics = presence_dynamics if isinstance(presence_dynamics, dict) else {}
-    resource_consumption = (
-        dynamics.get("resource_consumption", {})
-        if isinstance(dynamics.get("resource_consumption", {}), dict)
-        else {}
-    )
-    control_budget = (
-        resource_consumption.get("control_budget", {})
-        if isinstance(resource_consumption.get("control_budget", {}), dict)
-        else {}
-    )
-    mode = str(control_budget.get("mode", "") or "").strip().lower()
-    ratio = _clamp01(_safe_float(control_budget.get("ratio", 1.0), 1.0))
-    queue_ratio = _clamp01(
-        _safe_float(resource_consumption.get("queue_ratio", 0.0), 0.0)
-    )
-    compute_jobs_180s = max(0, _safe_int(dynamics.get("compute_jobs_180s", 0), 0))
-    cpu_sentinel_burn_active = bool(
-        resource_consumption.get("cpu_sentinel_burn_active", False)
-    )
-
-    cap = max(0, int(_SIMULATION_WEAVER_INTERACTION_PER_TICK_CAP))
-    cooldown_seconds = max(
+    snapshot = build_control_budget_snapshot(presence_dynamics)
+    base_cap = max(0, int(_SIMULATION_WEAVER_INTERACTION_PER_TICK_CAP))
+    base_cooldown_seconds = max(
         0.2, float(_SIMULATION_WEAVER_INTERACTION_LOCAL_COOLDOWN_SECONDS)
     )
-
-    if cpu_sentinel_burn_active or mode == "minimal" or ratio < 0.08:
-        cap = min(cap, 1)
-        cooldown_seconds = max(cooldown_seconds, 24.0)
-    elif mode == "reduced" or ratio < 0.16:
-        cap = min(cap, 2)
-        cooldown_seconds = max(cooldown_seconds, 14.0)
-    elif mode == "moderate" or ratio < 0.30:
-        cap = min(cap, 3)
-        cooldown_seconds = max(cooldown_seconds, 9.0)
-
-    if queue_ratio >= 0.90:
-        cap = min(cap, 1)
-        cooldown_seconds = max(cooldown_seconds, 24.0)
-    elif queue_ratio >= 0.75:
-        cap = min(cap, 2)
-        cooldown_seconds = max(cooldown_seconds, 12.0)
-
-    if compute_jobs_180s >= 48:
-        cap = min(cap, 1)
-        cooldown_seconds = max(cooldown_seconds, 16.0)
-    elif compute_jobs_180s >= 28:
-        cap = min(cap, 2)
-        cooldown_seconds = max(cooldown_seconds, 10.0)
-
-    return {
-        "mode": mode or "full",
-        "ratio": round(ratio, 6),
-        "queue_ratio": round(queue_ratio, 6),
-        "compute_jobs_180s": int(compute_jobs_180s),
-        "cpu_sentinel_burn_active": bool(cpu_sentinel_burn_active),
-        "per_tick_cap": max(0, int(cap)),
-        "local_cooldown_seconds": round(max(0.2, cooldown_seconds), 3),
-    }
+    return apply_weaver_interaction_budget_policy(
+        snapshot=snapshot,
+        base_per_tick_cap=base_cap,
+        base_cooldown_seconds=base_cooldown_seconds,
+    )
 
 
 def _apply_crawler_weaver_interaction_triggers(

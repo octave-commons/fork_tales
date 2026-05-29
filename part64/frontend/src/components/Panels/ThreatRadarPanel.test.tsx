@@ -748,6 +748,77 @@ describe("ThreatRadarPanel", () => {
     expect(String(museRequest.muse_id || "")).toBe("chaos");
   });
 
+  it("renders compact source-context layout when muse chat panel is provided", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/muse/threat-radar/report")) {
+        return mockJsonResponse({
+          ok: true,
+          radar: "global",
+          runtime: {
+            muse_id: "chaos",
+            interval_seconds: 45,
+            state: { last_status: "ok" },
+          },
+          result: {
+            count: 1,
+            critical_count: 1,
+            high_count: 0,
+            medium_count: 0,
+            low_count: 0,
+            source_count: 2,
+            sources: [
+              {
+                url: "https://www.ukmto.org/advisory/003-26",
+                kind: "maritime:ukmto_advisory",
+                title: "UKMTO Advisory 003-26",
+                source_type: "crawl",
+              },
+            ],
+            threats: [
+              {
+                risk_score: 10,
+                risk_level: "critical",
+                domain: "ukmto.org",
+                kind: "maritime:ukmto_advisory",
+                title: "Chaos compact row",
+                canonical_url: "https://www.ukmto.org/advisory/003-26",
+                labels: ["maritime_activity", "electronic_interference"],
+              },
+            ],
+          },
+        });
+      }
+      if (url.includes("/api/muse/threat-radar/tick")) {
+        return mockJsonResponse({ ok: true, status: "triggered" });
+      }
+      if (url.includes("/api/github/conversation")) {
+        return mockJsonResponse({ ok: true, markdown: "", comment_count: 0 });
+      }
+      return mockJsonResponse({ ok: true });
+    });
+
+    render(
+      <ThreatRadarPanel
+        fixedRadarMode="global"
+        assignedMuseByMode={{
+          local: "witness_thread",
+          global: "chaos",
+        }}
+        museChatPanel={<div>muse lane body</div>}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("GLOBAL SOURCE CONTEXT")).toBeTruthy();
+      expect(screen.getByText("Top Threats")).toBeTruthy();
+      expect(screen.getByText("Chaos compact row")).toBeTruthy();
+      expect(screen.getByText("muse lane body")).toBeTruthy();
+    });
+
+    expect(screen.queryByText("Chaos Muse / Global Geopolitical Radar")).toBeNull();
+  });
+
   it("ignores stale local report responses after switching back to global", async () => {
     const localReportResolver: { resolve: (value: Response) => void } = {
       resolve: () => undefined,

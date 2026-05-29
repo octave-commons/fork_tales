@@ -1,0 +1,73 @@
+;; contract — top-level agent contract EDN
+
+;; enums
+[:trigger-kind  [:enum :cron :event :manual]
+ :source-kind   [:enum :discord :github :cron :manual :http :rss :local :pi-sessions :s3]
+ :sink-kind     [:enum :openplanner :ragussy]
+ :thinking      [:enum :off :minimal :low :medium :high :xhigh]
+
+;; sub-blocks
+ :agent         [:map {:closed false}
+                 [:role     {:optional true} :keyword]
+                 [:model    {:optional true} :string]
+                 [:thinking {:optional true} :thinking]]
+
+ :prompts       [:map {:closed false}
+                 [:system {:optional true} :prompt-value]
+                 [:task   {:optional true} :prompt-value]
+                 [:user   {:optional true} :prompt-value]]
+
+ :events-block  [:map {:closed false}
+                 [:always {:optional true} [:vector :namespaced]]
+                 [:maybe  {:optional true} [:vector :namespaced]]]
+
+ :hook-node     [:map {:closed false}
+                 [:expr   {:optional true} :any]
+                 [:fn-ref {:optional true} :keyword]]
+
+ :hooks         [:map {:closed false}
+                 [:before {:optional true} [:map-of :keyword :hook-node]]
+                 [:after  {:optional true} [:map-of :keyword :hook-node]]]
+
+ :tool-policy   [:map {:closed false}
+                 [:name    :string]
+                 [:effect  {:optional true} [:enum :allow :deny]]
+                 [:allowed {:optional true} [:vector :string]]]
+
+ :data-source   [:map {:closed false}
+                 [:root-path   {:optional true} :string]
+                 [:batch-size  {:optional true} :pos-int]
+                 [:collections {:optional true} [:vector :string]]]
+
+ :openplanner-opts [:map {:closed false}
+                    [:collection      {:optional true} :string]
+                    [:embedding-model {:optional true} :string]
+                    [:chunk-strategy  {:optional true} [:enum :paragraph :semantic]]
+                    [:semantic-edges  {:optional true} :boolean]
+                    [:top-k           {:optional true} :pos-int]
+                    [:min-score       {:optional true} :score]]
+
+ :data-block    [:map {:closed false}
+                 [:source      {:optional true} :data-source]
+                 [:filters     {:optional true} [:map-of :keyword :any]]
+                 [:collections {:optional true} [:vector :string]]
+                 [:sink        {:optional true} :sink-kind]
+                 [:openplanner {:optional true} :openplanner-opts]]
+
+;; top-level
+ :contract      [:map {:closed false}
+                 [:contract/id      :id]
+                 [:contract/version {:optional true} :version]
+                 [:contract/kind    {:optional true} :keyword]
+                 [:contract/uses    {:optional true} [:vector :id]]
+                 [:enabled          {:optional true} :boolean]
+                 [:trigger-kind     :trigger-kind]
+                 [:source-kind      :source-kind]
+                 [:source-mode      {:optional true} :string]
+                 [:cadence-min      {:optional true} [:int {:min 1 :max 10080}]]
+                 [:agent            {:optional true} :agent]
+                 [:prompts          {:optional true} :prompts]
+                 [:events           {:optional true} :events-block]
+                 [:data             {:optional true} :data-block]
+                 [:tools            {:optional true} [:vector :tool-policy]]
+                 [:hooks            {:optional true} :hooks]]]

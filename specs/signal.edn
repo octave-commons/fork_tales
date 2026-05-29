@@ -1,0 +1,40 @@
+;; signal — observations, correlations, radar findings
+;; replaces hand-rolled signal-contracts TS normalization
+
+{:signal-direction [:enum :into :out-of :lateral :recursive]
+
+ ;; closed=true: crosses TS<->CLJS wire boundary
+ :signal-obs    [:map {:closed true}
+                 [:record         [:= :open-hax.signal-observation/v1]]
+                 [:schema-version [:= :signal.observation/v1]]
+                 [:id             :uuid]
+                 [:scope          :string]
+                 [:profile        :string]
+                 [:category       :string]
+                 [:severity       :score]
+                 [:confidence     :score]
+                 [:direction      :signal-direction]
+                 [:subject-refs   [:vector :string]]
+                 [:evidence-refs  [:vector :string]]
+                 [:tags           [:vector :string]]
+                 [:observed-at    :inst]
+                 [:summary        :string]]
+
+ :correlation   [:map {:closed false}
+                 [:id       :uuid]
+                 [:from     :uuid]
+                 [:to       :uuid]
+                 [:kind     :keyword]
+                 [:weight   {:optional true} :score]
+                 [:evidence {:optional true} [:vector :string]]
+                 [:ts       :inst]]
+
+ :radar-finding [:map {:closed false}
+                 [:id         :uuid]
+                 [:kind       :keyword]
+                 [:scope      :string]
+                 [:severity   :score]
+                 [:confidence :score]
+                 [:refs       [:vector :uuid]]
+                 [:summary    :string]
+                 [:ts         :inst]]}

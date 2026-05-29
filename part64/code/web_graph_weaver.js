@@ -4,6 +4,38 @@ const path = require("path");
 const crypto = require("crypto");
 const { URL } = require("url");
 const { WebSocketServer } = require("ws");
+const {
+  loadWatchlistSeedsFromFile,
+  mergeRequestedAndWatchlistSeeds,
+  parseWatchlistSeeds,
+} = require("@open-hax/signal-watchlists");
+const {
+  buildArxivApiQueryUrl,
+  canonicalArxivAbsUrlFromId,
+  canonicalArxivPdfUrlFromId,
+  canonicalWikipediaArticleUrl,
+  classifyKnowledgeUrl,
+  extractArxivAbsUrlsFromApiFeed,
+  extractArxivIdFromUrl,
+  extractCanonicalHref,
+  extractFeedEntries,
+  extractFeedEntryLinks,
+  extractLinks,
+  extractReadableTextFromHtml,
+  extractSemanticReferences,
+  extractTitle,
+  fallbackTextSummary,
+  inferKnowledgeMetadata,
+  isArxivSearchUrl,
+  isTextLikeContentType,
+  llmAuthHeaders,
+  looksLikeFeedDocument,
+  normalizeAnalysisSummary,
+  normalizeUrl,
+  parseArxivSearchSeed,
+  parseAuthHeader,
+  parseContentType,
+} = require("@open-hax/signal-source-utils");
 
 const HOST = process.env.WEAVER_HOST || "127.0.0.1";
 const PORT = Number.parseInt(process.env.WEAVER_PORT || "8793", 10);
@@ -49,15 +81,8 @@ const FETCH_TIMEOUT_MS = Number.parseInt(
   process.env.WEAVER_FETCH_TIMEOUT_MS || "12000",
   10,
 );
-const ARXIV_API_QUERY_URL = String(
-  process.env.WEAVER_ARXIV_API_QUERY_URL || "http://export.arxiv.org/api/query",
-).trim();
 const ARXIV_API_MIN_DELAY_MS = Number.parseInt(
   process.env.WEAVER_ARXIV_API_MIN_DELAY_MS || "3100",
-  10,
-);
-const ARXIV_API_MAX_RESULTS = Number.parseInt(
-  process.env.WEAVER_ARXIV_API_MAX_RESULTS || "400",
   10,
 );
 const FEED_ENTRY_LINK_MAX = Number.parseInt(
@@ -66,18 +91,6 @@ const FEED_ENTRY_LINK_MAX = Number.parseInt(
 );
 const ROBOTS_CACHE_TTL_MS = Number.parseInt(
   process.env.WEAVER_ROBOTS_CACHE_TTL_MS || String(60 * 60 * 1000),
-  10,
-);
-const MAX_SEMANTIC_REFERENCES_PER_PAGE = Number.parseInt(
-  process.env.WEAVER_MAX_SEMANTIC_REFERENCES_PER_PAGE || "2000",
-  10,
-);
-const MAX_ARXIV_REFERENCES_PER_PAGE = Number.parseInt(
-  process.env.WEAVER_MAX_ARXIV_REFERENCES_PER_PAGE || "1500",
-  10,
-);
-const MAX_WIKIPEDIA_REFERENCES_PER_PAGE = Number.parseInt(
-  process.env.WEAVER_MAX_WIKIPEDIA_REFERENCES_PER_PAGE || "1500",
   10,
 );
 const DEFAULT_MAX_REQUESTS_PER_HOST = Number.parseInt(
@@ -145,67 +158,12 @@ const LLM_TEXT_MAX_CHARS = Number.parseInt(
   10,
 );
 
-function parseAuthHeader(rawHeader) {
-  const header = String(rawHeader || "").trim();
-  if (!header) {
-    return {};
-  }
-  if (header.includes(":")) {
-    const [key, ...rest] = header.split(":");
-    const normalizedKey = String(key || "").trim();
-    const normalizedValue = String(rest.join(":") || "").trim();
-    if (normalizedKey && normalizedValue) {
-      return {
-        [normalizedKey]: normalizedValue,
-      };
-    }
-  }
-  return {
-    Authorization: header,
-  };
-}
-
-function llmAuthHeaders() {
-  const weaverRawHeader = String(process.env.WEAVER_LLM_AUTH_HEADER || "").trim();
-  if (weaverRawHeader) {
-    return parseAuthHeader(weaverRawHeader);
-  }
-  const textGenerationRawHeader = String(process.env.TEXT_GENERATION_AUTH_HEADER || "").trim();
-  if (textGenerationRawHeader) {
-    return parseAuthHeader(textGenerationRawHeader);
-  }
-
-  const bearerToken =
-    String(process.env.WEAVER_LLM_BEARER_TOKEN || "").trim() ||
-    String(process.env.TEXT_GENERATION_BEARER_TOKEN || "").trim();
-  if (bearerToken) {
-    return {
-      Authorization: `Bearer ${bearerToken}`,
-    };
-  }
-
-  const apiKey =
-    String(process.env.WEAVER_LLM_API_KEY || "").trim() ||
-    String(process.env.TEXT_GENERATION_API_KEY || "").trim();
-  if (apiKey) {
-    const headerName = String(
-      process.env.WEAVER_LLM_API_KEY_HEADER ||
-        process.env.TEXT_GENERATION_API_KEY_HEADER ||
-        "X-API-Key",
-    ).trim();
-    return {
-      [headerName || "X-API-Key"]: apiKey,
-    };
-  }
-
-  return {};
-}
-
 const LLM_AUTH_HEADERS = llmAuthHeaders();
 const LLM_AUTH_CONFIGURED = Object.keys(LLM_AUTH_HEADERS).length > 0;
 const USER_AGENT =
   process.env.WEAVER_USER_AGENT ||
   `WebGraphWeaver/0.1 (+http://${HOST}:${PORT}/api/weaver/opt-out)`;
+const WEAVER_RESEARCH_MODE = String(process.env.WEAVER_RESEARCH_MODE || "").trim().toLowerCase();
 
 const PART_ROOT = path.join(__dirname, "..");
 const WORLD_STATE_DIR = path.join(PART_ROOT, "world_state");
@@ -242,71 +200,14 @@ function ensureWorldStateDir() {
 }
 
 function parseWorldWatchlistSeeds(payload) {
-  if (!payload || typeof payload !== "object") {
-    return [];
-  }
-  if (payload.enabled === false) {
-    return [];
-  }
-  const domains = Array.isArray(payload.domains) ? payload.domains : [];
-  const rows = [];
-  const seen = new Set();
-  for (const domainRow of domains) {
-    if (!domainRow || typeof domainRow !== "object") {
-      continue;
-    }
-    if (domainRow.enabled === false) {
-      continue;
-    }
-    const domainId = String(domainRow.id || "").trim();
-    const seedRows = Array.isArray(domainRow.seed_urls) ? domainRow.seed_urls : [];
-    for (const seedRow of seedRows) {
-      let rawUrl = "";
-      let kind = "";
-      let title = "";
-      let sourceType = "";
-      if (typeof seedRow === "string") {
-        rawUrl = seedRow;
-      } else if (seedRow && typeof seedRow === "object") {
-        rawUrl = String(seedRow.url || "").trim();
-        kind = String(seedRow.kind || "").trim().toLowerCase();
-        title = String(seedRow.title || "").trim();
-        sourceType = String(seedRow.source_type || "").trim().toLowerCase();
-      }
-      const normalizedUrl = normalizeUrl(rawUrl, undefined);
-      if (!normalizedUrl || seen.has(normalizedUrl)) {
-        continue;
-      }
-      seen.add(normalizedUrl);
-      rows.push({
-        url: normalizedUrl,
-        kind,
-        title,
-        source_type: sourceType,
-        domain_id: domainId,
-      });
-    }
-  }
-  return rows;
+  return parseWatchlistSeeds(payload);
 }
 
 function loadWorldWatchlistSeeds(filePath = WORLD_WATCHLIST_PATH) {
   if (!WORLD_WATCHLIST_ENABLED) {
     return [];
   }
-  const target = String(filePath || "").trim();
-  if (!target) {
-    return [];
-  }
-  try {
-    if (!fs.existsSync(target)) {
-      return [];
-    }
-    const payload = JSON.parse(fs.readFileSync(target, "utf-8"));
-    return parseWorldWatchlistSeeds(payload);
-  } catch (_err) {
-    return [];
-  }
+  return loadWatchlistSeedsFromFile(filePath);
 }
 
 function loadWeaverSnapshot(filePath = SNAPSHOT_PATH) {
@@ -443,954 +344,415 @@ function normalizeDomain(input) {
   return value.replace(/^https?:\/\//, "").replace(/\/$/, "");
 }
 
-function normalizeUrl(raw, base) {
+const RESEARCH_MOTIF_PATTERNS = {
+  quantization: [/\bint6\b/i, /\bint8\b/i, /\bqat\b/i, /quant/i, /fp16 embed/i, /outlier/i],
+  recurrence: [/recurr/i, /shared depth/i, /layer tying/i, /cross-layer/i, /phase-conditioned/i],
+  tokenizer: [/tokenizer/i, /vocab/i, /sp1024/i, /sp4096/i, /bigramhash/i, /lm head/i],
+  optimizer: [/muon/i, /normuon/i, /swa/i, /warmdown/i, /optimizer/i],
+  eval_time_compute: [/sliding window/i, /sliding eval/i, /test-time training/i, /\bttt\b/i, /iterative refinement/i],
+  artifact_interface: [/rmsnorm/i, /codebook/i, /codec/i, /artifact-native/i, /regenerated-head/i],
+};
+
+function detectResearchMotifs(node) {
+  const text = [
+    String(node?.url || ""),
+    String(node?.title || ""),
+    String(node?.analysis_summary || ""),
+    String(node?.content_type || ""),
+  ].join(" ");
+  const motifs = [];
+  for (const [motif, patterns] of Object.entries(RESEARCH_MOTIF_PATTERNS)) {
+    if (patterns.some((pattern) => pattern.test(text))) {
+      motifs.push(motif);
+    }
+  }
+  return motifs;
+}
+
+function parameterGolfPatchBridgeUrl(input) {
   try {
-    const url = base ? new URL(raw, base) : new URL(raw);
-    if (url.protocol !== "http:" && url.protocol !== "https:") {
-      return null;
-    }
-    url.hash = "";
-    url.username = "";
-    url.password = "";
-    if (url.protocol === "http:" && url.port === "80") {
-      url.port = "";
-    }
-    if (url.protocol === "https:" && url.port === "443") {
-      url.port = "";
-    }
-    const cleanPath = url.pathname.replace(/\/+/g, "/");
-    if (cleanPath.length > 1) {
-      url.pathname = cleanPath.replace(/\/+$/, "");
-    } else {
-      url.pathname = "/";
-    }
-    const sortedParams = [...url.searchParams.entries()].sort((a, b) => {
-      if (a[0] === b[0]) {
-        return a[1].localeCompare(b[1]);
-      }
-      return a[0].localeCompare(b[0]);
-    });
-    url.search = "";
-    for (const [key, value] of sortedParams) {
-      url.searchParams.append(key, value);
-    }
-    return url.toString();
-  } catch (_err) {
-    return null;
-  }
-}
-
-function safeDecodeURIComponent(value) {
-  try {
-    return decodeURIComponent(value);
-  } catch (_err) {
-    return value;
-  }
-}
-
-function normalizeArxivId(rawId) {
-  let value = String(rawId || "").trim();
-  if (!value) {
-    return "";
-  }
-  value = value.replace(/\.pdf$/i, "").replace(/\/+$/, "");
-  value = value.replace(/v\d+$/i, "");
-  value = safeDecodeURIComponent(value);
-  if (!/^[a-z0-9._\-\/]+$/i.test(value)) {
-    return "";
-  }
-  return value;
-}
-
-function isArxivHost(hostname) {
-  const host = String(hostname || "").toLowerCase();
-  return host === "arxiv.org" || host.endsWith(".arxiv.org");
-}
-
-function extractArxivIdFromUrl(rawUrl) {
-  try {
-    const parsed = new URL(rawUrl);
-    if (!isArxivHost(parsed.hostname)) {
+    const parsed = input instanceof URL ? input : new URL(String(input || "").trim());
+    const host = String(parsed.hostname || "").trim().toLowerCase();
+    if (host !== "patch-diff.githubusercontent.com") {
       return "";
     }
-    const path = parsed.pathname || "";
-    const match = /^\/(abs|pdf)\/(.+)$/i.exec(path);
+    const match = String(parsed.pathname || "").match(/^\/raw\/openai\/parameter-golf\/pull\/(\d+)\.patch$/i);
     if (!match) {
       return "";
     }
-    const candidate = normalizeArxivId(match[2]);
-    return candidate;
+    return `https://github.com/openai/parameter-golf/pull/${match[1]}`;
   } catch (_err) {
     return "";
   }
 }
 
-function canonicalArxivAbsUrlFromId(arxivId) {
-  const normalized = normalizeArxivId(arxivId);
-  if (!normalized) {
-    return "";
-  }
-  return `https://arxiv.org/abs/${normalized}`;
-}
-
-function canonicalArxivPdfUrlFromId(arxivId) {
-  const normalized = normalizeArxivId(arxivId);
-  if (!normalized) {
-    return "";
-  }
-  return `https://arxiv.org/pdf/${normalized}.pdf`;
-}
-
-function isArxivPdfUrl(rawUrl) {
-  try {
-    const parsed = new URL(rawUrl);
-    return isArxivHost(parsed.hostname) && /^\/pdf\//i.test(parsed.pathname || "");
-  } catch (_err) {
-    return false;
-  }
-}
-
-function isArxivSearchUrl(rawUrl) {
-  try {
-    const parsed = new URL(rawUrl);
-    return isArxivHost(parsed.hostname) && /^\/search\/?$/i.test(parsed.pathname || "");
-  } catch (_err) {
-    return false;
-  }
-}
-
-function parseArxivSearchSeed(rawUrl) {
-  try {
-    const parsed = new URL(rawUrl);
-    if (!isArxivHost(parsed.hostname) || !/^\/search\/?$/i.test(parsed.pathname || "")) {
-      return null;
-    }
-
-    const query = String(
-      parsed.searchParams.get("query") || parsed.searchParams.get("search_query") || "",
-    ).trim();
-    if (!query) {
-      return null;
-    }
-
-    const searchType = String(parsed.searchParams.get("searchtype") || "all").trim().toLowerCase();
-    const prefixByType = {
-      all: "all",
-      title: "ti",
-      author: "au",
-      abstract: "abs",
-      comments: "co",
-      journal_ref: "jr",
-      cat: "cat",
-    };
-    const fieldPrefix = prefixByType[searchType] || "all";
-    const compactQuery = query.replace(/\s+/g, " ").trim();
-    const searchQuery = /^[a-z_]+\s*:/i.test(compactQuery)
-      ? compactQuery
-      : `${fieldPrefix}:${compactQuery}`;
-
-    const sortByRaw = String(parsed.searchParams.get("order") || "").trim().toLowerCase();
-    let sortBy = "relevance";
-    if (sortByRaw === "-announced_date_first") {
-      sortBy = "submittedDate";
-    } else if (sortByRaw === "-last_updated_date") {
-      sortBy = "lastUpdatedDate";
-    }
-
-    const startRaw = Number.parseInt(String(parsed.searchParams.get("start") || "0"), 10);
-    const sizeRaw = Number.parseInt(
-      String(parsed.searchParams.get("size") || parsed.searchParams.get("max_results") || "25"),
-      10,
-    );
-    const start = Number.isFinite(startRaw) ? Math.max(0, startRaw) : 0;
-    const maxResults = clamp(
-      Number.isFinite(sizeRaw) && sizeRaw > 0 ? sizeRaw : 25,
-      1,
-      Math.max(1, ARXIV_API_MAX_RESULTS),
-    );
-
-    return {
-      searchQuery,
-      start,
-      maxResults,
-      sortBy,
-      sortOrder: "descending",
-    };
-  } catch (_err) {
-    return null;
-  }
-}
-
-function buildArxivApiQueryUrl(seed) {
-  const parsed = seed || {};
-  const apiUrl = new URL(ARXIV_API_QUERY_URL);
-  apiUrl.searchParams.set("search_query", String(parsed.searchQuery || "all:all"));
-  apiUrl.searchParams.set("start", String(Math.max(0, Number(parsed.start || 0))));
-  apiUrl.searchParams.set(
-    "max_results",
-    String(clamp(Number(parsed.maxResults || 25), 1, Math.max(1, ARXIV_API_MAX_RESULTS))),
-  );
-  apiUrl.searchParams.set("sortBy", String(parsed.sortBy || "relevance"));
-  apiUrl.searchParams.set("sortOrder", String(parsed.sortOrder || "descending"));
-  return apiUrl.toString();
-}
-
-function extractArxivAbsUrlsFromApiFeed(feedXml, maxItems = ARXIV_API_MAX_RESULTS) {
-  const xml = String(feedXml || "");
-  const entries = xml.match(/<entry\b[\s\S]*?<\/entry>/gi) || [];
-  const output = [];
-  const seen = new Set();
-  for (const entry of entries) {
-    const idMatch = /<id[^>]*>\s*([^<]+)\s*<\/id>/i.exec(entry);
-    const idUrl = String(idMatch?.[1] || "").trim();
-    const arxivId = extractArxivIdFromUrl(idUrl);
-    if (!arxivId) {
-      continue;
-    }
-    const canonical = canonicalArxivAbsUrlFromId(arxivId);
-    if (!canonical || seen.has(canonical)) {
-      continue;
-    }
-    seen.add(canonical);
-    output.push(canonical);
-    if (output.length >= maxItems) {
-      break;
-    }
-  }
-  return output;
-}
-
-function extractFeedEntries(feedBody, baseUrl, maxItems = FEED_ENTRY_LINK_MAX) {
-  const output = [];
-  const seen = new Set();
-  const safeMax = clamp(Number(maxItems || FEED_ENTRY_LINK_MAX), 1, Math.max(1, FEED_ENTRY_LINK_MAX));
-
-  const cleanFeedText = (rawValue, limit = 360) => {
-    const decoded = decodeHtmlEntities(String(rawValue || "")).replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, "$1");
-    const plain = decoded
-      .replace(/<[^>]+>/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-    if (!plain) {
-      return "";
-    }
-    if (plain.length <= limit) {
-      return plain;
-    }
-    return `${plain.slice(0, Math.max(0, limit - 3)).trim()}...`;
+function parameterGolfRoutingPolicy(input) {
+  const policy = {
+    routingClass: "generic",
+    allowlistBonus: 0,
+    denylistPenalty: 0,
+    hardBlockReason: "",
+    bridgeUrl: "",
+    optOutDomain: false,
   };
-
-  const pushEntry = (rawValue, meta = {}) => {
-    const decoded = String(rawValue || "")
-      .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, "$1")
-      .replace(/&amp;/gi, "&")
-      .replace(/&lt;/gi, "<")
-      .replace(/&gt;/gi, ">")
-      .replace(/&quot;/gi, '"')
-      .replace(/&#39;/gi, "'")
-      .trim();
-    if (!decoded) {
-      return;
-    }
-    const normalized = normalizeUrl(decoded, baseUrl);
-    if (!normalized || seen.has(normalized)) {
-      return;
-    }
-    const title = cleanFeedText(meta.title || "", 200);
-    const summary = cleanFeedText(meta.summary || meta.description || "", 480);
-    const publishedAt = cleanFeedText(meta.publishedAt || meta.date_published || "", 80);
-    const sourceKind = cleanFeedText(meta.sourceKind || "", 80).toLowerCase();
-    seen.add(normalized);
-    output.push({
-      url: normalized,
-      title,
-      summary,
-      publishedAt,
-      sourceKind,
-    });
-  };
-
-  const text = String(feedBody || "").trim();
-  if (!text) {
-    return output;
+  if (WEAVER_RESEARCH_MODE !== "parameter-golf") {
+    return policy;
   }
 
-  const maybeJson = text.startsWith("{") || text.startsWith("[");
-  if (maybeJson) {
-    try {
-      const payload = JSON.parse(text);
-      const items = Array.isArray(payload?.items) ? payload.items : [];
-      for (const item of items) {
-        if (!item || typeof item !== "object") {
-          continue;
-        }
-        pushEntry(item.url || item.external_url || item.id || "", {
-          title: item.title || "",
-          summary: item.summary || item.content_text || item.content_html || "",
-          publishedAt: item.date_published || item.date_modified || "",
-          sourceKind: "feed:json",
-        });
-        if (output.length >= safeMax) {
-          return output;
-        }
-      }
-      if (output.length > 0) {
-        return output;
-      }
-    } catch (_err) {
-      // Fall through to XML feed parsing.
-    }
-  }
-
-  const xml = text;
-  const rssItems = xml.match(/<item\b[\s\S]*?<\/item>/gi) || [];
-  for (const item of rssItems) {
-    const titleMatch = /<title[^>]*>\s*([\s\S]*?)\s*<\/title>/i.exec(item);
-    const descriptionMatch = /<description[^>]*>\s*([\s\S]*?)\s*<\/description>/i.exec(item);
-    const pubDateMatch = /<pubDate[^>]*>\s*([\s\S]*?)\s*<\/pubDate>/i.exec(item);
-    const dcDateMatch = /<dc:date[^>]*>\s*([\s\S]*?)\s*<\/dc:date>/i.exec(item);
-    const rssMeta = {
-      title: titleMatch?.[1] || "",
-      summary: descriptionMatch?.[1] || "",
-      publishedAt: pubDateMatch?.[1] || dcDateMatch?.[1] || "",
-      sourceKind: "feed:rss",
-    };
-    const linkMatch = /<link[^>]*>\s*([\s\S]*?)\s*<\/link>/i.exec(item);
-    if (linkMatch) {
-      pushEntry(linkMatch[1], rssMeta);
-    }
-    const guidMatch = /<guid\b([^>]*)>\s*([\s\S]*?)\s*<\/guid>/i.exec(item);
-    if (guidMatch) {
-      const attrs = String(guidMatch[1] || "").toLowerCase();
-      if (!attrs.includes('ispermalink="false"')) {
-        pushEntry(guidMatch[2], rssMeta);
-      }
-    }
-    const rdfAboutMatch = /<item\b[^>]*\brdf:about\s*=\s*(?:"([^"]+)"|'([^']+)')/i.exec(item);
-    if (rdfAboutMatch) {
-      pushEntry(rdfAboutMatch[1] || rdfAboutMatch[2] || "", rssMeta);
-    }
-    if (output.length >= safeMax) {
-      return output.slice(0, safeMax);
-    }
-  }
-
-  const atomEntries = xml.match(/<entry\b[\s\S]*?<\/entry>/gi) || [];
-  for (const entry of atomEntries) {
-    const titleMatch = /<title[^>]*>\s*([\s\S]*?)\s*<\/title>/i.exec(entry);
-    const summaryMatch = /<summary[^>]*>\s*([\s\S]*?)\s*<\/summary>/i.exec(entry);
-    const contentMatch = /<content[^>]*>\s*([\s\S]*?)\s*<\/content>/i.exec(entry);
-    const publishedMatch = /<published[^>]*>\s*([\s\S]*?)\s*<\/published>/i.exec(entry);
-    const updatedMatch = /<updated[^>]*>\s*([\s\S]*?)\s*<\/updated>/i.exec(entry);
-    const atomMeta = {
-      title: titleMatch?.[1] || "",
-      summary: summaryMatch?.[1] || contentMatch?.[1] || "",
-      publishedAt: publishedMatch?.[1] || updatedMatch?.[1] || "",
-      sourceKind: "feed:atom",
-    };
-    const atomLinkPattern = /<link\b[^>]*>/gi;
-    while (true) {
-      const linkTagMatch = atomLinkPattern.exec(entry);
-      if (!linkTagMatch) {
-        break;
-      }
-      const tag = String(linkTagMatch[0] || "");
-      const hrefMatch = /\bhref\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'`<>]+))/i.exec(tag);
-      if (!hrefMatch) {
-        continue;
-      }
-      const relMatch = /\brel\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'`<>]+))/i.exec(tag);
-      const relValue = String(relMatch?.[1] || relMatch?.[2] || relMatch?.[3] || "")
-        .toLowerCase()
-        .trim();
-      if (relValue && !relValue.split(/\s+/).includes("alternate")) {
-        continue;
-      }
-      pushEntry(hrefMatch[1] || hrefMatch[2] || hrefMatch[3] || "", atomMeta);
-      if (output.length >= safeMax) {
-        return output.slice(0, safeMax);
-      }
-    }
-    const idMatch = /<id[^>]*>\s*([\s\S]*?)\s*<\/id>/i.exec(entry);
-    if (idMatch) {
-      pushEntry(idMatch[1], atomMeta);
-      if (output.length >= safeMax) {
-        return output.slice(0, safeMax);
-      }
-    }
-  }
-
-  return output.slice(0, safeMax);
-}
-
-function extractFeedEntryLinks(feedBody, baseUrl, maxItems = FEED_ENTRY_LINK_MAX) {
-  return extractFeedEntries(feedBody, baseUrl, maxItems)
-    .map((row) => String(row?.url || "").trim())
-    .filter((url) => url.length > 0);
-}
-
-function looksLikeFeedDocument(contentType, bodyText) {
-  const type = String(contentType || "").toLowerCase();
-  if (type.includes("application/rss+xml") || type.includes("application/atom+xml")) {
-    return true;
-  }
-  if (type.includes("application/feed+json")) {
-    return true;
-  }
-
-  const trimmed = String(bodyText || "").trim();
-  if (!trimmed) {
-    return false;
-  }
-  if ((type.includes("json") || trimmed.startsWith("{")) && trimmed.includes("jsonfeed.org/version")) {
-    return true;
-  }
-  if (!(type.includes("xml") || type.includes("text/") || trimmed.startsWith("<"))) {
-    return false;
-  }
-
-  const head = trimmed.slice(0, 8192).toLowerCase();
-  return (
-    head.includes("<rss")
-    || head.includes("<feed")
-    || head.includes("<rdf:rdf")
-    || (head.includes("<channel") && head.includes("<item"))
-  );
-}
-
-function canonicalWikipediaArticleUrl(rawUrl) {
+  let parsed = null;
   try {
-    const parsed = new URL(rawUrl);
-    const host = String(parsed.hostname || "").toLowerCase();
-    if (host !== "wikipedia.org" && !host.endsWith(".wikipedia.org")) {
-      return "";
-    }
-    if (!parsed.pathname.startsWith("/wiki/")) {
-      return "";
-    }
-    const rawSlug = parsed.pathname.slice("/wiki/".length);
-    const slug = safeDecodeURIComponent(rawSlug).trim().replace(/\s+/g, "_");
-    if (!slug || slug.includes(":")) {
-      return "";
-    }
-    const canonicalHost = host.replace(/\.m\.wikipedia\.org$/, ".wikipedia.org");
-    const encodedSlug = encodeURIComponent(slug).replace(/%2F/g, "/");
-    const canonical = `https://${canonicalHost}/wiki/${encodedSlug}`;
-    return normalizeUrl(canonical, undefined) || "";
+    parsed = input instanceof URL ? input : new URL(String(input || "").trim());
   } catch (_err) {
-    return "";
+    return policy;
   }
+
+  const host = String(parsed.hostname || "").trim().toLowerCase();
+  const pathname = String(parsed.pathname || "").trim();
+  if (!host) {
+    return policy;
+  }
+
+  if (/\.(png|jpg|jpeg|gif|svg|ico|woff2?|ttf|css|js)$/i.test(pathname)) {
+    policy.routingClass = "asset_noise";
+    policy.denylistPenalty = 2.1;
+    return policy;
+  }
+
+  if (host === "patch-diff.githubusercontent.com") {
+    policy.routingClass = "blocked_patch_diff";
+    policy.denylistPenalty = 2.6;
+    policy.hardBlockReason = "known_robots_blocked_patch_diff";
+    policy.bridgeUrl = parameterGolfPatchBridgeUrl(parsed);
+    policy.optOutDomain = true;
+    return policy;
+  }
+
+  if (host === "parameter-golf.github.io" && /^\/data\/.*\.json$/i.test(pathname)) {
+    policy.routingClass = "leaderboard_json";
+    policy.allowlistBonus = 1.25;
+    return policy;
+  }
+
+  if (host === "raw.githubusercontent.com") {
+    if (/submission\.json$/i.test(pathname)) {
+      policy.routingClass = "submission_json_raw";
+      policy.allowlistBonus = 1.4;
+      return policy;
+    }
+    if (/train\.log$/i.test(pathname)) {
+      policy.routingClass = "train_log_raw";
+      policy.allowlistBonus = 1.3;
+      return policy;
+    }
+    if (/train_gpt\.py$/i.test(pathname)) {
+      policy.routingClass = "trainer_script_raw";
+      policy.allowlistBonus = 1.2;
+      return policy;
+    }
+    if (/^\/openai\/parameter-golf\//i.test(pathname)) {
+      policy.routingClass = "parameter_golf_raw";
+      policy.allowlistBonus = 0.95;
+      return policy;
+    }
+    if (/agustif\/parameter-golf-research-garden\/main\/content\//i.test(pathname)) {
+      policy.routingClass = "research_garden_raw";
+      policy.allowlistBonus = 0.85;
+      return policy;
+    }
+    if (/agustif\/runmatrix\/main\/(docs\/|README\.md$)/i.test(pathname)) {
+      policy.routingClass = "runmatrix_raw_doc";
+      policy.allowlistBonus = 0.6;
+      return policy;
+    }
+  }
+
+  if (host === "arxiv.org") {
+    if (/^\/abs\//i.test(pathname)) {
+      policy.routingClass = "arxiv_abs";
+      policy.allowlistBonus = 0.9;
+      return policy;
+    }
+    if (/^\/pdf\//i.test(pathname)) {
+      policy.routingClass = "arxiv_pdf";
+      policy.allowlistBonus = 0.65;
+      return policy;
+    }
+    if (/^\/(search|help|user|corr)\b/i.test(pathname)) {
+      policy.routingClass = "arxiv_navigation_noise";
+      policy.denylistPenalty = 1.15;
+      return policy;
+    }
+  }
+
+  if (host === "github.com") {
+    if (/\/openai\/parameter-golf\/pull\/\d+$/i.test(pathname)) {
+      policy.routingClass = "parameter_golf_pr";
+      policy.allowlistBonus = 0.85;
+      return policy;
+    }
+    if (/\/(login|marketplace|trending|search|settings|notifications|sponsors|features|copilot|enterprise|pricing|join|session)\b/i.test(pathname)) {
+      policy.routingClass = "github_navigation_noise";
+      policy.denylistPenalty = 2.2;
+      policy.hardBlockReason = "github_navigation_noise";
+      return policy;
+    }
+    if (/\/(blob|tree|commits)\//i.test(pathname)) {
+      policy.routingClass = "github_repo_navigation";
+      policy.denylistPenalty = 1.35;
+      return policy;
+    }
+  }
+
+  if (host === "join.slack.com" || (host.endsWith("slack.com") && /\/(join|invite)\b/i.test(pathname))) {
+    policy.routingClass = "social_invite_noise";
+    policy.denylistPenalty = 2.0;
+    policy.hardBlockReason = "social_invite_noise";
+    return policy;
+  }
+
+  if (host === "ui.adsabs.harvard.edu" || host === "doi.org") {
+    policy.routingClass = "secondary_index";
+    policy.denylistPenalty = host === "doi.org" ? 0.85 : 1.0;
+    return policy;
+  }
+
+  if (host === "blog.skypilot.co") {
+    policy.routingClass = "skypilot_blog";
+    policy.allowlistBonus = /scaling-autoresearch/i.test(pathname) ? 0.55 : 0.35;
+    return policy;
+  }
+
+  return policy;
 }
 
-function extractWikipediaSlugFromUrl(rawUrl) {
-  const canonical = canonicalWikipediaArticleUrl(rawUrl);
-  if (!canonical) {
-    return "";
+function annotateResearchNode(node) {
+  if (!node || String(node.kind || "") !== "url" || WEAVER_RESEARCH_MODE !== "parameter-golf") {
+    return node;
   }
+
+  const url = String(node.url || node.label || "").trim();
+  let host = "";
+  let pathname = "";
   try {
-    const parsed = new URL(canonical);
-    return safeDecodeURIComponent(parsed.pathname.slice("/wiki/".length));
+    const parsed = new URL(url);
+    host = String(parsed.hostname || "").trim().toLowerCase();
+    pathname = String(parsed.pathname || "").trim();
   } catch (_err) {
-    return "";
+    host = "";
+    pathname = "";
   }
-}
 
-function classifyKnowledgeUrl(rawUrl) {
-  const arxivId = extractArxivIdFromUrl(rawUrl);
-  if (arxivId) {
-    return isArxivPdfUrl(rawUrl) ? "arxiv_pdf" : "arxiv_abs";
-  }
-  const wikiUrl = canonicalWikipediaArticleUrl(rawUrl);
-  if (wikiUrl) {
-    return "wikipedia_article";
-  }
-  return "other";
-}
+  let sourceKind = "web_page";
+  let sourceQuality = "tertiary";
+  let rawSignalScore = 0.0;
+  let navigationNoisePenalty = 0.0;
 
-function inferKnowledgeMetadata(rawUrl) {
-  const knowledgeKind = classifyKnowledgeUrl(rawUrl);
-  if (knowledgeKind === "arxiv_abs" || knowledgeKind === "arxiv_pdf") {
-    return {
-      source_family: "arxiv",
-      knowledge_kind: knowledgeKind,
-      arxiv_id: extractArxivIdFromUrl(rawUrl) || null,
-      wikipedia_slug: null,
-    };
+  if (host === "patch-diff.githubusercontent.com") {
+    sourceKind = "patch_diff";
+    sourceQuality = "primary";
+    rawSignalScore = 2.4;
+  } else if (host === "parameter-golf.github.io" && pathname.startsWith("/data/") && pathname.endsWith(".json")) {
+    sourceKind = "leaderboard_json";
+    sourceQuality = "primary";
+    rawSignalScore = 2.1;
+  } else if (host === "raw.githubusercontent.com") {
+    if (/submission\.json$/i.test(pathname)) {
+      sourceKind = "submission_json";
+      sourceQuality = "primary";
+      rawSignalScore = 2.3;
+    } else if (/train\.log$/i.test(pathname)) {
+      sourceKind = "train_log";
+      sourceQuality = "primary";
+      rawSignalScore = 2.2;
+    } else if (/train_gpt\.py$/i.test(pathname)) {
+      sourceKind = "trainer_script";
+      sourceQuality = "primary";
+      rawSignalScore = 2.0;
+    } else if (/parameter-golf-research-garden\/main\/content\//i.test(pathname)) {
+      sourceKind = "research_garden_note";
+      sourceQuality = "secondary";
+      rawSignalScore = 1.0;
+    } else if (/agustif\/runmatrix\/main\/docs\//i.test(pathname) || /agustif\/runmatrix\/main\/README\.md$/i.test(pathname)) {
+      sourceKind = "orchestration_doc";
+      sourceQuality = "secondary";
+      rawSignalScore = 0.9;
+    } else {
+      sourceKind = "raw_document";
+      sourceQuality = "secondary";
+      rawSignalScore = 0.7;
+    }
+  } else if (host === "arxiv.org") {
+    if (/^\/abs\//i.test(pathname)) {
+      sourceKind = "arxiv_abs";
+      sourceQuality = "primary";
+      rawSignalScore = 1.8;
+    } else if (/^\/pdf\//i.test(pathname)) {
+      sourceKind = "arxiv_pdf";
+      sourceQuality = "primary";
+      rawSignalScore = 1.7;
+    } else if (/^\/search\/?$/i.test(pathname)) {
+      sourceKind = "arxiv_search";
+      sourceQuality = "secondary";
+      rawSignalScore = 0.6;
+    }
+  } else if (host === "github.com") {
+    if (/\/openai\/parameter-golf\/pull\/\d+/i.test(pathname)) {
+      sourceKind = "parameter_golf_pr";
+      sourceQuality = "secondary";
+      rawSignalScore = 0.7;
+    } else if (/\/(login|marketplace|trending|search|settings|notifications|sponsors)\b/i.test(pathname)) {
+      sourceKind = "navigation_noise";
+      sourceQuality = "noise";
+      navigationNoisePenalty = 1.6;
+    } else if (/\/(blob|tree|commits)\//i.test(pathname)) {
+      sourceKind = "repo_navigation";
+      sourceQuality = "noise";
+      navigationNoisePenalty = 1.0;
+    } else {
+      sourceKind = "repo_html";
+      sourceQuality = "tertiary";
+      rawSignalScore = 0.2;
+    }
+  } else if (host === "blog.skypilot.co") {
+    sourceKind = "blog_post";
+    sourceQuality = "secondary";
+    rawSignalScore = 0.45;
   }
-  if (knowledgeKind === "wikipedia_article") {
-    return {
-      source_family: "wikipedia",
-      knowledge_kind: knowledgeKind,
-      arxiv_id: null,
-      wikipedia_slug: extractWikipediaSlugFromUrl(rawUrl) || null,
-    };
+
+  if (/\.(png|jpg|jpeg|gif|svg|ico|woff2?|ttf|css|js)$/i.test(pathname)) {
+    sourceKind = "asset_noise";
+    sourceQuality = "noise";
+    navigationNoisePenalty = Math.max(navigationNoisePenalty, 1.8);
+    rawSignalScore = 0;
   }
+
+  const routingPolicy = parameterGolfRoutingPolicy(url);
+  const researchMotifs = detectResearchMotifs(node);
   return {
-    source_family: "web",
-    knowledge_kind: "web_url",
-    arxiv_id: null,
-    wikipedia_slug: null,
-  };
-}
-
-function parseContentType(contentTypeHeader) {
-  if (!contentTypeHeader) {
-    return "application/octet-stream";
-  }
-  return String(contentTypeHeader).split(";")[0].trim().toLowerCase() || "application/octet-stream";
-}
-
-function isTextLikeContentType(contentType) {
-  const value = String(contentType || "").toLowerCase();
-  return (
-    value.startsWith("text/") ||
-    value.includes("html") ||
-    value.includes("xml") ||
-    value.includes("json") ||
-    value.includes("javascript") ||
-    value.includes("xhtml") ||
-    value.includes("svg")
-  );
-}
-
-function decodeHtmlEntities(text) {
-  return String(text || "")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'");
-}
-
-function extractReadableTextFromHtml(html) {
-  const withoutScripts = String(html || "")
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ");
-  const withoutTags = withoutScripts.replace(/<[^>]+>/g, " ");
-  const decoded = decodeHtmlEntities(withoutTags);
-  return decoded.replace(/\s+/g, " ").trim();
-}
-
-function fallbackTextSummary(text) {
-  const clean = String(text || "").replace(/\s+/g, " ").trim();
-  if (!clean) {
-    return "No readable text extracted.";
-  }
-  if (clean.length <= 260) {
-    return clean;
-  }
-  return `${clean.slice(0, 257)}...`;
-}
-
-function focusIntentFromText(text) {
-  const lowered = String(text || "").toLowerCase();
-  if (!lowered.trim()) {
-    return "Re-crawl this source with alternate rendering to extract reliable content.";
-  }
-  if (/\b(cve|vulnerability|exploit|security|advisory|mitre|nvd|cisa|patch)\b/.test(lowered)) {
-    return "Track affected systems, severity signals, and remediation guidance from this source.";
-  }
-  if (/\b(release|changelog|version|update|roadmap)\b/.test(lowered)) {
-    return "Track release changes, version deltas, and references to impacted components.";
-  }
-  if (/\b(doc|documentation|guide|tutorial|quickstart|api)\b/.test(lowered)) {
-    return "Track implementation guidance, API references, and linked technical dependencies.";
-  }
-  return "Track the key entities, claims, and outbound references from this page.";
-}
-
-function structuredFallbackAnalysisSummary(text) {
-  const compact = fallbackTextSummary(text);
-  if (!compact || compact === "No readable text extracted.") {
-    return [
-      "- No reliable page text was extracted.",
-      "- The source may require JavaScript, authentication, or alternate rendering.",
-      "FocusIntent: Re-crawl this source with alternate rendering to capture substantive content.",
-    ].join("\n");
-  }
-  const first = compact.length > 220 ? `${compact.slice(0, 217)}...` : compact;
-  return [
-    `- ${first}`,
-    "- Auto-condensed summary; verify important claims against the canonical source.",
-    `FocusIntent: ${focusIntentFromText(compact)}`,
-  ].join("\n");
-}
-
-function normalizeAnalysisSummary(rawText, fallbackText) {
-  const fallbackSummary = structuredFallbackAnalysisSummary(fallbackText);
-  const cleanRaw = String(rawText || "").replace(/\r/g, "\n").trim();
-  if (!cleanRaw) {
-    return fallbackSummary;
-  }
-
-  const flattened = cleanRaw
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!flattened) {
-    return fallbackSummary;
-  }
-
-  const lowered = flattened.toLowerCase();
-  if (
-    lowered.includes("<what should a graph crawler learn from this page>") ||
-    lowered.includes("the page text in 2 concise bullet") ||
-    lowered === "text" ||
-    lowered === "page text"
-  ) {
-    return fallbackSummary;
-  }
-
-  const tokens = lowered.match(/[a-z0-9_/-]+/g) || [];
-  if (tokens.length >= 12) {
-    const uniqueRatio = new Set(tokens).size / tokens.length;
-    if (uniqueRatio < 0.28) {
-      return fallbackSummary;
-    }
-  }
-
-  const rows = cleanRaw
-    .split(/\n+/)
-    .map((line) => String(line || "").replace(/\s+/g, " ").trim())
-    .filter((line) => line.length > 0);
-
-  const bulletCandidates = [];
-  let focusIntent = "";
-  for (const row of rows) {
-    const noMarkdown = row.replace(/^#+\s*/, "").trim();
-    const focusMatch = /^focus\s*intent\s*[:\-]\s*(.+)$/i.exec(noMarkdown);
-    if (focusMatch && !focusIntent) {
-      focusIntent = String(focusMatch[1] || "").replace(/\s+/g, " ").trim();
-      continue;
-    }
-    const stripped = noMarkdown
-      .replace(/^[-*•]\s*/, "")
-      .replace(/^\d+[.)]\s*/, "")
-      .trim();
-    if (!stripped) {
-      continue;
-    }
-    if (/^focus\s*intent\b/i.test(stripped)) {
-      continue;
-    }
-    bulletCandidates.push(stripped);
-  }
-
-  if (bulletCandidates.length < 2) {
-    const sentenceCandidates = flattened
-      .split(/[.!?]\s+/)
-      .map((item) => String(item || "").replace(/\s+/g, " ").trim())
-      .filter((item) => item.length >= 12);
-    for (const sentence of sentenceCandidates) {
-      bulletCandidates.push(sentence);
-      if (bulletCandidates.length >= 3) {
-        break;
-      }
-    }
-  }
-
-  const dedupedBullets = [];
-  const seen = new Set();
-  for (const item of bulletCandidates) {
-    const normalized = String(item || "").replace(/\s+/g, " ").trim();
-    if (!normalized) {
-      continue;
-    }
-    const key = normalized.toLowerCase();
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    dedupedBullets.push(normalized);
-    if (dedupedBullets.length >= 4) {
-      break;
-    }
-  }
-
-  const fallbackRows = fallbackSummary.split(/\n+/);
-  const fallbackBulletA = String(fallbackRows[0] || "").replace(/^[-*]\s*/, "").trim();
-  const fallbackBulletB = String(fallbackRows[1] || "").replace(/^[-*]\s*/, "").trim();
-
-  const bulletA = dedupedBullets[0] || fallbackBulletA || "No reliable summary extracted.";
-  const bulletB =
-    dedupedBullets[1] ||
-    fallbackBulletB ||
-    "Verify key claims against the original source before acting.";
-  const resolvedIntent =
-    String(focusIntent || "").trim() || focusIntentFromText(flattened);
-
-  const clamp = (text, limit) => {
-    const clean = String(text || "").replace(/\s+/g, " ").trim();
-    if (clean.length <= limit) {
-      return clean;
-    }
-    return `${clean.slice(0, Math.max(0, limit - 3)).trim()}...`;
-  };
-
-  return [
-    `- ${clamp(bulletA, 260)}`,
-    `- ${clamp(bulletB, 260)}`,
-    `FocusIntent: ${clamp(resolvedIntent, 240)}`,
-  ].join("\n");
-}
-
-function extractCanonicalHref(html) {
-  const match = /<link[^>]+rel\s*=\s*["'][^"']*canonical[^"']*["'][^>]*href\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'>]+))/i.exec(
-    html,
-  );
-  if (!match) {
-    return "";
-  }
-  return String(match[1] || match[2] || match[3] || "").trim();
-}
-
-function extractTitle(html) {
-  const match = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html);
-  if (!match) {
-    return "";
-  }
-  return match[1].replace(/\s+/g, " ").trim().slice(0, 160);
-}
-
-function extractAnchorLinks(html, baseUrl) {
-  const links = [];
-  const seen = new Set();
-  const pushLink = (url, nofollow) => {
-    if (!url || seen.has(url)) {
-      return;
-    }
-    seen.add(url);
-    links.push({ url, nofollow });
-  };
-
-  const pageNoFollow = /<meta[^>]+name\s*=\s*["']robots["'][^>]+content\s*=\s*["'][^"']*nofollow[^"']*["'][^>]*>/i.test(
-    html,
-  );
-  const anchorPattern = /<a\s+[^>]*href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'`<>]+))[^>]*>/gi;
-  while (true) {
-    const match = anchorPattern.exec(html);
-    if (match === null) {
-      break;
-    }
-    const tag = match[0] || "";
-    const href = String(match[1] || match[2] || match[3] || "").trim();
-    if (!href) {
-      continue;
-    }
-    const relMatch = /rel\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'`<>]+))/i.exec(tag);
-    const relValue = String(relMatch?.[1] || relMatch?.[2] || relMatch?.[3] || "").toLowerCase();
-    const nofollow = pageNoFollow || relValue.split(/\s+/).includes("nofollow");
-    const normalized = normalizeUrl(href, baseUrl);
-    if (!normalized) {
-      continue;
-    }
-    pushLink(normalized, nofollow);
-  }
-  return links;
-}
-
-function extractLinks(html, baseUrl) {
-  const links = [];
-  const seen = new Set();
-  const pushLink = (url, nofollow) => {
-    if (!url || seen.has(url)) {
-      return;
-    }
-    seen.add(url);
-    links.push({ url, nofollow });
-  };
-
-  for (const link of extractAnchorLinks(html, baseUrl)) {
-    pushLink(link.url, link.nofollow);
-  }
-
-  const resourcePattern = /<(?:link|script|img|source)\s+[^>]*(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'`<>]+))[^>]*>/gi;
-  while (true) {
-    const match = resourcePattern.exec(html);
-    if (match === null) {
-      break;
-    }
-    const href = String(match[1] || match[2] || match[3] || "").trim();
-    if (!href) {
-      continue;
-    }
-    const normalized = normalizeUrl(href, baseUrl);
-    if (!normalized) {
-      continue;
-    }
-    pushLink(normalized, false);
-  }
-
-  return links;
-}
-
-function extractArxivMentionIds(text) {
-  const ids = [];
-  const seen = new Set();
-  const mentionPattern = /\barxiv\s*:\s*([a-z\-]+\/\d{7}|\d{4}\.\d{4,5})(?:v\d+)?\b/gi;
-  while (true) {
-    const match = mentionPattern.exec(text);
-    if (match === null) {
-      break;
-    }
-    const normalized = normalizeArxivId(match[1]);
-    if (!normalized || seen.has(normalized)) {
-      continue;
-    }
-    seen.add(normalized);
-    ids.push(normalized);
-  }
-  return ids;
-}
-
-function dedupeSemanticReferences(rows, maxItems = MAX_SEMANTIC_REFERENCES_PER_PAGE) {
-  const output = [];
-  const seen = new Set();
-  for (const row of rows) {
-    const normalized = normalizeUrl(row.url, undefined);
-    if (!normalized) {
-      continue;
-    }
-    const edgeKind = String(row.edge_kind || "").trim().toLowerCase();
-    if (!edgeKind) {
-      continue;
-    }
-    const key = `${edgeKind}|${normalized}`;
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    output.push({
-      url: normalized,
-      edge_kind: edgeKind,
-      reason: String(row.reason || "semantic_reference"),
-      nofollow: Boolean(row.nofollow),
-      enqueue: Boolean(row.enqueue),
-    });
-    if (output.length >= maxItems) {
-      break;
-    }
-  }
-  return output;
-}
-
-function extractSemanticReferences(sourceUrl, html) {
-  const sourceKind = classifyKnowledgeUrl(sourceUrl);
-  if (sourceKind === "other") {
-    return {
-      source_kind: "other",
-      references: [],
-    };
-  }
-
-  const references = [];
-  const anchorLinks = extractAnchorLinks(html, sourceUrl);
-
-  if (sourceKind === "arxiv_abs" || sourceKind === "arxiv_pdf") {
-    const sourceArxivId = extractArxivIdFromUrl(sourceUrl);
-    if (sourceArxivId) {
-      references.push({
-        url: canonicalArxivPdfUrlFromId(sourceArxivId),
-        edge_kind: "paper_pdf",
-        reason: "arxiv_pdf_asset",
-        nofollow: false,
-        enqueue: true,
-      });
-    }
-
-    let arxivReferenceBudget = MAX_ARXIV_REFERENCES_PER_PAGE;
-    for (const link of anchorLinks) {
-      const targetArxivId = extractArxivIdFromUrl(link.url);
-      if (targetArxivId) {
-        if (sourceArxivId && targetArxivId === sourceArxivId) {
-          if (isArxivPdfUrl(link.url)) {
-            references.push({
-              url: canonicalArxivPdfUrlFromId(targetArxivId),
-              edge_kind: "paper_pdf",
-              reason: "arxiv_pdf_asset",
-              nofollow: link.nofollow,
-              enqueue: !link.nofollow,
-            });
-          }
-        } else if (arxivReferenceBudget > 0) {
-          references.push({
-            url: canonicalArxivAbsUrlFromId(targetArxivId),
-            edge_kind: "citation",
-            reason: "arxiv_link_citation",
-            nofollow: link.nofollow,
-            enqueue: !link.nofollow,
-          });
-          arxivReferenceBudget -= 1;
-        }
-      }
-
-      const wikiTarget = canonicalWikipediaArticleUrl(link.url);
-      if (wikiTarget) {
-        references.push({
-          url: wikiTarget,
-          edge_kind: "cross_reference",
-          reason: "arxiv_to_wikipedia",
-          nofollow: link.nofollow,
-          enqueue: !link.nofollow,
-        });
-      }
-    }
-
-    if (arxivReferenceBudget > 0) {
-      for (const mentionId of extractArxivMentionIds(html)) {
-        if (sourceArxivId && mentionId === sourceArxivId) {
-          continue;
-        }
-        references.push({
-          url: canonicalArxivAbsUrlFromId(mentionId),
-          edge_kind: "citation",
-          reason: "arxiv_text_citation",
-          nofollow: false,
-          enqueue: false,
-        });
-        arxivReferenceBudget -= 1;
-        if (arxivReferenceBudget <= 0) {
-          break;
-        }
-      }
-    }
-  }
-
-  if (sourceKind === "wikipedia_article") {
-    const sourceWiki = canonicalWikipediaArticleUrl(sourceUrl);
-    let wikipediaBudget = MAX_WIKIPEDIA_REFERENCES_PER_PAGE;
-
-    for (const link of anchorLinks) {
-      const wikiTarget = canonicalWikipediaArticleUrl(link.url);
-      if (wikiTarget && wikiTarget !== sourceWiki && wikipediaBudget > 0) {
-        references.push({
-          url: wikiTarget,
-          edge_kind: "wiki_reference",
-          reason: "wikipedia_internal_link",
-          nofollow: link.nofollow,
-          enqueue: !link.nofollow,
-        });
-        wikipediaBudget -= 1;
-      }
-
-      const targetArxivId = extractArxivIdFromUrl(link.url);
-      if (targetArxivId) {
-        references.push({
-          url: canonicalArxivAbsUrlFromId(targetArxivId),
-          edge_kind: "cross_reference",
-          reason: "wikipedia_to_arxiv",
-          nofollow: link.nofollow,
-          enqueue: !link.nofollow,
-        });
-      }
-    }
-  }
-
-  return {
+    ...node,
     source_kind: sourceKind,
-    references: dedupeSemanticReferences(references),
+    source_quality: sourceQuality,
+    raw_signal_score: Number(rawSignalScore.toFixed(4)),
+    navigation_noise_penalty: Number(navigationNoisePenalty.toFixed(4)),
+    allowlist_bonus: Number(routingPolicy.allowlistBonus.toFixed(4)),
+    denylist_penalty: Number(routingPolicy.denylistPenalty.toFixed(4)),
+    routing_class: routingPolicy.routingClass,
+    hard_block_reason: routingPolicy.hardBlockReason,
+    preferred_bridge_url: routingPolicy.bridgeUrl,
+    research_motifs: researchMotifs,
   };
+}
+
+const SOURCE_QUALITY_RANK = {
+  noise: 0,
+  tertiary: 1,
+  secondary: 2,
+  primary: 3,
+};
+
+function sourceQualityRank(node) {
+  const quality = String(node?.source_quality || "tertiary").trim().toLowerCase();
+  return SOURCE_QUALITY_RANK[quality] ?? 1;
+}
+
+function sharedResearchMotifCount(leftNode, rightNode) {
+  const left = new Set(Array.isArray(leftNode?.research_motifs) ? leftNode.research_motifs : []);
+  const right = Array.isArray(rightNode?.research_motifs) ? rightNode.research_motifs : [];
+  let count = 0;
+  for (const motif of right) {
+    if (left.has(motif)) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function researchRouteAdjustment(sourceNode, targetNode) {
+  const targetKind = String(targetNode?.source_kind || "web_page");
+  const sourceKind = String(sourceNode?.source_kind || "");
+  const targetQuality = String(targetNode?.source_quality || "tertiary");
+  const sourceQuality = String(sourceNode?.source_quality || "tertiary");
+  const sharedMotifs = sharedResearchMotifCount(sourceNode, targetNode);
+  const interactionPenalty = Math.min(1.5, Number(targetNode?.interaction_count || 0) * 0.06);
+
+  let bridgeBonus = 0;
+  let loopPenalty = interactionPenalty;
+  const targetIsRawFollowOn = ["submission_json", "train_log", "trainer_script"].includes(targetKind);
+  const sourceIsEvidenceAnchor = [
+    "patch_diff",
+    "parameter_golf_pr",
+    "leaderboard_json",
+    "submission_json",
+    "train_log",
+    "trainer_script",
+    "research_garden_note",
+    "arxiv_abs",
+    "blog_post",
+    "orchestration_doc",
+  ].includes(sourceKind);
+
+  if (!sourceNode) {
+    return { bridgeBonus, loopPenalty, sharedMotifs };
+  }
+
+  if (targetQuality === "noise") {
+    loopPenalty += 1.2;
+  }
+  if (sourceKind && sourceKind === targetKind) {
+    loopPenalty += 0.55;
+    if (targetKind === "patch_diff") {
+      loopPenalty += 1.85;
+    } else if (targetKind === "parameter_golf_pr" || targetKind === "submission_json") {
+      loopPenalty += 0.35;
+    } else if (targetKind === "repo_navigation") {
+      loopPenalty += 0.7;
+    }
+  }
+  if (sourceNode.domain && targetNode?.domain && sourceNode.domain === targetNode.domain) {
+    loopPenalty += 0.12;
+  }
+  if (sourceKind === "parameter_golf_pr" && targetKind === "repo_navigation") {
+    loopPenalty += 1.0;
+  }
+  if (sourceKind === "repo_navigation" && targetKind === "repo_navigation") {
+    loopPenalty += 0.6;
+  }
+  if (["blog_post", "research_garden_note", "arxiv_abs"].includes(sourceKind) && sourceKind === targetKind) {
+    loopPenalty += 0.3;
+  }
+
+  if (sharedMotifs > 0 && sourceKind !== targetKind) {
+    bridgeBonus += 0.22 + 0.10 * sharedMotifs;
+  }
+  if (sourceQualityRank(targetNode) > sourceQualityRank(sourceNode)) {
+    bridgeBonus += 0.28;
+  }
+  if (sourceQuality === "primary" && targetQuality === "secondary" && sharedMotifs > 0) {
+    bridgeBonus += 0.25;
+  }
+  if (sourceKind === "patch_diff" && ["submission_json", "train_log", "trainer_script", "parameter_golf_pr"].includes(targetKind)) {
+    bridgeBonus += 0.55;
+  }
+  if (sourceKind === "parameter_golf_pr" && targetIsRawFollowOn) {
+    bridgeBonus += 0.9;
+  }
+  if (["leaderboard_json", "research_garden_note", "arxiv_abs", "blog_post", "orchestration_doc"].includes(sourceKind) && targetIsRawFollowOn) {
+    bridgeBonus += 0.3;
+  }
+  if (sourceKind === "leaderboard_json" && targetKind === "parameter_golf_pr") {
+    bridgeBonus += 0.35;
+  }
+  if (["patch_diff", "submission_json", "train_log"].includes(sourceKind) && ["arxiv_abs", "research_garden_note", "blog_post", "orchestration_doc"].includes(targetKind)) {
+    bridgeBonus += 0.18;
+  }
+  if (sourceKind === "research_garden_note" && ["patch_diff", "submission_json", "trainer_script", "arxiv_abs"].includes(targetKind) && sharedMotifs > 0) {
+    bridgeBonus += 0.35;
+  }
+  if (sourceIsEvidenceAnchor && targetKind === "leaderboard_json") {
+    bridgeBonus += 0.12;
+  }
+
+  return { bridgeBonus, loopPenalty, sharedMotifs };
 }
 
 function getDepthHistogram(urlNodes) {
@@ -1688,7 +1050,7 @@ class GraphStore {
       };
     }
     const knowledge = inferKnowledgeMetadata(url);
-    const created = this._insertNode({
+    const created = this._insertNode(annotateResearchNode({
       id,
       kind: "url",
       label: url,
@@ -1708,7 +1070,7 @@ class GraphStore {
       knowledge_kind: knowledge.knowledge_kind,
       arxiv_id: knowledge.arxiv_id,
       wikipedia_slug: knowledge.wikipedia_slug,
-    });
+    }));
     return {
       id,
       created: created && !created.rejected ? created : null,
@@ -1722,10 +1084,10 @@ class GraphStore {
     if (!existing) {
       return;
     }
-    this.nodes.set(id, {
+    this.nodes.set(id, annotateResearchNode({
       ...existing,
       ...patch,
-    });
+    }));
   }
 
   getNodeById(id) {
@@ -2521,10 +1883,93 @@ class WebGraphWeaver {
     });
   }
 
+  _applyResearchPolicyBlock(url, sourceUrl, depth, reason) {
+    const policy = parameterGolfRoutingPolicy(url);
+    if (!policy.hardBlockReason) {
+      return null;
+    }
+
+    let host = "";
+    try {
+      host = String(new URL(url).hostname || "").trim().toLowerCase();
+    } catch (_err) {
+      host = "";
+    }
+
+    if (policy.optOutDomain && host && !this.optOutDomains.has(host)) {
+      this.optOutDomains.add(host);
+      this._emit("domain_opt_out", {
+        domain: host,
+        reason: policy.hardBlockReason,
+      });
+    }
+
+    this.graph.setUrlStatus(url, {
+      status: "blocked",
+      compliance: "policy_blocked",
+      policy_block_reason: policy.hardBlockReason,
+      preferred_bridge_url: policy.bridgeUrl || "",
+      last_enqueue_reason: reason,
+    });
+
+    let bridgeOutcome = null;
+    if (policy.bridgeUrl && policy.bridgeUrl !== url) {
+      const bridgeNode = this.graph.upsertUrl(policy.bridgeUrl, depth, sourceUrl || null);
+      const bridgeEdge = this.graph.upsertEdge(
+        "policy_bridge",
+        `url:${url}`,
+        `url:${policy.bridgeUrl}`,
+        {
+          reason: policy.hardBlockReason,
+        },
+      );
+      this._emitGraphDelta(
+        "policy_bridge",
+        bridgeNode.created ? [bridgeNode.created] : [],
+        bridgeEdge ? [bridgeEdge] : [],
+      );
+      bridgeOutcome = this.enqueueUrl(
+        policy.bridgeUrl,
+        sourceUrl || null,
+        depth,
+        "policy_bridge",
+      );
+    }
+
+    this.stats.skipped += 1;
+    this._emit("policy_blocked", {
+      url,
+      source: sourceUrl || null,
+      depth,
+      reason: policy.hardBlockReason,
+      bridge_url: policy.bridgeUrl || null,
+    });
+
+    if (bridgeOutcome?.ok) {
+      return {
+        ok: true,
+        url: bridgeOutcome.url,
+        redirected_from: url,
+        reason: "policy_redirect",
+        policy_reason: policy.hardBlockReason,
+        bridge_url: policy.bridgeUrl,
+      };
+    }
+
+    return {
+      ok: false,
+      url,
+      reason: "policy_blocked",
+      policy_reason: policy.hardBlockReason,
+      bridge_url: policy.bridgeUrl || null,
+    };
+  }
+
   _candidateTargetsForEntity(entity) {
     const rows = [];
     const seen = new Set();
     const sourceUrl = entity.current_url;
+    const sourceNode = sourceUrl ? this.graph.getUrlNode(sourceUrl) : null;
     if (sourceUrl) {
       for (const edge of this.graph.getOutgoingUrlEdges(sourceUrl)) {
         const targetUrl = String(edge.target || "").startsWith("url:")
@@ -2535,13 +1980,61 @@ class WebGraphWeaver {
         }
         seen.add(targetUrl);
         const node = this.graph.getUrlNode(targetUrl);
+        let targetHost = "";
+        try {
+          targetHost = String(new URL(targetUrl).hostname || "").trim().toLowerCase();
+        } catch (_err) {
+          targetHost = "";
+        }
+        const routing = parameterGolfRoutingPolicy(targetUrl);
+        if (routing.hardBlockReason) {
+          continue;
+        }
+        if (targetHost && this.optOutDomains.has(targetHost)) {
+          continue;
+        }
+        const status = String(node?.status || "").trim().toLowerCase();
+        const compliance = String(node?.compliance || "").trim().toLowerCase();
+        if (status === "blocked" || compliance === "robots_blocked" || compliance === "opt_out") {
+          continue;
+        }
         const activation = Number(node?.activation_potential || 0);
         const cooldownRemaining = this._cooldownRemainingMs(targetUrl);
         const inFlight = this.inFlightUrls.has(targetUrl) || this.frontier.has(targetUrl);
         if (cooldownRemaining > 0 || inFlight) {
           continue;
         }
-        const score = 0.65 + activation + Math.random() * 0.35;
+        const rawSignal = Number(node?.raw_signal_score || 0);
+        const noisePenalty = Number(node?.navigation_noise_penalty || 0);
+        const allowlistBonus = Math.max(
+          Number(node?.allowlist_bonus || 0),
+          Number(routing.allowlistBonus || 0),
+        );
+        const denylistPenalty = Math.max(
+          Number(node?.denylist_penalty || 0),
+          Number(routing.denylistPenalty || 0),
+        );
+        const motifCount = Array.isArray(node?.research_motifs) ? node.research_motifs.length : 0;
+        const quality = String(node?.source_quality || "tertiary");
+        const qualityBonus = quality === "primary"
+          ? 0.75
+          : quality === "secondary"
+            ? 0.25
+            : quality === "noise"
+              ? -1.15
+              : 0.0;
+        const adjustment = researchRouteAdjustment(sourceNode, node);
+        const score = 0.35
+          + activation
+          + rawSignal
+          + allowlistBonus
+          + qualityBonus
+          + motifCount * 0.08
+          + adjustment.bridgeBonus
+          - noisePenalty
+          - denylistPenalty
+          - adjustment.loopPenalty
+          + Math.random() * 0.12;
         rows.push({
           url: targetUrl,
           score,
@@ -2557,6 +2050,24 @@ class WebGraphWeaver {
         if (!targetUrl || seen.has(targetUrl)) {
           continue;
         }
+        let targetHost = "";
+        try {
+          targetHost = String(new URL(targetUrl).hostname || "").trim().toLowerCase();
+        } catch (_err) {
+          targetHost = "";
+        }
+        const routing = parameterGolfRoutingPolicy(targetUrl);
+        if (routing.hardBlockReason) {
+          continue;
+        }
+        if (targetHost && this.optOutDomains.has(targetHost)) {
+          continue;
+        }
+        const status = String(node.status || "").trim().toLowerCase();
+        const compliance = String(node.compliance || "").trim().toLowerCase();
+        if (status === "blocked" || compliance === "robots_blocked" || compliance === "opt_out") {
+          continue;
+        }
         const cooldownRemaining = this._cooldownRemainingMs(targetUrl);
         const inFlight = this.inFlightUrls.has(targetUrl) || this.frontier.has(targetUrl);
         if (cooldownRemaining > 0 || inFlight) {
@@ -2564,9 +2075,39 @@ class WebGraphWeaver {
         }
         const activation = Number(node.activation_potential || 0);
         const fetchedBias = String(node.status || "") === "fetched" ? 0.1 : 0.22;
+        const rawSignal = Number(node.raw_signal_score || 0);
+        const noisePenalty = Number(node.navigation_noise_penalty || 0);
+        const allowlistBonus = Math.max(
+          Number(node.allowlist_bonus || 0),
+          Number(routing.allowlistBonus || 0),
+        );
+        const denylistPenalty = Math.max(
+          Number(node.denylist_penalty || 0),
+          Number(routing.denylistPenalty || 0),
+        );
+        const motifCount = Array.isArray(node.research_motifs) ? node.research_motifs.length : 0;
+        const quality = String(node.source_quality || "tertiary");
+        const qualityBonus = quality === "primary"
+          ? 0.55
+          : quality === "secondary"
+            ? 0.18
+            : quality === "noise"
+              ? -0.9
+              : 0.0;
+        const adjustment = researchRouteAdjustment(sourceNode, node);
         rows.push({
           url: targetUrl,
-          score: activation + fetchedBias + Math.random() * 0.16,
+          score: activation
+            + fetchedBias
+            + rawSignal
+            + allowlistBonus
+            + qualityBonus
+            + motifCount * 0.05
+            + adjustment.bridgeBonus
+            - noisePenalty
+            - denylistPenalty
+            - adjustment.loopPenalty
+            + Math.random() * 0.08,
           reason: "known_url",
         });
       }
@@ -2998,6 +2539,32 @@ class WebGraphWeaver {
     if (domainInfo.lastFetchedAt <= 0) {
       score += 14;
     }
+    if (WEAVER_RESEARCH_MODE === "parameter-golf") {
+      const meta = annotateResearchNode({ kind: "url", url });
+      const routing = parameterGolfRoutingPolicy(url);
+      if (routing.hardBlockReason) {
+        return -1000;
+      }
+      score += Number(meta.raw_signal_score || 0) * 18;
+      score -= Number(meta.navigation_noise_penalty || 0) * 20;
+      score += Math.max(
+        Number(meta.allowlist_bonus || 0),
+        Number(routing.allowlistBonus || 0),
+      ) * 14;
+      score -= Math.max(
+        Number(meta.denylist_penalty || 0),
+        Number(routing.denylistPenalty || 0),
+      ) * 16;
+      const motifs = Array.isArray(meta.research_motifs) ? meta.research_motifs.length : 0;
+      score += motifs * 2.5;
+      if (String(meta.source_quality || "") === "primary") {
+        score += 12;
+      } else if (String(meta.source_quality || "") === "secondary") {
+        score += 4;
+      } else if (String(meta.source_quality || "") === "noise") {
+        score -= 18;
+      }
+    }
     score += Math.random() * 0.5;
     return score;
   }
@@ -3061,6 +2628,11 @@ class WebGraphWeaver {
     }
 
     this._emitGraphDelta(reason, createdNodes, createdEdges);
+
+    const policyOutcome = this._applyResearchPolicyBlock(normalized, sourceUrl, depth, reason);
+    if (policyOutcome) {
+      return policyOutcome;
+    }
 
     const priority = this._priorityFor(normalized, depth, sourceUrl);
     const pushed = this.frontier.push({
@@ -3175,6 +2747,16 @@ class WebGraphWeaver {
       return;
     }
 
+    const policyOutcome = this._applyResearchPolicyBlock(
+      item.url,
+      item.sourceUrl || null,
+      item.depth,
+      "fetch_policy_guard",
+    );
+    if (policyOutcome) {
+      return;
+    }
+
     const domainState = this._domainState(domain);
     const now = nowMs();
     if (domainState.active >= this.currentMaxRequestsPerHost) {
@@ -3227,6 +2809,13 @@ class WebGraphWeaver {
     if (!allowed) {
       this.stats.skipped += 1;
       this.stats.robots_blocked += 1;
+      if (WEAVER_RESEARCH_MODE === "parameter-golf" && domain === "patch-diff.githubusercontent.com") {
+        this.optOutDomains.add(domain);
+        this._emit("domain_opt_out", {
+          domain,
+          reason: "robots_blocked_primary_patch_host",
+        });
+      }
       this.graph.setUrlStatus(item.url, {
         status: "blocked",
         compliance: "robots_blocked",
@@ -3816,6 +3405,10 @@ class WebGraphWeaver {
       } catch (_err) {
         host = "";
       }
+      const routing = parameterGolfRoutingPolicy(normalized);
+      if (routing.hardBlockReason) {
+        continue;
+      }
       if (!host || host === "localhost" || host === "127.0.0.1" || host === "::1") {
         continue;
       }
@@ -3841,7 +3434,15 @@ class WebGraphWeaver {
       const activation = Number(node?.activation_potential || 0);
       const depthPenalty = Math.max(0, Number(node?.depth || 0)) * 0.3;
       const cooldownPenalty = this._cooldownRemainingMs(normalized, now) > 0 ? 3.5 : 0;
-      const score = statusWeight + activation - depthPenalty - cooldownPenalty;
+      const allowlistBonus = Math.max(
+        Number(node?.allowlist_bonus || 0),
+        Number(routing.allowlistBonus || 0),
+      );
+      const denylistPenalty = Math.max(
+        Number(node?.denylist_penalty || 0),
+        Number(routing.denylistPenalty || 0),
+      );
+      const score = statusWeight + activation + allowlistBonus - depthPenalty - cooldownPenalty - denylistPenalty;
       const freshness = Math.max(
         0,
         Number(node?.last_interacted_at || 0),
@@ -4004,51 +3605,16 @@ class WebGraphWeaver {
 
   start({ seeds, maxDepth, maxNodes, concurrency, maxPerHost, entityCount, startReason } = {}) {
     const seedList = Array.isArray(seeds) ? seeds : [];
-    const requestedSeeds = [];
-    for (const seed of seedList) {
-      const normalized = normalizeUrl(seed, undefined);
-      if (normalized) {
-        requestedSeeds.push(normalized);
-      }
-    }
-
     const watchlistRows = loadWorldWatchlistSeeds();
     const watchlistSeeds = watchlistRows.map((row) => row.url);
-    const mergedRows = [];
-    const mergedSeen = new Set();
-    for (const seed of requestedSeeds) {
-      if (mergedSeen.has(seed)) {
-        continue;
-      }
-      mergedSeen.add(seed);
-      mergedRows.push({
-        url: seed,
-        source: "request",
-        kind: "",
-        domain_id: "",
-        source_type: "",
-      });
-    }
-    for (const row of watchlistRows) {
-      const seed = String(row?.url || "").trim();
-      const kind = String(row?.kind || "").trim().toLowerCase();
-      const domainId = String(row?.domain_id || "").trim().toLowerCase();
-      const sourceType = String(row?.source_type || "").trim().toLowerCase();
-      if (!seed) {
-        continue;
-      }
-      if (mergedSeen.has(seed)) {
-        continue;
-      }
-      mergedSeen.add(seed);
-      mergedRows.push({
-        url: seed,
-        source: "watchlist",
-        kind,
-        domain_id: domainId,
-        source_type: sourceType,
-      });
-    }
+    const mergedRows = mergeRequestedAndWatchlistSeeds({
+      requestedUrls: seedList,
+      watchlistRows,
+      normalizeUrlFn: (rawUrl) => normalizeUrl(rawUrl, undefined) || "",
+    });
+    const requestedSeeds = mergedRows
+      .filter((row) => row.source === "request")
+      .map((row) => row.url);
 
     if (mergedRows.length === 0) {
       return {

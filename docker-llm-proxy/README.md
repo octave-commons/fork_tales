@@ -879,7 +879,7 @@ docker compose up -d
 docker compose logs -f
 
 # 5. Open the React gateway UI
-# http://localhost:5173
+# http://localhost:5197
 ```
 
 > **Important:** You must create `key_usage.json` before running Docker Compose. If this file doesn't exist on the host, Docker will create it as a directory instead of a file, causing the container to fail.
