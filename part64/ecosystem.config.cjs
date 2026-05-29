@@ -18,17 +18,14 @@ const resolveOrtGpuIncludeDir = () =>
       "/app/onnxruntime-linux-x64-1.22.0/include",
   );
 
-const resolveLithNexusRoot = () =>
-  path.resolve(__dirname, "..", "..", "..", "open-hax", "tooloxx", "services", "mcp-lith-nexus");
-
 const resolveLithNexusScript = () =>
   String(
     process.env.LITH_NEXUS_SCRIPT ||
-      path.resolve(resolveLithNexusRoot(), "dist", "http.js"),
+      path.resolve(__dirname, "..", "mcp-lith-nexus", "dist", "http.js"),
   );
 
 const resolveLithNexusRepoRoot = () =>
-  String(process.env.LITH_NEXUS_REPO_ROOT || path.resolve(__dirname, "..", "..", "..", ".."));
+  String(process.env.LITH_NEXUS_REPO_ROOT || path.resolve(__dirname, ".."));
 
 const resolveLithNexusPythonWorkdir = () =>
   String(process.env.LITH_NEXUS_PYTHON_WORKDIR || __dirname);
@@ -203,7 +200,7 @@ module.exports = {
         LITH_NEXUS_HTTP_PATH: process.env.LITH_NEXUS_HTTP_PATH || "/mcp",
       },
       watch: [
-        path.resolve(resolveLithNexusRoot(), "dist", "**", "*.js"),
+        path.resolve(__dirname, "..", "mcp-lith-nexus", "dist", "**", "*.js"),
       ],
       ignore_watch: ["world_state", "artifacts", "*.md", "__pycache__"],
       autorestart: true,
