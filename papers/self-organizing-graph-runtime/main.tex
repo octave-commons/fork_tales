@@ -1,0 +1,66 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage[numbers,sort&compress]{natbib}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  citecolor=blue,
+  urlcolor=blue,
+  pdftitle={A Self-Organizing Graph Runtime for Coupled Meaning and Resource Flow}
+}
+
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+\newcommand{\truthgraph}{\textsc{TruthGraph}}
+\newcommand{\viewgraph}{\textsc{ViewGraph}}
+
+\title{A Self-Organizing Graph Runtime for Coupled Meaning and Resource Flow}
+\author{Octave Commons\\\normalsize Draft initialized from the Fork Tales deep research report}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\input{sections/abstract}
+\end{abstract}
+
+\section{Introduction}
+\input{sections/introduction}
+
+\section{Related Work}
+\input{sections/related-work}
+
+\section{Comparison Frame}
+\input{sections/comparison-frame}
+
+\section{Model}
+\input{sections/model}
+
+\section{System Design}
+\input{sections/system}
+
+\section{Evaluation Plan}
+\input{sections/evaluation}
+
+\section{Limitations and Scope}
+\input{sections/limitations}
+
+\section{Conclusion}
+\input{sections/conclusion}
+
+\bibliographystyle{plainnat}
+\bibliography{refs}
+
+\end{document}

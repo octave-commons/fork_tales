@@ -1,0 +1,31 @@
+The runtime is built around two graph layers. \truthgraph{} is the immutable persistence layer containing raw objects, provenance edges, and event history. \viewgraph{} is a losslessly reconstructable operational projection used for simulation, routing, and control. This distinction makes compression and expansion explicit rather than hiding them inside opaque indexing machinery.
+
+Formally, let \(G^T=(V^T,E^T)\) be the persistent truth layer and \(G^V=(V^V,E^V)\) be the operational projection. A surjective projection map \(\Pi:V^T \to V^V\) assigns each truth node to an atomic or bundled runtime node. Bundle ledgers record membership, internal edges, and boundary relations so that expansion remains auditable rather than approximate.
+
+Nodes in the runtime are nexus points that may carry both semantic attributes and resource reservoirs. Edges carry throughput and congestion state in addition to semantic affinity. Presences are the only actors. They maintain internal state such as needs, priorities, masks, and adaptive lens parameters, but do not directly rewrite persisted truth.
+
+Traversal cost is defined over graph structure rather than hidden embedding-space neighborhoods alone. A simple form used throughout the underlying report is:
+
+\[
+cost_e = w_L + w_C \cdot sat_e + w_S \cdot (1-a_e),
+\]
+
+where \(sat_e\) is edge saturation and \(a_e\) is semantic affinity. This makes routing decisions inspectable path by path.
+
+Daimoi are the runtime's moving packets. They carry owners, intent distributions, resource signatures, and energy-like size budgets. Rather than treating every message as a fixed symbol, the model represents daimoi as probabilistic bundles that can drift, consolidate, collide, absorb, or deflect. This allows uncertainty and control to be modeled at the packet layer instead of being deferred entirely to post hoc language-model reasoning.
+
+Presence demand is likewise explicit. For presence \(p\) and resource \(k\), the report models need as a bounded transform of utilization state:
+
+\[
+need_{p,k} = priority_p \cdot \sigma\!\left(a_k(u_{p,k}-\theta_k)\right).
+\]
+
+This gives the runtime a way to translate ongoing pressure into attention and routing without producing unbounded black holes of demand.
+
+Finally, the runtime includes a reservoir economy. Resource amounts, capacities, pressures, and local scarcity-derived prices are treated as first-class state. One canonical local price form is:
+
+\[
+\pi_k(n)=\exp(\kappa_k \hat P[n,k])\cdot (1+\rho_k \cdot sat(n)),
+\]
+
+where \(\hat P[n,k]\) is normalized pressure and \(sat(n)\) is local congestion. This turns compute and IO into explicit constraints that shape routing and behavior. The metabolic layer is therefore part of the model rather than only an implementation concern.
