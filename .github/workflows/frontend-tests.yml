@@ -2,6 +2,9 @@ name: Frontend Tests
 
 on:
   pull_request:
+    paths:
+      - 'part64/frontend/**'
+  workflow_dispatch:
 
 jobs:
   frontend-test:
