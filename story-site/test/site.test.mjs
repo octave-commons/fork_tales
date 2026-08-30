@@ -5,7 +5,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { classifyPath } from '../catalog.mjs';
+import { archaeologyAnchors, classifyPath } from '../catalog.mjs';
 import { buildArchive, buildSite, renderMarkdown, toPublicArchive } from '../lib.mjs';
 
 async function writeFixture(root, relativePath, content) {
@@ -44,6 +44,14 @@ test('classification is explicit and conservative', () => {
   assert.equal(classifyPath('docs/TECHNICAL.md').action, 'hold');
   assert.equal(classifyPath('docs/GATES_OF_TRUTH_ANNOUNCEMENT.md').action, 'include');
   assert.equal(classifyPath('part64/frontend/src/App.tsx').action, 'ignore');
+});
+
+test('recovered reader lineage is explicit and public mutation stays excluded', () => {
+  const reader = archaeologyAnchors.find((anchor) => anchor.id === 'gates-of-aker-reader');
+  assert.ok(reader);
+  assert.equal(reader.repository, 'octave-commons/gates-of-aker');
+  assert.equal(reader.path, 'web/src/components/ForkTalesPanel.tsx');
+  assert.match(reader.relation, /removing public mutation/i);
 });
 
 test('archive preserves sequence gaps, duplicate witnesses, and held boundaries', async (context) => {
@@ -108,5 +116,8 @@ test('site build is deterministic and emits readable entry pages', async (contex
   const searchIndex = JSON.parse(await fs.readFile(path.join(outA, 'search-index.json'), 'utf8'));
   assert.ok(searchIndex.some((record) => record.text.includes('archive begins')));
   assert.ok(await fs.stat(path.join(outA, 'assets', 'styles.css')));
-  assert.ok(await fs.stat(path.join(outA, 'archaeology.html')));
+  const archaeologyHtml = await fs.readFile(path.join(outA, 'archaeology.html'), 'utf8');
+  assert.ok(archaeologyHtml.includes('ForkTalesPanel'));
+  assert.ok(archaeologyHtml.includes('Reading and mutation are different surfaces.'));
+  assert.ok(!archaeologyHtml.includes('Write Next Chapter'));
 });

@@ -11,7 +11,7 @@ export function renderArchaeology(archive) {
   </section>
 
   <section class="strata" aria-labelledby="strata-heading">
-    <div class="section-heading"><p class="eyebrow">Recovered lineage</p><h2 id="strata-heading">Five anchors survived the search</h2></div>
+    <div class="section-heading"><p class="eyebrow">Recovered lineage</p><h2 id="strata-heading">${archive.archaeologyAnchors.length} anchors survived the search</h2></div>
     <ol class="strata-list">${archive.archaeologyAnchors.map((anchor, index) => `<li>
       <span class="stratum-number">${String(index + 1).padStart(2, '0')}</span>
       <div><h3>${escapeHtml(anchor.label)}</h3><p>${escapeHtml(anchor.relation)}</p><a href="${escapeAttribute(anchor.url)}"><code>${escapeHtml(anchor.repository)}${anchor.path ? `/${escapeHtml(anchor.path)}` : ''}@${escapeHtml(anchor.revision.slice(0, 12))}</code></a></div>
@@ -19,8 +19,8 @@ export function renderArchaeology(archive) {
   </section>
 
   <section class="archaeology-grid">
-    <article><p class="eyebrow">Recovered intent</p><h2>The corpus wanted its own address.</h2><p>The devel superproject later organized Fork Tales lore into characters, creative works, events, and world records. A descendant fork preserved runtime code without the story trees. Together they reveal a separation already trying to happen.</p></article>
-    <article><p class="eyebrow">Rejected shortcut</p><h2>The old frontend is not the reader.</h2><p>The existing React application is a world-simulation and operator console. Its existence proves interface intent, but reusing its monolith would preserve the original entanglement.</p></article>
+    <article><p class="eyebrow">Recovered interface</p><h2>The reader survived inside Gates of Aker.</h2><p>The public <code>/fork-tales</code> route and <code>ForkTalesPanel</code> expose chapter history, selection, status, and source paths. This static site preserves the recovered choose → read → advance grammar.</p></article>
+    <article><p class="eyebrow">Rejected coupling</p><h2>Reading and mutation are different surfaces.</h2><p>The recovered panel also sat beside preview and write-next-chapter controls backed by a story engine. The public reader omits mutation. Future generation belongs to a separately authenticated studio/editor, not the publication default.</p></article>
     <article><p class="eyebrow">Publication law</p><h2>Manifest first, movement second.</h2><p>This layer leaves every source file in place, records inclusions and exclusions in <a href="archive.json">archive.json</a>, and publishes a deterministic projection. A later repository split can preserve history after the boundary has been reviewed.</p></article>
   </section>
 
@@ -36,4 +36,3 @@ export function renderArchaeology(archive) {
     pageClass: 'archaeology-page',
   });
 }
-
