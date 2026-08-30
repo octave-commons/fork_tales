@@ -17,7 +17,7 @@
     let visible = 0;
 
     for (const card of cards) {
-      const indexedText = fullText.get(card.dataset.entryId) ?? card.dataset.search;
+      const indexedText = `${card.dataset.search ?? ''} ${fullText.get(card.dataset.entryId) ?? ''}`;
       const matchesQuery = !query || indexedText.includes(query);
       const matchesCollection = selected === 'all' || card.dataset.collection === selected;
       card.hidden = !(matchesQuery && matchesCollection);

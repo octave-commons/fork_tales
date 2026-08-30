@@ -72,26 +72,56 @@ function makeSlug(sourcePath, digest) {
   return `${stem || 'entry'}-${digest.slice(0, 10)}`;
 }
 
-async function exists(target) {
+async function lstatIfExists(target) {
   try {
-    await fs.access(target);
-    return true;
-  } catch {
-    return false;
+    return await fs.lstat(target);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
   }
 }
 
-async function walkDirectory(rootDir, directory, output) {
+function isInsideRoot(rootRealPath, targetRealPath) {
+  const relative = path.relative(rootRealPath, targetRealPath);
+  return relative === '' || (
+    relative !== '..'
+    && !relative.startsWith(`..${path.sep}`)
+    && !path.isAbsolute(relative)
+  );
+}
+
+async function assertSafeSource(rootRealPath, absolute, sourcePath) {
+  const stat = await fs.lstat(absolute);
+  if (stat.isSymbolicLink()) {
+    throw new Error(`Refusing symbolic link in archive source: ${sourcePath}`);
+  }
+  const realPath = await fs.realpath(absolute);
+  if (!isInsideRoot(rootRealPath, realPath)) {
+    throw new Error(`Refusing archive source outside corpus root: ${sourcePath}`);
+  }
+  return stat;
+}
+
+async function walkDirectory(rootDir, rootRealPath, directory, output) {
   const absolute = path.join(rootDir, directory);
-  if (!(await exists(absolute))) return;
+  const stat = await lstatIfExists(absolute);
+  if (!stat) return;
+  if (stat.isSymbolicLink()) {
+    throw new Error(`Refusing symbolic link in archive source: ${directory}`);
+  }
+  if (!stat.isDirectory()) return;
+  await assertSafeSource(rootRealPath, absolute, directory);
 
   const dirents = await fs.readdir(absolute, { withFileTypes: true });
   dirents.sort((left, right) => left.name.localeCompare(right.name));
 
   for (const dirent of dirents) {
     const relative = normalizeSourcePath(path.posix.join(directory, dirent.name));
+    if (dirent.isSymbolicLink()) {
+      throw new Error(`Refusing symbolic link in archive source: ${relative}`);
+    }
     if (dirent.isDirectory()) {
-      if (!SKIP_DIRECTORIES.has(dirent.name)) await walkDirectory(rootDir, relative, output);
+      if (!SKIP_DIRECTORIES.has(dirent.name)) await walkDirectory(rootDir, rootRealPath, relative, output);
       continue;
     }
     if (dirent.isFile()) output.push(relative);
@@ -100,12 +130,21 @@ async function walkDirectory(rootDir, directory, output) {
 
 export async function discoverCandidatePaths(rootDir) {
   const output = [];
+  const rootRealPath = await fs.realpath(rootDir);
 
   for (const filename of candidateRootFiles) {
-    if (await exists(path.join(rootDir, filename))) output.push(filename);
+    const absolute = path.join(rootDir, filename);
+    const stat = await lstatIfExists(absolute);
+    if (!stat) continue;
+    if (stat.isSymbolicLink()) {
+      throw new Error(`Refusing symbolic link in archive source: ${filename}`);
+    }
+    if (!stat.isFile()) continue;
+    await assertSafeSource(rootRealPath, absolute, filename);
+    output.push(filename);
   }
   for (const directory of candidateRoots) {
-    await walkDirectory(rootDir, directory, output);
+    await walkDirectory(rootDir, rootRealPath, directory, output);
   }
 
   return [...new Set(output)].sort((left, right) => left.localeCompare(right));
@@ -170,6 +209,7 @@ export async function buildArchive({
 } = {}) {
   if (!rootDir) throw new TypeError('rootDir is required');
 
+  const rootRealPath = await fs.realpath(rootDir);
   const candidatePaths = await discoverCandidatePaths(rootDir);
   const entries = [];
   const boundary = [];
@@ -177,7 +217,10 @@ export async function buildArchive({
   for (const sourcePath of candidatePaths) {
     const classification = classifyPath(sourcePath);
     const absolute = path.join(rootDir, ...sourcePath.split('/'));
-    const stat = await fs.stat(absolute);
+    const stat = await assertSafeSource(rootRealPath, absolute, sourcePath);
+    if (!stat.isFile()) {
+      throw new Error(`Archive candidate is not a regular file: ${sourcePath}`);
+    }
 
     if (classification.action === 'include') {
       if (classification.kind === 'markdown') {

@@ -2,6 +2,7 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { buildArchive, toPublicArchive } from './archive.mjs';
 import { renderArchaeology, renderEntryPage, renderHome, renderShell } from './render.mjs';
 
@@ -34,10 +35,9 @@ export async function buildSite({ rootDir, outputDir, sourceRepository, sourceRe
   await writeFile(outputDir, 'search-index.json', `${JSON.stringify(archive.entries.map((entry) => ({ id: entry.id, text: entry.searchText })))}\n`);
   await writeFile(outputDir, '.nojekyll', '');
 
-  const localStatic = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'static');
+  const localStatic = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'static');
   await fs.mkdir(path.join(outputDir, 'assets'), { recursive: true });
   await fs.copyFile(path.join(localStatic, 'styles.css'), path.join(outputDir, 'assets', 'styles.css'));
-
   await fs.copyFile(path.join(localStatic, 'app.js'), path.join(outputDir, 'assets', 'app.js'));
 
   for (const [index, entry] of archive.entries.entries()) {

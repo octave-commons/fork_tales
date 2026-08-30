@@ -9,6 +9,7 @@ on:
       - 'docs/**'
       - 'MANUSCRIPT_FULL.md'
       - 'LIVE_CHOIR.md'
+      - 'narrative_audio_v3/**'
       - '.github/workflows/story-site.yml'
   push:
     branches: [main]
@@ -19,6 +20,7 @@ on:
       - 'docs/**'
       - 'MANUSCRIPT_FULL.md'
       - 'LIVE_CHOIR.md'
+      - 'narrative_audio_v3/**'
       - '.github/workflows/story-site.yml'
   workflow_dispatch:
 
@@ -37,6 +39,9 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          ref: ${{ env.SOURCE_REF }}
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -71,6 +76,9 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@v6

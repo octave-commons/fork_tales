@@ -54,6 +54,27 @@ test('recovered reader lineage is explicit and public mutation stays excluded', 
   assert.match(reader.relation, /removing public mutation/i);
 });
 
+test('candidate discovery rejects symbolic links at corpus roots', async (context) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'fork-tales-story-site-root-'));
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'fork-tales-story-site-outside-'));
+  context.after(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(outside, { recursive: true, force: true });
+  });
+
+  await writeFixture(outside, 'narrative/Chapter_01.md', '# Outside witness\n');
+  await fs.symlink(
+    path.join(outside, 'narrative'),
+    path.join(root, 'narrative'),
+    process.platform === 'win32' ? 'junction' : 'dir',
+  );
+
+  await assert.rejects(
+    () => buildArchive({ rootDir: root, sourceRevision: 'fixture-revision' }),
+    /Refusing symbolic link in archive source: narrative/,
+  );
+});
+
 test('archive preserves sequence gaps, duplicate witnesses, and held boundaries', async (context) => {
   const root = await makeFixture();
   context.after(() => fs.rm(root, { recursive: true, force: true }));
