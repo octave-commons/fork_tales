@@ -42,6 +42,17 @@ This repository contains:
 - **.opencode/** - OpenCode agent specifications
 - **artifacts/** - Generated artifacts
 
+## Story archive
+
+`story-site/` builds a provenance-aware static reader over explicitly classified creative witnesses. It preserves source paths, revisions, content digests, chapter gaps, exact duplicates, and a ledger of story-adjacent material that has not been promoted for publication.
+
+```sh
+npm --prefix story-site test
+SOURCE_REF="$(git rev-parse HEAD)" npm --prefix story-site run build
+```
+
+The generated site is written to `story-site/dist/`. See [story-site/ARCHAEOLOGY.md](story-site/ARCHAEOLOGY.md) for the recovered lineage and extraction boundary.
+
 ## Quick Start
 
 See [AGENTS.md](AGENTS.md) for development and runtime commands.
