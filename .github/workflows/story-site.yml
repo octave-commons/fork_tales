@@ -1,0 +1,103 @@
+name: Fork Tales story archive
+
+on:
+  pull_request:
+    paths:
+      - 'story-site/**'
+      - 'narrative/**'
+      - 'world_building/**'
+      - 'docs/**'
+      - 'MANUSCRIPT_FULL.md'
+      - 'LIVE_CHOIR.md'
+      - 'narrative_audio_v3/**'
+      - '.github/workflows/story-site.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'story-site/**'
+      - 'narrative/**'
+      - 'world_building/**'
+      - 'docs/**'
+      - 'MANUSCRIPT_FULL.md'
+      - 'LIVE_CHOIR.md'
+      - 'narrative_audio_v3/**'
+      - '.github/workflows/story-site.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: story-site-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      SOURCE_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.SOURCE_REF }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Run archive tests
+        run: npm --prefix story-site test
+
+      - name: Build deterministic archive
+        run: npm --prefix story-site run build
+
+      - name: Upload review artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fork-tales-story-site-${{ env.SOURCE_REF }}
+          path: story-site/dist
+          if-no-files-found: error
+          retention-days: 14
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Build archive at merged revision
+        env:
+          SOURCE_REF: ${{ github.sha }}
+        run: npm --prefix story-site run build
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: story-site/dist
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

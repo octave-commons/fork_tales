@@ -57,6 +57,7 @@ part64/world_state/tts_cache/
 # Frontend build outputs
 part64/frontend/dist/
 part64/frontend/dist-ssr/
+story-site/dist/
 
 # Local benchmark/runtime artifacts
 **/.cache*/
